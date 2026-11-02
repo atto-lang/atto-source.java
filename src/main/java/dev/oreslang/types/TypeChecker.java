@@ -71,7 +71,7 @@ public final class TypeChecker {
     // Qualified class names admitted through an explicitly imported module alias.
     // Kept separate from classOwners so foreign class bodies are not revalidated
     // in the importing compilation unit.
-    private final IdentityHashMap<Ast.ClassDecl, String> linkedClassOwners = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.ClassDecl, String> linkedClassNames = new IdentityHashMap<>();
     private Map<String, Ast.TypeAliasDecl> resolvingLinkedFieldAliases = Map.of();
     private final Set<String> hiddenLinkedAliasNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -302,12 +302,12 @@ public final class TypeChecker {
             }
 
             String linkedModuleAlias = null;
-            boolean importedDirectly = name.equals(declaration.name())
-                    && declaration.actorKind() == Ast.ActorKind.NONE
+            boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
                     && program.imports().stream().anyMatch(use ->
                             use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                                    && use.names().contains(name)
-                                    && ImportRules.localName(use, name).equals(name));
+                                    && use.names().stream().anyMatch(sourceName ->
+                                            sourceName.equals(declaration.name())
+                                                    && ImportRules.localName(use, sourceName).equals(name)));
             if (!importedDirectly && declaration.actorKind() == Ast.ActorKind.NONE) {
                 int separator = name.lastIndexOf('.');
                 if (separator > 0 && separator < name.length() - 1
@@ -339,13 +339,11 @@ public final class TypeChecker {
                         "linked public class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
-            if (linkedModuleAlias != null) {
-                String previousAlias = checker.linkedClassOwners.putIfAbsent(declaration, linkedModuleAlias);
-                if (previousAlias != null && !previousAlias.equals(linkedModuleAlias)) {
-                    throw new IllegalArgumentException(
-                            "the same linked class cannot be imported through multiple module aliases: "
-                                    + declaration.name());
-                }
+            String previousName = checker.linkedClassNames.putIfAbsent(declaration, name);
+            if (previousName != null && !previousName.equals(name)) {
+                throw new IllegalArgumentException(
+                        "the same linked class cannot be imported through multiple names: "
+                                + declaration.name());
             }
             Map<String, Ast.TypeAliasDecl> aliases =
                     linkedAliases.getOrDefault(name, Map.of());
@@ -9789,8 +9787,8 @@ public final class TypeChecker {
     }
 
     private String qualifiedClassName(Ast.ClassDecl klass) {
-        String linkedOwner = linkedClassOwners.get(klass);
-        if (linkedOwner != null) return linkedOwner + "." + klass.name();
+        String linkedName = linkedClassNames.get(klass);
+        if (linkedName != null) return linkedName;
         String owner = classOwners.get(klass);
         return owner == null || owner.equals("__root__") ? klass.name() : owner + "." + klass.name();
     }
