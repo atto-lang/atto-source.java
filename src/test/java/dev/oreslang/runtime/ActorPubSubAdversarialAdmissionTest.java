@@ -449,4 +449,136 @@ final class ActorPubSubAdversarialAdmissionTest {
         }
     }
 
+    @Test
+    void unsubscribeWhileHostPublishesIsAnAdmissionBarrier() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "unsubscribe-race", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            CountDownLatch subscribed = new CountDownLatch(1);
+            CountDownLatch unsubscribed = new CountDownLatch(1);
+            AtomicReference<ActorEventBus.Subscription<String>> edge =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            if ("subscribe".equals(message)) {
+                                join.join();
+                                edge.set(topic.subscribe());
+                                subscribed.countDown();
+                            } else {
+                                edge.get().close();
+                                unsubscribed.countDown();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                            subscribed.countDown();
+                            unsubscribed.countDown();
+                        }
+                    });
+            actor.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            CountDownLatch started = new CountDownLatch(1);
+            try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+                Future<?> publishing = executor.submit(() -> {
+                    started.countDown();
+                    for (int i = 0; i < 200; i++) {
+                        try {
+                            group.events().publishSystem("unsubscribe-race", "p-" + i);
+                        } catch (ActorEventBus.EventBackpressureException exhausted) {
+                            // A synchronous bounded-credit denial is permitted;
+                            // no carrier may wait for capacity on this path.
+                        }
+                    }
+                });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                actor.send("unsubscribe");
+                assertTrue(unsubscribed.await(5, TimeUnit.SECONDS),
+                        "actor-side unsubscribe must not wait for a host publisher");
+                publishing.get(5, TimeUnit.SECONDS);
+            }
+            assertNull(failure.get());
+            assertTrue(edge.get().closed());
+            assertEquals(0, group.events().topics().getFirst().subscribers(),
+                    "no publication may retain an unsubscribed delivery edge");
+            assertEquals(0, group.events().publishSystem(
+                    "unsubscribe-race", "post-barrier").subscribers());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
+    void replacementActorCannotReadRetiredGenerationEvent() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "replacement", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            CountDownLatch oldReady = new CountDownLatch(1);
+            AtomicReference<ActorEventBus.Subscription<String>> oldEdge =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> oldActor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            join.join();
+                            oldEdge.set(topic.subscribe());
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            oldReady.countDown();
+                        }
+                    });
+            oldActor.send("subscribe");
+            assertTrue(oldReady.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            group.events().publishSystem("replacement", "old-generation");
+            oldActor.stop();
+            assertTrue(oldActor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(oldEdge.get().closed(),
+                    "actor death must revoke the physical subscription");
+
+            CountDownLatch newReady = new CountDownLatch(1);
+            CountDownLatch read = new CountDownLatch(1);
+            AtomicReference<String> observed = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> replacement =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            if ("subscribe".equals(message)) {
+                                join.join();
+                                ActorEventBus.Subscription<String> current = topic.subscribe();
+                                assertNotSame(oldEdge.get(), current);
+                                assertTrue(current.tryRead().isEmpty(),
+                                        "replacement must not inherit old-generation data");
+                                newReady.countDown();
+                            } else {
+                                observed.set(topic.subscribe().tryRead().orElseThrow().value());
+                                read.countDown();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                            newReady.countDown();
+                            read.countDown();
+                        }
+                    });
+            replacement.send("subscribe");
+            assertTrue(newReady.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            group.events().publishSystem("replacement", "new-generation");
+            replacement.send("read");
+            assertTrue(read.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals("new-generation", observed.get());
+            replacement.stop();
+            assertTrue(replacement.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
 }
