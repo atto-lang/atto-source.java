@@ -154,20 +154,19 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
-        // Bootstrap: site-scoped gates are retained only for this checked
-        // code image and evaluator. Actor state requires actor-generation
-        // ownership and remains explicitly unsupported in this stage.
-        private final Map<Ast.CriticalStmt, CriticalGate> rootCriticalGates =
-                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
-
-        private CriticalGate rootCriticalGate(Ast.CriticalStmt stmt) {
-            if (ActorRuntime.inActorExecution()) {
+        /**
+         * Critical source is actor-owned only in this stage. The actor cell,
+         * never the shared code/AST or carrier thread, owns its gate.
+         * Outside actors, an explicit protected-resource capability must be
+         * added to the language before guest critical source may execute.
+         */
+        private CriticalGate actorCriticalGate() {
+            ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+            if (runtime == null) {
                 throw new IllegalStateException(
-                        "actor critical blocks require actor-owned generation-fenced gate identity");
+                        "critical in a free function requires an explicit protected-resource capability");
             }
-            synchronized (rootCriticalGates) {
-                return rootCriticalGates.computeIfAbsent(stmt, ignored -> new CriticalGate());
-            }
+            return runtime.currentActorCriticalGate();
         }
 
         private int checkedOptionDepth(Ast.CallExpr call) {
@@ -2517,7 +2516,7 @@ public final class OresEvalRootNode extends RootNode {
                         "critical source requires checked resource-bound admission");
             }
             CriticalEffectPreflight.verify(critical.body());
-            CriticalGate gate = rootCriticalGate(critical);
+            CriticalGate gate = actorCriticalGate();
             OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
             SourceCleanupFrame cleanup = task.registerSourceCleanup((owner, finished) -> {
                 // This is an authenticated cancellation-unwind turn; it also
