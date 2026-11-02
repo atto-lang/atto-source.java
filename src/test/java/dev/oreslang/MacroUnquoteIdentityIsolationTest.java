@@ -45,20 +45,58 @@ final class MacroUnquoteIdentityIsolationTest {
     }
 
     @Test
-    void compositeCallerSyntaxFailsClosedBeforeProvenanceTouchesOriginalTree() {
+    void compositeCallerSyntaxIsDeepCopiedWithPriorProvenance() {
         Ast.Program program = parse("40 + 2");
         Ast.Expr original = input(program).expression();
-        Ast.BinaryExpr originalLeft = assertInstanceOf(Ast.BinaryExpr.class, original);
+        Ast.BinaryExpr originalBinary = assertInstanceOf(Ast.BinaryExpr.class, original);
+        Ast.Expr originalLeft = originalBinary.left();
+        MacroSyntaxProvenance.Origin priorRoot = new MacroSyntaxProvenance.Origin(
+                new MacroSyntaxProvenance.HygieneIdentity(
+                        "test-unit", "Main", "Main", "prior_root",
+                        new Ast.SourceSite(1, 1), 0),
+                new Ast.SourceSite(1, 1),
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE);
+        MacroSyntaxProvenance.Origin priorLeaf = new MacroSyntaxProvenance.Origin(
+                new MacroSyntaxProvenance.HygieneIdentity(
+                        "test-unit", "Main", "Main", "prior_leaf",
+                        new Ast.SourceSite(1, 2), 1),
+                new Ast.SourceSite(1, 2),
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE);
+        MacroSyntaxProvenance.record(original, priorRoot);
+        MacroSyntaxProvenance.record(originalLeft, priorLeaf);
+
+        Ast.Program expanded = assertDoesNotThrow(() -> MacroExpander.expand(program));
+        Ast.BinaryExpr outer = assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded));
+        Ast.BinaryExpr emitted = assertInstanceOf(Ast.BinaryExpr.class, outer.left());
+
+        assertNotSame(original, emitted,
+                "unquote must not retain the caller-owned composite root");
+        assertNotSame(originalLeft, emitted.left(),
+                "unquote must recursively copy the composite child");
+        assertEquals(original, emitted);
+        assertTrue(MacroSyntaxProvenance.lookup(emitted).contains(priorRoot),
+                "root provenance must follow the copied root identity");
+        assertTrue(MacroSyntaxProvenance.lookup(emitted.left()).contains(priorLeaf),
+                "nested provenance must follow the copied child identity");
+        assertEquals(java.util.List.of(priorRoot), MacroSyntaxProvenance.lookup(original),
+                "the original root must retain only its prior provenance");
+        assertEquals(java.util.List.of(priorLeaf), MacroSyntaxProvenance.lookup(originalLeft),
+                "the original child must retain only its prior provenance");
+    }
+
+    @Test
+    void unsupportedCallerSyntaxFailsClosedWithoutAliasing() {
+        Ast.Program program = parse("await pending");
+        Ast.Expr original = input(program).expression();
+        assertInstanceOf(Ast.AwaitExpr.class, original);
 
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> MacroExpander.expand(program));
 
-        assertTrue(failure.getMessage().contains("composite or compiler-internal syntax"),
+        assertTrue(failure.getMessage().contains("outside the bounded deep-copy allowlist"),
                 failure::toString);
         assertTrue(MacroSyntaxProvenance.lookup(original).isEmpty(),
-                "failed expansion must not publish provenance onto caller-owned root syntax");
-        assertTrue(MacroSyntaxProvenance.lookup(originalLeft.left()).isEmpty(),
-                "failed expansion must not contaminate a nested caller-owned syntax node");
+                "unsupported caller syntax must not be returned by reference");
     }
 
     @Test
