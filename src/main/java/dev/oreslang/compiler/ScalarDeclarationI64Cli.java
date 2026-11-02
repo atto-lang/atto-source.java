@@ -9,7 +9,7 @@ import java.util.ArrayList;
 /**
  * Experimental executable i64 declaration runner. Not the production
  * oreslang compiler; supports only the explicit restricted declaration form
- * admitted by ScalarDeclarationI64Compiler.
+ * admitted by ProtectedScalarMirV1 from the production Parser AST.
  *
  * Usage: ScalarDeclarationI64Cli <source.atto> <signed-i64-delta> ...
  */
@@ -27,7 +27,7 @@ public final class ScalarDeclarationI64Cli {
             throw new IllegalArgumentException("restricted guest source must be a regular file <=8192 bytes");
         }
         String source = Files.readString(file, StandardCharsets.UTF_8);
-        var declaration = OresCompiler.compileProtectedScalarI64(source);
+        var declaration = ProtectedScalarMirV1.lower(source);
         long[] deltas = new long[args.length - 1];
         for (int i = 1; i < args.length; i++) {
             deltas[i - 1] = Long.parseLong(args[i]);
