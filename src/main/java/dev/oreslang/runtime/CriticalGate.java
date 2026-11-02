@@ -47,7 +47,9 @@ public final class CriticalGate {
 
     private final ReentrantLock metadata = new ReentrantLock();
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
-    // Only runtime-owned futures. Notifications always happen outside metadata.
+    // Scheduler-owned pending AND just-promoted unsettled Futures. Keep a
+    // promoted Future in this map until completion so retire() can revoke it.
+    // Every terminal callback/notification runs outside metadata.
     private final IdentityHashMap<Ticket, OresFuture<Ticket>> admissions = new IdentityHashMap<>();
     private Ticket owner;
     private long issued;
@@ -144,13 +146,30 @@ public final class CriticalGate {
             }
             owner = waiters.pollFirst();
             successor = owner;
-            readiness = successor == null ? null : admissions.remove(successor);
+            // Retain the just-granted readiness in the admission ledger
+            // until its terminal notification begins. Otherwise retire()
+            // cannot fence a promoted ticket in the gap between releasing
+            // metadata and settling this Future.
+            readiness = successor == null ? null : admissions.get(successor);
         } finally {
             metadata.unlock();
         }
         // A Future may synchronously notify host subscribers. Never settle
         // one while holding the short gate metadata lock or execute guest code.
-        if (readiness != null) readiness.completeFromRuntime(successor);
+        if (readiness != null) {
+            try {
+                readiness.completeFromRuntime(successor);
+            } finally {
+                metadata.lock();
+                try {
+                    // Conditional remove: concurrent cancellation/retirement
+                    // may already have retracted the promoted ticket.
+                    admissions.remove(successor, readiness);
+                } finally {
+                    metadata.unlock();
+                }
+            }
+        }
         return Optional.ofNullable(successor);
     }
 
