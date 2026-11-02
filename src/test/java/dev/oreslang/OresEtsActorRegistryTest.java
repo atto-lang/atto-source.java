@@ -368,9 +368,10 @@ final class OresEtsActorRegistryTest {
             } finally {
                 assertEquals(Boolean.TRUE, unpin.invoke(entry));
             }
-            // Production unpin is followed by the registry's owner Pin.close()
-            // reaper callback. This reflected pin must instead be explicitly
-            // swept by a non-carrier host check while close() stays idempotent.
+            // The reflected pin bypasses the registry's Pin.close() sweep;
+            // explicitly trigger the same host-only reclamation path.
+            assertEquals(1, registry.reap());
+            assertTrue(map.isEmpty());
             registry.close();
         }
     }
