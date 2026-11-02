@@ -454,4 +454,65 @@ final class ProjectManifestImportTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void nativeAttoExtensionResolvesRelativeAndExtensionlessImports() throws Exception {
+        Path app = temp.resolve("atto-import-app");
+        Files.createDirectories(app);
+        Path helper = app.resolve("helper.atto");
+        Path main = app.resolve("main.atto");
+        Files.writeString(helper, """
+                pub fnc atto_marker(): string {
+                  return "native-atto-import";
+                }
+                """);
+        Files.writeString(main, """
+                import fnc atto_marker from "./helper";
+
+                pub fnc main(): void {
+                  stdio.println(atto_marker());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+        assertEquals(2, build.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("native-atto-import"));
+    }
+
+    @Test
+    void explicitAttoSuffixIsNotRewrittenToLegacyOres() throws Exception {
+        Path app = temp.resolve("explicit-atto-import");
+        Files.createDirectories(app);
+        Path helperAtto = app.resolve("helper.atto");
+        Path helperOres = app.resolve("helper.ores");
+        Path main = app.resolve("main.atto");
+        Files.writeString(helperAtto, """
+                pub fnc marker(): string { return "atto"; }
+                """);
+        Files.writeString(helperOres, """
+                pub fnc marker(): string { return "ores"; }
+                """);
+        Files.writeString(main, """
+                import fnc marker from "./helper.atto";
+                pub fnc main(): void {
+                  stdio.println(marker());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), out, new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("atto"));
+        assertFalse(out.toString(StandardCharsets.UTF_8).contains("ores"));
+    }
+
 }
