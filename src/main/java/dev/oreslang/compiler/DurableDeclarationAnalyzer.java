@@ -104,11 +104,16 @@ public final class DurableDeclarationAnalyzer {
             throw new IllegalArgumentException(
                     "WORKFLOW_ANNOTATIONS_UNSUPPORTED: durable annotation contracts are not yet versioned");
         }
-        long runCount = body.methods().stream().filter(m -> m.name().equals("run")).count();
-        if (runCount != 1) {
+        List<Ast.MethodDecl> entries = body.methods().stream()
+                .filter(m -> m.name().equals("run")).toList();
+        if (entries.size() != 1) {
             throw new IllegalArgumentException(
                     "WORKFLOW_ENTRYPOINT_REQUIRED: '" + module + "." + workflow.name()
                             + "' must declare exactly one run(...) entry point");
+        }
+        if (entries.getFirst().isStatic()) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ENTRYPOINT_STATIC: workflow run must be an instance entry point");
         }
         Set<String> memberNames = new LinkedHashSet<>();
         for (Ast.MethodDecl method : body.methods()) memberNames.add(method.name());
@@ -269,14 +274,9 @@ public final class DurableDeclarationAnalyzer {
                 checkExpr(s.condition(), members);
                 checkExpr(s.update(), members);
                 checkStatements(s.body(), members);
-            } else if (statement instanceof Ast.ForOfStmt s) {
-                if (s.asyncIteration()) throw new IllegalArgumentException("WORKFLOW_ASYNC_ITERATION_FORBIDDEN");
-                checkExpr(s.iterable(), members);
-                checkStatements(s.body(), members);
-            } else if (statement instanceof Ast.ForOfDestructureStmt s) {
-                if (s.asyncIteration()) throw new IllegalArgumentException("WORKFLOW_ASYNC_ITERATION_FORBIDDEN");
-                checkExpr(s.iterable(), members);
-                checkStatements(s.body(), members);
+            } else if (statement instanceof Ast.ForOfStmt || statement instanceof Ast.ForOfDestructureStmt) {
+                throw new IllegalArgumentException(
+                        "WORKFLOW_ITERATION_ORDER_UNSUPPORTED: for-of requires a declared deterministic collection-order contract");
             } else if (statement instanceof Ast.DoWhileStmt s) {
                 checkStatements(s.body(), members);
                 checkExpr(s.condition(), members);
@@ -292,7 +292,13 @@ public final class DurableDeclarationAnalyzer {
 
     private static void checkExpr(Ast.Expr expression, Set<String> members) {
         if (expression == null) return;
-        if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) return;
+        if (expression instanceof Ast.LiteralExpr) return;
+        if (expression instanceof Ast.NameExpr name) {
+            if (name.name().startsWith("$")) {
+                throw new IllegalArgumentException("WORKFLOW_INTERNAL_NAME_FORBIDDEN");
+            }
+            return;
+        }
         if (expression instanceof Ast.RuntimeCallExpr || expression instanceof Ast.AwaitExpr
                 || expression instanceof Ast.TaskExpr || expression instanceof Ast.ChannelOpExpr
                 || expression instanceof Ast.DynamicSelectExpr || expression instanceof Ast.LambdaExpr
