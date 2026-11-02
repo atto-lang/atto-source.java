@@ -27,3 +27,11 @@ Two additional **real linked-guest JUnit candidates** exercise source constructs
 2. `attoOwnedIntegerArrayAndOptionCompileThroughGuestPipeline` uses an owned `Array<int>` column, `add/get/size`, `Option<int>`, `Some/None`, and `unwrap` in a second `.atto` class import. It must emit `42`.
 
 The test names are proposals until actual stepful Maven/Graal execution; they do not establish current compatibility or eliminate the broader seven-fixture LRU gate.
+
+## Symlinked source aliases
+
+The Java linked-unit loader now rejects a symbolic-link **leaf file** for a `.atto` entrypoint or transitive filesystem import before opening its content. The admission tests cover both direct and imported aliases. This narrow policy does not establish symlink-free ancestor directories; those need separate package-root canonicalization. Legacy `.ores` and `.java` behavior is unchanged. The gate remains a code candidate until actual stepful Java Maven tests are executed.
+
+## CI transfer hold
+
+The Java source repository `main` branch reports `protected=false` and status-check enforcement `off`. The source repository remains private. A source-free GraalVM JDK25 carrier test passed in private `usa-acc/usa-acc-e2e`, but security issue #962 has no independently approved destination policy and branch-protection evidence. **Do not mirror private compiler source or treat the carrier canary as authorization.**

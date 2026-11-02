@@ -113,7 +113,7 @@ final class AttoSourceAdmissionTest {
         Path library = temp.resolve("column.atto");
         Path entry = temp.resolve("main-column.atto");
         Files.writeString(library, """
-                pub define class Column as
+                define pub class Column as
                   pub let int value;
                   pub constructor(int initial) {
                     self.value = initial;
@@ -146,7 +146,7 @@ final class AttoSourceAdmissionTest {
         Path library = temp.resolve("tiny-column.atto");
         Path entry = temp.resolve("main-tiny-column.atto");
         Files.writeString(library, """
-                pub define class TinyColumn as
+                define pub class TinyColumn as
                   let mut Array<int> slots = new Array<int>();
                   pub fnc add(mut self)(int value): void {
                     self.slots.add(value);
@@ -174,6 +174,43 @@ final class AttoSourceAdmissionTest {
                 ExecutionProfile.serverJit(), Set.of(), Map.of(),
                 out, new ByteArrayOutputStream());
         assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void symlinkedAttoEntrypointIsRejectedBeforeReading() throws Exception {
+        Path actual = temp.resolve("real.atto");
+        Path alias = temp.resolve("main.atto");
+        Files.writeString(actual, "pub fnc main(): void { return; }");
+        try {
+            Files.createSymbolicLink(alias, actual.getFileName());
+        } catch (java.io.IOException | UnsupportedOperationException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks not available");
+            return;
+        }
+        SecurityException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                SecurityException.class, () -> LinkedProgramRunner.validate(alias, Map.of()));
+        assertTrue(denied.getMessage().contains("symlinked .atto"));
+    }
+
+    @Test
+    void symlinkedAttoImportIsRejectedBeforeReading() throws Exception {
+        Path actual = temp.resolve("real.atto");
+        Path alias = temp.resolve("helper.atto");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(actual, "pub fnc answer(): int { return 42; }");
+        Files.writeString(entry, """
+                import fnc answer from "./helper.atto";
+                pub fnc main(): void { return; }
+                """);
+        try {
+            Files.createSymbolicLink(alias, actual.getFileName());
+        } catch (java.io.IOException | UnsupportedOperationException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks not available");
+            return;
+        }
+        SecurityException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                SecurityException.class, () -> LinkedProgramRunner.validate(entry, Map.of()));
+        assertTrue(denied.getMessage().contains("symlinked .atto"));
     }
 
 }
