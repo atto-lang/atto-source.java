@@ -59,6 +59,27 @@ reviewer's actual approval. Independently verify effective CODEOWNER
 enforcement after enabling source-main protection, including a
 synthetic negative test before allowing any private transfer.
 
+## Source-free Java 21 compatibility receipt (not an executable carrier)
+
+A second, independently isolated **source-free** workflow was added on a
+temporary branch of the private candidate carrier, without any Git checkout:
+
+- Repository: `gha-indie-worker/gha-indie-worker-docs` ID `1351003564`.
+- Branch: `ci/critical-java21-source-free-canary-20261102`.
+- Commit: `6e8a1419b5517aa47d88eedbc8b49018560c128d`;
+  root tree `fcea5555c27d384d992f293d874f018fbcc7e48f`.
+- Workflow: `.github/workflows/critical-java21-source-free-canary.yml`,
+  exact Git blob `ed18c13bd7c5dbc49a9caf394292404c6d715b2f`.
+- [Actions run 41396452614](https://github.com/gha-indie-worker/gha-indie-worker-docs/actions/runs/41396452614):
+  success with **seven executed job steps**, OpenJDK/javac `21.0.13` and
+  Apache Maven `3.9.15` shown in captured job logs.
+
+This confirms current Java 21 toolchain admission **without private
+AttoLang/Oreslang source**. It does not authorize a private tree transfer,
+establish remaining paid Actions minutes, approve a source-bearing carrier
+control plane, or replace independent security-owner approval. The
+source-executing carrier workflow/test plan remains separately unreviewed.
+
 ## Mandatory independent actions before any source-bearing Git object or ref
 
 1. Protect the source `main`, and verify live required checks, CODEOWNER
