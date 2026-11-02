@@ -8,8 +8,10 @@ import java.util.Objects;
  * <p>The physical column representation remains one unsigned 32-bit word
  * (zero is reserved for null; nonzero words encode index + 1). This wrapper
  * carries the table identity, table epoch and slot generation OUTSIDE that
- * word. It is intended for validation at API, persistence, migration and
- * ownership boundaries, not for allocation in a hot SoA/AoSoA loop.</p>
+ * word. It is intended for validation at in-process API and ownership boundaries, not for allocation in
+ * a hot SoA/AoSoA loop. It is deliberately not Serializable or a wire format;
+ * persistence and cross-process migration require a separately versioned
+ * stable table identity/epoch/generation encoding.</p>
  *
  * <p>A raw word copied from {@code ActorDenseIndexColumns} is transient and
  * has no generation or table authority by itself.</p>
