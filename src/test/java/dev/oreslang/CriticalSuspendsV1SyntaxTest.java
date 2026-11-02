@@ -161,15 +161,16 @@ final class CriticalSuspendsV1SyntaxTest {
         assertTrue(failure.getMessage().contains(
                 "successfully type-checked exact Program"), failure::toString);
 
-        // Even if another caller has published the ownership epoch, the
-        // separate public permit API cannot fabricate a type proof.
-        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(raw);
+        // A denied ownership-only pass must not publish even the shared
+        // Task execution epoch before failing the critical typing gate.
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(raw));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedCriticalBlocks.publish(
-                        raw, epoch, java.util.Set.of(actorCritical(raw))));
+                        raw, 1L, java.util.Set.of(actorCritical(raw))));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedCriticalBlocks.require(
-                        raw, actorCritical(raw), epoch));
+                        raw, actorCritical(raw), 1L));
     }
 
     @Test void failedOrdinaryTypeCheckCannotBeReplacedByStandaloneOwnership() {
