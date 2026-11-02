@@ -108,24 +108,18 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
     }
 
     @Test
-    void nominalObjectSnapshotPreservesNominalTagAndDetachesFields() throws Throwable {
+    void nominalObjectsNeverRetainEvaluatorOwnershipInChannelSnapshots() throws Throwable {
         Class<?> type = Class.forName("dev.oreslang.nodes.OresEvalRootNode$OresObject");
         java.lang.reflect.Constructor<?> ctor = type.getDeclaredConstructors()[0];
         ctor.setAccessible(true);
+        dev.oreslang.ast.Ast.ClassDecl klass = new dev.oreslang.ast.Ast.ClassDecl(
+                "DataLike", false, List.of(), List.of(), List.of());
         ArrayList<Object> nested = new ArrayList<>(List.of(1L));
-        dev.oreslang.ast.Ast.ClassDecl nominalClass = new dev.oreslang.ast.Ast.ClassDecl(
-                "TransportedData", false, List.of(), List.of(), List.of());
-        Object nominal = ctor.newInstance(
-                null, nominalClass, new LinkedHashMap<>(Map.of("nested", nested)));
-        Object detached = snapshot(nominal);
-        assertEquals(type, detached.getClass());
-        java.lang.reflect.Field fields = type.getDeclaredField("fields");
-        fields.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> received = (Map<String, Object>) fields.get(detached);
-        nested.add(2L);
-        assertEquals(List.of(1L), received.get("nested"));
-        assertTrue(detached != nominal);
+        Object nominal = ctor.newInstance(null, klass, Map.of("nested", nested));
+
+        reject(nominal);
+        reject(List.of(Map.of("nested", nominal)));
+        assertEquals(List.of(1L), nested, "failed admission must not mutate producer data");
     }
 
     @Test
