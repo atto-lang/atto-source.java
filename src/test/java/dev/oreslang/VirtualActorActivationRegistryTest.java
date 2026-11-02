@@ -81,6 +81,8 @@ final class VirtualActorActivationRegistryTest {
         assertThrows(IllegalArgumentException.class,
                 () -> registry.resolve("Worker", "k".repeat(257)));
         assertThrows(IllegalArgumentException.class,
+                () -> registry.resolve("Worker", "x".repeat(1_000_000)));
+        assertThrows(IllegalArgumentException.class,
                 () -> registry.resolve("Worker", "\uD800"));
         assertThrows(IllegalArgumentException.class,
                 () -> registry.resolve("Worker", "bad\nkey"));
