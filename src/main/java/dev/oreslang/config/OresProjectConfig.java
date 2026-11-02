@@ -8,8 +8,12 @@ import org.tomlj.TomlTable;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -260,10 +264,10 @@ public final class OresProjectConfig {
         // Explicit foreign-source paths must never pass through this resolver.
         // Preserve existing .ores and Java interop while admitting canonical .atto.
         if (lowerFilename.endsWith(".atto")) {
-            // A dangling canonical AttoLang entry must reach the bounded
-            // no-follow reader instead of falling back to a legacy sibling.
-            return (Files.isRegularFile(normalized) || Files.isSymbolicLink(normalized))
-                    ? Optional.of(normalized) : Optional.empty();
+            // Any canonical directory entry (regular file, directory or link)
+            // wins suffix selection. The bounded no-follow reader then rejects
+            // a non-regular or linked .atto; do not fall back to a legacy peer.
+            return existsNoFollow(normalized) ? Optional.of(normalized) : Optional.empty();
         }
         if (lowerFilename.endsWith(".ores") || lowerFilename.endsWith(".java")) {
             return Files.isRegularFile(normalized) ? Optional.of(normalized) : Optional.empty();
@@ -274,14 +278,25 @@ public final class OresProjectConfig {
         // An explicitly suffixed import can still select the legacy file.
         for (String extension : List.of(".atto", ".ores", ".java")) {
             Path source = Path.of(normalized.toString() + extension);
-            // A dangling .atto symlink is still the canonical directory entry.
-            // Select it so the bounded no-follow reader rejects it; never fall
-            // through to a shadowing legacy .ores sibling.
-            if (Files.isRegularFile(source) ||
-                    (extension.equals(".atto") && Files.isSymbolicLink(source)))
+            // Inspect the canonical .atto path without following links. Even a
+            // dangling symlink or directory occupies the canonical name and
+            // must not silently fall through to a shadowing .ores file.
+            if (extension.equals(".atto") ? existsNoFollow(source) : Files.isRegularFile(source))
                 return Optional.of(source);
         }
         return Optional.empty();
+    }
+
+    private static boolean existsNoFollow(Path path) {
+        try {
+            Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            return true;
+        } catch (NoSuchFileException missing) {
+            return false;
+        } catch (IOException failure) {
+            // An unreadable canonical entry is not equivalent to absence.
+            throw new UncheckedIOException("cannot inspect canonical .atto source entry", failure);
+        }
     }
 
     private static Path directoryFor(Path start) {
