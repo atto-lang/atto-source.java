@@ -111,6 +111,26 @@ final class SourceActorPubSubExecutionTest {
         assertTrue(error.getMessage().contains("Topic payload"), error.getMessage());
     }
 
+    @Test
+    void pubSubRejectsTypedActorRefCapabilityPayload() throws Exception {
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(fixture("actor-pubsub-reject-actor-ref-topic.ores"),
+                        "source-pubsub-actor-ref-payload-rejected.ores"));
+        assertTrue(error.getMessage().contains("requires MessageData"),
+                error.getMessage());
+    }
+
+    @Test
+    void pubSubRejectsNestedSharedMutexPayload() throws Exception {
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(fixture("actor-pubsub-reject-synchronized-topic.ores"),
+                        "source-pubsub-synchronized-payload-rejected.ores"));
+        assertTrue(error.getMessage().contains("requires MessageData"),
+                error.getMessage());
+    }
+
     private static String fixture(String name) throws Exception {
         return Files.readString(
                 Path.of("contracts", "v1", "fixtures", name),
