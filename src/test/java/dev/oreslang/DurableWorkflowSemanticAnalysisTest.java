@@ -156,7 +156,8 @@ final class DurableWorkflowSemanticAnalysisTest {
         DurableExecutionManifest manifest = DurableExecutionManifest.analyze(
                 replaceWorkflow(original, query));
         String json = new String(manifest.canonicalBytes(), StandardCharsets.UTF_8);
-        assertTrue(json.contains("\"kind\":\"query\""));
+        assertTrue(json.contains("\"queries\":[{\"endpoint\":\"run\""));
+        assertTrue(json.contains("\"commands\":[]"));
         assertFalse(json.contains("\"id\":\"query\""),
                 "read-only queries do not occupy durable history or receive command IDs");
     }
