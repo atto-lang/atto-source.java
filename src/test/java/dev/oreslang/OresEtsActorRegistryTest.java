@@ -301,4 +301,77 @@ final class OresEtsActorRegistryTest {
             assertThrows(IllegalStateException.class, () -> registry.lookup(id, owner, "key"));
         }
     }
+
+    @Test
+    void actualActorTurnSelfStopRevokesPublicTableWithoutCarrierParking() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 2)) {
+            var actorTurnExited = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                // Actors must not enter this host reference, but may stop
+                // themselves without waiting for the host-owned reaper.
+                context.self().stop();
+                actorTurnExited.countDown();
+            });
+            var peer = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, String>create(actor, Access.PUBLIC, 4, 128);
+            registry.insert(id, peer, "status", "alive");
+            actor.send("stop");
+            assertTrue(actorTurnExited.await(5, TimeUnit.SECONDS));
+            assertFalse(actor.isAlive());
+            assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "status"));
+            registry.reap();
+            assertEquals(0, registry.liveTableCount());
+        }
+    }
+
+    @Test
+    void actualActorCancellationRevokesOwnerTableAndDoesNotReuseCapability() {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 2)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var peer = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, Long>create(owner, Access.PUBLIC, 2, 128);
+            assertTrue(registry.insertNew(id, peer, "generation", 1L));
+            assertTrue(owner.cancel());
+            assertFalse(owner.isAlive());
+            assertThrows(IllegalStateException.class, () -> registry.insert(id, peer, "generation", 2L));
+            registry.reap();
+            var replacement = registry.<String, Long>create(peer, Access.PRIVATE, 2, 128);
+            assertTrue(registry.insertNew(replacement, peer, "generation", 3L));
+            assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "generation"));
+        }
+    }
+
+    @Test
+    void registryShutdownCannotReclaimStorageUntilAdmittedPinIsReleased() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var registry = new OresEtsActorRegistry(runtime, 1);
+            var id = registry.<String, String>create(owner, Access.PRIVATE, 2, 128);
+            var mapField = OresEtsActorRegistry.class.getDeclaredField("entries");
+            mapField.setAccessible(true);
+            var map = (java.util.Map<?, ?>) mapField.get(registry);
+            Object entry = map.get(id);
+            var pin = entry.getClass().getDeclaredMethod("pin");
+            var unpin = entry.getClass().getDeclaredMethod("unpin");
+            pin.setAccessible(true);
+            unpin.setAccessible(true);
+            pin.invoke(entry);
+            try {
+                registry.close();
+                assertSame(entry, map.get(id), "shutdown must preserve pinned storage");
+                assertThrows(IllegalStateException.class, () -> registry.lookup(id, owner, "x"));
+                var denied = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                        () -> pin.invoke(entry));
+                assertInstanceOf(IllegalStateException.class, denied.getCause());
+            } finally {
+                assertEquals(Boolean.TRUE, unpin.invoke(entry));
+            }
+            // Production unpin is followed by the registry's owner Pin.close()
+            // reaper callback. This reflected pin must instead be explicitly
+            // swept by a non-carrier host check while close() stays idempotent.
+            registry.close();
+        }
+    }
 }
