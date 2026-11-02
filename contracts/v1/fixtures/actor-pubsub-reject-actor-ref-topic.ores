@@ -1,0 +1,11 @@
+define actor Subscriber as
+  suspends receive(ActorMail<String> mail): void {
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val group = actor.group("typed");
+  val topic = group.topic<ActorRef<Subscriber>>("actor-ref-payload", "reliable", 4);
+  return;
+}
