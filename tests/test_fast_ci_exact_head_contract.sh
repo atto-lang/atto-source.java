@@ -22,7 +22,7 @@ require_one '          test -z "$(git ls-files --others --exclude-standard)"'
 require_one '      - name: Verify exact source revision'
 require_one '      - name: Verify fast-CI exact-head contract (source-free)'
 require_one '        run: bash tests/test_fast_ci_exact_head_contract.sh'
-require_one '          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40'
+require_one '          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt'
 
 checkout="$(line_of '          ref: ${{ github.event.pull_request.head.sha || github.sha }}')"
 exact="$(line_of '      - name: Verify exact source revision')"
@@ -46,7 +46,10 @@ if [[ $# -eq 0 ]]; then
   sed -i '/^          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"$/d' "$tmp"
   if bash "$0" "$tmp" >/dev/null 2>&1; then echo "accepted missing exact-head comparison" >&2; exit 1; fi
   cp "$workflow" "$tmp"
-  sed -i 's#bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40#test 1 -eq 1#' "$tmp"
+  sed -i 's# stdlib 40 tests/native-testing-regressions-40.expected-ids.txt# stdlib 40#' "$tmp"
+  if bash "$0" "$tmp" >/dev/null 2>&1; then echo "accepted count-only 40-case verification" >&2; exit 1; fi
+  cp "$workflow" "$tmp"
+  sed -i '/bash scripts\/verify_ores_test_receipts.sh \/tmp\/ores-regressions-40-fast-jit.out stdlib 40 tests\/native-testing-regressions-40.expected-ids.txt/d' "$tmp"
   if bash "$0" "$tmp" >/dev/null 2>&1; then echo "accepted missing 40-case verifier" >&2; exit 1; fi
 fi
 echo "PASS: fast-CI exact-head and 40-case receipt contract"
