@@ -349,7 +349,7 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, method.parameters());
             boolean previousActorMethod = insideSuspendingActorMethod;
             insideSuspendingActorMethod = klass.actorKind() != Ast.ActorKind.NONE
-                    && !method.isStatic() && method.suspends() && !method.generator();
+                    && !method.isStatic() && method.suspends();
             try {
                 checkBlock(method.body(), scope, method.returnType());
             } finally {
