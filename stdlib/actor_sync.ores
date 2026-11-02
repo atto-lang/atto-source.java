@@ -111,9 +111,13 @@ define module actor_sync as
     // Seeing a gap poisons incremental advance until an owned snapshot is
     // authenticated and applied. No silent rewind or auto-gap skipping.
     pub apply_delta(mut self)(int event_epoch, int event_revision): bool {
-      // A new writer incarnation must first publish an authenticated
-      // full checkpoint. A sequential revision alone does not establish
-      // authority to advance epochs or adopt a new actor activation.
+      // Seeing a higher epoch invalidates all outstanding lower-epoch
+      // deltas. Poison incremental consumption until an authenticated full
+      // checkpoint is installed. A stale lower epoch never unpoisons.
+      if event_epoch > self.epoch; do
+        self.gap = true;
+        return false;
+      fi
       if event_epoch != self.epoch || event_revision <= self.revision ||
          event_revision >= 2147483647 || self.gap; do
         return false;
