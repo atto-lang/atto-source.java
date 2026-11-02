@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -58,8 +59,9 @@ public final class DurableDeclarationAnalyzer {
         // Re-enter the normal checker using the exact class bodies, not wrappers.
         // This validates every activity/workflow member's parameter, return,
         // expression and control-flow types through the ordinary class pipeline.
-        TypeChecker.checkTypes(new Ast.Program(
-                program.namespace(), program.imports(), rewrittenModules));
+        TypeChecker.TypeCheckResult memberChecks = TypeChecker.checkTypesWithDiagnostics(
+                new Ast.Program(program.namespace(), program.imports(), rewrittenModules));
+        OwnershipChecker.check(memberChecks.program(), memberChecks.shortInferredAliases());
         return DurableExecutionManifest.fromValidated(program);
     }
 
