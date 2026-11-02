@@ -44,6 +44,12 @@ public final class DiscoverySmoke {
                 return Map.of("backend", "synthetic-smoke-only");
             }
             @Override public boolean hasActorDiscovery() { return true; }
+            @Override public boolean hasTaskDiscovery() { return true; }
+            @Override public Map<String, Object> listTasks(int limit) {
+                return Map.of("tasks", List.of(Map.of(
+                        "task_id", 1, "lifecycle", "ACTIVE")),
+                        "consistency", "SYNTHETIC_ONLY");
+            }
             @Override public Map<String, Object> listActors(int limit) {
                 return Map.of("actors", List.of(Map.of(
                         "actor_id", "11111111-1111-1111-1111-111111111111",
@@ -61,6 +67,9 @@ public final class DiscoverySmoke {
                     "list_actors did not return descriptor");
             must(list.body().contains("\"resultType\":\"complete\""),
                     "missing MCP complete envelope");
+            var tasks = call(client, server.port(), "atto.list_tasks", "{\"limit\":4}");
+            must(tasks.statusCode() == 200 && tasks.body().contains("\"task_id\":1"),
+                    "list_tasks did not return logical Task metadata");
             var inspect = call(client, server.port(), "atto.inspect_actor",
                     "{\"actor_id\":\"11111111-1111-1111-1111-111111111111\"}");
             must(inspect.statusCode() == 200 && inspect.body().contains("\"found\":true"),
