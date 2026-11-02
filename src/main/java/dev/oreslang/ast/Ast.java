@@ -479,6 +479,16 @@ public final class Ast {
                         throw new IllegalArgumentException(
                                 "instance state backing rejects public representation field '" + field.name() + "'");
                     }
+                    if (!field.annotations().isEmpty()) {
+                        // @FromJson can synthesize a public setter after class
+                        // validation; other field decorators can likewise
+                        // change representation capabilities in rewrite passes.
+                        // No backing field gets an alternate access path until
+                        // generated accessor effects are checked in HIR.
+                        throw new IllegalArgumentException(
+                                "instance state backing rejects annotated representation field '" + field.name()
+                                        + "'; generated field accessors bypass sealed state ownership");
+                    }
                     // This first verified-ownership target is a closed scalar
                     // storage shape. A generic, pointer, class, channel, array,
                     // reference, or inferred field could smuggle shared mutable
