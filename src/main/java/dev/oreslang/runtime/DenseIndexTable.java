@@ -26,6 +26,8 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
     private final long[] generations;
     private final int[] freeSlots;
     private final int capacity;
+    private final ActorRuntime ownerRuntime;
+    private final ActorRuntime.ActorId ownerActor;
     private int nextSlot;
     private int freeCount;
     private int liveCount;
@@ -33,18 +35,50 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
     private boolean closed;
 
     public DenseIndexTable(int capacity) {
+        this(capacity, null, null);
+    }
+
+    private DenseIndexTable(
+            int capacity, ActorRuntime ownerRuntime, ActorRuntime.ActorId ownerActor) {
         if (capacity <= 0 || capacity > MAX_CAPACITY) {
             throw new IllegalArgumentException("dense index table capacity outside bounded range");
         }
         this.capacity = capacity;
+        this.ownerRuntime = ownerRuntime;
+        this.ownerActor = ownerActor;
         this.live = new boolean[capacity];
         this.generations = new long[capacity];
         this.freeSlots = new int[capacity];
         Arrays.fill(generations, 1L);
     }
 
+    /** Create a table permanently confined to the currently executing actor. */
+    public static <TTag> DenseIndexTable<TTag> forCurrentActor(int capacity) {
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        ActorRuntime.ActorId actor = ActorRuntime.currentActorId().orElseThrow(() ->
+                new SecurityException("actor-bound dense table requires an executing actor"));
+        if (runtime == null) {
+            throw new SecurityException("actor-bound dense table requires an actor runtime");
+        }
+        return new DenseIndexTable<>(capacity, runtime, actor);
+    }
+
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+        return ownerRuntime != null && ownerActor != null
+                && ownerRuntime == runtime && ownerActor.equals(actor);
+    }
+
+    private void requireOwner() {
+        if (ownerRuntime != null
+                && (ActorRuntime.currentActorRuntime() != ownerRuntime
+                    || !ActorRuntime.currentActorId().filter(ownerActor::equals).isPresent())) {
+            throw new SecurityException("dense index table accessed outside its owning actor");
+        }
+    }
+
     /** Allocate the next available row identity. */
     public synchronized DenseIndex32<TTag> allocate() {
+        requireOwner();
         ensureOpen();
         final int slot;
         if (freeCount != 0) {
@@ -66,6 +100,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
 
     /** Validate exact table identity, current epoch, slot and generation. */
     public synchronized boolean isLive(DenseIndex32<TTag> handle) {
+        requireOwner();
         if (closed || handle == null || !handle.belongsTo(identity)
                 || handle.tableEpoch() != epoch) {
             return false;
@@ -78,6 +113,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
 
     /** Return the compact word only after validating its out-of-line identity. */
     public synchronized OptionalInt checkedStorageWord(DenseIndex32<TTag> handle) {
+        requireOwner();
         return isLive(handle) ? OptionalInt.of(handle.encodedWord()) : OptionalInt.empty();
     }
 
@@ -86,6 +122,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
      * retired rather than wrapped and made capable of reviving an old handle.
      */
     public synchronized boolean remove(DenseIndex32<TTag> handle) {
+        requireOwner();
         if (!isLive(handle)) return false;
         int slot = (int) handle.index();
         live[slot] = false;
@@ -102,6 +139,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
      * Epoch exhaustion permanently closes the table instead of wrapping.
      */
     public synchronized void clear() {
+        requireOwner();
         ensureOpen();
         if (epoch == Long.MAX_VALUE) {
             closeInternal();
@@ -124,12 +162,14 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
     }
 
     public synchronized long epoch() {
+        requireOwner();
         ensureOpen();
         return epoch;
     }
 
     @Override
     public synchronized void close() {
+        requireOwner();
         if (closed) return;
         closeInternal();
     }
