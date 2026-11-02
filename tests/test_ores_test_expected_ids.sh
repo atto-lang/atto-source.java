@@ -56,4 +56,44 @@ while IFS= read -r case_id; do
 done < "$portable"
 printf '%s\n' "$summary16" >> "$receipt"
 bash "$verifier" "$receipt" portable-scalar-v1 16 "$portable"
-printf 'PASS: 16 negative exact-case receipt mutations and pinned 16-case source fixture\n'
+# Source-free adversarial replay of the *actual ordered 40-case inventory*.
+# Synthetic logs verify the verifier only; do not credit guest test passes.
+expected40="$root/tests/native-testing-regressions-40.expected-ids.txt"
+[ "$(wc -l < "$expected40")" -eq 40 ]
+summary40='ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0'
+emit40() {
+  : > "$receipt"
+  while IFS= read -r case_id; do
+    printf 'ORES_TEST|PASS|stdlib/%s|\n' "$case_id" >> "$receipt"
+  done < "$expected40"
+  printf '%s\n' "$summary40" >> "$receipt"
+}
+reject40() {
+  local label="$1"
+  if bash "$verifier" "$receipt" stdlib 40 "$expected40" >/dev/null 2>&1; then
+    printf 'FAIL: accepted 40-case mutation: %s\n' "$label" >&2
+    exit 1
+  fi
+}
+emit40
+bash "$verifier" "$receipt" stdlib 40 "$expected40"
+emit40
+sed -i '0,/^ORES_TEST|PASS|stdlib\/truth\/true-accept|$/s#^ORES_TEST|PASS|stdlib/truth/true-accept|$#ORES_TEST|PASS|stdlib/truth/forged-substitution|#' "$receipt"
+reject40 'substituted passing case with same 40 count'
+emit40
+sed -i 's#^ORES_TEST|PASS|stdlib/truth/true-reject|$#ORES_TEST|PASS|stdlib/truth/true-accept|#' "$receipt"
+reject40 'duplicated passing case'
+emit40
+sed -i '/^ORES_TEST|PASS|stdlib\/outcome\/fail-message|$/d' "$receipt"
+reject40 'one missing pass'
+emit40
+printf 'ORES_TEST|PASS|stdlib/outcome/extra-after-summary|\n' >> "$receipt"
+reject40 'event after summary'
+emit40
+sed -i 's#^ORES_TEST|SUMMARY|total=40#ORES_TEST|SUMMARY|total=41#' "$receipt"
+reject40 'inflated summary'
+emit40
+sed -i 's#^ORES_TEST|PASS|stdlib/truth/true-reject|$#ORES_TEST|PASS|stdlib/truth/true-reject|unexpected-detail#' "$receipt"
+reject40 'passing case with nonempty failure detail'
+printf 'PASS: 16 exact-case mutations, 16-case and 40-case pinned synthetic inventories, six extra 40-case negatives (source-free only)\n'
+
