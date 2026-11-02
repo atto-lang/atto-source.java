@@ -90,3 +90,37 @@ destination/source review and protected allowlisting before mirroring.
 The previously reported cross-org host-subset passes do not authorize a new
 copy. Existing source-org `steps=null` workflow failures do not count as
 tests run.
+
+
+## Real ActorRuntime integration test additions and cleanup scaling (2026-11-02)
+
+The source-tree regression suite now includes real `ActorRuntime` tests of
+self-STOP from an actor mailbox turn, structured owner cancellation, and
+public-table revocation after either lifecycle transition. No guest ETS
+operation is executed inside an actor turn; the table remains a trusted-host
+reference whose CHM may block. Additional deterministic tests verify table
+retirement with an outstanding operation pin, registry shutdown with a pin,
+stale capability rejection, and cleanup/reaper scheduling races.
+
+A resource audit found that one `ScheduledExecutorService` per registry
+could create an unbounded number of daemon cleanup threads when trusted host
+registries are created repeatedly. Registries now share a **single daemon
+scheduled executor**. Each registry cancels its periodic cleanup future at
+close, with remove-on-cancel enabled. The regression suite verifies
+per-registry task cancellation/removal without relying on an unstable global
+queue-size count. This bounds cleanup THREAD count, not the number of
+live registries or their scheduled tasks; host admission must still control
+registry creation.
+
+**The real ActorRuntime tests are authored, not executed at this head.**
+The source org's workflow runs have continued to fail before runner admission.
+The private-source CI transfer contract on `main` still contains no approved
+destinations. The separate source-free JDK25 canary proves only test-org runner
+admission; the prior 17 passing stubbed-host tests apply to an older head.
+Do not classify either as passing compiler/runtime tests for these changes.
+
+Strictly serializing a table mutation's commit with ActorRuntime's STOP/cancel
+transition still requires an independently reviewed and tested shared
+lifecycle admission gate or equivalent scheduler-owned transactional
+commit. Host operation admission pins only serialize against TABLE retirement,
+not against STOP's transition. This is an explicit release blocker.
