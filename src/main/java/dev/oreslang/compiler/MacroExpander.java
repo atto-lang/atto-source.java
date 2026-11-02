@@ -346,6 +346,7 @@ public final class MacroExpander {
             if (bound instanceof Ast.NameExpr callerName
                     && !callerName.name().startsWith("$")) {
                 Ast.NameExpr copy = new Ast.NameExpr(callerName.name());
+                Ast.copyCheckedMetadata(callerName, copy);
                 MacroSyntaxProvenance.copyOrigins(callerName, copy);
                 return copy;
             }
@@ -359,6 +360,7 @@ public final class MacroExpander {
                                     + "composite syntax copying is not implemented");
                 }
                 Ast.LiteralExpr copy = new Ast.LiteralExpr(value);
+                Ast.copyCheckedMetadata(literal, copy);
                 MacroSyntaxProvenance.copyOrigins(literal, copy);
                 return copy;
             }
