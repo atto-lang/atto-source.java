@@ -90,6 +90,46 @@ public final class CriticalSectionGateStandaloneTest {
             gate.retire();
             check(gate.quiescent(),"retirement cleanup");
         }
+        // Cancellation and physical callback admission must select exactly
+        // one winner even when both callers begin on separate carriers.
+        for (int round = 0; round < 300; round++) {
+            CriticalSectionGate gate = new CriticalSectionGate(61,2);
+            var ticket = gate.enter(new Object(),61);
+            CountDownLatch race = new CountDownLatch(1);
+            AtomicInteger callbacks = new AtomicInteger();
+            AtomicInteger cancelled = new AtomicInteger();
+            AtomicInteger denied = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread executing = Thread.ofPlatform().start(() -> {
+                try {
+                    race.await();
+                    ticket.execute(callbacks::incrementAndGet);
+                } catch (CancellationException expected) {
+                    denied.incrementAndGet();
+                } catch (Throwable unexpected) {
+                    failure.compareAndSet(null, unexpected);
+                }
+            });
+            Thread cancelling = Thread.ofPlatform().start(() -> {
+                try {
+                    race.await();
+                    if (ticket.cancel()) cancelled.incrementAndGet();
+                } catch (Throwable unexpected) {
+                    failure.compareAndSet(null, unexpected);
+                }
+            });
+            race.countDown();
+            executing.join();
+            cancelling.join();
+            check(failure.get() == null,"unexpected admission/cancellation race error");
+            check(callbacks.get() + denied.get() == 1,"callback did not settle exactly once");
+            check((cancelled.get() == 1 && callbacks.get() == 0 && denied.get() == 1)
+                    || (cancelled.get() == 0 && callbacks.get() == 1 && denied.get() == 0),
+                    "cancelled ticket executed protected callback");
+            gate.retire();
+            check(gate.quiescent(),"cancel-vs-execute race did not reclaim lease");
+        }
         for (int round = 0; round < 300; round++) {
             CriticalSectionGate gate = new CriticalSectionGate(37,2);
             var owner=gate.enter(new Object(),37);
