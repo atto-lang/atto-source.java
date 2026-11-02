@@ -167,8 +167,8 @@ critical AST set through the public publishing method. This is JVM API-level
 hardening, not a sandbox against malicious reflection or native access.
 
 Ownership-only checks on programs **without** critical statements remain
-supported and do not need a new typing proof. Seven authored regression
-cases cover untyped ownership-only admission, equivalent untyped ASTs,
+supported and do not need a new typing proof. Eight authored regression
+cases cover untyped ownership-only admission, equivalent untyped ASTs and equal Program aliases sharing the exact critical node,
 ordinary typing failures, failed linked-metadata rechecks, successful
 rechecks with stale ownership epochs, ordinary noncritical ownership
 compatibility, and nonconstructible publisher tokens.
