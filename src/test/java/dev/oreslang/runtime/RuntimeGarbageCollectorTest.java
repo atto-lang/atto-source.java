@@ -548,6 +548,75 @@ final class RuntimeGarbageCollectorTest {
     }
 
     @Test
+    void permanentlyFailingEarlyHooksDoNotStarveHealthyOwnerInSameActor() throws Exception {
+        AtomicInteger failedAttempts = new AtomicInteger();
+        AtomicInteger healthyCleanup = new AtomicInteger();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 320; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, () -> {
+                        failedAttempts.incrementAndGet();
+                        throw new IllegalStateException("permanent poison");
+                    });
+                }
+                Object healthyOwner = new Object();
+                owners.add(healthyOwner);
+                gc.track(healthyOwner, healthyCleanup::incrementAndGet);
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, healthyCleanup.get(),
+                    "32-entry actor exit must stop before the last registered owner");
+            for (int pass = 0; pass < 4 && healthyCleanup.get() == 0; pass++) {
+                var report = gc.collectPeriodic();
+                assertTrue(report.inspected() <= 256);
+                assertFalse(report.jvmGcRequested());
+            }
+            assertEquals(1, healthyCleanup.get(),
+                    "rotating within one actor domain must reach healthy hooks despite earlier poison");
+            assertTrue(failedAttempts.get() >= 32);
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
+    void explicitCloseRemovesRotatingEntryWithoutDoubleCleanup() throws Exception {
+        AtomicInteger completed = new AtomicInteger();
+        AtomicReference<RuntimeGarbageCollector.CleanupHandle> handle = new AtomicReference<>();
+        ArrayList<Object> owners = new ArrayList<>();
+        try (var gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             var runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                for (int i = 0; i < 80; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    var trackedHandle = gc.track(owner, completed::incrementAndGet);
+                    if (i == 79) handle.set(trackedHandle);
+                }
+                context.self().stop();
+            });
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(32, completed.get());
+            handle.get().close();
+            assertEquals(33, completed.get());
+            gc.collectPeriodic();
+            assertEquals(80, completed.get());
+            handle.get().close();
+            assertEquals(80, completed.get(),
+                    "explicit close must be exactly-once even after cursor rotation");
+            Reference.reachabilityFence(owners);
+        }
+    }
+
+    @Test
     void poisonedRetiredDomainDoesNotLoopForeverDuringProcessGc() throws Exception {
         AtomicInteger attempts = new AtomicInteger();
         ArrayList<Object> owners = new ArrayList<>();
