@@ -182,6 +182,17 @@ final class RecordTypeValueContextTest {
         assertEquals("Point", first.declaredType().name());
         assertNull(first.inferredTypeName(),
                 "short inference must be proved by the checker, not forged by the parser");
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        assertEquals(1, checked.shortInferredAliases().size(),
+                "only the introducing binding may create a lexical type alias");
+        Ast.FunctionDecl checkedFunction = (Ast.FunctionDecl)
+                checked.program().modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt checkedFirst = (Ast.BindingStmt) checkedFunction.body().getFirst();
+        assertEquals("Point", checked.shortInferredAliases().get(checkedFirst),
+                "short alias proof must belong to the checked AST declaration");
+        assertNull(checked.shortInferredAliases().get(first),
+                "a separately parsed, value-equal binding must not inherit the proof");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
