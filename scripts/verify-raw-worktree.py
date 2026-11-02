@@ -31,8 +31,8 @@ def verify(repo: Path) -> int:
     actual_tree = git(repo, "write-tree").strip()
     if expected_tree != actual_tree:
         raise IntegrityError("index tree differs from the exact HEAD tree")
-    if git(repo, "ls-files", "--others", "--exclude-standard", "-z"):
-        raise IntegrityError("untracked nonignored worktree files")
+    if git(repo, "ls-files", "--others", "-z"):
+        raise IntegrityError("untracked worktree files (including ignored paths)")
     fmt = git(repo, "rev-parse", "--show-object-format").strip().decode("ascii")
     if fmt not in ("sha1", "sha256"):
         raise IntegrityError("unrecognized Git object format")
@@ -116,6 +116,23 @@ def self_test() -> None:
         else:
             raise IntegrityError("untracked file was accepted")
         (root / "untracked.txt").unlink()
+        # An ignored source file must not pass as a clean exact-head checkout.
+        (root / ".gitignore").write_text("generated/*.java\\n")
+        # Stage/commit only the test ignore policy; still no malicious filter execution.
+        git(root, "add", ".gitignore")
+        git(root, "-c", "user.name=Fixture", "-c",
+            "user.email=fixture@example.invalid", "commit", "-qm", "ignore policy")
+        ignored = root / "generated" / "Injected.java"
+        ignored.parent.mkdir()
+        ignored.write_text("class Injected {}\\n")
+        try:
+            verify(root)
+        except IntegrityError:
+            pass
+        else:
+            raise IntegrityError("ignored untracked source file was accepted")
+        ignored.unlink()
+        ignored.parent.rmdir()
         # Reset the test before the symlink case; no source is copied.
         (root / "example.txt").unlink()
         (root / "example.txt").symlink_to(".gitattributes")
@@ -127,7 +144,7 @@ def self_test() -> None:
             raise IntegrityError("replaced tracked regular file was accepted")
         if (root / "filter-executed").exists():
             raise IntegrityError("Git clean filter executed during verification")
-    print("RAW_WORKTREE_SELF_TEST_PASS clean=1 negative=3 filter_executed=0")
+    print("RAW_WORKTREE_SELF_TEST_PASS clean=1 negative=4 filter_executed=0")
 
 
 if __name__ == "__main__":
