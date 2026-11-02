@@ -54,6 +54,7 @@ public final class DurableDeclarationAnalyzer {
                     module.name(), module.annotations(), module.contracts(), declarations));
         }
         if (!found) return DurableExecutionManifest.empty();
+        validateCommandTargets(program);
         // Re-enter the normal checker using the exact class bodies, not wrappers.
         // This validates every activity/workflow member's parameter, return,
         // expression and control-flow types through the ordinary class pipeline.
@@ -120,6 +121,13 @@ public final class DurableDeclarationAnalyzer {
         }
         Set<String> commandIds = new HashSet<>();
         for (Ast.WorkflowCommand command : workflow.commands()) {
+            if (command instanceof Ast.ActivityStepCommand c) c.arguments().forEach(e -> checkExpr(e, memberNames));
+            else if (command instanceof Ast.TimerCommand c) checkExpr(c.delay(), memberNames);
+            else if (command instanceof Ast.SignalCommand c) c.arguments().forEach(e -> checkExpr(e, memberNames));
+            else if (command instanceof Ast.UpdateCommand c) c.arguments().forEach(e -> checkExpr(e, memberNames));
+            else if (command instanceof Ast.ChildWorkflowCommand c) checkExpr(c.input(), memberNames);
+            else if (command instanceof Ast.ContinueAsNewCommand c) checkExpr(c.input(), memberNames);
+            else if (command instanceof Ast.CompensationCommand c) c.arguments().forEach(e -> checkExpr(e, memberNames));
             String id = commandId(command);
             if (id != null && !commandIds.add(id)) {
                 throw new IllegalArgumentException(
@@ -138,6 +146,74 @@ public final class DurableDeclarationAnalyzer {
                     kind.toUpperCase() + "_STATE_SCHEMA_UNSUPPORTED: '" + name
                             + "' currently requires an explicit versioned state-schema lowering; "
                             + "live class fields, constructors, inheritance and generic containers are denied");
+        }
+    }
+
+    private static void validateCommandTargets(Ast.Program program) {
+        java.util.Map<String, Ast.ActivityDecl> activities = new java.util.LinkedHashMap<>();
+        java.util.Map<String, Ast.WorkflowDecl> workflows = new java.util.LinkedHashMap<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ActivityDecl activity) {
+                    activities.put(module.name() + "." + activity.name(), activity);
+                    activities.putIfAbsent(activity.name(), activity);
+                } else if (declaration instanceof Ast.WorkflowDecl workflow) {
+                    workflows.put(module.name() + "." + workflow.name(), workflow);
+                    workflows.putIfAbsent(workflow.name(), workflow);
+                }
+            }
+        }
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.WorkflowDecl workflow)) continue;
+                Set<String> endpoints = new HashSet<>();
+                workflow.body().methods().forEach(m -> endpoints.add(m.name()));
+                for (Ast.WorkflowCommand command : workflow.commands()) {
+                    if (command instanceof Ast.ActivityStepCommand step) {
+                        requireActivityOperation(activities, step.activityName(), step.operation(),
+                                step.arguments().size(), "activity step");
+                    } else if (command instanceof Ast.CompensationCommand compensation) {
+                        requireActivityOperation(activities, compensation.activityName(), compensation.operation(),
+                                compensation.arguments().size(), "compensation");
+                    } else if (command instanceof Ast.ChildWorkflowCommand child) {
+                        if (!workflows.containsKey(child.workflowName())
+                                && !workflows.containsKey(module.name() + "." + child.workflowName())) {
+                            throw new IllegalArgumentException(
+                                    "WORKFLOW_CHILD_TARGET_UNKNOWN: '" + child.workflowName() + "' is not a declared workflow");
+                        }
+                    } else if (command instanceof Ast.SignalCommand signal) {
+                        requireEndpoint(endpoints, signal.endpoint(), "signal");
+                    } else if (command instanceof Ast.QueryCommand query) {
+                        requireEndpoint(endpoints, query.endpoint(), "query");
+                    } else if (command instanceof Ast.UpdateCommand update) {
+                        requireEndpoint(endpoints, update.endpoint(), "update");
+                    }
+                }
+            }
+        }
+    }
+
+    private static void requireActivityOperation(
+            java.util.Map<String, Ast.ActivityDecl> activities,
+            String activityName, String operation, int arity, String context) {
+        Ast.ActivityDecl activity = activities.get(activityName);
+        if (activity == null) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ACTIVITY_TARGET_UNKNOWN: " + context + " references undeclared activity '" + activityName + "'");
+        }
+        boolean found = activity.body().methods().stream().anyMatch(method ->
+                method.name().equals(operation) && method.parameters().size() == arity);
+        if (!found) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ACTIVITY_OPERATION_UNKNOWN: " + context + " references missing operation '"
+                            + activityName + "." + operation + "#" + arity + "'");
+        }
+    }
+
+    private static void requireEndpoint(Set<String> endpoints, String name, String kind) {
+        if (!endpoints.contains(name)) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_" + kind.toUpperCase() + "_ENDPOINT_UNKNOWN: no workflow member '" + name + "'");
         }
     }
 
@@ -187,7 +263,7 @@ public final class DurableDeclarationAnalyzer {
                 checkStatements(s.catchBody(), members);
                 checkStatements(s.finallyBody(), members);
             } else if (statement instanceof Ast.ForStmt s) {
-                checkStatements(List.of(s.initializer()), members);
+                if (s.initializer() != null) checkStatements(List.of(s.initializer()), members);
                 checkExpr(s.condition(), members);
                 checkExpr(s.update(), members);
                 checkStatements(s.body(), members);
