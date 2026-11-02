@@ -120,6 +120,23 @@ may capture execution-domain-local authority, so moving it through a channel
 would make the transport boundary depend on hidden capture state. Keep callbacks
 local and send explicit data describing the requested operation instead.
 
+**Sendable and Serializable are distinct:** a local channel payload must be
+concrete `Sendable` data that the runtime can move, copy, or freeze without
+transferring a lexical environment. It need not implement
+`Serializable<Format>`: encoding a payload for Redis, a network transport, or
+durable persistence requires a separate explicit codec/schema contract.
+`Serializable<Format>` does not override the channel's Sendable requirement
+and neither trait may be asserted on a closure, bound method, or callable field
+to bypass the recursive rejection rule.
+
+ActorGroup `Topic<T>.publish` and `Subscription<T>` must apply the same
+recursive no-callable rule on declaration, publication, and runtime admission,
+including nested collections/records/nominal fields. Pub/sub additionally
+requires group membership, actor-generation fencing, bounded retention, and
+safe freeze/copy semantics. This is a requirement for the actor-pubsub v1
+integration; the presence of the contract is **not** proof that every backend
+currently enforces the admission check.
+
 ### Blocking/suspending forms
 
 ```ores
