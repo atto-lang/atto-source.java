@@ -190,6 +190,54 @@ public final class CriticalSectionGateStandaloneTest {
             rejectGate.retire();
             check(rejectGate.quiescent(),"rejected scheduler dispatch leaked gate");
         }
+        // A grant queued to the trusted scheduler is not guest execution
+        // authority. Retirement/cancellation before delivery must fail closed.
+        for (int round = 0; round < 300; round++) {
+            CriticalSectionGate retiredGate = new CriticalSectionGate(83,2);
+            var retiredOwner = retiredGate.enter(new Object(),83);
+            var stale = retiredGate.enter(new Object(),83);
+            java.util.ArrayDeque<Runnable> retireLane = new java.util.ArrayDeque<>();
+            var staleStage = stale.whenReadyOn(retireLane::addLast);
+            AtomicInteger staleCallbacks = new AtomicInteger();
+            staleStage.thenAccept(ticket -> staleCallbacks.incrementAndGet());
+            retiredOwner.execute(() -> {});
+            check(retireLane.size()==1,"stale scheduler dispatch was not queued");
+            retiredGate.retire();
+            check(retiredGate.quiescent(),"retirement did not revoke granted pre-entry ticket");
+            retireLane.removeFirst().run();
+            try {
+                staleStage.toCompletableFuture().join();
+                throw new AssertionError("stale scheduler delivery admitted after retirement");
+            } catch (CancellationException | java.util.concurrent.CompletionException expected) {
+                check(true,"retired scheduled continuation denied");
+            }
+            check(staleCallbacks.get()==0,"stale scheduler callback ran after retirement");
+
+            CriticalSectionGate cancelledGate = new CriticalSectionGate(84,2);
+            var cancelOwner = cancelledGate.enter(new Object(),84);
+            var cancelledBeforeDispatch = cancelledGate.enter(new Object(),84);
+            var successor = cancelledGate.enter(new Object(),84);
+            java.util.ArrayDeque<Runnable> cancelLane = new java.util.ArrayDeque<>();
+            var cancelledStage = cancelledBeforeDispatch.whenReadyOn(cancelLane::addLast);
+            AtomicInteger cancelledCallbacks = new AtomicInteger();
+            cancelledStage.thenAccept(ticket -> cancelledCallbacks.incrementAndGet());
+            cancelOwner.execute(() -> {});
+            check(cancelLane.size()==1,"cancellation scheduler dispatch was not queued");
+            check(cancelledBeforeDispatch.cancel(),"cancel before delivery did not revoke ticket");
+            check(successor.whenReady().toCompletableFuture().join()==successor,
+                    "cancel before delivery stranded FIFO successor");
+            cancelLane.removeFirst().run();
+            try {
+                cancelledStage.toCompletableFuture().join();
+                throw new AssertionError("cancelled scheduler delivery admitted stale ticket");
+            } catch (CancellationException | java.util.concurrent.CompletionException expected) {
+                check(true,"cancelled scheduled continuation denied");
+            }
+            check(cancelledCallbacks.get()==0,"cancelled scheduler callback ran");
+            successor.execute(() -> {});
+            cancelledGate.retire();
+            check(cancelledGate.quiescent(),"cancel before dispatch leaked critical owner");
+        }
         for (int round = 0; round < 300; round++) {
             CriticalSectionGate gate = new CriticalSectionGate(37,2);
             var owner=gate.enter(new Object(),37);
