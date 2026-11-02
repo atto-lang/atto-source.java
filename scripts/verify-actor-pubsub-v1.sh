@@ -22,8 +22,8 @@ fi
 
 command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 
-# Must execute the guest-positive fixtures and all five guest negatives, not
-# only host/runtime facade tests. Surefire's -Dtest does not permit matching
+# Must execute the guest-positive fixtures and all guest compile negatives,
+# including direct/nested callable topic payloads, not only host facade tests. Surefire's -Dtest does not permit matching
 # empty suites; we additionally inspect the exact suite reports below.
 suites=(
   dev.oreslang.SourceActorPubSubExecutionTest
