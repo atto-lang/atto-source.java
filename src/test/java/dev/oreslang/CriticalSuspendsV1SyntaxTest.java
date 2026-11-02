@@ -138,6 +138,80 @@ final class CriticalSuspendsV1SyntaxTest {
                 "try critical requires 'else");
     }
 
+    private static final String TYPED_CRITICAL_ACTOR = """
+            define actor Worker as
+              suspends receive(ActorMail<String> mail): void {
+                let int value = 40;
+                critical { value = value + 2; }
+                return;
+              }
+            end
+            """;
+
+    private static Ast.CriticalStmt actorCritical(Ast.Program program) {
+        Ast.ClassDecl worker = (Ast.ClassDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        return (Ast.CriticalStmt) worker.methods().getFirst().body().get(1);
+    }
+
+    @Test void rawOwnershipPassCannotMintExecutableCriticalTypePermission() {
+        Ast.Program raw = Parser.parse(TYPED_CRITICAL_ACTOR);
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(raw));
+        assertTrue(failure.getMessage().contains(
+                "successfully type-checked exact Program"), failure::toString);
+
+        // Even if another caller has published the ownership epoch, the
+        // separate public permit API cannot fabricate a type proof.
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(raw);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.publish(
+                        raw, epoch, java.util.Set.of(actorCritical(raw))));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        raw, actorCritical(raw), epoch));
+    }
+
+    @Test void successfulTypingAndOwnershipPermitExactProgramOnly() {
+        Ast.Program parsed = Parser.parse(TYPED_CRITICAL_ACTOR);
+        Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(parsed);
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(typed));
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(typed);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                typed, actorCritical(typed), epoch));
+
+        Ast.Program equivalentButUntyped = Parser.parse(TYPED_CRITICAL_ACTOR);
+        assertNotSame(typed, equivalentButUntyped);
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(equivalentButUntyped));
+        assertTrue(failure.getMessage().contains(
+                "successfully type-checked exact Program"), failure::toString);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        typed, actorCritical(equivalentButUntyped), epoch));
+    }
+
+    @Test void failedLinkedTypeRecheckRevokesPreviouslyExecutablePermit() {
+        Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        dev.oreslang.types.OwnershipChecker.check(typed);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(typed);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                typed, actorCritical(typed), epoch));
+
+        // Even early linked-metadata validation failures revoke old typing;
+        // a stale ownership epoch alone cannot recover executable authority.
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker
+                        .checkTypesWithLinkedMetadataWithDiagnostics(
+                                typed, java.util.Map.of(), java.util.Map.of(), null));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        typed, actorCritical(typed), epoch));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(typed));
+    }
+
     @Test void CriticalWordsInCommentsDoNotChangeExecution() {
         assertDoesNotThrow(() -> Parser.parse("""
                 // async fnc and critical suspends are deprecated source spellings
