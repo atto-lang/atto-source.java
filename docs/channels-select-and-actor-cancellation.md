@@ -141,11 +141,18 @@ and deny guest callables as well as unknown host objects at runtime.
 for Redis, network and persistence; implementing it cannot make an executable
 or non-MessageData payload admissible.
 
+The Java reference interpreter now takes a recursively verified, bounded
+**detached snapshot at source-visible write/select registration**, rather than
+retaining the producer's mutable collection/nominal object by reference. The
+snapshot preserves guest record, struct and nominal value tags. A separate
+host-only regression suite checks post-send producer mutation, cyclic graphs,
+actor-instance rejection and oversized data before allocation.
+
 The compiler/runtime equality of this policy is currently **under review**.
-The Java source interpreter has an independent recursive runtime admission
-guard for public channel writes and select registrations, but a successful
-guard alone is not a proof of alias-free transfer, immutable snapshotting or
-cross-backend compiler parity. Keep executable guest tests and exact-head
+This Java interpreter snapshot is not a proof of simultaneous hostile-host
+mutation safety, global lock-free publication, or cross-backend compiler parity.
+The low-level Java ChannelRuntime API also remains a trusted/internal primitive
+and does not independently enforce guest MessageData contracts. Keep executable guest tests and exact-head
 runner receipts as release gates.
 
 ### Blocking/suspending forms
