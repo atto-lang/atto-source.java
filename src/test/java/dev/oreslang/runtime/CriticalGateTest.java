@@ -280,29 +280,29 @@ final class CriticalGateTest {
             java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
             AtomicReference<CriticalGate.Ticket> acquired = new AtomicReference<>();
             AtomicReference<Boolean> retired = new AtomicReference<>();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
             Thread requester = Thread.ofPlatform().start(() -> {
                 try {
                     start.await();
                     acquired.set(gate.request().ticket());
                 } catch (IllegalStateException closed) {
-                    assertTrue(gate.retired());
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(interrupted);
+                    if (!gate.retired()) unexpected.compareAndSet(null, closed);
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
                 }
             });
             Thread stopper = Thread.ofPlatform().start(() -> {
                 try {
                     start.await();
                     retired.set(gate.retireIfQuiescent());
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(interrupted);
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
                 }
             });
             start.countDown();
             requester.join();
             stopper.join();
+            assertNull(unexpected.get(), "unexpected worker failure");
             if (Boolean.TRUE.equals(retired.get())) {
                 assertNull(acquired.get(), "ticket admitted after atomic retirement");
                 assertTrue(gate.retired());
