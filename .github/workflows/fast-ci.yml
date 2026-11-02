@@ -30,6 +30,8 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify critical host gate (exact checked-out PR tree)
+        run: bash scripts/verify-critical-substrate-host.sh
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
