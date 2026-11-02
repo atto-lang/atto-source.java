@@ -45,6 +45,25 @@ public final class OwnershipChecker {
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /** Exact immutable Program identity checked by this ownership pass. */
+    /**
+     * Opaque compiler-owned publishing capability. External host embeddings
+     * cannot construct a token or publish an arbitrary critical AST set just
+     * by knowing the checked Program and ownership epoch.
+     */
+    public static final class CriticalPublishAuthority {
+        private final Ast.Program program;
+        private final long epoch;
+
+        private CriticalPublishAuthority(Ast.Program program, long epoch) {
+            this.program = program;
+            this.epoch = epoch;
+        }
+
+        public boolean permits(Ast.Program expectedProgram, long expectedEpoch) {
+            return program == expectedProgram && epoch > 0 && epoch == expectedEpoch;
+        }
+    }
+
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
@@ -160,7 +179,8 @@ public final class OwnershipChecker {
         Ast.CheckedCriticalBlocks.publish(
                 checkedProgram,
                 taskCheckEpoch,
-                pendingCriticalAdmissions);
+                pendingCriticalAdmissions,
+                new CriticalPublishAuthority(checkedProgram, taskCheckEpoch));
     }
 
     private void index(Ast.Program program) {
