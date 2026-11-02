@@ -654,6 +654,18 @@ public final class Parser {
                         throw error(previous(), "injected state v0 requires initialized "
                                 + "scalar int/bool fields; object graphs need region lowering");
                     }
+                    // Owned-state v0 is initialized before the instance is fully
+                    // published. Admit only type-matching scalar literals.
+                    // Calls, self references, field dependencies and closures
+                    // require verified initialization-order/lifetime lowering.
+                    boolean primitiveLiteral = field.initializer() instanceof Ast.LiteralExpr literal
+                            && ((field.type().name().equals("int") && literal.value() instanceof Long)
+                                    || (field.type().name().equals("bool")
+                                            && literal.value() instanceof Boolean));
+                    if (!primitiveLiteral) {
+                        throw error(previous(), "injected state v0 requires literal int/bool initializers"
+                                + " to prevent prepublication self escape and side effects");
+                    }
                     if (fields.stream().anyMatch(existing -> existing.name().equals(field.name()))) {
                         throw error(previous(), "duplicate injected mutable state field: " + field.name());
                     }
