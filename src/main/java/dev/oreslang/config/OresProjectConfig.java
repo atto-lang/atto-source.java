@@ -259,9 +259,14 @@ public final class OresProjectConfig {
         String lowerFilename = filename.toLowerCase(Locale.ROOT);
         // Explicit foreign-source paths must never pass through this resolver.
         // Preserve existing .ores and Java interop while admitting canonical .atto.
-        if (lowerFilename.endsWith(".atto") || lowerFilename.endsWith(".ores") || lowerFilename.endsWith(".java")) {
+        if (lowerFilename.endsWith(".atto")) {
+            // A dangling canonical AttoLang entry must reach the bounded
+            // no-follow reader instead of falling back to a legacy sibling.
             return (Files.isRegularFile(normalized) || Files.isSymbolicLink(normalized))
                     ? Optional.of(normalized) : Optional.empty();
+        }
+        if (lowerFilename.endsWith(".ores") || lowerFilename.endsWith(".java")) {
+            return Files.isRegularFile(normalized) ? Optional.of(normalized) : Optional.empty();
         }
         if (filename.contains(".")) return Optional.empty();
 
@@ -272,7 +277,8 @@ public final class OresProjectConfig {
             // A dangling .atto symlink is still the canonical directory entry.
             // Select it so the bounded no-follow reader rejects it; never fall
             // through to a shadowing legacy .ores sibling.
-            if (Files.isRegularFile(source) || Files.isSymbolicLink(source))
+            if (Files.isRegularFile(source) ||
+                    (extension.equals(".atto") && Files.isSymbolicLink(source)))
                 return Optional.of(source);
         }
         return Optional.empty();
