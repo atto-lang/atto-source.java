@@ -36,7 +36,10 @@
     "actor_termination": "automatically revoke memberships and subscriptions",
     "critical_body_may_suspend": false,
     "payload_sendability": "recursive concrete owned Sendable data only; reject functions, bound methods, closures and nested callable fields at compile time and runtime",
-    "lexical_capture_transfer": "forbidden, including callable values without an explicit capture"
+    "lexical_capture_transfer": "forbidden, including callable values without an explicit capture",
+    "message_data_policy": "recursive concrete Sendable data plus no executable, synchronization, task, stream, codec, storage or actor-ref capabilities",
+    "actor_ref_topic_policy": "forbidden at Topic<T> declaration, nested generic/nominal source admission, and dynamic publication; unlike verified typed ActorRef channel reply endpoints",
+    "channel_graph_budget": "source-visible Java channel runtime preflight rejects graphs deeper than 128 and with more than 65536 visited nodes; does not prove ownership detachment"
   },
   "delivery_policies": {
     "RELIABLE": "bounded asynchronous backpressure; no unbounded pending writer queue",
@@ -73,6 +76,9 @@
     "fifo-per-publisher-subscription",
     "callable-topic-payload-rejection",
     "nested-callable-topic-payload-rejection",
-    "runtime-callable-payload-rejection"
+    "runtime-callable-payload-rejection",
+    "topic-actor-ref-reject",
+    "topic-nested-synchronized-reject",
+    "channel-wide-graph-budget-reject"
   ]
 }
