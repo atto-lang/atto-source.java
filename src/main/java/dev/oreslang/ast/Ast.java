@@ -1783,7 +1783,9 @@ public final class Ast {
 
         private static final java.lang.ref.ReferenceQueue<CriticalStmt> CLEARED =
                 new java.lang.ref.ReferenceQueue<>();
-        private static final java.util.Map<CriticalKey, Long> ADMISSIONS =
+        private record CriticalAdmission(long ownershipEpoch, long typingGeneration) { }
+
+        private static final java.util.Map<CriticalKey, CriticalAdmission> ADMISSIONS =
                 new java.util.HashMap<>();
 
         private static final class CriticalKey
@@ -1830,21 +1832,23 @@ public final class Ast {
             if (epoch <= 0) throw new IllegalArgumentException(
                     "critical check epoch must be positive");
             java.util.Objects.requireNonNull(checked, "critical admissions");
-            if (authority == null || !authority.permits(program, epoch))
+            // Record the exact typing generation, rather than only testing
+            // that some successful type proof happens to exist now. Otherwise
+            // a later successful recheck could reactivate an old ownership
+            // permit without a fresh ownership pass.
+            long typingGeneration = checked.isEmpty()
+                    ? 0L : dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            if (authority == null || !authority.permits(program, epoch, typingGeneration))
                 throw new IllegalStateException(
                         "critical publish requires compiler-owned ownership authority");
             if (CheckedTaskCaptures.requireProgramEpoch(program) != epoch)
                 throw new IllegalStateException("critical ownership epoch mismatch");
-            // Ownership-only checking remains supported for programs without
-            // critical blocks; only active critical authority needs type proof.
-            if (!checked.isEmpty()) {
-                dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
-            }
             expunge();
             ADMISSIONS.keySet().removeIf(key -> key.program() == program);
             for (CriticalStmt node : checked) {
                 java.util.Objects.requireNonNull(node, "critical admission node");
-                ADMISSIONS.put(new CriticalKey(program, node, CLEARED), epoch);
+                ADMISSIONS.put(new CriticalKey(program, node, CLEARED),
+                        new CriticalAdmission(epoch, typingGeneration));
             }
         }
 
@@ -1859,12 +1863,16 @@ public final class Ast {
                         "critical Program ownership proof was revoked or superseded");
             // Rechecking typing invalidates old permits even if ownership
             // was not rerun. The type proof is an independent safety gate.
-            dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            long actualTypingGeneration =
+                    dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
             expunge();
-            Long admitted = ADMISSIONS.get(new CriticalKey(program, node, null));
-            if (admitted == null || admitted.longValue() != expectedEpoch)
+            CriticalAdmission admitted =
+                    ADMISSIONS.get(new CriticalKey(program, node, null));
+            if (admitted == null
+                    || admitted.ownershipEpoch() != expectedEpoch
+                    || admitted.typingGeneration() != actualTypingGeneration)
                 throw new IllegalStateException(
-                        "critical execution requires exact checked Program/AST admission");
+                        "critical execution requires exact checked Program/AST and typing generation admission");
         }
     }
 
