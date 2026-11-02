@@ -174,7 +174,7 @@ final class ActorDenseIndexColumnsTest {
             ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(factory -> {
                 ActorDenseIndexColumns column = new ActorDenseIndexColumns(
                         ActorShardColumns.Layout.SOA, 4, 1, 1);
-                DenseIndexTable<EntityTag> table = new DenseIndexTable<>(1);
+                DenseIndexTable<EntityTag> table = DenseIndexTable.forCurrentActor(1);
                 DenseIndex32<EntityTag> stale = table.allocate();
                 return (message, turn) -> {
                     try {
@@ -202,6 +202,48 @@ final class ActorDenseIndexColumnsTest {
             actor.drain().get(5, TimeUnit.SECONDS);
             assertNull(failure.get());
             actor.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
+ 
+    @Test
+    void typedDenseTableCannotBeUsedFromAnotherActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<DenseIndexTable<EntityTag>> foreignTable = new AtomicReference<>();
+            AtomicReference<DenseIndex32<EntityTag>> foreignHandle = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> owner = runtime.spawnSharedTrusted(factory -> {
+                DenseIndexTable<EntityTag> table = DenseIndexTable.forCurrentActor(1);
+                foreignTable.set(table);
+                foreignHandle.set(table.allocate());
+                return (message, turn) -> {
+                    if (message == 2) table.close();
+                };
+            });
+            owner.send(1);
+            owner.drain().get(5, TimeUnit.SECONDS);
+
+            ActorRuntime.ActorRef<Integer> foreign = runtime.spawnSharedTrusted(factory -> {
+                ActorDenseIndexColumns column = new ActorDenseIndexColumns(
+                        ActorShardColumns.Layout.SOA, 1, 1, 1);
+                return (message, turn) -> {
+                    try {
+                        assertThrows(SecurityException.class, () ->
+                                column.writeHandle(0, 0, foreignHandle.get(), foreignTable.get()));
+                        assertThrows(SecurityException.class, () ->
+                                column.matchesHandle(0, 0, foreignHandle.get(), foreignTable.get()));
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                };
+            });
+            foreign.send(1);
+            foreign.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+            foreign.gracefulStop().get(5, TimeUnit.SECONDS);
+            owner.send(2);
+            owner.drain().get(5, TimeUnit.SECONDS);
+            owner.gracefulStop().get(5, TimeUnit.SECONDS);
         }
     }
 
