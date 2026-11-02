@@ -270,6 +270,11 @@ public final class DurableDeclarationAnalyzer {
                     "WORKFLOW_ACTIVITY_OPERATION_UNKNOWN: " + context + " references missing operation '"
                             + activity.name() + "." + operation + "#" + arity + "'");
         }
+        if (found.visibility() != Ast.Visibility.PUBLIC || found.isStatic()) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ACTIVITY_OPERATION_VISIBILITY: activity operation '"
+                            + activity.name() + "." + operation + "' must be a public instance method");
+        }
         return found;
     }
 
@@ -358,6 +363,16 @@ public final class DurableDeclarationAnalyzer {
                 throw new IllegalArgumentException(
                         "ACTIVITY_DUPLICATE_OPERATION: duplicate operation " + identity);
             }
+            if (method.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "ACTIVITY_OPERATION_VISIBILITY_UNSUPPORTED: operation '" + method.name()
+                                + "' must be public in the v1 external activity manifest");
+            }
+            if (!method.annotations().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "ACTIVITY_OPERATION_ANNOTATIONS_UNSUPPORTED: operation '" + method.name()
+                                + "' has annotations without a versioned durable contract");
+            }
             if (method.isAbstract() || method.genericParameters().size() > 0
                     || method.isStatic()) {
                 throw new IllegalArgumentException(
@@ -392,6 +407,11 @@ public final class DurableDeclarationAnalyzer {
         Set<String> memberNames = new LinkedHashSet<>();
         for (Ast.MethodDecl method : body.methods()) memberNames.add(method.name());
         for (Ast.MethodDecl method : body.methods()) {
+            if (!method.annotations().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "WORKFLOW_MEMBER_ANNOTATIONS_UNSUPPORTED: workflow member '" + method.name()
+                                + "' has annotations without a versioned deterministic/replay contract");
+            }
             if (method.isAbstract() || method.async() || method.suspends()
                     || !method.genericParameters().isEmpty() || !method.effects().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -565,6 +585,12 @@ public final class DurableDeclarationAnalyzer {
             throw new IllegalArgumentException(
                     "WORKFLOW_" + kind.toUpperCase() + "_ENDPOINT_UNKNOWN: no workflow member '"
                             + name + "#" + arity + "'");
+        }
+        if (endpoint.visibility() != Ast.Visibility.PUBLIC || endpoint.isStatic()) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_" + kind.toUpperCase()
+                            + "_ENDPOINT_VISIBILITY: endpoint '" + name
+                            + "' must be a public instance method");
         }
         return endpoint;
     }
