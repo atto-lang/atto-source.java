@@ -1,6 +1,6 @@
 # Java/GraalVM critical source admission — v1 (2026-11-01)
 
-Status: **parser and safety-preflight implementation; guest execution NOT enabled**.
+Status: **restricted actor-only guest lowering is authored, but NOT execution-verified**. `try critical`, free-function critical and effectful critical bodies remain denied. The Java Actions job has not executed its test steps.
 
 This PR now preserves `critical { ... }` as `Ast.CriticalStmt`, and
 `try critical { ... } else { ... }` as `Ast.TryCriticalStmt` rather than
@@ -14,39 +14,50 @@ deferred callbacks, nested guards, dynamic getters/setters and unknown
 expression kinds. A pass does **not** prove a call effect-safe; calls are
 rejected until transitive typed effect closure is implemented.
 
-The TypeChecker verifies that `critical {}` requires a `suspends`
-callable for a potentially queued entry, but then **rejects all critical
-source** until scheduler-owned ticket acquisition and lexical guard unwind
-are implemented. `try critical` also rejects until immediate ticket entry
-and fallback execution are verified. The OwnershipChecker independently
-rejects both AST nodes. Both the synchronous evaluator and suspension-aware
-SourceTask evaluator reject them explicitly, so skipping normal type
-checking cannot silently turn a critical body into unguarded execution.
+The TypeChecker permits the restricted scalar `critical {}` body in a
+`suspends` actor instance method, after bounded effect preflight and ordinary
+type checking. The OwnershipChecker then checks the body and publishes an
+identity-and-epoch-bound permit for admitted critical AST nodes. All other
+critical scopes, including `try critical`, are rejected. The synchronous
+evaluator denies critical source outright. The suspension-aware `SourceTask`
+evaluator requires the permit and actor-owned gate, but this source path has
+not been established as working by executed compiler/guest CI. The permit
+lookup itself validates ownership epoch and AST identity; it does not
+independently certify that every caller ran TypeChecker first. Treat
+host-supplied/untyped AST entry points as a separate security audit gate.
 
 Host runtime `dev.oreslang.runtime.CriticalGate` now has `requestAwaitable()` returning a runtime-owned `OresFuture<Ticket>` in addition to immediate try-enter, FIFO bounded logical tickets, cancellation, stale-generation checks and retirement. It settles the next ticket **only after unlocking** its bookkeeping mutex.
 
-The suspension-aware `SourceTask` evaluator now contains a staged critical lowering path that would await that future through `OresScheduler`, register heap-owned cancellation cleanup, and release the ticket on body completion/return/failure. The path is **not guest-authorized**: `criticalGuestLoweringAdmitted(...)` deliberately returns false, as the type and ownership passes have not issued identity-bound proof of safe protected resource/actor ownership. Host AST embeddings must also fail closed.
-Critically, the scheduler must never run callbacks/guest code from
-`CriticalGate.release`; it must validate task, actor, tenant and generation
-identity before dispatch.
+The suspension-aware `SourceTask` evaluator now has a restricted actor-only
+critical lowering path: it awaits a `CriticalGate` future through the
+scheduler, registers cancellation cleanup, checks the current actor/runtime
+incarnation after admission, and releases the ticket on completion, return
+or failure. `criticalGuestLoweringAdmitted(...)` checks an identity-bound
+ownership permit and returns true only after that check; it is **not** a
+constant deny. This candidate still needs exact-head compilation, runtime
+cancellation/cleanup evidence, and a proof that untyped host AST entry
+points cannot mint equivalent authority. Future settlement must not execute
+guest callbacks; actor/task/generation fencing remains mandatory.
 
-## Required before enabling execution
+## Required before treating the restricted lowering as verified or widening admission
 
-1. Establish stable gate identity per protected resource/instance/module and
-   tenant/isolate, rather than global AST text or JVM-global locks. The
-   current staged nonactor path uses per-evaluator lexical-site identity,
-   which is insufficient to authorize arbitrary shared state. Actor contexts
-   are explicitly denied until an actor-owned incarnation fence is wired.
+1. Retain the authored per-ActorCell incarnation gate and recheck it after
+   scheduler resumption. Nonactor protected resources require a separately
+   designed, identity-bound capability; no per-AST or JVM-global gate may
+   authorize them. Independently test tenant/isolate boundaries.
 2. Verify the now-authored scheduler `OresFuture` bridge, cancellation/queue
    retraction and fair wakeups under actual JUnit and guest workloads; ensure
    no Task cancellation can leak an already-granted ticket.
 3. Prove body calls transitively non-suspending across function values,
    overloads, generic calls, virtual dispatch and native/host FFI.
-4. Implement a lexical guard that releases on return, break, continue,
-   trap, cancellation and actor teardown; test return-flow continuation.
-5. Prevent reentrant actor handler admission while suspended without holding
-   a physical mutex across await; bind each gate to actor-generation state
-   and issue a checked, nonforgeable AST admission proof before enabling guest execution.
+4. Verify the authored lexical cleanup on return, trap and cancellation,
+   including forced shutdown, carrier migration, early-return and double
+   release. Widening the statement subset to loops/break/continue requires
+   additional control-flow release tests.
+5. Prove nonreentrant actor handler admission while a critical ticket is
+   queued, without holding a physical mutex over suspension. Authenticate
+   both TypeChecker and OwnershipChecker provenance for every admitted AST,
+   not only the current ownership epoch; reject host-injected/untyped ASTs.
 6. Run executable source cases with an exact-head compiler hash and recorded
    GitHub Actions steps. Source parsing and host tests are not guest evidence.
 7. Migrate legacy Java `async` tests and source semantics deliberately.
@@ -68,7 +79,7 @@ replacement actor receives an independent gate.
 The staged `SourceTask` critical path now checks the actor runtime, actor ID,
 and exact current actor gate again *after* its awaited ticket becomes ready.
 An old ticket cannot authorize a replacement actor or arbitrary resumed
-carrier. This is separate from the still-closed source execution gate.
+carrier. This is an authored safeguard, not evidence of successful guest execution.
 
 Actor finalization calls `CriticalGate.retireIfQuiescent()` under the actor
 lifecycle monitor **after** existing physical source-task quiescence gates.
@@ -83,8 +94,9 @@ behavior source, reincarnation/old-ticket fencing, retirement races and
 already-granted ownership winning over late cancellation.
 
 **Evidence remains unverified**: GitHub Actions jobs have reported zero
-executed steps. Source guest execution is still held closed pending exact-AST
-checked ownership/effect admission and non-suspending-body native proofs.
+executed steps. Restricted guest source lowering is present but has no
+stepful compiler/guest receipt. Nonactor, `try critical` and effectful
+critical scopes remain intentionally denied.
 
 ## Restricted actor critical source lowering — candidate (2026-11-01)
 
@@ -113,8 +125,10 @@ The candidate native Oreslang guest sources are
 `examples/critical-actor-checked-v1.ores` (expected `42`) and
 `examples/critical-actor-early-return-v1.ores` (expected `returned`, followed
 by actor STOP/physical cleanup), exercised by the
-`CriticalActorGuestExecutionTest` JVM/Graal test. Shared parity copies are
-recorded in the common-source v1 contract and match both Java guest bodies.
+`CriticalActorGuestExecutionTest` JVM/Graal polyglot-context test. Shared
+parity copies are recorded in the common-source v1 contract and match both
+Java guest bodies. This is a `.ores` guest execution test, **not** a
+GraalVM Native Image AOT binary build/test.
 
 **Not admitted:** non-actor/free-function critical, critical declaration
 modifiers, `try critical`, direct actor-state field mutation and any
@@ -156,7 +170,9 @@ An exact PR-head cross-organization source mirror is **blocked by the
 repository's checked-in private-source export policy**:
 `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md` requires a protected source
 `main`, reviewed numeric destination allowlist and independent security-owner
-approval. Current source `main` reports `protected=false`, and
+approval. The last recorded source `main` check reported `protected=false`;
+current independent protection verification is unavailable to the connected
+GitHub App (403). The checked-in
 `.github/private-ci-approved-repositories.txt` has no approved entries.
 Do not bypass with GitHub connector blob/tree writes. The concrete
 candidate IDs, source head/tree and capacity receipt are recorded on
