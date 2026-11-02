@@ -1,0 +1,24 @@
+// Native Oreslang guest conformance fixture for the restricted Java/Graal
+// actor-owned critical v1 subset. No Java host implementation substitutes for
+// this source. Requires compiler and scheduler-backed execution proof.
+define actor CriticalWorker as
+  suspends receive(ActorMail<String> mail): void {
+    let int value = 40;
+    critical {
+      value = value + 2;
+    }
+    self.send(value);
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn CriticalWorker();
+  await worker.get_ready();
+  worker.send("go");
+  val output = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(output.value);
+  await worker.get_done();
+  return;
+}
