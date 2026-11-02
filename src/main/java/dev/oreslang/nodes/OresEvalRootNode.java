@@ -4882,8 +4882,9 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
 
+                                    Object detached;
                                     try {
-                                        requireDataOnlyChannelPayload(value);
+                                        detached = snapshotChannelMessageData(value);
                                     } catch (RuntimeException | Error invalidPayload) {
                                         continuation.accept(t2, null, invalidPayload);
                                         return;
@@ -4896,7 +4897,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         "nb cb writech requires actor execution");
                                             }
                                             OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                                    channel.writeAsync(detached);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -4935,7 +4936,7 @@ public final class OresEvalRootNode extends RootNode {
                                         try {
                                             continuation.accept(
                                                     t2,
-                                                    channel.tryWrite(value),
+                                                    channel.tryWrite(detached),
                                                     null);
                                         } catch (RuntimeException | Error failure) {
                                             continuation.accept(
@@ -4955,7 +4956,7 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
                                     OresFuture<Void> future =
-                                            channel.writeAsync(value);
+                                            channel.writeAsync(detached);
                                     if (operation.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
                                         if (ActorRuntime.inActorExecution()) {
@@ -6642,11 +6643,10 @@ public final class OresEvalRootNode extends RootNode {
                     case READ -> cases.add(ChannelRuntime.read(
                             requireChannel(eval(arm.channel(), env), "readch select case")));
                     case WRITE -> {
-                        Object value = eval(arm.value(), env);
-                        requireDataOnlyChannelPayload(value);
+                        Object detached = snapshotChannelMessageData(eval(arm.value(), env));
                         cases.add(ChannelRuntime.write(
                                 requireChannel(eval(arm.channel(), env), "writech select case"),
-                                value));
+                                detached));
                     }
                     case AWAIT -> {
                         Object future = eval(arm.channel(), env);
@@ -6749,14 +6749,13 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
 
-            Object value = eval(operation.value(), env);
-            requireDataOnlyChannelPayload(value);
+            Object detached = snapshotChannelMessageData(eval(operation.value(), env));
             if (operation.callback()) {
                 if (!ActorRuntime.inActorExecution()) {
                     throw new IllegalStateException(
                             "nb cb writech can only execute inside an actor turn");
                 }
-                OresFuture<Void> completion = channel.writeAsync(value);
+                OresFuture<Void> completion = channel.writeAsync(detached);
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 Env callbackEnv = env.snapshot();
@@ -6784,12 +6783,12 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             return switch (operation.mode()) {
-                case IMMEDIATE -> channel.tryWrite(value);
+                case IMMEDIATE -> channel.tryWrite(detached);
                 case NONBLOCKING -> context.actors()
-                        .ownCurrentActorFuture(channel.writeAsync(value));
+                        .ownCurrentActorFuture(channel.writeAsync(detached));
                 case BLOCKING -> {
                     awaitBlockingChannelFuture(
-                            channel.writeAsync(value),
+                            channel.writeAsync(detached),
                             "writech");
                     yield null;
                 }
@@ -6797,21 +6796,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * Defensive runtime admission for all source-visible channel writes.
-         * Compiler Sendable checks run first, but dynamically sourced values
-         * must not smuggle callable lexical environments through a channel.
-         * Do not apply this to runtime-internal ChannelRuntime completions.
+         * Source-visible Channel<T> payloads are detached at write/select
+         * registration, before they can be buffered or await a receiver.
+         * A mere validation walk leaves mutable producer aliases live.
+         * Internal ChannelRuntime scheduler frames are not guest messages.
          */
         private static void requireDataOnlyChannelPayload(Object value) {
-            requireDataOnlyChannelPayload(
+            snapshotChannelMessageData(value);
+        }
+
+        private static Object snapshotChannelMessageData(Object value) {
+            return snapshotChannelMessageData(
                     value, new IdentityHashMap<>(), new int[] {0}, 0);
         }
 
-        private static void requireDataOnlyChannelPayload(
+        private static Object snapshotChannelMessageData(
                 Object value, IdentityHashMap<Object, Boolean> visiting,
                 int[] nodes, int depth) {
-            // The active-path size is not a total node bound: a flat list of
-            // millions of scalars would previously bypass that accounting.
+            // Count the entire graph, not only the active recursive path.
             if (depth > 128 || ++nodes[0] > 65536) {
                 throw new IllegalArgumentException(
                         "channel payload exceeds safe data graph limits");
@@ -6828,8 +6830,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "channel payload cannot contain a function, bound method, closure, or lexical environment");
             }
-            // Do not admit arbitrary Number/Enum subclasses: they may carry
-            // mutable fields, Java callbacks, or executable host state.
+            // A closed scalar allowlist: arbitrary Number/Enum/Serializable
+            // implementations can hold executable Java state.
             if (value instanceof String || value instanceof Boolean
                     || value instanceof Character || value instanceof Byte
                     || value instanceof Short || value instanceof Integer
@@ -6842,7 +6844,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Complex
                     || value instanceof ActorRuntime.ActorId
                     || value instanceof ActorRuntime.ActorRef<?>) {
-                return;
+                return value;
             }
             if (visiting.put(value, Boolean.TRUE) != null) {
                 throw new IllegalArgumentException(
@@ -6850,41 +6852,90 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 if (value instanceof OptionValue option) {
-                    if (option.present()) {
-                        requireDataOnlyChannelPayload(option.value(), visiting, nodes, depth + 1);
-                    }
-                } else if (value instanceof ResultValue result) {
-                    requireDataOnlyChannelPayload(result.value(), visiting, nodes, depth + 1);
-                } else if (value instanceof ReadonlyRecordValue record) {
-                    requireDataOnlyChannelPayload(record.fields, visiting, nodes, depth + 1);
-                } else if (value instanceof OresObject object) {
-                    for (Object field : object.fields.values()) {
-                        requireDataOnlyChannelPayload(field, visiting, nodes, depth + 1);
-                    }
-                } else if (value instanceof List<?> list) {
-                    for (Object field : list) {
-                        requireDataOnlyChannelPayload(field, visiting, nodes, depth + 1);
-                    }
-                } else if (value instanceof Set<?> set) {
-                    for (Object field : set) {
-                        requireDataOnlyChannelPayload(field, visiting, nodes, depth + 1);
-                    }
-                } else if (value instanceof Map<?, ?> map) {
-                    for (Map.Entry<?, ?> entry : map.entrySet()) {
-                        requireDataOnlyChannelPayload(entry.getKey(), visiting, nodes, depth + 1);
-                        requireDataOnlyChannelPayload(entry.getValue(), visiting, nodes, depth + 1);
-                    }
-                } else if (value.getClass().isArray()) {
-                    int length = java.lang.reflect.Array.getLength(value);
-                    for (int i = 0; i < length; i++) {
-                        requireDataOnlyChannelPayload(
-                                java.lang.reflect.Array.get(value, i), visiting, nodes, depth + 1);
-                    }
-                } else {
-                    throw new IllegalArgumentException(
-                            "channel payload is not a recognized data-only value: "
-                                    + value.getClass().getName());
+                    return option.present()
+                            ? new OptionValue(true, snapshotChannelMessageData(
+                                    option.value(), visiting, nodes, depth + 1))
+                            : option;
                 }
+                if (value instanceof ResultValue result) {
+                    // Result<void,E> success may have a null internal marker;
+                    // null is never an independently sendable guest value.
+                    return new ResultValue(result.ok(),
+                            result.ok() && result.value() == null ? null
+                                    : snapshotChannelMessageData(
+                                            result.value(), visiting, nodes, depth + 1));
+                }
+                if (value instanceof ReadonlyRecordValue record) {
+                    LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> field : record.entrySet()) {
+                        copy.put(field.getKey(), snapshotChannelMessageData(
+                                field.getValue(), visiting, nodes, depth + 1));
+                    }
+                    return new ReadonlyRecordValue(copy);
+                }
+                if (value instanceof MutableStructValue struct) {
+                    LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> field : struct.entrySet()) {
+                        copy.put(field.getKey(), snapshotChannelMessageData(
+                                field.getValue(), visiting, nodes, depth + 1));
+                    }
+                    return new MutableStructValue(copy);
+                }
+                if (value instanceof OresObject object) {
+                    LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> field : object.fields.entrySet()) {
+                        copy.put(field.getKey(), snapshotChannelMessageData(
+                                field.getValue(), visiting, nodes, depth + 1));
+                    }
+                    return new OresObject(object.owner, object.klass, copy);
+                }
+                if (value instanceof List<?> list) {
+                    ArrayList<Object> copy = new ArrayList<>(list.size());
+                    for (Object item : list) {
+                        copy.add(snapshotChannelMessageData(
+                                item, visiting, nodes, depth + 1));
+                    }
+                    return copy;
+                }
+                if (value instanceof Set<?> set) {
+                    LinkedHashSet<Object> copy = new LinkedHashSet<>();
+                    for (Object item : set) {
+                        Object detached = snapshotChannelMessageData(
+                                item, visiting, nodes, depth + 1);
+                        if (!copy.add(detached)) {
+                            throw new IllegalArgumentException(
+                                    "channel payload has duplicate Set values after detachment");
+                        }
+                    }
+                    return copy;
+                }
+                if (value instanceof Map<?, ?> map) {
+                    LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> field : map.entrySet()) {
+                        Object key = snapshotChannelMessageData(
+                                field.getKey(), visiting, nodes, depth + 1);
+                        Object item = snapshotChannelMessageData(
+                                field.getValue(), visiting, nodes, depth + 1);
+                        if (copy.containsKey(key)) {
+                            throw new IllegalArgumentException(
+                                    "channel payload has duplicate Map keys after detachment");
+                        }
+                        copy.put(key, item);
+                    }
+                    return copy;
+                }
+                if (value.getClass().isArray()) {
+                    int length = java.lang.reflect.Array.getLength(value);
+                    ArrayList<Object> copy = new ArrayList<>(length);
+                    for (int i = 0; i < length; i++) {
+                        copy.add(snapshotChannelMessageData(
+                                java.lang.reflect.Array.get(value, i), visiting, nodes, depth + 1));
+                    }
+                    return copy;
+                }
+                throw new IllegalArgumentException(
+                        "channel payload is not a recognized data-only value: "
+                                + value.getClass().getName());
             } finally {
                 visiting.remove(value);
             }
@@ -11337,10 +11388,10 @@ public final class OresEvalRootNode extends RootNode {
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
             }
-            Evaluator.requireDataOnlyChannelPayload(args.get(1));
+            Object detached = Evaluator.snapshotChannelMessageData(args.get(1));
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
-                    args.get(1));
+                    detached);
         }
 
         private Object future(List<Object> args) {
