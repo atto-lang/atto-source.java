@@ -39,7 +39,8 @@
     "lexical_capture_transfer": "forbidden, including callable values without an explicit capture",
     "message_data_policy": "recursive concrete Sendable data plus no executable, synchronization, task, stream, codec, storage or actor-ref capabilities",
     "actor_ref_topic_policy": "forbidden at Topic<T> declaration, nested generic/nominal source admission, and dynamic publication; unlike verified typed ActorRef channel reply endpoints",
-    "channel_graph_budget": "source-visible Java channel runtime preflight rejects graphs deeper than 128 and with more than 65536 visited nodes; does not prove ownership detachment"
+    "channel_graph_budget": "source-visible Java channel runtime preflight rejects graphs deeper than 128 and with more than 65536 visited nodes; does not prove ownership detachment",
+    "nominal_payload_policy": "Java source compiler and channel runtime reject owner-bearing nominal OresObject values, including nested types, until owner-free MessageData ABI is independently verified; test execution pending"
   },
   "delivery_policies": {
     "RELIABLE": "bounded asynchronous backpressure; no unbounded pending writer queue",
@@ -79,6 +80,8 @@
     "runtime-callable-payload-rejection",
     "topic-actor-ref-reject",
     "topic-nested-synchronized-reject",
-    "channel-wide-graph-budget-reject"
+    "channel-wide-graph-budget-reject",
+    "topic-nominal-evaluator-owner-reject",
+    "channel-nominal-evaluator-owner-reject"
   ]
 }
