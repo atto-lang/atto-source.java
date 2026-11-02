@@ -181,6 +181,31 @@ final class StateBackedOwnedInstanceV1Test {
     }
 
     @Test
+    void generatedAccessorAnnotationsCannotExposeBackedPrivateState() {
+        Ast.FieldDecl annotated = new Ast.FieldDecl(
+                "slot", Ast.Visibility.PRIVATE, Ast.BindingKind.LET,
+                Ast.TypeRef.simple("int"),
+                java.util.List.of(new Ast.Annotation("FromJson",
+                        java.util.List.of(Ast.TypeRef.stringLiteral("slot")))),
+                new Ast.LiteralExpr(1L));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> backedClass(java.util.List.of(), annotated));
+        assertTrue(denied.getMessage().contains("generated field accessors"),
+                denied::getMessage);
+    }
+
+    @Test
+    void ordinaryClassFromJsonAnnotationIsUnaffectedByStateBackingRestrictions() {
+        String source = """
+                define class Plain as
+                    @FromJson("slot")
+                    let int slot = 1;
+                end
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void stateBackingRejectsUninitializedAndImmutableStorageAndGenericLayouts() {
         Ast.FieldDecl mutable = new Ast.FieldDecl(
                 "slot", Ast.Visibility.PRIVATE, Ast.BindingKind.LET,
