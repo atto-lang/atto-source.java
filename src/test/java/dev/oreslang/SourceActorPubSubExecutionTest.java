@@ -91,6 +91,26 @@ final class SourceActorPubSubExecutionTest {
                 error.getMessage());
     }
 
+    @Test
+    void functionTopicPayloadFailsBeforeExecution() throws Exception {
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(
+                        fixture("actor-pubsub-reject-callable-topic.ores"),
+                        "source-pubsub-callable-topic-rejected.ores"));
+        assertTrue(error.getMessage().contains("Topic payload"), error.getMessage());
+    }
+
+    @Test
+    void nestedFunctionTopicPayloadFailsBeforeExecution() throws Exception {
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(
+                        fixture("actor-pubsub-reject-nested-callable-topic.ores"),
+                        "source-pubsub-nested-callable-topic-rejected.ores"));
+        assertTrue(error.getMessage().contains("Topic payload"), error.getMessage());
+    }
+
     private static String fixture(String name) throws Exception {
         return Files.readString(
                 Path.of("contracts", "v1", "fixtures", name),
