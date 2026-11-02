@@ -40,12 +40,14 @@ final class StateContainerAccessGateTest {
         assertNotNull(read);
         gate.close();
         assertTrue(gate.isClosed());
+        assertFalse(gate.leasesQuiescentAfterClose(), "owner must not free memory with live read lease");
         assertNull(gate.tryRead());
         assertNull(gate.tryWrite());
         assertFalse(read.active());
         assertThrows(IllegalStateException.class, () -> read.requireActive(READ));
         read.close();
         assertEquals(0, gate.readerCount());
+        assertTrue(gate.leasesQuiescentAfterClose());
     }
 
     @Test
