@@ -40,6 +40,18 @@ for this candidate. This packet cannot be used as an authorization token.
   protected-main alternative requires independent exact carrier-main
   tree/review attestation. A successful canary is not that attestation.
 
+## CODEOWNER coverage improvement (review-only, not enforcement)
+
+This governance PR also proposes a narrow hardening of
+`.github/CODEOWNERS`: `/docs/security/ @ORESoftware`. Previously,
+the specific carrier review packet did not match a CODEOWNER rule.
+The final, privileged-publisher-specific CODEOWNERS lines retain
+their existing order. This added ownership rule **does not turn on
+branch protection**, grant export authority, or substitute for the
+reviewer's actual approval. Independently verify effective CODEOWNER
+enforcement after enabling source-main protection, including a
+synthetic negative test before allowing any private transfer.
+
 ## Mandatory independent actions before any source-bearing Git object or ref
 
 1. Protect the source `main`, and verify live required checks, CODEOWNER
