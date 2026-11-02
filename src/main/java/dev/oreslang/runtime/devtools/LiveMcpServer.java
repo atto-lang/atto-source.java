@@ -25,6 +25,10 @@ import java.util.concurrent.TimeUnit;
 public final class LiveMcpServer implements AutoCloseable {
     public interface RuntimeView {
         Map<String, Object> inspect();
+        default boolean hasTaskDiscovery() { return false; }
+        default Map<String, Object> listTasks(int limit) {
+            throw new UnsupportedOperationException("task discovery unavailable");
+        }
         default boolean hasActorDiscovery() { return false; }
         default Map<String, Object> listActors(int limit) {
             throw new UnsupportedOperationException("actor discovery unavailable");
@@ -233,6 +237,14 @@ public final class LiveMcpServer implements AutoCloseable {
                                         "required", List.of("actor_id"),
                                         "additionalProperties", false)));
                     }
+                    if (view.hasTaskDiscovery()) {
+                        tools.add(tool("atto.list_tasks",
+                                "List at most 64 active logical Tasks, not physical threads or TaskLocal state.",
+                                Map.of("type", "object", "properties",
+                                        Map.of("limit", Map.of("type", "integer",
+                                                "minimum", 1, "maximum", 64)),
+                                        "additionalProperties", false)));
+                    }
                     result = Map.of("resultType", "complete", "tools", tools,
                             "ttlMs", 0, "cacheScope", "private");
                 }
@@ -264,6 +276,23 @@ public final class LiveMcpServer implements AutoCloseable {
                             limit = n.intValueExact();
                         }
                         data = Objects.requireNonNull(view.listActors(limit), "null actor listing");
+                    } else if ("atto.list_tasks".equals(name) && view.hasTaskDiscovery()) {
+                        if (a.size() > 1 || (a.size() == 1 && !a.containsKey("limit"))) {
+                            send(exchange, 200, error(id, -32602, "Unexpected task list arguments"));
+                            return;
+                        }
+                        Object rawLimit = a.get("limit");
+                        int limit = 32;
+                        if (rawLimit != null) {
+                            if (!(rawLimit instanceof java.math.BigDecimal n)
+                                    || n.scale() > 0 || n.compareTo(java.math.BigDecimal.ONE) < 0
+                                    || n.compareTo(java.math.BigDecimal.valueOf(64)) > 0) {
+                                send(exchange, 200, error(id, -32602, "limit must be 1..64"));
+                                return;
+                            }
+                            limit = n.intValueExact();
+                        }
+                        data = Objects.requireNonNull(view.listTasks(limit), "null task listing");
                     } else if ("atto.inspect_actor".equals(name) && view.hasActorDiscovery()) {
                         Object requested = a.get("actor_id");
                         if (a.size() != 1 || !(requested instanceof String actorId)
