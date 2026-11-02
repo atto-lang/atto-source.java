@@ -172,4 +172,93 @@ final class DurableWorkflowSemanticAnalysisTest {
                 module.name(), module.annotations(), module.contracts(), declarations);
         return new Ast.Program(original.namespace(), original.imports(), List.of(rewritten));
     }
+
+    @Test
+    void recordedActivityPayloadIsTypeCheckedAgainstExactOperationParameters() {
+        Ast.Program valid = parseValidPair();
+        Ast.WorkflowDecl old = workflow(valid);
+        Ast.WorkflowDecl command = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-order", "PaymentProvider", "charge",
+                        List.of(new Ast.NameExpr("order_id")))));
+        assertDoesNotThrow(() -> DurableDeclarationAnalyzer.analyze(
+                replaceWorkflow(valid, command)));
+
+        Ast.WorkflowDecl invalid = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-order", "PaymentProvider", "charge",
+                        List.of(new Ast.LiteralExpr("not-an-int")))));
+        assertThrows(IllegalArgumentException.class, () -> DurableDeclarationAnalyzer.analyze(
+                replaceWorkflow(valid, invalid)));
+    }
+
+    @Test
+    void signalAndUpdatePayloadsUseEndpointParameterTypes() {
+        Ast.Program source = Parser.parse("""
+                define workflow Checkout as
+                    approve(int code) -> bool { return code > 0; }
+                    run(int order_id) -> int { return order_id; }
+                end
+                """);
+        Ast.WorkflowDecl old = workflow(source);
+        Ast.WorkflowDecl valid = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.SignalCommand("signal-approve", "approve", List.of(new Ast.NameExpr("order_id"))),
+                new Ast.UpdateCommand("update-approve", "approve", List.of(new Ast.LiteralExpr(7L)))));
+        assertDoesNotThrow(() -> DurableDeclarationAnalyzer.analyze(
+                replaceWorkflow(source, valid)));
+
+        Ast.WorkflowDecl invalid = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.SignalCommand("signal-approve", "approve", List.of(new Ast.LiteralExpr("wrong")))));
+        assertThrows(IllegalArgumentException.class, () -> DurableDeclarationAnalyzer.analyze(
+                replaceWorkflow(source, invalid)));
+    }
+
+    @Test
+    void timerDelayIsCheckedAsIntegerMilliseconds() {
+        Ast.Program source = parseValidPair();
+        Ast.WorkflowDecl old = workflow(source);
+        Ast.WorkflowDecl valid = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.TimerCommand("timer-1", new Ast.LiteralExpr(250L))));
+        assertDoesNotThrow(() -> DurableDeclarationAnalyzer.analyze(
+                replaceWorkflow(source, valid)));
+
+        Ast.WorkflowDecl invalid = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.TimerCommand("timer-1", new Ast.LiteralExpr("250ms"))));
+        assertThrows(IllegalArgumentException.class, () -> DurableDeclarationAnalyzer.analyze(
+                replaceWorkflow(source, invalid)));
+    }
+
+    @Test
+    void ambiguousUnqualifiedActivityTargetsFailClosed() {
+        Ast.Program source = Parser.parse("""
+                define module Billing as
+                    define activity PaymentProvider as
+                        charge(int cents) -> int { return cents; }
+                    end
+                end
+                define module Commerce as
+                    define activity PaymentProvider as
+                        charge(int cents) -> int { return cents; }
+                    end
+                end
+                define module CheckoutModule as
+                    define workflow Checkout as
+                        run(int order_id) -> int { return order_id; }
+                    end
+                end
+                """);
+        Ast.ModuleDecl checkoutModule = source.modules().stream()
+                .filter(m -> m.name().equals("CheckoutModule")).findFirst().orElseThrow();
+        Ast.WorkflowDecl old = (Ast.WorkflowDecl) checkoutModule.declarations().getFirst();
+        Ast.WorkflowDecl command = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-1", "PaymentProvider", "charge",
+                        List.of(new Ast.LiteralExpr(1L)))));
+        List<Ast.ModuleDecl> modules = source.modules().stream().map(module ->
+                module == checkoutModule
+                        ? new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), List.of(command))
+                        : module).toList();
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> DurableDeclarationAnalyzer.analyze(
+                        new Ast.Program(source.namespace(), source.imports(), modules)))
+                .getMessage().contains("WORKFLOW_ACTIVITY_TARGET_AMBIGUOUS"));
+    }
+
 }
