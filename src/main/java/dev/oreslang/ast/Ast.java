@@ -1770,6 +1770,92 @@ public final class Ast {
         }
     }
 
+    /**
+     * Critical execution authority for the exact source Program, exact AST
+     * node and current successful ownership-check epoch. A parser-produced
+     * equivalent/cloned node has no permission.
+     *
+     * Only the compiler/ownership pass may stage candidates. The scheduler
+     * must independently validate actor incarnation and runtime gate tickets.
+     */
+    public static final class CheckedCriticalBlocks {
+        private CheckedCriticalBlocks() { }
+
+        private static final java.lang.ref.ReferenceQueue<CriticalStmt> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<CriticalKey, Long> ADMISSIONS =
+                new java.util.HashMap<>();
+
+        private static final class CriticalKey
+                extends java.lang.ref.WeakReference<CriticalStmt> {
+            private final java.lang.ref.WeakReference<Program> program;
+            private final int hash;
+
+            private CriticalKey(Program program, CriticalStmt critical,
+                    java.lang.ref.ReferenceQueue<CriticalStmt> queue) {
+                super(java.util.Objects.requireNonNull(critical, "critical AST"), queue);
+                this.program = new java.lang.ref.WeakReference<>(
+                        java.util.Objects.requireNonNull(program, "critical Program"));
+                this.hash = 31 * System.identityHashCode(program)
+                        + System.identityHashCode(critical);
+            }
+
+            private Program program() { return program.get(); }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof CriticalKey key)) return false;
+                Program leftProgram = program();
+                CriticalStmt leftCritical = get();
+                return leftProgram != null && leftProgram == key.program()
+                        && leftCritical != null && leftCritical == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CriticalStmt> cleared;
+            while ((cleared = CLEARED.poll()) != null) ADMISSIONS.remove(cleared);
+            ADMISSIONS.keySet().removeIf(key ->
+                    key.program() == null || key.get() == null);
+        }
+
+        /**
+         * Publish after BOTH typing and ownership succeed. Rechecking the
+         * same Program invalidates older permissions through the shared Task
+         * ownership epoch, even if a critical node object was reused.
+         */
+        public static synchronized void publish(Program program, long epoch,
+                java.util.Set<CriticalStmt> checked) {
+            if (epoch <= 0) throw new IllegalArgumentException(
+                    "critical check epoch must be positive");
+            java.util.Objects.requireNonNull(checked, "critical admissions");
+            if (CheckedTaskCaptures.requireProgramEpoch(program) != epoch)
+                throw new IllegalStateException("critical ownership epoch mismatch");
+            expunge();
+            ADMISSIONS.keySet().removeIf(key -> key.program() == program);
+            for (CriticalStmt node : checked) {
+                java.util.Objects.requireNonNull(node, "critical admission node");
+                ADMISSIONS.put(new CriticalKey(program, node, CLEARED), epoch);
+            }
+        }
+
+        /** Throws unless this exact checked node remains admitted at this epoch. */
+        public static synchronized void require(
+                Program program, CriticalStmt node, long expectedEpoch) {
+            if (expectedEpoch <= 0) throw new IllegalStateException(
+                    "critical execution requires a checked epoch");
+            long actualEpoch = CheckedTaskCaptures.requireProgramEpoch(program);
+            if (actualEpoch != expectedEpoch)
+                throw new IllegalStateException(
+                        "critical Program ownership proof was revoked or superseded");
+            expunge();
+            Long admitted = ADMISSIONS.get(new CriticalKey(program, node, null));
+            if (admitted == null || admitted.longValue() != expectedEpoch)
+                throw new IllegalStateException(
+                        "critical execution requires exact checked Program/AST admission");
+        }
+    }
+
     /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
     public record TrapExpr(Expr expression) implements Expr { }
 
