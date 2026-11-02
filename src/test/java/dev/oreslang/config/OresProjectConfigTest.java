@@ -107,6 +107,46 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void canonicalAttoImportsWinWithoutBreakingExplicitLegacyImports() throws Exception {
+        Path src = temp.resolve("atto-src");
+        Path pkg = src.resolve("pkg");
+        Files.createDirectories(pkg);
+        Path importer = src.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Path canonical = pkg.resolve("value.atto");
+        Path legacy = pkg.resolve("value.ores");
+        Files.writeString(canonical, "pub fnc value() => int { return 1; }");
+        Files.writeString(legacy, "pub fnc value() => int { return 2; }");
+
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(canonical.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value.ores").orElseThrow());
+        assertEquals(canonical.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value.atto").orElseThrow());
+
+        Files.delete(canonical);
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value").orElseThrow());
+    }
+
+    @Test
+    void foreignFilesAreNeverAcceptedAsLanguageImports() throws Exception {
+        Path src = temp.resolve("foreign-src");
+        Files.createDirectories(src);
+        Path importer = src.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Files.writeString(src.resolve("payload.py"), "print('unsafe')\n");
+        Files.writeString(src.resolve("payload.txt"), "not source\n");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertTrue(config.resolveImport(importer, "./payload.py").isEmpty());
+        assertTrue(config.resolveImport(importer, "./payload.txt").isEmpty());
+        assertTrue(config.resolveImport(importer, "./payload").isEmpty());
+        assertTrue(config.resolveImport(importer, "./missing.atto").isEmpty());
+    }
+
+    @Test
     void rejectsUnsupportedSchemaVersion() throws Exception {
         Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
         Files.writeString(manifest, "schema_version = \"999\"\n");
