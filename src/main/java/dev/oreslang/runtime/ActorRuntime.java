@@ -882,7 +882,9 @@ public final class ActorRuntime implements AutoCloseable {
             long generation, String lifecycle, int mailboxPending) { }
 
     private DevtoolsActorInfo devtoolsActorInfo(ActorCell<?> cell) {
-        if (cell.finalized || actors.get(cell.ref.id()) != cell) return null;
+        synchronized (cell.lifecycleLock) {
+            if (cell.finalized || actors.get(cell.ref.id()) != cell) return null;
+        }
         int pending;
         synchronized (cell.mailboxAccountingLock) {
             pending = cell.queuedUserMessages;
