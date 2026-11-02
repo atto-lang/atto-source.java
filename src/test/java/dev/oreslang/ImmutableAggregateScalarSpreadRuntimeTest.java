@@ -256,6 +256,42 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     }
 
     @Test
+    void inferredRecordSpreadReplacesFieldTypeAndRetainsUntouchedSource() {
+        assertEquals("8080\n8080\ntrue\n", execute("""
+                pub fnc main(): void {
+                    const initial = infer record{port: 8080, active: false};
+                    const extended = infer record{...initial, port: "8080", active: true};
+                    stdio.println(initial.port);
+                    stdio.println(extended.port);
+                    stdio.println(extended.active);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void structuralReadonlyViewCanReadInferredAggregateWithoutMovingOwner() {
+        assertEquals("2\n3\n2\n", execute("""
+                define interface HasValue
+                    value: int;
+                end
+
+                fnc peek(structural HasValue item): int {
+                    return item.value;
+                }
+
+                pub fnc main(): void {
+                    const local = infer struct{value: 2, extra: 99};
+                    const readonly_row = infer record{value: 3, extra: "ok"};
+                    stdio.println(peek(local));
+                    stdio.println(peek(readonly_row));
+                    stdio.println(local.value);
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void emptySpreadsAndQuotedStaticKeysRemainClosed() {
         assertEquals("Ada\n5\n", execute("""
                 pub fnc main(): void {
