@@ -99,7 +99,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     void canonicalAttoAggregateScalarSpreadExecutesAsGuestSource() {
         // The canonical new source extension is .atto, while legacy .ores
         // fixtures remain supported during the language rename.
-        assertEquals("42\\n", execute("""
+        assertEquals("42\n", execute("""
                 pub fnc main(): void {
                     const a = infer struct{x: 20};
                     const b = infer struct{...a, y: 22};
