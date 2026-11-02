@@ -167,10 +167,30 @@ final class CriticalSuspendsV1SyntaxTest {
                 () -> Ast.CheckedTaskCaptures.requireProgramEpoch(raw));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedCriticalBlocks.publish(
-                        raw, 1L, java.util.Set.of(actorCritical(raw))));
+                        raw, 1L, java.util.Set.of(actorCritical(raw)), null));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedCriticalBlocks.require(
                         raw, actorCritical(raw), 1L));
+    }
+
+    @Test void noCriticalOwnershipOnlyProgramsRemainSupported() {
+        Ast.Program nonCritical = Parser.parse(
+                "pub fnc one(): int { return 1; }");
+        assertDoesNotThrow(
+                () -> dev.oreslang.types.OwnershipChecker.check(nonCritical));
+        assertTrue(Ast.CheckedTaskCaptures.requireProgramEpoch(nonCritical) > 0);
+    }
+
+    @Test void criticalPublisherAuthorityCannotBeConstructedByHostApis() {
+        for (var constructor : dev.oreslang.types.OwnershipChecker
+                .CriticalPublishAuthority.class.getDeclaredConstructors()) {
+            assertTrue(java.lang.reflect.Modifier.isPrivate(
+                    constructor.getModifiers()));
+        }
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.publish(
+                        Parser.parse(TYPED_CRITICAL_ACTOR), 1L,
+                        java.util.Set.of(), null));
     }
 
     @Test void failedOrdinaryTypeCheckCannotBeReplacedByStandaloneOwnership() {
