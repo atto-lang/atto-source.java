@@ -164,6 +164,44 @@ final class ActorDenseIndexColumnsTest {
             assertEquals(0, runtime.privateMemoryBytes());
         }
     }
+ 
+    @Test
+    void typedHandleValidationSurvivesSameWordSlotReuse() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(factory -> {
+                ActorDenseIndexColumns column = new ActorDenseIndexColumns(
+                        ActorShardColumns.Layout.SOA, 4, 1, 1);
+                DenseIndexTable<EntityTag> table = new DenseIndexTable<>(1);
+                DenseIndex32<EntityTag> stale = table.allocate();
+                return (message, turn) -> {
+                    try {
+                        column.writeHandle(0, 0, stale, table);
+                        assertTrue(column.matchesHandle(0, 0, stale, table));
+                        assertTrue(table.remove(stale));
+
+                        DenseIndex32<EntityTag> fresh = table.allocate();
+                        assertEquals(stale.encodedWord(), fresh.encodedWord(),
+                                "the compact row word is intentionally reusable");
+                        assertFalse(column.matchesHandle(0, 0, stale, table),
+                                "the old generation must fail despite identical stored bits");
+                        assertThrows(IllegalStateException.class,
+                                () -> column.writeHandle(0, 0, stale, table));
+
+                        column.writeHandle(0, 0, fresh, table);
+                        assertTrue(column.matchesHandle(0, 0, fresh, table));
+                        table.close();
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                };
+            });
+            actor.send(1);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+            actor.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
 
     @Test
     void hostCannotAllocateOrReadActorIndexStorage() {
