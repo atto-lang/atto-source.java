@@ -21,7 +21,7 @@ define workflow OrderFulfillment as
 end
 ```
 
-`activity` and `workflow` are class-like declaration kinds, not callable modifiers.
+`activity` and `workflow` are class-like declaration kinds, not callable modifiers. Declaration-level annotations are retained verbatim in the dedicated AST wrapper; they are not expanded or interpreted until durable declaration metadata has a checked contract.
 Each gets a distinct AST node containing a class-shaped member body. They are not
 ordinary classes and cannot be instantiated/executed through ordinary class paths.
 
