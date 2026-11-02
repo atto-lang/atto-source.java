@@ -499,6 +499,10 @@ final class RuntimeGarbageCollectorTest {
             var later = gc.collectPeriodic();
             assertEquals(64, later.cleaned());
             assertEquals(96, cleanups.get());
+            var ticketsField = RuntimeGarbageCollector.class.getDeclaredField("retiredDomainQueue");
+            ticketsField.setAccessible(true);
+            assertTrue(((java.util.Set<?>) ticketsField.get(gc)).isEmpty(),
+                    "completed actor retirement must not leave a queued heap root");
             Reference.reachabilityFence(owners);
         }
     }
