@@ -13,8 +13,12 @@ cp "$root/scripts/check-record-inference.sh" "$repo/scripts/"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-record-parser.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-record-frontend.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-soa-snapshot.sh"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/mvn"
+cat > "$tmp/bin/mvn" <<'STUB_MVN'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${RECORD_GATE_MVN_LOG:?}"
+STUB_MVN
 chmod +x "$tmp/bin/mvn"
+export RECORD_GATE_MVN_LOG="$tmp/mvn-invocations"
 # The gate sees this harmless synthetic Maven stub, never a real compiler.
 export PATH="$tmp/bin:$PATH"
 printf '*.java\n' > "$repo/.gitignore"
@@ -47,6 +51,18 @@ assert_exit 3 bash scripts/check-record-inference.sh --tree 00000000000000000000
 assert_exit 0 bash scripts/check-record-inference.sh "$head"
 assert_exit 0 bash scripts/check-record-inference.sh --commit "$head"
 assert_exit 0 bash scripts/check-record-inference.sh --tree "$tree"
+
+# Verify the real gate explicitly names its new regression suite, rather
+# than allowing a passing synthetic Maven stub to conceal a missing test.
+# These are invocation checks only: no Java/GraalVM tests execute here.
+if ! grep -Fq 'RecordTypeValueContextTest' "$RECORD_GATE_MVN_LOG"; then
+  echo "record type/value regression missing from Maven gate invocation" >&2
+  exit 1
+fi
+if ! grep -Fq -- '-Dores.runtime.carriers=native verify' "$RECORD_GATE_MVN_LOG"; then
+  echo "native carrier verification missing from Maven gate invocation" >&2
+  exit 1
+fi
 
 # Validate the missing-tool guard without depending on whether CI happens
 # to have a global Maven binary. Give the test only the required early tools.
