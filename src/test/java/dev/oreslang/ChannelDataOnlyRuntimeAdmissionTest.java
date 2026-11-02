@@ -108,6 +108,15 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
     }
 
     @Test
+    void rejectsWideDataGraphsEvenWithoutDeepRecursion() {
+        java.util.ArrayList<Object> flat = new java.util.ArrayList<>(65537);
+        for (int i = 0; i < 65537; i++) flat.add(1L);
+        reject(flat);
+        assertDoesNotThrow(() -> admit(List.of(1L, 2L, 3L)),
+                "graph budget failure must not poison the next independent admission");
+    }
+
+    @Test
     void rejectsNullAsNotAnOption() {
         reject(null);
     }
