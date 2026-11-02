@@ -429,4 +429,76 @@ final class CriticalGateTest {
         assertTrue(gate.holds(queued.ticket()));
         gate.release(queued.ticket());
     }
+
+    @Test void cancellingAnAlreadyGrantedAdmissionCannotStealOwnership() {
+        CriticalGate gate = new CriticalGate();
+        OresFuture<CriticalGate.Ticket> granted = gate.requestAwaitable();
+        OresFuture<CriticalGate.Ticket> queued = gate.requestAwaitable();
+        CriticalGate.Ticket owner = granted.join();
+
+        assertFalse(granted.cancel(false),
+                "settled admission cancellation must not invoke its release hook");
+        assertTrue(gate.holds(owner), "the granted ticket lost ownership");
+        assertFalse(queued.isDone(), "a failed cancel must not promote the waiter");
+
+        gate.release(owner);
+        assertTrue(queued.isDone());
+        CriticalGate.Ticket successor = queued.join();
+        assertTrue(gate.holds(successor));
+        gate.release(successor);
+        assertTrue(gate.quiescent());
+    }
+
+    @Test void atomicRetirementRefusesPromotedTicketDuringNotificationDrain()
+            throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CriticalGate.Ticket first = gate.requestAwaitable().join();
+        OresFuture<CriticalGate.Ticket> promoted = gate.requestAwaitable();
+        java.util.concurrent.CountDownLatch notifying =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch unblock =
+                new java.util.concurrent.CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        promoted.whenCompleteRuntime((ticket, error) -> {
+            notifying.countDown();
+            try {
+                if (!unblock.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("promoted notification did not unblock");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+
+        Thread releaser = Thread.ofPlatform().start(() -> {
+            try {
+                gate.release(first);
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        });
+        try {
+            assertTrue(notifying.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "promoted admission notification was not reached");
+            assertTrue(promoted.isDone());
+            assertTrue(gate.holds(promoted.join()));
+            assertFalse(gate.retireIfQuiescent(),
+                    "actor must not retire while a promoted ticket is owned");
+            assertFalse(gate.retired());
+        } finally {
+            unblock.countDown();
+            releaser.join(5_000);
+        }
+
+        assertFalse(releaser.isAlive(), "notification blocked release forever");
+        assertNull(failure.get());
+        assertFalse(gate.retireIfQuiescent(),
+                "completed notification does not itself release ticket ownership");
+        gate.release(promoted.join());
+        assertTrue(gate.retireIfQuiescent());
+        assertTrue(gate.retired());
+        assertTrue(gate.quiescent());
+    }
 }
