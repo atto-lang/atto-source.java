@@ -134,7 +134,9 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
 
     private final Set<TrackedCleanup> tracked = ConcurrentHashMap.newKeySet();
     private final Set<TrackedCleanup> retryableFailures = ConcurrentHashMap.newKeySet();
-    private final Map<Object, Set<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
+    // Every domain preserves a stable circular visitation order. All accesses to
+    // these buckets occur under lifecycleLock; cleanup callbacks run outside it.
+    private final Map<Object, LinkedHashSet<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
     private final Set<Object> retiredDomains = ConcurrentHashMap.newKeySet();
     // One O(1)-removable, round-robin ticket per retired domain. Always access
     // under lifecycleLock, including its iterator and emptiness checks.
@@ -229,8 +231,8 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             }
             Object actorDomain = ActorRuntime.currentActorExecutionDomain();
             Object domain = actorDomain == null ? PROCESS_DOMAIN : actorDomain;
-            Set<TrackedCleanup> domainEntries =
-                    trackedByDomain.computeIfAbsent(domain, ignored -> ConcurrentHashMap.newKeySet());
+            LinkedHashSet<TrackedCleanup> domainEntries =
+                    trackedByDomain.computeIfAbsent(domain, ignored -> new LinkedHashSet<>());
             if (actorDomain != null && domainEntries.size() >= maxTrackedPerActor) {
                 throw new IllegalStateException(
                         "actor cleanup registry limit exceeded: " + maxTrackedPerActor);
@@ -403,17 +405,26 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     inspected++;
                     continue;
                 }
-                Set<TrackedCleanup> entries = trackedByDomain.getOrDefault(retired, Set.of());
-                if (entries.isEmpty()) {
-                    retiredDomains.remove(retired);
-                    inspected++;
-                    continue;
-                }
                 int domainBudget = Math.min(
                         DEFAULT_RETIRED_DOMAIN_SWEEP_QUANTUM, retiredWorkLimit - inspected);
                 int domainInspected = 0;
-                for (TrackedCleanup entry : entries) {
-                    if (domainInspected >= domainBudget) break;
+                // Live circular cursor: a poison hook is not revisited until
+                // every other entry in this domain has had its turn.
+                int available;
+                synchronized (lifecycleLock) {
+                    var entries = trackedByDomain.get(retired);
+                    available = entries == null ? 0 : entries.size();
+                }
+                if (available == 0) {
+                    synchronized (lifecycleLock) {
+                        retiredDomains.remove(retired);
+                    }
+                    inspected++;
+                    continue;
+                }
+                while (domainInspected < domainBudget && domainInspected < available) {
+                    TrackedCleanup entry = nextDomainEntry(retired);
+                    if (entry == null) break;
                     inspected++;
                     domainInspected++;
                     try {
@@ -437,10 +448,14 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 }
             }
         } else {
-            Set<TrackedCleanup> candidates =
-                    trackedByDomain.getOrDefault(requestedDomain, Set.of());
-            for (TrackedCleanup entry : candidates) {
-                if (inspected >= maxEntriesToInspect) break;
+            int available;
+            synchronized (lifecycleLock) {
+                var entries = trackedByDomain.get(requestedDomain);
+                available = entries == null ? 0 : entries.size();
+            }
+            while (inspected < maxEntriesToInspect && inspected < available) {
+                TrackedCleanup entry = nextDomainEntry(requestedDomain);
+                if (entry == null) break;
                 inspected++;
                 if (!entry.eligible(retiredDomains)) continue;
                 try {
@@ -471,6 +486,24 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 jvmGcRequested);
     }
 
+    /**
+     * Select and rotate a tracked entry in constant time under the lifecycle
+     * mutex. Never invoke a user cleanup hook while holding this mutex.
+     * A deletion removes the entry from its bucket immediately, so no stale
+     * serial cursor or uncleared queue node can pin completed actor resources.
+     */
+    private TrackedCleanup nextDomainEntry(Object domain) {
+        synchronized (lifecycleLock) {
+            LinkedHashSet<TrackedCleanup> entries = trackedByDomain.get(domain);
+            if (entries == null || entries.isEmpty()) return null;
+            var it = entries.iterator();
+            TrackedCleanup entry = it.next();
+            it.remove();
+            entries.add(entry);
+            return entry;
+        }
+    }
+
     private void retainRetry(TrackedCleanup entry) {
         synchronized (lifecycleLock) {
             if (!closed.get() && tracked.contains(entry) && !entry.cleaned.get()) {
@@ -489,7 +522,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             entry.clear();
             Object domain = entry.domain;
             if (domain != null) {
-                Set<TrackedCleanup> domainEntries = trackedByDomain.get(domain);
+                LinkedHashSet<TrackedCleanup> domainEntries = trackedByDomain.get(domain);
                 if (domainEntries != null) {
                     domainEntries.remove(entry);
                     if (domainEntries.isEmpty()) {
