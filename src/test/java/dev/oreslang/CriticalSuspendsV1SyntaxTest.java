@@ -226,6 +226,32 @@ final class CriticalSuspendsV1SyntaxTest {
                         typed, actorCritical(equivalentButUntyped), epoch));
     }
 
+    @Test void sharedCriticalAstNodeCannotEscapeItsCheckedProgramIdentity() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(TYPED_CRITICAL_ACTOR);
+        Ast.CriticalStmt exactNode = actorCritical(checked);
+        long checkedEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                checked, exactNode, checkedEpoch));
+
+        // Retain *every* module and AST node object. Only the enclosing
+        // immutable Program identity changes: equality and shared children
+        // must not confer an executable typing/ownership proof.
+        Ast.Program alias = new Ast.Program(
+                checked.namespace(), checked.imports(), checked.modules());
+        assertNotSame(checked, alias);
+        assertEquals(checked, alias);
+        assertSame(exactNode, actorCritical(alias));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.TypeChecker.requireCriticalTypeProof(alias));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(alias));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(alias, exactNode, checkedEpoch));
+        // The rejected alias must not revoke the original Program's authority.
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                checked, exactNode, checkedEpoch));
+    }
+
     @Test void successfulTypeRecheckAlsoRevokesOldCriticalOwnershipPermit() {
         Ast.Program first = dev.oreslang.types.TypeChecker.checkTypes(
                 Parser.parse(TYPED_CRITICAL_ACTOR));
