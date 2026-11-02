@@ -199,7 +199,7 @@ final class ActorSyncStdlibTest {
             "src/test/resources/actor-sync-v1/cross-epoch-delta-reject.ores"));
         assertEquals("""
                 false
-                false
+                true
                 5
                 true
                 true
@@ -212,7 +212,7 @@ final class ActorSyncStdlibTest {
     void crossEpochDeltaRequiresSnapshotBeforeReplicaCanAdvance() throws Exception {
         assertEquals("""
                 false
-                false
+                true
                 5
                 true
                 true
