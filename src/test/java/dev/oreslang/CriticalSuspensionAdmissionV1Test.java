@@ -94,6 +94,24 @@ final class CriticalSuspensionAdmissionV1Test {
         }
     }
 
+    @Test void protectedBodyCannotMoveOrRebindItsAdmittingGate() {
+        for (String body : new String[] {
+            "gate = other;",
+            "val leaked = gate;",
+            "let leaked = gate;"
+        }) {
+            String source = "pub fnc main(): void {"
+                    + "let gate = Mutex.new(0);"
+                    + "val other = Mutex.new(1);"
+                    + "try critical gate {" + body + "} else { }"
+                    + "return; }";
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("E_CRITICAL_BODY_EFFECT"),
+                    error.getMessage());
+        }
+    }
+
     @Test void namedTryCriticalExecutesSuccessAndBusyFallbackInGuest() throws Exception {
         String source = fixture("positive-try-critical-named-mutex.ores");
         assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
