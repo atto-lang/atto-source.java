@@ -143,6 +143,13 @@ public final class OwnershipChecker {
     }
 
     private void publishTaskAdmissions() {
+        // Fail before publishing ANY executable capture authority if a
+        // critical node was seen but this exact Program has no successful
+        // independent type-check proof. Public ownership-only entry points
+        // must not partially commit a task epoch before discovering this.
+        if (!pendingCriticalAdmissions.isEmpty()) {
+            TypeChecker.requireCriticalTypeProof(checkedProgram);
+        }
         Ast.CheckedTaskCaptures.publish(
                 checkedProgram,
                 taskCheckEpoch,
