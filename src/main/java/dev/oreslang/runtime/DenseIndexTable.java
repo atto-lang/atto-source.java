@@ -1,8 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.util.Arrays;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.OptionalInt;
 
 /**
@@ -62,7 +60,8 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
         }
         live[slot] = true;
         liveCount++;
-        return new DenseIndex32<>(identity, epoch, Math.addExact(slot, 1), generations[slot]);
+        return new DenseIndex32<>(identity, epoch,
+                ManagedReferencePolicy.encodeDenseIndex32(slot), generations[slot]);
     }
 
     /** Validate exact table identity, current epoch, slot and generation. */
