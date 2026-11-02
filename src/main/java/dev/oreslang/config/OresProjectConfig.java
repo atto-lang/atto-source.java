@@ -254,17 +254,20 @@ public final class OresProjectConfig {
 
     private static Optional<Path> existingSource(Path candidate) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
+        String filename = normalized.getFileName().toString();
+        // Explicit foreign-source paths must never pass through this resolver.
+        // Preserve existing .ores and Java interop while admitting canonical .atto.
+        if (filename.endsWith(".atto") || filename.endsWith(".ores") || filename.endsWith(".java")) {
+            return Files.isRegularFile(normalized) ? Optional.of(normalized) : Optional.empty();
+        }
+        if (filename.contains(".")) return Optional.empty();
 
-        String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
-
-        Path ores = Path.of(normalized.toString() + ".ores");
-        if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
-
-        Path java = Path.of(normalized.toString() + ".java");
-        if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
-
+        // Canonical extension wins over legacy sources when both exist.
+        // An explicitly suffixed import can still select the legacy file.
+        for (String extension : List.of(".atto", ".ores", ".java")) {
+            Path source = Path.of(normalized.toString() + extension);
+            if (Files.isRegularFile(source)) return Optional.of(source);
+        }
         return Optional.empty();
     }
 
