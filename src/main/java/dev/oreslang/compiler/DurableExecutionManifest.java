@@ -68,24 +68,52 @@ public final class DurableExecutionManifest {
         for (Ast.MethodDecl method : workflow.body().methods()) methods.add(methodJson(method));
         methods.sort(Comparator.naturalOrder());
         List<String> commands = new ArrayList<>();
-        for (int i = 0; i < workflow.commands().size(); i++) {
-            commands.add(commandJson(i, workflow.commands().get(i)));
+        List<String> queries = new ArrayList<>();
+        int historyOrder = 0;
+        for (Ast.WorkflowCommand command : workflow.commands()) {
+            if (command instanceof Ast.QueryCommand query) {
+                queries.add(queryJson(query));
+            } else {
+                commands.add(commandJson(historyOrder++, command));
+            }
         }
+        queries.sort(Comparator.naturalOrder());
         return "{\"id\":" + quote(module + "." + workflow.name())
                 + ",\"version\":1,\"state\":[],\"members\":["
                 + String.join(",", methods) + "],\"commands\":["
-                + String.join(",", commands) + "]}";
+                + String.join(",", commands) + "],\"queries\":["
+                + String.join(",", queries) + "]}";
     }
 
     private static String methodJson(Ast.MethodDecl method) {
         List<String> parameters = method.parameters().stream()
                 .map(p -> quote(typeName(p.type())))
                 .toList();
+        List<String> parameterNames = method.parameters().stream()
+                .map(p -> "{\"name\":" + quote(p.name())
+                        + ",\"type\":" + quote(typeName(p.type()))
+                        + ",\"mutable\":" + p.mutable()
+                        + ",\"structural\":" + p.structural() + "}")
+                .toList();
         return "{\"name\":" + quote(method.name())
+                + ",\"visibility\":" + quote(method.visibility().name().toLowerCase(java.util.Locale.ROOT))
+                + ",\"static\":" + method.isStatic()
                 + ",\"arity\":" + method.parameters().size()
-                + ",\"parameters\":[" + String.join(",", parameters) + "]"
+                + ",\"parameters\":[" + String.join(",", parameterNames) + "]"
                 + ",\"returns\":" + quote(typeName(method.returnType()))
                 + ",\"suspends\":" + method.suspends() + "}";
+    }
+
+    private static String queryJson(Ast.QueryCommand query) {
+        List<String> parameters = query.parameters().stream()
+                .map(p -> "{\"name\":" + quote(p.name())
+                        + ",\"type\":" + quote(typeName(p.type()))
+                        + ",\"mutable\":" + p.mutable()
+                        + ",\"structural\":" + p.structural() + "}")
+                .toList();
+        return "{\"endpoint\":" + quote(query.endpoint())
+                + ",\"parameters\":[" + String.join(",", parameters) + "]"
+                + ",\"returns\":" + quote(typeName(query.returnType())) + "}";
     }
 
     private static String commandJson(int order, Ast.WorkflowCommand command) {
