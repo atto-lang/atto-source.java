@@ -86,7 +86,9 @@ final class OresEtsActorRegistryTest {
             owner.stop();
             assertFalse(owner.isAlive());
             assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "key"));
-            assertEquals(1, registry.reap());
+            // The daemon reaper may have already reclaimed it: neither
+            // scheduling order should make this test nondeterministic.
+            registry.reap();
             assertEquals(0, registry.liveTableCount());
             assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "key"));
             var replacement = registry.<String, String>create(peer, Access.PRIVATE, 1, 128);
