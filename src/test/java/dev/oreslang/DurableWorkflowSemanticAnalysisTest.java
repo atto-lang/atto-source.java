@@ -66,7 +66,7 @@ final class DurableWorkflowSemanticAnalysisTest {
                 .contains("WORKFLOW_ENTRYPOINT_REQUIRED"));
 
         Ast.Program duplicateRun = Parser.parse(
-                "define workflow Checkout as run(int id) -> int { return id; } run(String id) -> int { return 1; } end");
+                "define workflow Checkout as run(int id) -> int { return id; } run(int id, int retry) -> int { return id; } end");
         assertThrows(IllegalArgumentException.class, () -> DurableDeclarationAnalyzer.analyze(duplicateRun));
     }
 
