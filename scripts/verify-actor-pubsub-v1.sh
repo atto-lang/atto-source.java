@@ -32,9 +32,7 @@ suites=(
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
-selection="$(IFS=,; echo "${suites[*]##*.}")"
-# The basename extraction above is deliberately re-created without changing
-# the original array used for exact full-class report verification.
+# Maven's selection is explicit, while reports are checked by full class name.
 selection="SourceActorPubSubExecutionTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
