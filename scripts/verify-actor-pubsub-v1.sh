@@ -22,18 +22,20 @@ fi
 
 command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 
+# Must execute the Channel<T> recursive Sendable/callable negatives,
 # Must execute the guest-positive fixtures and all guest compile negatives,
 # including direct/nested callable topic payloads, not only host facade tests. Surefire's -Dtest does not permit matching
 # empty suites; we additionally inspect the exact suite reports below.
 suites=(
   dev.oreslang.SourceActorPubSubExecutionTest
+  dev.oreslang.ChannelCallableTransportTest
   dev.oreslang.runtime.ActorPubSubV1ContractTest
   dev.oreslang.runtime.ActorPubSubConcurrencyTest
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
