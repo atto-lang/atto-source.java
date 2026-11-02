@@ -55,6 +55,18 @@ Target compiler PR: #2049, reviewed candidate head
 - Source-free carrier run [41395135081](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41395135081) completed eight hosted workflow steps and reports 73/73 Node contract assertions passed. This is carrier/contract evidence only, not private Java-source, JUnit, or guest-AOT evidence.
 - No source transfer is authorized: source `main` was last observed `protected=false`, the approved-destination file has no authorization row, and independent approval remains outstanding.
 
+## Source-free Java toolchain carrier qualification — 2026-11-02 20:16 UTC
+
+The previously validated private `scintilla-run/scintilla-e2e` carrier (repo ID `1346629495`) now has three separate, source-free hosted validations:
+
+1. **73/73 Node contract tests:** run [41395135081](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41395135081), commit `180de0fb780c1ed2d0658b55969373ace624ae0f`. Ubuntu 24.04 / Node 22.16.0, eight workflow steps all completed, five exact semantic Git blobs verified, 73 passed / 0 failed, including negative receipt/authorization tests.
+2. **JDK 25 Maven/JUnit:** run [41517400532](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41517400532), exact carrier commit `71343eb9bce4f6d512bdc4d0593b9bb5ce4f3c50`. Ubuntu 24.04; Eclipse Temurin `25.0.5+8`; Maven 3.8.7; three disposable JUnit 5 tests passed, zero failures/errors/skips; Maven `BUILD SUCCESS`. The workflow creates a temporary Maven project in `RUNNER_TEMP` and does not checkout compiler source.
+3. **GraalVM 25 Native Image:** run [41517400534](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41517400534), same exact carrier commit. Oracle GraalVM `25.0.4` / Native Image `25.0.4`; `native-image --no-fallback` built a Linux ELF x86-64 executable, which ran and returned `graalvm-native-aot-ok:42`; marker `GRAALVM25_NATIVE_IMAGE_SOURCE_FREE=PASS`.
+
+These demonstrate alternative hosted capacity, JDK 25 Maven/JUnit execution, and a working Native Image toolchain. They are all **source-free carrier qualification**. They are not the AttoLang compiler's JUnit suite and not AttoLang guest AOT.
+
+No private Java source was checked out or mirrored. Source `main` was last directly observed `protected=false`; the exact destination approval file remains comment-only; the independent @ORESoftware approval remains absent. The source-export block is unchanged. The next approval gate is still enforced live source-main protection plus an independent review binding exact destination ID, source commit/tree, carrier workflow, and test-plan blobs. After that, and only after that, use the exact-tree carrier flow and verify the complete root-tree SHA before running the real JDK25 Maven/JUnit and macro guest-AOT test plan.
+
 ## Fresh seven-file semantic reconciliation notes (2026-11-02)
 
 These observations compare the current source `main` blobs with macro PR #2049 head `d2d0ba9b4ddb14167e6e7bbdd6fd3904419fa2b7`. They are deliberately not a textual merge:
