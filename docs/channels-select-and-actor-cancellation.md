@@ -143,24 +143,24 @@ or non-MessageData payload admissible.
 
 The Java reference interpreter now takes a recursively verified, bounded
 **detached snapshot at source-visible write/select registration**, rather than
-retaining the producer's mutable collection/nominal object by reference.
+retaining the producer's mutable collection or struct by reference.
 Static select preserves channel-before-value eager evaluation. Dynamic select
 also resnapshots host-supplied WriteCase and SelectSet descriptors without
 resetting the reusable FAIR cursor, so a host descriptor cannot bypass the
-source SelectCase.write check. The snapshot preserves guest record, struct and
-nominal value tags. Graph size is bounded before allocation, and no actor
-instance may pass as a nominal object. Host-only regression suites cover
+source SelectCase.write check. The snapshot preserves guest record and struct
+tags. All nominal guest class instances are rejected by both the source type
+checker and the write-time runtime guard because their current representation
+retains an Evaluator owner. Host-only regression suites cover
 post-send producer mutation, dynamic case admission, cyclic graphs, and
 oversized data.
 
-**P0 unresolved nominal-object safety:** `OresObject` snapshots currently
-copy fields but retain the original `Evaluator owner`, which carries
-execution and callable-dispatch authority. This does **not** prove nominal
-values are owner-free `MessageData`. See
-[Java issue #2462](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/2462).
-Until an explicit fail-closed compiler/runtime restriction or an independently
-verified owner-free nominal representation is implemented, **do not merge,
-release or claim nominal channel payload isolation**.
+**P0 nominal-object restriction:** source-type admission and source-visible
+runtime channel snapshots now fail closed on nominal `OresObject` payloads,
+including nested occurrences. The present object layout still retains an
+`Evaluator owner`, so nominal MessageData is deliberately unavailable until
+an independently reviewed owner-free ABI is implemented and compiled/guest
+tests pass. Track [Java issue #2462](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/2462).
+No compiled Java/Graal test evidence is yet available for this change.
 
 The compiler/runtime equality of this policy is currently **under review**.
 This Java interpreter snapshot is not a proof of simultaneous hostile-host
