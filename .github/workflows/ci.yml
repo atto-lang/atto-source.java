@@ -72,7 +72,7 @@ jobs:
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.ores" | tee /tmp/ores-portable-scalar-v3-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-jit.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-jit.out
-          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-jit.out stdlib 40
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-jit.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
           timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-jit.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-jit.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-jit.out)" -eq 1
@@ -183,7 +183,7 @@ jobs:
           timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/portable-scalar-v3-20261101.ores | tee /tmp/ores-portable-scalar-v3-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-aot.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-aot.out
-          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-aot.out stdlib 40
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-aot.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-aot.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-aot.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-aot.out)" -eq 1
@@ -305,7 +305,7 @@ jobs:
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/portable-scalar-v3-20261101.ores | tee /tmp/ores-portable-scalar-v3-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-hybrid.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-hybrid.out
-          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-hybrid.out stdlib 40
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-hybrid.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-hybrid.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-hybrid.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-hybrid.out)" -eq 1
