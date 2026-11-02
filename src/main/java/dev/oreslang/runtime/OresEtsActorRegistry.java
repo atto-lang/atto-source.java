@@ -40,12 +40,16 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         final OresEtsTable<Object, Object> table;
         private static final long RETIRED = Long.MIN_VALUE;
         private static final long COUNT = Long.MAX_VALUE;
+        /** Do not admit unlimited overlapping host operations per table. */
+        private static final int MAX_INFLIGHT_OPERATIONS = 256;
         final AtomicLong admission = new AtomicLong();
         void pin() {
             for (;;) {
                 long old = admission.get();
                 if ((old & RETIRED) != 0) throw new IllegalStateException("ETS table retired");
-                if ((old & COUNT) == COUNT) throw new IllegalStateException("ETS pin capacity exhausted");
+                if ((old & COUNT) >= MAX_INFLIGHT_OPERATIONS) {
+                    throw new IllegalStateException("ETS in-flight operation quota exceeded");
+                }
                 if (admission.compareAndSet(old, old + 1)) return;
             }
         }
