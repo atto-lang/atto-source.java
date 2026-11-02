@@ -221,4 +221,46 @@ final class RecordTypeValueContextTest {
                 "a structural record alias must not authorize concrete struct values");
     }
 
+
+    @Test
+    void constTypeDeclarationRejectedInEveryBindingContext() {
+        // The module/function binding guard must not be bypassed by parsing
+        // a binding as a class field or a for-loop initializer.
+        for (String source : List.of(
+                """
+                define class Widget as
+                    const type T = record { foo: string };
+                end
+                """,
+                """
+                fnc bad(): void {
+                    for (const type T = record { foo: string }; ; ) { }
+                    return;
+                }
+                """,
+                """
+                fnc bad(): void {
+                    for const type T = record { foo: string }; ; { }
+                    return;
+                }
+                """)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source));
+            assertTrue(failure.getMessage().contains("'const type' is not a declaration"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void constTypeAliasMarkerStillWorksInClassFields() {
+        String source = """
+                type T = record { foo: string };
+                define class Widget as
+                    const type T value = record { foo: "ok" };
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source),
+                "the guard must only reject declarations, not typed const values");
+    }
+
 }
