@@ -93,8 +93,9 @@ def self_test() -> None:
         root = Path(tmp)
         git(root, "init", "-q")
         (root / ".gitattributes").write_text("example.txt filter=attack\n")
+        (root / ".gitignore").write_text("generated/*.java\n")
         (root / "example.txt").write_text("safe\n")
-        git(root, "add", ".gitattributes", "example.txt")
+        git(root, "add", ".gitattributes", ".gitignore", "example.txt")
         git(root, "-c", "user.name=Fixture", "-c",
             "user.email=fixture@example.invalid", "commit", "-qm", "initial")
         git(root, "config", "filter.attack.clean", "sh -c 'touch filter-executed; cat'")
@@ -117,11 +118,6 @@ def self_test() -> None:
             raise IntegrityError("untracked file was accepted")
         (root / "untracked.txt").unlink()
         # An ignored source file must not pass as a clean exact-head checkout.
-        (root / ".gitignore").write_text("generated/*.java\n")
-        # Stage/commit only the test ignore policy; still no malicious filter execution.
-        git(root, "add", ".gitignore")
-        git(root, "-c", "user.name=Fixture", "-c",
-            "user.email=fixture@example.invalid", "commit", "-qm", "ignore policy")
         ignored = root / "generated" / "Injected.java"
         ignored.parent.mkdir()
         ignored.write_text("class Injected {}\n")
