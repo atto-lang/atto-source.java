@@ -110,12 +110,13 @@ final class CriticalSuspendsV1SyntaxTest {
             String actor = """
                     define actor Worker as
                       suspends receive(ActorMail<String> mail): void {
-                        critical { """ + unsafe + """ 
+                        critical {
+                          %s
                         }
                         return;
                       }
                     end
-                    """;
+                    """.formatted(unsafe);
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(actor), unsafe);
         }
