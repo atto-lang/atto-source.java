@@ -120,6 +120,34 @@ may capture execution-domain-local authority, so moving it through a channel
 would make the transport boundary depend on hidden capture state. Keep callbacks
 local and send explicit data describing the requested operation instead.
 
+### MessageData admission (source/runtime parity)
+
+`Sendable` is an ownership/isolation auto-trait; it is **not** by itself
+proof that a value is an admissible channel message. The v1 `MessageData`
+predicate is checked recursively at source type admission: the type must be
+concrete and Sendable, must contain no callable or lexical capture, and must
+exclude synchronization, task, storage, stream and codec capabilities.
+`Box<T>`, `Arc<T>`, `Weak<T>`, `Mutex<T>`, `SharedMutex<T>`,
+`RwLock<T>`, `RefCell<T>`, `Future<T>`, and nested equivalents remain
+**non-MessageData** until an explicit verified move/copy/freeze contract lands.
+`ActorRef<ConcreteActor>` is a narrow, statically verified *local channel*
+exception for reply-routing authority, not ordinary immutable user data.
+
+`Topic<T>` and `Subscription<T>` enforce the stricter data-only subset
+and **never** admit `ActorRef<T>`, even inside an Option, Result, list,
+record or nominal object. Topic publication must deep-freeze admitted values
+and deny guest callables as well as unknown host objects at runtime.
+`Serializable<Format>` is a separate explicit codec/schema-bound contract
+for Redis, network and persistence; implementing it cannot make an executable
+or non-MessageData payload admissible.
+
+The compiler/runtime equality of this policy is currently **under review**.
+The Java source interpreter has an independent recursive runtime admission
+guard for public channel writes and select registrations, but a successful
+guard alone is not a proof of alias-free transfer, immutable snapshotting or
+cross-backend compiler parity. Keep executable guest tests and exact-head
+runner receipts as release gates.
+
 ### Blocking/suspending forms
 
 ```ores
