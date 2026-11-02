@@ -4811,19 +4811,29 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
         }
-        // Ordinary Channel<T> is an execution-domain-local capability, not a
-        // mailbox. Owned function values and objects containing callables may
-        // move through local channels. Actor message types are checked by
-        // validateActorCallableBoundaryType/isSharedSafe instead and remain
-        // strictly non-callable. Borrows cannot inhabit buffered channels
-        // until channel-bound lifetimes are expressible and checked.
+        // A channel is an execution-domain-local handle, but its payload is
+        // still transferred between independently resumed continuations.
+        // Only statically Sendable data is admissible: a function, bound
+        // method, closure or an object containing one must never carry its
+        // lexical environment into channel storage or select registrations.
+        // Serializable<Format> is a separate, stricter wire/codec contract.
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " cannot transport borrowed payloads, including nested fields: "
                             + "channel storage may outlive their owners");
         }
+        if (containsChannelCallable(element, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport functions, bound methods, closures, or nested callable fields; "
+                            + "send Sendable data instead");
+        }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
+        }
+        if (!isSendSafe(element, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " requires concrete Sendable data; runtime capabilities, unresolved types, "
+                            + "and non-Sendable mutable state cannot be channel payloads");
         }
     }
 
