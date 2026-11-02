@@ -185,4 +185,88 @@ final class OresEtsActorRegistryTest {
             assertEquals(3, registry.liveTableCount());
         }
     }
+
+    /**
+     * Test-only inspection of the production pin state. This deliberately
+     * does not introduce a guest-visible or public host lease API.
+     */
+    @Test
+    void tableRetirementWaitsForAdmittedHostPinBeforePhysicalReclaim() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 1)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var peer = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, String>create(owner, Access.PUBLIC, 1, 64);
+            registry.insert(id, owner, "key", "value");
+
+            var entriesField = OresEtsActorRegistry.class.getDeclaredField("entries");
+            entriesField.setAccessible(true);
+            var entries = (java.util.Map<?, ?>) entriesField.get(registry);
+            Object entry = entries.get(id);
+            assertNotNull(entry);
+            var pin = entry.getClass().getDeclaredMethod("pin");
+            var unpin = entry.getClass().getDeclaredMethod("unpin");
+            pin.setAccessible(true);
+            unpin.setAccessible(true);
+
+            pin.invoke(entry); // Mimic an already-authorized in-flight host call.
+            try {
+                owner.stop();
+                assertFalse(owner.isAlive());
+                assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "key"));
+                assertEquals(0, registry.reap(), "must retain physical storage while pinned");
+                assertSame(entry, entries.get(id));
+                assertEquals(1, registry.liveTableCount(), "a pinned retired table still occupies quota");
+                assertThrows(IllegalStateException.class, () -> pin.invoke(entry),
+                        "retired tables must reject new admission");
+            } finally {
+                assertEquals(Boolean.TRUE, unpin.invoke(entry));
+            }
+            registry.reap(); // A scheduler reaper may already have reclaimed.
+            assertEquals(0, registry.liveTableCount());
+            assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "key"));
+        }
+    }
+
+    @Test
+    void retiredTableDoesNotReopenAfterSlotReuseOrConcurrentReaders() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 2)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var reader = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, Long>create(owner, Access.PUBLIC, 1, 128);
+            registry.insert(id, owner, "value", 10L);
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(16);
+            var unexpected = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            for (int i = 0; i < 16; i++) {
+                Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        for (int j = 0; j < 200; j++) {
+                            try {
+                                var observed = registry.lookup(id, reader, "value");
+                                if (observed.isPresent() && observed.get() != 10L) {
+                                    throw new AssertionError("corrupt value");
+                                }
+                            } catch (IllegalStateException retired) {
+                                break; // post-retirement operations fail closed.
+                            }
+                        }
+                    } catch (Throwable error) {
+                        unexpected.add(error);
+                    } finally { done.countDown(); }
+                });
+            }
+            start.countDown();
+            registry.retire(id, owner);
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            assertTrue(unexpected.isEmpty(), unexpected.toString());
+            registry.reap();
+            var newer = registry.<String, Long>create(owner, Access.PUBLIC, 1, 128);
+            registry.insert(newer, owner, "value", 99L);
+            assertThrows(IllegalStateException.class, () -> registry.lookup(id, reader, "value"));
+            assertEquals(99L, registry.lookup(newer, reader, "value").orElseThrow());
+        }
+    }
 }
