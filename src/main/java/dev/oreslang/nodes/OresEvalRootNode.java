@@ -6884,6 +6884,11 @@ public final class OresEvalRootNode extends RootNode {
                     return new MutableStructValue(copy);
                 }
                 if (value instanceof OresObject object) {
+                    if (object.klass == null
+                            || object.klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "channel payload cannot contain an actor instance or untyped nominal object");
+                    }
                     LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> field : object.fields.entrySet()) {
                         copy.put(field.getKey(), snapshotChannelMessageData(
