@@ -157,14 +157,19 @@ A public direct ownership check can inspect an untyped AST, but if it sees
 critical nodes it now refuses to publish the shared Task ownership epoch
 before an exact-Program typing proof exists. Critical permission publication
 and runtime use enforce typing again, so an earlier ownership epoch cannot
-resurrect execution after a later failed type recheck. This guards raw AST
-and stale identity/epoch confusion, but it does not prove all host interop,
-tenant isolation, or dynamic actor scheduling paths safe.
+resurrect execution after a later failed type recheck. The publisher also
+requires an opaque authority whose constructor is private to the
+OwnershipChecker, so ordinary host callers cannot pass a hand-chosen
+critical AST set through the public publishing method. This is JVM API-level
+hardening, not a sandbox against malicious reflection or native access.
 
-Four new authored regression cases cover untyped ownership-only admission,
-equivalent untyped ASTs, ordinary typing failures, and failed linked-metadata
-rechecks after an earlier successful admission. These tests have **not** run
-in stepful exact-head CI; critical source remains a draft feature.
+Ownership-only checks on programs **without** critical statements remain
+supported and do not need a new typing proof. Six authored regression
+cases cover untyped ownership-only admission, equivalent untyped ASTs,
+ordinary typing failures, failed linked-metadata rechecks, ordinary
+noncritical ownership compatibility, and nonconstructible publisher tokens.
+These tests have **not** run in stepful exact-head CI; critical source
+remains a draft feature.
 
 ## Adversarial gate handoff and CI-mirror policy (2026-11-01 follow-up)
 
