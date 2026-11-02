@@ -21,6 +21,7 @@ final class DurableActivityWorkflowDeclarationTest {
         assertEquals("EmailDelivery", activity.name());
         assertEquals(1, activity.body().methods().size());
         assertEquals("send", activity.body().methods().getFirst().name());
+        assertTrue(activity.annotations().isEmpty());
     }
 
     @Test void parsesClassShapedWorkflowWithItsOwnAstIdentity() {
@@ -32,6 +33,7 @@ final class DurableActivityWorkflowDeclarationTest {
         Ast.WorkflowDecl workflow = assertInstanceOf(Ast.WorkflowDecl.class, first(program));
         assertEquals("OrderFulfillment", workflow.name());
         assertEquals("run", workflow.body().methods().getFirst().name());
+        assertTrue(workflow.annotations().isEmpty());
     }
 
     @Test void declarationsAreSupportedInsideModules() {
@@ -63,5 +65,25 @@ final class DurableActivityWorkflowDeclarationTest {
     @Test void ordinaryClassDeclarationRemainsDistinct() {
         Ast.Program program = Parser.parse("define class Email as send(int id) -> int { return id; } end");
         assertInstanceOf(Ast.ClassDecl.class, first(program));
+    }
+    @Test void declarationAnnotationsArePreservedInsteadOfDiscarded() {
+        Ast.Program program = Parser.parse("""
+                @DurablePolicy
+                define workflow Checkout as
+                    run(int id) -> int { return id; }
+                end
+                """);
+        Ast.WorkflowDecl workflow = assertInstanceOf(Ast.WorkflowDecl.class, first(program));
+        assertEquals(1, workflow.annotations().size());
+        assertEquals("DurablePolicy", workflow.annotations().getFirst().name());
+    }
+
+    @Test void unsupportedActorAndCallableModifiersAreRejected() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define shared activity Email as send() -> void { return; } end"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define suspends workflow Checkout as run() -> void { return; } end"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define workflow fnc Checkout() -> void { return; }"));
     }
 }
