@@ -4292,6 +4292,12 @@ public final class TypeChecker {
 
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
+                if (linkedClassAliases.containsKey(klass)
+                        && constructor.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "constructor for imported class '" + qualifiedClassName(klass)
+                                    + "' is private to its declaring module");
+                }
                 if (created.arguments().size() != constructor.arity()) {
                     throw new IllegalArgumentException(
                             "constructor for " + klass.name() + " expects "
