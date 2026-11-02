@@ -20,12 +20,19 @@ for this candidate. This packet cannot be used as an authorization token.
   candidate is Java PR #2422 head
   `d4e1fd1af08264bf928bde0cdcfddfb3d025eaf1`, complete Git root tree
   `f09ffb5fffac56094a9a9dca68917f807d75fbd4`.
-  This is the only source pin eligible for *new independent review*, and any
-  head movement again invalidates it. The candidate adds an exact-Program
-  type-check proof, a compiler-owned publisher capability, fail-closed
-  ownership-only admission for critical ASTs, and authored negative tests.
-  Current focused workflow run 41394993544 failed before any steps
-  (`steps=null`); **no compiler, JUnit or guest result is established**.
+  This is a historical security-hardening candidate. The **current**
+  source PR head is `27565e1a5b5c26e23b266e771d752212501b86e8`, with
+  complete Git root tree `09e6934c0c14d1a9ae8aee5b836848886b6327da`.
+  Only this current exact head/tree can enter a *new independent review*;
+  any subsequent source change invalidates that pin.
+
+  The current candidate adds an exact-Program type-check proof, a
+  compiler-owned publisher capability, fail-closed ownership-only critical
+  admission, and a typing-generation fence so even successful rechecks
+  cannot restore stale critical permissions. Seven new adversarial and
+  compatibility JUnit tests are authored. The latest focused Java workflow
+  run 41396262327 failed with `steps=null`; **no compiler, JUnit or guest
+  test has executed**.
   Source-free alternate runner run 41391572866 attempt 2 independently
   succeeded with five executed steps; this does not authorize private export.
 - Private candidate carrier: `gha-indie-worker/gha-indie-worker-docs`,
