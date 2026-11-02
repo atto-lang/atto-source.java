@@ -91,6 +91,7 @@ public final class TreeShaker {
         }
 
         Result run() {
+            rejectUnloweredDurableDeclarations(input);
             collectConstants();
             collectInlineFunctions();
             applyBuildDefines();
@@ -113,6 +114,22 @@ public final class TreeShaker {
             return new Result(pruned, retained, removed, constantValues, roots);
         }
 
+        private static void rejectUnloweredDurableDeclarations(Ast.Program program) {
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.ActivityDecl activity) {
+                        throw new IllegalArgumentException(
+                                "ACTIVITY_TREE_SHAKING_UNSUPPORTED: '" + activity.name()
+                                        + "' must pass durable activity semantic lowering before build optimization");
+                    }
+                    if (declaration instanceof Ast.WorkflowDecl workflow) {
+                        throw new IllegalArgumentException(
+                                "WORKFLOW_TREE_SHAKING_UNSUPPORTED: '" + workflow.name()
+                                        + "' must pass deterministic workflow lowering before build optimization");
+                    }
+                }
+            }
+        }
         private void collectConstants() {
             for (Ast.ModuleDecl module : input.modules()) {
                 for (Ast.Decl declaration : module.declarations()) {
