@@ -25,6 +25,13 @@ import java.util.concurrent.TimeUnit;
 public final class LiveMcpServer implements AutoCloseable {
     public interface RuntimeView {
         Map<String, Object> inspect();
+        default boolean hasActorDiscovery() { return false; }
+        default Map<String, Object> listActors(int limit) {
+            throw new UnsupportedOperationException("actor discovery unavailable");
+        }
+        default Map<String, Object> inspectActor(String actorId) {
+            throw new UnsupportedOperationException("actor discovery unavailable");
+        }
     }
 
     public static final String PROTOCOL_VERSION = "2026-07-28";
@@ -151,6 +158,22 @@ public final class LiveMcpServer implements AutoCloseable {
             String declaredMethod = exchange.getRequestHeaders().getFirst("Mcp-Method");
             String declaredName = exchange.getRequestHeaders().getFirst("Mcp-Name");
             Object params = msg.get("params");
+            if (!(params instanceof Map<?, ?> parameters)
+                    || !(parameters.get("_meta") instanceof Map<?, ?> metadata)
+                    || !PROTOCOL_VERSION.equals(
+                            metadata.get("io.modelcontextprotocol/protocolVersion"))
+                    || !(metadata.get("io.modelcontextprotocol/clientCapabilities") instanceof Map<?, ?>)) {
+                send(exchange, 400, error(id, -32602, "Missing or invalid MCP request metadata"));
+                return;
+            }
+            Object clientInfo = metadata.get("io.modelcontextprotocol/clientInfo");
+            if (clientInfo != null
+                    && (!(clientInfo instanceof Map<?, ?> info)
+                        || !(info.get("name") instanceof String)
+                        || !(info.get("version") instanceof String))) {
+                send(exchange, 400, error(id, -32602, "Invalid MCP client information"));
+                return;
+            }
             if (!method.equals(declaredMethod)) {
                 send(exchange, 400, error(id, -32020, "MCP header mismatch"));
                 return;
@@ -169,38 +192,83 @@ public final class LiveMcpServer implements AutoCloseable {
             Object result;
             switch (method) {
                 case "server/discover" -> result = Map.of(
+                        "resultType", "complete",
                         "supportedVersions", List.of(PROTOCOL_VERSION),
                         "capabilities", Map.of("tools", Map.of()),
-                        "serverInfo", Map.of("name", "attolang-live-devtools", "version", "0.1.0"),
                         "ttlMs", 0, "cacheScope", "private");
-                case "tools/list" -> result = Map.of("tools", List.of(Map.of(
-                        "name", "atto.runtime_info",
-                        "description", "Read a bounded, detached runtime summary; no actor state or memory access.",
-                        "inputSchema", Map.of("type", "object",
-                                "properties", Map.of(), "additionalProperties", false),
-                        "annotations", Map.of("readOnlyHint", true))),
-                        "ttlMs", 0, "cacheScope", "private");
+                case "tools/list" -> {
+                    List<Map<String, Object>> tools = new ArrayList<>();
+                    tools.add(tool("atto.runtime_info",
+                            "Read a detached runtime summary; no actor private state.",
+                            Map.of("type", "object", "properties", Map.of(),
+                                   "additionalProperties", false)));
+                    if (view.hasActorDiscovery()) {
+                        tools.add(tool("atto.list_actors",
+                                "List at most 64 bounded actor descriptors, not a state snapshot.",
+                                Map.of("type", "object", "properties",
+                                        Map.of("limit", Map.of("type", "integer",
+                                                "minimum", 1, "maximum", 64)),
+                                        "additionalProperties", false)));
+                        tools.add(tool("atto.inspect_actor",
+                                "Inspect one actor descriptor by UUID; no private fields.",
+                                Map.of("type", "object", "properties",
+                                        Map.of("actor_id", Map.of("type", "string")),
+                                        "required", List.of("actor_id"),
+                                        "additionalProperties", false)));
+                    }
+                    result = Map.of("resultType", "complete", "tools", tools,
+                            "ttlMs", 0, "cacheScope", "private");
+                }
                 case "tools/call" -> {
                     Map<?, ?> p = (Map<?, ?>) params;
-                    if (!"atto.runtime_info".equals(p.get("name"))) {
-                        send(exchange, 200, error(id, -32602, "Unknown tool"));
-                        return;
-                    }
                     Object args = p.containsKey("arguments") ? p.get("arguments") : Map.of();
-                    if (!(args instanceof Map<?, ?> a) || !a.isEmpty()) {
-                        send(exchange, 200, error(id, -32602, "Tool accepts no arguments"));
+                    if (!(args instanceof Map<?, ?> a)) {
+                        send(exchange, 200, error(id, -32602, "Arguments must be an object"));
                         return;
                     }
-                    Map<String, Object> snapshot = Objects.requireNonNull(
-                            view.inspect(), "runtime view returned null");
-                    // Do not retain the view's state; serialize each detached observation.
-                    String json = Json.write(snapshot);
+                    String name = (String) p.get("name");
+                    Map<String, Object> data;
+                    if ("atto.runtime_info".equals(name) && a.isEmpty()) {
+                        data = Objects.requireNonNull(view.inspect(), "null runtime view");
+                    } else if ("atto.list_actors".equals(name) && view.hasActorDiscovery()) {
+                        if (a.size() > 1 || (a.size() == 1 && !a.containsKey("limit"))) {
+                            send(exchange, 200, error(id, -32602, "Unexpected list arguments"));
+                            return;
+                        }
+                        Object rawLimit = a.getOrDefault("limit", null);
+                        int limit = 32;
+                        if (rawLimit != null) {
+                            if (!(rawLimit instanceof java.math.BigDecimal n)
+                                    || n.scale() > 0 || n.compareTo(java.math.BigDecimal.ONE) < 0
+                                    || n.compareTo(java.math.BigDecimal.valueOf(64)) > 0) {
+                                send(exchange, 200, error(id, -32602, "limit must be 1..64"));
+                                return;
+                            }
+                            limit = n.intValueExact();
+                        }
+                        data = Objects.requireNonNull(view.listActors(limit), "null actor listing");
+                    } else if ("atto.inspect_actor".equals(name) && view.hasActorDiscovery()) {
+                        Object requested = a.get("actor_id");
+                        if (a.size() != 1 || !(requested instanceof String actorId)
+                                || actorId.length() != 36
+                                || !actorId.matches("[0-9a-fA-F-]{36}")) {
+                            send(exchange, 200, error(id, -32602, "Invalid actor_id"));
+                            return;
+                        }
+                        data = Objects.requireNonNull(view.inspectActor(actorId), "null actor view");
+                    } else {
+                        send(exchange, 200, error(id, -32602, "Unknown tool or invalid arguments"));
+                        return;
+                    }
+                    String json = Json.write(data);
                     if (json.getBytes(StandardCharsets.UTF_8).length > 16_384) {
                         send(exchange, 200, error(id, -32603, "Runtime view exceeds bound"));
                         return;
                     }
-                    result = Map.of("content",
-                            List.of(Map.of("type", "text", "text", json)));
+                    result = Map.of("resultType", "complete",
+                            "content", List.of(Map.of("type", "text", "text", json)),
+                            "structuredContent", data,
+                            "isError", false);
                 }
                 default -> {
                     send(exchange, 200, error(id, -32601, "Method not found"));
@@ -208,13 +276,22 @@ public final class LiveMcpServer implements AutoCloseable {
                 }
             }
             send(exchange, 200, Json.write(Map.of("jsonrpc", "2.0",
-                    "id", id, "result", result)));
+                    "id", id, "result", result,
+                    "_meta", Map.of("io.modelcontextprotocol/serverInfo",
+                            Map.of("name", "attolang-live-devtools", "version", "0.1.0")))));
         } catch (RuntimeException failure) {
             // Never reflect Java exception names, actor state or stack traces over MCP.
             send(exchange, 500, error(null, -32603, "Internal error"));
         } finally {
             exchange.close();
         }
+    }
+
+    private static Map<String, Object> tool(String name, String description,
+            Map<String, Object> inputSchema) {
+        return Map.of("name", name, "description", description,
+                "inputSchema", inputSchema,
+                "annotations", Map.of("readOnlyHint", true));
     }
 
     private static String error(Object id, int code, String message) {
