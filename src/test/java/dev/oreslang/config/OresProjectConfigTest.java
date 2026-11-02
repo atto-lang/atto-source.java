@@ -1,6 +1,7 @@
 package dev.oreslang.config;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
@@ -134,6 +135,26 @@ final class OresProjectConfigTest {
         Files.delete(canonical);
         assertEquals(legacy.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./pkg/value").orElseThrow());
+    }
+
+
+    @Test
+    void danglingCanonicalAttoEntryDoesNotFallBackToLegacySibling() throws Exception {
+        Path src = temp.resolve("dangling-atto-src");
+        Files.createDirectories(src);
+        Path importer = src.resolve("main.atto");
+        Path dangling = src.resolve("helper.atto");
+        Path legacy = src.resolve("helper.ores");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Files.writeString(legacy, "pub fnc helper() => int { return 41; }");
+        try {
+            Files.createSymbolicLink(dangling, Path.of("missing-atto-target"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            Assumptions.assumeTrue(false, "filesystem does not permit symlink fixtures: " + unsupported);
+        }
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(dangling.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./helper").orElseThrow());
     }
 
     @Test
