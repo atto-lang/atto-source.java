@@ -402,10 +402,12 @@ final class ClassConstructorHardeningTest {
         Exception privateClass = assertThrows(
                 Exception.class,
                 () -> runLinked(privateClassMain));
-        assertTrue(privateClass.getMessage().contains("public")
-                || privateClass.getMessage().contains("export")
-                || (privateClass.getCause() != null
-                    && String.valueOf(privateClass.getCause().getMessage()).contains("public")));
+        String privateClassMessage = privateClass.getMessage() + " "
+                + (privateClass.getCause() == null ? "" : privateClass.getCause().getMessage());
+        assertTrue(privateClassMessage.contains("HiddenBox"));
+        assertTrue(privateClassMessage.contains("public")
+                || privateClassMessage.contains("export")
+                || privateClassMessage.contains("unknown type"));
     }
 
     @Test
