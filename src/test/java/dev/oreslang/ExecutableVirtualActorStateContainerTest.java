@@ -16,9 +16,8 @@ final class ExecutableVirtualActorStateContainerTest {
         var container = new ScalarStateContainer(8, 8);
         assertEquals(8, container.tryRead().orElseThrow());
         assertEquals(13, container.tryAddChecked(5).orElseThrow());
-        assertThrows(ArithmeticException.class,
-                () -> container.trySet(Long.MAX_VALUE).stream().forEach(
-                    ignored -> container.tryAddChecked(1)));
+        assertEquals(Long.MAX_VALUE, container.trySet(Long.MAX_VALUE).orElseThrow());
+        assertThrows(ArithmeticException.class, () -> container.tryAddChecked(1));
         assertEquals(Long.MAX_VALUE, container.tryRead().orElseThrow());
         container.close();
         assertTrue(container.readyForReclamation());
