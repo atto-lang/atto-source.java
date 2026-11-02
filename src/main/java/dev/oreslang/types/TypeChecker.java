@@ -4915,6 +4915,10 @@ public final class TypeChecker {
             }
             default -> { }
         }
+        // Current nominal guest objects retain an Evaluator owner. Even a
+        // field-only copy keeps execution authority; reject these types
+        // until the owner-free MessageData representation is implemented.
+        if (findClass(named.name()) != null) return true;
         for (Type argument : named.arguments()) {
             if (containsChannelExecutionCapability(argument, seen, genericBindings, allowTypedActorRef)) {
                 return true;
