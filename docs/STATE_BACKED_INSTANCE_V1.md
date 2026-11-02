@@ -21,9 +21,20 @@ are ordinary lexical Oreslang borrows, **not** the `@Inject` annotation.
 
 V1 intentionally refuses `#shared`, `#actor`, `#task`, singleton scopes,
 unrecognized or missing scopes, multiple class annotations, empty backing
-classes, public representation fields, abstract classes, inherited classes and
-static methods. `@Inject` still fails closed; no userland constructor
-argument may forge a state-provider identity.
+classes, public representation fields, abstract classes, inherited classes,
+generic storage, uninitialized/final fields, and static methods. Backing fields
+must be explicitly initialized private mutable `int`, `bool`, `float`, or
+`string` slots. Pointers, channels, nested classes, references and other
+heap-reachable fields fail closed until deep ownership and lifetime checks
+exist. `@Inject` still fails closed; no userland constructor argument may
+forge a state-provider identity.
+
+**Generated-accessor boundary:** backing fields may not use `@FromJson` or
+other field annotations. The existing annotation expander can generate public
+accessors for decorated fields, which would otherwise bypass the private owned
+representation after AST validation. Ordinary classes retain their existing
+`@FromJson` behavior. This is a V1 safety restriction, not a guarantee of
+actor-sealed state.
 
 Test target:
 
