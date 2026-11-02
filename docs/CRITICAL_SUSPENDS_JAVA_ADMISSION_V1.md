@@ -127,3 +127,37 @@ compiler mechanics, not full protected actor-state semantics.
 pushed, but neither compilation nor actual runtime results are established.
 Do not mark this as a portable feature or merge without exact-head
 stepful Java guest evidence, then LLVM/.NET/Wasm/Cranelift parity.
+
+## Adversarial gate handoff and CI-mirror policy (2026-11-01 follow-up)
+
+Fixed an additional actor-retirement race in `CriticalGate.release(ticket)`:
+the first version removed the promoted waiter's `OresFuture` from
+`admissions` *before* settling that Future outside the metadata lock. An
+independent `retire()` between these operations would no longer find the
+promoted-but-unsettled Future to fail. The revised release keeps the Future
+in the identity ledger through terminal completion and removes its exact
+key/value afterward in a `finally` block. Concurrent ticket cancellation
+and actor retirement can still retract or fail that admission; no caller
+runs guest code while gate bookkeeping is locked.
+
+New authored JUnit tests exercise a deliberately blocked promoted-Future
+notification during retirement and 128 adversarial release/cancel/retire
+races. These tests are **not yet executed** against the changed branch.
+
+For CI capacity, the private carrier
+`gha-indie-worker/gha-indie-worker-docs` (numeric GitHub repository ID
+`1351003564`) ran a source-free Java toolchain check at
+[Actions run 41391572866](https://github.com/gha-indie-worker/gha-indie-worker-docs/actions/runs/41391572866):
+**success, five nonempty executed steps**, Java 25.0.5, Maven 3.9.15.
+No private Oreslang source was copied. This is runner/toolchain evidence,
+**not** an Oreslang compile or guest pass.
+
+An exact PR-head cross-organization source mirror is **blocked by the
+repository's checked-in private-source export policy**:
+`docs/security/CI_PRIVATE_SOURCE_MIRRORING.md` requires a protected source
+`main`, reviewed numeric destination allowlist and independent security-owner
+approval. Current source `main` reports `protected=false`, and
+`.github/private-ci-approved-repositories.txt` has no approved entries.
+Do not bypass with GitHub connector blob/tree writes. The concrete
+candidate IDs, source head/tree and capacity receipt are recorded on
+[governance issue #962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962).
