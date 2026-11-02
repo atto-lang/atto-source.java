@@ -873,6 +873,59 @@ public final class ActorRuntime implements AutoCloseable {
     public int actorCount() { return actorCount.get(); }
 
     /**
+     * Detached, host-only actor observation. Each entry is a bounded, weakly
+     * consistent observation, NOT a state snapshot or a scheduler safepoint.
+     * No actor-owned guest state, pointer, task, or mutable handle is exported.
+     */
+    public record DevtoolsActorInfo(
+            String actorId, String parentActorId, String kind,
+            long generation, String lifecycle, int mailboxPending) { }
+
+    private DevtoolsActorInfo devtoolsActorInfo(ActorCell<?> cell) {
+        if (cell.finalized || actors.get(cell.ref.id()) != cell) return null;
+        int pending;
+        synchronized (cell.mailboxAccountingLock) {
+            pending = cell.queuedUserMessages;
+        }
+        return new DevtoolsActorInfo(
+                cell.ref.id().value().toString(),
+                cell.parent == null ? "" : cell.parent.ref.id().value().toString(),
+                cell.kind.name(), cell.ref.generation(),
+                cell.stopped.get() ? "STOPPING" : "ALIVE", pending);
+    }
+
+    /** This returns at most 64 non-sensitive descriptors; no pagination promise. */
+    public List<DevtoolsActorInfo> devtoolsListActors(int limit) {
+        requireSupervisorContext("inspect actor descriptors");
+        if (limit < 1 || limit > 64) {
+            throw new IllegalArgumentException("actor inspection limit must be 1..64");
+        }
+        ArrayList<DevtoolsActorInfo> result = new ArrayList<>(limit);
+        for (ActorCell<?> cell : actors.values()) {
+            DevtoolsActorInfo info = devtoolsActorInfo(cell);
+            if (info != null) result.add(info);
+            if (result.size() >= limit) break;
+        }
+        return List.copyOf(result);
+    }
+
+    /** Lookup is by runtime-owned identity, never by guest object reference. */
+    public Optional<DevtoolsActorInfo> devtoolsInspectActor(String actorId) {
+        requireSupervisorContext("inspect one actor descriptor");
+        Objects.requireNonNull(actorId, "actorId");
+        final UUID uuid;
+        try {
+            uuid = UUID.fromString(actorId);
+        } catch (IllegalArgumentException invalid) {
+            return Optional.empty();
+        }
+        ActorCell<?> cell = actors.get(new ActorId(uuid));
+        return cell == null ? Optional.empty()
+                : Optional.ofNullable(devtoolsActorInfo(cell));
+    }
+
+
+    /**
      * Compiler/runtime hook for fair static-select sites.
      *
      * <p>The immutable select-site identity may live in the shared code image,
