@@ -370,7 +370,9 @@ final class OresEtsActorRegistryTest {
             }
             // The reflected pin bypasses the registry's Pin.close() sweep;
             // explicitly trigger the same host-only reclamation path.
-            assertEquals(1, registry.reap());
+            // A reaper already in flight may have reclaimed it; avoid
+            // asserting a schedule-dependent number of removed entries.
+            registry.reap();
             assertTrue(map.isEmpty());
             registry.close();
         }
