@@ -124,3 +124,33 @@ transition still requires an independently reviewed and tested shared
 lifecycle admission gate or equivalent scheduler-owned transactional
 commit. Host operation admission pins only serialize against TABLE retirement,
 not against STOP's transition. This is an explicit release blocker.
+
+
+## 2026-11-02 callback retention / global host quota audit
+
+A later host-only audit removed the **one `owner.done()` registration per
+table**. Previously, explicitly retiring a table left its completion callback
+attached to the actor's pending Future until eventual actor termination,
+retaining an `Entry` and creating unnecessary work on actor finalization.
+This is especially problematic under repeated table churn. Instead, direct
+operations immediately check authoritative `ActorRuntime.isAlive(ref)`;
+the shared supervisor reaper periodically revokes all tables belonging to
+stopped/cancelled actors. Explicit `reap()` remains available for deterministic
+host cleanup. No callback is executed on a carrier during ETS retirement.
+
+The host registry now caps concurrent live registries at **1,024** in addition
+to the existing per-registry table cap (1..4,096). Construction atomically
+reserves a global registry slot; scheduling failure refunds it; idempotent
+`close()` refunds it exactly once. This bounds the total number of periodic
+reaper tasks, but **does not** certify a complete physical-memory budget.
+
+Direct `OresEtsTable` calls now reject actor turns and ActorGroup CONTROL
+mailman contexts, not only the `ACTOR_CARRIER` thread flag. Regression
+tests use real `ActorRuntime` types to verify carrier refusal, actor
+completion-waiter retention after table churn, and registry quota refunds.
+
+All changes here are authored on the private source PR. **No new full-source
+or subset cross-organization transfer was made.** Exact-head real Java/Graal
+execution is still blocked pending independently approved destination policy
+and runner admission. A source-free CI canary cannot prove these source changes
+pass a compiler or the production actor runtime.
