@@ -5,7 +5,9 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 classes="$(mktemp -d)"
 trap 'rm -rf -- "$classes"' EXIT
-javac -Xlint:all -Werror -d "$classes" \
+javac --release 21 -Xlint:all -Werror -d "$classes" \
   "$root/src/main/java/dev/oreslang/runtime/CriticalSectionGate.java" \
-  "$root/src/test/java/dev/oreslang/CriticalSectionGateStandaloneTest.java"
+  "$root/src/test/java/dev/oreslang/CriticalSectionGateStandaloneTest.java" \
+  "$root/src/test/java/dev/oreslang/CriticalSectionGateExecutorStressTest.java"
 java -ea -cp "$classes" dev.oreslang.CriticalSectionGateStandaloneTest
+java -ea -cp "$classes" dev.oreslang.CriticalSectionGateExecutorStressTest
