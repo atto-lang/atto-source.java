@@ -751,8 +751,7 @@ public final class MacroExpander {
                             "syntax parameter '" + entry.getKey()
                                     + "' would be discarded before semantic checking");
                 }
-                if (count > 1 && !(entry.getValue() instanceof Ast.NameExpr
-                        || entry.getValue() instanceof Ast.LiteralExpr)) {
+                if (count > 1 && !(entry.getValue() instanceof Ast.LiteralExpr)) {
                     throw unsupported(invocation.name(),
                             "repeated unquote of nontrivial syntax parameter '"
                                     + entry.getKey()
