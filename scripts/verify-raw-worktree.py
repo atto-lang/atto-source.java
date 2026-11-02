@@ -117,14 +117,15 @@ def self_test() -> None:
             raise IntegrityError("untracked file was accepted")
         (root / "untracked.txt").unlink()
         # An ignored source file must not pass as a clean exact-head checkout.
-        (root / ".gitignore").write_text("generated/*.java\\n")
+        (root / ".gitignore").write_text("generated/*.java\n")
         # Stage/commit only the test ignore policy; still no malicious filter execution.
         git(root, "add", ".gitignore")
         git(root, "-c", "user.name=Fixture", "-c",
             "user.email=fixture@example.invalid", "commit", "-qm", "ignore policy")
         ignored = root / "generated" / "Injected.java"
         ignored.parent.mkdir()
-        ignored.write_text("class Injected {}\\n")
+        ignored.write_text("class Injected {}\n")
+        git(root, "check-ignore", "-q", "generated/Injected.java")
         try:
             verify(root)
         except IntegrityError:
