@@ -9,7 +9,12 @@
     "publisher": "capability of an authorized member to publish; not a distinct actor kind"
   },
   "source_surface": {
-    "types": ["ActorGroup", "Topic<T>", "Subscription<T>", "PublishReceipt"],
+    "types": [
+      "ActorGroup",
+      "Topic<T>",
+      "Subscription<T>",
+      "PublishReceipt"
+    ],
     "new_actor_keywords": [],
     "publisher_keyword": false,
     "subscriber_keyword": false
@@ -29,7 +34,9 @@
     "reliable_cancellation": "cancelling a pending RELIABLE publication revokes its still-pending owned admissions and releases their bounded accounting; deliveries already committed to subscriber queues are not recalled",
     "cross_tenant": "deny by default",
     "actor_termination": "automatically revoke memberships and subscriptions",
-    "critical_body_may_suspend": false
+    "critical_body_may_suspend": false,
+    "payload_sendability": "recursive concrete owned Sendable data only; reject functions, bound methods, closures and nested callable fields at compile time and runtime",
+    "lexical_capture_transfer": "forbidden, including callable values without an explicit capture"
   },
   "delivery_policies": {
     "RELIABLE": "bounded asynchronous backpressure; no unbounded pending writer queue",
@@ -38,7 +45,8 @@
   },
   "transport": {
     "in_memory": "normative v1 semantics",
-    "redis": "future adapter; must not silently claim stronger delivery semantics than provider supplies"
+    "redis": "future adapter; must not silently claim stronger delivery semantics than provider supplies",
+    "serializable": "separate codec/schema-qualified requirement for Redis/network/persistence, not required for local in-memory topics and never an override for Sendable"
   },
   "golden_fixture": "contracts/v1/fixtures/actor-pubsub-v1.ores",
   "golden_expected_stdout": "subscribed|p-1",
@@ -62,6 +70,9 @@
     "cancellation-during-publication",
     "critical-suspension-rejection",
     "cross-tenant-publication-rejection",
-    "fifo-per-publisher-subscription"
+    "fifo-per-publisher-subscription",
+    "callable-topic-payload-rejection",
+    "nested-callable-topic-payload-rejection",
+    "runtime-callable-payload-rejection"
   ]
 }
