@@ -210,4 +210,17 @@ final class OresEtsTableTest {
             assertEquals(1, table.size());
         }
     }
+
+    @Test
+    void unbalancedExitNeverClearsClosedFence() throws Exception {
+        var table = new OresEtsTable<String, String>(1);
+        table.close();
+        var exit = OresEtsTable.class.getDeclaredMethod("exit");
+        exit.setAccessible(true);
+        var underflow = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> exit.invoke(table));
+        assertInstanceOf(AssertionError.class, underflow.getCause());
+        assertTrue(table.isClosed());
+        assertThrows(IllegalStateException.class, () -> table.lookup("key"));
+    }
 }
