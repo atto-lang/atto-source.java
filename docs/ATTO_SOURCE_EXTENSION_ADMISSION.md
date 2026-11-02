@@ -47,3 +47,10 @@ Three JUnit regressions were added: symlinked parent entrypoint, symlinked impor
 Checking ancestor path components before opening a file is *not an atomic resolution guarantee*: an adversary with write permission to parent directories can race directory changes after the check. The leaf open uses `NOFOLLOW_LINKS`, but race-proof ancestor admission still requires an approved secure directory-relative source-root walker (for example a provider supporting `SecureDirectoryStream`) and a fallback policy. Legitimate system-level symlink aliases may also require callers to use their canonical physical path. Keep the security review gate open rather than claiming full race-free traversal.
 
 At exact PR head `2897d19750b6bfffc865b7db9a6ca669a0512af6`, Java Actions `fast-ci` run 41490485954, synthetic CI runner smoke 41490486044, and project manifest run 41490486334 each have a failed job with zero recorded steps. These are **runner-admission failures**, not a JUnit/parser/compiler verdict. Do not bypass private source-transfer holds to use a different organization's Actions minutes.
+
+
+## Canonical suffix selection hardening (2026-11-02)
+
+`OresProjectConfig` now checks canonical `.atto` entries with `BasicFileAttributes` and `NOFOLLOW_LINKS`. A regular file, directory, symlink (including a dangling symlink), or other existing entry occupies the canonical name. Only `NoSuchFileException` means absence; other metadata errors fail closed. The selected path is handed to the bounded source reader, which rejects non-regular/symlink input. `.ores` and `.java` explicit-path behavior remains unchanged.
+
+Regressions cover both a dangling `.atto` symlink and a directory named `.atto` beside a valid `.ores` sibling. The directory/symlink must be selected as canonical rather than triggering legacy fallback. An isolated JDK 21 resolver harness compiled and passed six cases: canonical precedence, explicit legacy, legacy fallback, directory shadow, dangling-link shadow, and foreign-extension rejection. This is isolated resolver evidence only; it does not substitute for the exact-head Maven/JUnit or compiler guest suite.
