@@ -145,6 +145,47 @@ public final class CriticalSectionGateStandaloneTest {
             gate.retire();
             check(gate.quiescent(), "duplicate registration leaked lease");
         }
+        // Race distinct scheduler subscriptions on two carriers. Only one
+        // registration may survive; no duplicate logical resume may escape.
+        for (int round = 0; round < 300; round++) {
+            CriticalSectionGate gate = new CriticalSectionGate(92,2);
+            var ticket = gate.enter(new Object(),92);
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.ConcurrentLinkedQueue<Runnable> deliveries =
+                    new java.util.concurrent.ConcurrentLinkedQueue<>();
+            AtomicInteger accepted = new AtomicInteger();
+            AtomicInteger denied = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletionStage<
+                    CriticalSectionGate.Ticket>> granted = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> error =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Runnable attempt = () -> {
+                try {
+                    start.await();
+                    var stage = ticket.whenReadyOn(deliveries::add);
+                    granted.set(stage);
+                    accepted.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    denied.incrementAndGet();
+                } catch (Throwable unexpected) {
+                    error.compareAndSet(null, unexpected);
+                }
+            };
+            Thread a = Thread.ofPlatform().start(attempt);
+            Thread b = Thread.ofPlatform().start(attempt);
+            start.countDown();
+            a.join(); b.join();
+            check(error.get() == null, "racing dispatch registration failed unexpectedly");
+            check(accepted.get() == 1 && denied.get() == 1,
+                    "racing subscriptions did not select exactly one scheduler");
+            check(deliveries.size()==1, "multiple deliveries queued for one logical turn");
+            deliveries.remove().run();
+            check(granted.get().toCompletableFuture().join() == ticket,
+                    "single racing subscription lost grant");
+            ticket.execute(() -> {});
+            gate.retire();
+            check(gate.quiescent(), "racing dispatch leaked physical permit");
+        }
         // A scheduler-owned executor, not the releasing carrier, must run
         // guest continuation callbacks. Rejected dispatch revokes its permit.
         for (int round = 0; round < 300; round++) {
