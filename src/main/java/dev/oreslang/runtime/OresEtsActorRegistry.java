@@ -8,6 +8,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 /**
  * Trusted-host, ActorRuntime-bound ETS table authority.
@@ -35,7 +37,25 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         final ActorRuntime.ActorRef<?> owner;
         final Access access;
         final OresEtsTable<Object, Object> table;
-        final AtomicBoolean retired = new AtomicBoolean();
+        private static final long RETIRED = Long.MIN_VALUE;
+        private static final long COUNT = Long.MAX_VALUE;
+        final AtomicLong admission = new AtomicLong();
+        void pin() {
+            for (;;) {
+                long old = admission.get();
+                if ((old & RETIRED) != 0) throw new IllegalStateException("ETS table retired");
+                if ((old & COUNT) == COUNT) throw new IllegalStateException("ETS pin capacity exhausted");
+                if (admission.compareAndSet(old, old + 1)) return;
+            }
+        }
+        boolean unpin() {
+            long old = admission.getAndDecrement();
+            if ((old & COUNT) == 0) throw new AssertionError("ETS pin underflow");
+            return (old & RETIRED) != 0 && (old & COUNT) == 1;
+        }
+        void retire() { admission.getAndUpdate(old -> old | RETIRED); }
+        boolean retired() { return (admission.get() & RETIRED) != 0; }
+        boolean quiescent() { return (admission.get() & COUNT) == 0; }
 
         Entry(ActorRuntime.ActorRef<?> owner, Access access, int maxEntries, long maxBytes) {
             this.owner = owner;
@@ -108,79 +128,110 @@ public final class OresEtsActorRegistry implements AutoCloseable {
             // The done callback runs on a completion thread. It may be a
             // carrier, so its ONLY responsibility is atomic revocation.
             owner.done().whenCompleteRuntime((value, failure) ->
-                    entry.retired.set(true));
-            if (!owner.isAlive()) entry.retired.set(true);
+                    entry.retire());
+            if (!owner.isAlive()) entry.retire();
             return id;
         }
     }
 
-    private Entry authorize(TableId<?, ?> id, ActorRuntime.ActorRef<?> caller, boolean write) {
+    /**
+     * An operation obtains a CAS-backed lease on the same state word that
+     * marks table retirement. This closes authorization-to-storage TOCTOU
+     * against explicit table retire. ActorRuntime STOP remains independent:
+     * operations admitted BEFORE STOP may finish AFTER STOP; strict commit
+     * fencing needs a shared ActorRuntime admission gate, not yet installed.
+     */
+    private final class Pin implements AutoCloseable {
+        private final Entry entry;
+        private boolean released;
+        Pin(Entry entry) { this.entry = entry; }
+        Entry entry() { return entry; }
+        @Override public void close() {
+            if (released) throw new AssertionError("ETS pin released twice");
+            released = true;
+            if (entry.unpin()) reap();
+        }
+    }
+
+    private Pin authorize(TableId<?, ?> id, ActorRuntime.ActorRef<?> caller, boolean write) {
         requireHost();
         Objects.requireNonNull(id, "table ID");
         if (id.issuer != this) throw new SecurityException("foreign ETS table capability");
         requireOpen();
         requireActor(caller);
         Entry entry = entries.get(id);
-        if (entry == null || entry.retired.get() || !entry.owner.isAlive()) {
-            if (entry != null) entry.retired.set(true);
-            throw new IllegalStateException("stale or retired ETS table capability");
-        }
+        if (entry == null) throw new IllegalStateException("stale ETS table capability");
         boolean owner = caller == entry.owner;
         if ((!owner && entry.access == Access.PRIVATE)
-                || (!owner && write && entry.access != Access.PUBLIC)) {
+                || (!owner && write && entry.access != Access.PUBLIC))
             throw new SecurityException("ETS table access denied");
+        entry.pin();
+        if (closed.get() || !runtime.isAlive(caller) || !runtime.isAlive(entry.owner)) {
+            entry.retire();
+            if (entry.unpin()) reap();
+            throw new IllegalStateException("ETS table or actor retired during admission");
         }
-        return entry;
+        return new Pin(entry);
     }
 
-    /** Owner-only retirement, with physical cleanup on a host thread. */
+    /** Owner-only retirement, physical release after the last admitted pin. */
     public void retire(TableId<?, ?> id, ActorRuntime.ActorRef<?> caller) {
-        Entry entry = authorize(id, caller, true);
-        if (entry.owner != caller) throw new SecurityException("only the owner may retire ETS table");
-        entry.retired.set(true);
+        try (var pin = authorize(id, caller, true)) {
+            if (pin.entry().owner != caller)
+                throw new SecurityException("only the owner may retire ETS table");
+            pin.entry().retire();
+        }
         reap();
     }
 
+    private <R> R access(TableId<?, ?> id, ActorRuntime.ActorRef<?> caller,
+                         boolean write, Function<OresEtsTable<Object, Object>, R> op) {
+        try (var pin = authorize(id, caller, write)) {
+            return op.apply(pin.entry().table);
+        }
+    }
+
     public <K, V> Optional<V> lookup(TableId<K, V> id, ActorRuntime.ActorRef<?> caller, K key) {
-        Entry e = authorize(id, caller, false);
-        @SuppressWarnings("unchecked") Optional<V> result = (Optional<V>) e.table.lookup(key);
+        @SuppressWarnings("unchecked") Optional<V> result =
+                (Optional<V>) access(id, caller, false, table -> table.lookup(key));
         return result;
     }
 
     public <K, V> Optional<V> insert(
             TableId<K, V> id, ActorRuntime.ActorRef<?> caller, K key, V value) {
-        Entry e = authorize(id, caller, true);
-        @SuppressWarnings("unchecked") Optional<V> result = (Optional<V>) e.table.insert(key, value);
+        @SuppressWarnings("unchecked") Optional<V> result =
+                (Optional<V>) access(id, caller, true, table -> table.insert(key, value));
         return result;
     }
 
     public <K, V> boolean insertNew(
             TableId<K, V> id, ActorRuntime.ActorRef<?> caller, K key, V value) {
-        return authorize(id, caller, true).table.insertNew(key, value);
+        return access(id, caller, true, table -> table.insertNew(key, value));
     }
 
     public <K, V> boolean compareExchange(
             TableId<K, V> id, ActorRuntime.ActorRef<?> caller, K key, V expected, V replacement) {
-        return authorize(id, caller, true).table.compareExchange(key, expected, replacement);
+        return access(id, caller, true,
+                table -> table.compareExchange(key, expected, replacement));
     }
 
     public <K, V> Optional<V> take(TableId<K, V> id, ActorRuntime.ActorRef<?> caller, K key) {
-        Entry e = authorize(id, caller, true);
-        @SuppressWarnings("unchecked") Optional<V> result = (Optional<V>) e.table.take(key);
+        @SuppressWarnings("unchecked") Optional<V> result =
+                (Optional<V>) access(id, caller, true, table -> table.take(key));
         return result;
     }
 
     public int size(TableId<?, ?> id, ActorRuntime.ActorRef<?> caller) {
-        return authorize(id, caller, false).table.size();
+        return access(id, caller, false, OresEtsTable::size);
     }
 
     public long byteSize(TableId<?, ?> id, ActorRuntime.ActorRef<?> caller) {
-        return authorize(id, caller, false).table.byteSize();
+        return access(id, caller, false, OresEtsTable::byteSize);
     }
 
     public <K, V> Map<K, V> snapshot(TableId<K, V> id, ActorRuntime.ActorRef<?> caller) {
-        Entry e = authorize(id, caller, false);
-        @SuppressWarnings("unchecked") Map<K, V> result = (Map<K, V>) e.table.snapshot();
+        @SuppressWarnings("unchecked") Map<K, V> result =
+                (Map<K, V>) access(id, caller, false, OresEtsTable::snapshot);
         return result;
     }
 
@@ -208,9 +259,11 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         int removed = 0;
         for (var item : entries.entrySet()) {
             Entry entry = item.getValue();
-            if (!closed.get() && !entry.retired.get() && entry.owner.isAlive()) continue;
-            entry.retired.set(true);
-            // Remove before invoking host cleanup; all later accesses fail.
+            if (!closed.get() && !entry.retired() && entry.owner.isAlive()) continue;
+            entry.retire();
+            // In-flight host operations hold a pin: no physical cleanup
+            // until all operations admitted before retirement have exited.
+            if (!entry.quiescent()) continue;
             if (entries.remove(item.getKey(), entry)) {
                 entry.table.close();
                 removed++;
