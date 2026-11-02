@@ -27,6 +27,7 @@ public final class DurableDeclarationAnalyzer {
 
     public static DurableExecutionManifest analyze(Ast.Program program) {
         java.util.Objects.requireNonNull(program, "durable declaration program");
+        validateDurableTypeNamespace(program);
         List<Ast.ModuleDecl> rewrittenModules = new ArrayList<>();
         boolean found = false;
         for (Ast.ModuleDecl module : program.modules()) {
@@ -74,6 +75,34 @@ public final class DurableDeclarationAnalyzer {
      * This makes the existing checker validate lexical names, expression types,
      * and overload resolution without introducing a guest/runtime fallback.
      */
+    private static void validateDurableTypeNamespace(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            java.util.Map<String, String> names = new java.util.LinkedHashMap<>();
+            for (Ast.Decl declaration : module.declarations()) {
+                String name = null;
+                String kind = null;
+                if (declaration instanceof Ast.ClassDecl value) {
+                    name = value.name(); kind = "class";
+                } else if (declaration instanceof Ast.InterfaceDecl value) {
+                    name = value.name(); kind = "interface/contract";
+                } else if (declaration instanceof Ast.TypeAliasDecl value) {
+                    name = value.name(); kind = "type alias";
+                } else if (declaration instanceof Ast.ActivityDecl value) {
+                    name = value.name(); kind = "activity";
+                } else if (declaration instanceof Ast.WorkflowDecl value) {
+                    name = value.name(); kind = "workflow";
+                }
+                if (name == null) continue;
+                String previous = names.putIfAbsent(name, kind);
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "DURABLE_TYPE_NAMESPACE_DUPLICATE: '" + module.name() + "." + name
+                                    + "' is declared as both " + previous + " and " + kind);
+                }
+            }
+        }
+    }
+
     private static Ast.ClassDecl withCommandPayloadValidation(
             Ast.Program program, Ast.ModuleDecl module, Ast.WorkflowDecl workflow) {
         Ast.MethodDecl run = workflow.body().methods().stream()
