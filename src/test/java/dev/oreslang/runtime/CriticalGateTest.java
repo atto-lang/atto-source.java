@@ -274,6 +274,66 @@ final class CriticalGateTest {
         }
     }
 
+    @Test void atomicRetirementCannotRaceNewTicketIntoRetiredActor() throws Exception {
+        for (int i = 0; i < 128; i++) {
+            CriticalGate gate = new CriticalGate();
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            AtomicReference<CriticalGate.Ticket> acquired = new AtomicReference<>();
+            AtomicReference<Boolean> retired = new AtomicReference<>();
+            Thread requester = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    acquired.set(gate.request().ticket());
+                } catch (IllegalStateException closed) {
+                    assertTrue(gate.retired());
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    retired.set(gate.retireIfQuiescent());
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            start.countDown();
+            requester.join();
+            stopper.join();
+            if (Boolean.TRUE.equals(retired.get())) {
+                assertNull(acquired.get(), "ticket admitted after atomic retirement");
+                assertTrue(gate.retired());
+            } else {
+                assertNotNull(acquired.get(), "retirement failed with no owner");
+                assertTrue(gate.holds(acquired.get()));
+                assertFalse(gate.retireIfQuiescent());
+                gate.release(acquired.get());
+                assertTrue(gate.retireIfQuiescent());
+            }
+            assertTrue(gate.retired());
+            assertTrue(gate.quiescent());
+        }
+    }
+
+    @Test void actorRetirementRefusesLiveTicketOrQueuedAdmission() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.requestAwaitable().join();
+        var pending = gate.requestAwaitable();
+        assertFalse(gate.quiescent());
+        assertFalse(gate.retireIfQuiescent());
+        assertFalse(gate.retired());
+        assertTrue(pending.cancel(false));
+        assertFalse(gate.retireIfQuiescent());
+        gate.release(owner);
+        assertTrue(gate.quiescent());
+        assertTrue(gate.retireIfQuiescent());
+        assertTrue(gate.tryEnter().isEmpty());
+        assertThrows(IllegalStateException.class, gate::request);
+    }
+
     @Test void logicalTicketCanBeReleasedOnAnotherCarrier() throws InterruptedException {
         CriticalGate gate = new CriticalGate();
         var owner = gate.request();
