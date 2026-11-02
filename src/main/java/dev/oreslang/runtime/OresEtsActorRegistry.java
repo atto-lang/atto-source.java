@@ -8,6 +8,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
@@ -81,6 +82,20 @@ public final class OresEtsActorRegistry implements AutoCloseable {
      * removes periodic tasks immediately, avoiding an unbounded cancelled
      * task queue when registries are repeatedly created and retired.
      */
+    /** Global quota also bounds how many periodic reaper tasks may exist. */
+    private static final int MAX_HOST_REGISTRIES = 1024;
+    private static final AtomicInteger ACTIVE_HOST_REGISTRIES = new AtomicInteger();
+
+    private static void reserveRegistry() {
+        for (;;) {
+            int active = ACTIVE_HOST_REGISTRIES.get();
+            if (active >= MAX_HOST_REGISTRIES) {
+                throw new IllegalStateException("ETS host registry quota exceeded");
+            }
+            if (ACTIVE_HOST_REGISTRIES.compareAndSet(active, active + 1)) return;
+        }
+    }
+
     private static final ScheduledThreadPoolExecutor HOST_REAPER =
             new ScheduledThreadPoolExecutor(1,
                     Thread.ofPlatform().daemon(true).name("ores-ets-host-reaper").factory());
@@ -98,8 +113,14 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         // One shared cleanup carrier for all trusted host registries.
         // Actor termination is observed by liveness and supervisor sweeps;
         // no per-table completion callback runs on a carrier.
-        reaperTask = HOST_REAPER.scheduleWithFixedDelay(
-                this::safeReap, 100, 100, TimeUnit.MILLISECONDS);
+        reserveRegistry();
+        try {
+            reaperTask = HOST_REAPER.scheduleWithFixedDelay(
+                    this::safeReap, 100, 100, TimeUnit.MILLISECONDS);
+        } catch (RuntimeException | Error failure) {
+            ACTIVE_HOST_REGISTRIES.decrementAndGet();
+            throw failure;
+        }
     }
 
     private static void requireHost() {
@@ -304,8 +325,14 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         requireHost();
         if (!closed.compareAndSet(false, true)) return;
         reaperTask.cancel(false);
-        synchronized (admissionLock) {
-            reapLocked();
+        try {
+            synchronized (admissionLock) {
+                reapLocked();
+            }
+        } finally {
+            // Count the registry once, even if cleanup is deferred until a
+            // previously admitted host operation releases its last pin.
+            ACTIVE_HOST_REGISTRIES.decrementAndGet();
         }
     }
 }
