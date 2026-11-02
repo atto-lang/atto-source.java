@@ -146,6 +146,17 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void actorRefCapabilityExceptionRequiresAConcreteActorTarget() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<ActorRef<int>> input): void { return; }
+                """)));
+        assertTrue(error.getMessage().contains("ActorRef target"),
+                () -> "opaque ActorRef must not become a channel escape hatch: "
+                        + error.getMessage());
+    }
+
+    @Test
     void borrowedTypesRemainRejectedForChannels() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(Channel<Option<&int>> values): void { return; }
