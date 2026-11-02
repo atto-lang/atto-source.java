@@ -123,7 +123,8 @@ final class CriticalSuspensionAdmissionV1Test {
                     OresLanguage.ID, source, "try-critical-executed.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
         }
-        assertTrue(out.toString().contains("31"), out::toString);
+        assertEquals("31", out.toString(java.nio.charset.StandardCharsets.UTF_8).strip(),
+                "the exact guest output must include the successful admission and busy fallback");
     }
 
     private static String fixture(String name) throws Exception {
@@ -135,14 +136,21 @@ final class CriticalSuspensionAdmissionV1Test {
     }
 
     @Test void portableNegativeGuestFixturesRemainFailClosed() throws Exception {
-        for (String name : new String[] {
-            "negative-queued-critical-unlowered.ores",
-            "negative-try-critical-call-effect.ores",
-            "negative-try-critical-shared-gate.ores"
-        }) {
+        // Match the first emitted diagnostic code, not merely the E_CRITICAL_ family:
+        // a misleading earlier error must not pass an exact-head guest negative.
+        String[][] cases = {
+            {"negative-queued-critical-unlowered.ores", "E_CRITICAL_UNLOWERED"},
+            {"negative-try-critical-call-effect.ores", "E_CRITICAL_BODY_EFFECT"},
+            {"negative-try-critical-shared-gate.ores", "E_CRITICAL_GATE_TYPE"}
+        };
+        var code = java.util.regex.Pattern.compile("E_[A-Z0-9_]+");
+        for (String[] entry : cases) {
             var failure = assertThrows(IllegalArgumentException.class,
-                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(fixture(name)));
-            assertTrue(failure.getMessage().contains("E_CRITICAL_"), failure.getMessage());
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(fixture(entry[0])));
+            var match = code.matcher(failure.getMessage());
+            assertTrue(match.find(), failure.getMessage());
+            assertEquals(entry[1], match.group(),
+                    "wrong first compiler diagnostic for " + entry[0] + ": " + failure.getMessage());
         }
     }
 
