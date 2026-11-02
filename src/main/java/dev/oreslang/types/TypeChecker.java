@@ -281,8 +281,13 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        // No typing proof escapes unless even the immutable diagnostic result
+        // has been assembled successfully. Failure at any earlier stage stays
+        // in the negative (revoked) proof state.
+        TypeCheckResult validated = new TypeCheckResult(
+                program, checker.warnings, checker.shortInferredTypeNames);
         finishCriticalTypeCheck(program, criticalTypingToken);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return validated;
     }
 
     /**
@@ -402,8 +407,13 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        // No typing proof escapes unless even the immutable diagnostic result
+        // has been assembled successfully. Failure at any earlier stage stays
+        // in the negative (revoked) proof state.
+        TypeCheckResult validated = new TypeCheckResult(
+                program, checker.warnings, checker.shortInferredTypeNames);
         finishCriticalTypeCheck(program, criticalTypingToken);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return validated;
     }
 
     private void validateImports(Ast.Program program) {
