@@ -21,6 +21,7 @@ final class DurableWorkflowSemanticAnalysisTest {
                 end
                 define workflow Checkout as
                     normalize(int order_id) -> int { return order_id; }
+                    status(int order_id) -> int { return order_id; }
                     run(int order_id) -> int { return normalize(order_id); }
                 end
                 """);
@@ -152,11 +153,13 @@ final class DurableWorkflowSemanticAnalysisTest {
         Ast.Program original = parseValidPair();
         Ast.WorkflowDecl old = workflow(original);
         Ast.WorkflowDecl query = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
-                new Ast.QueryCommand("run", List.of(), Ast.TypeRef.simple("int"))));
+                new Ast.QueryCommand("status",
+                        List.of(new Ast.Param(Ast.TypeRef.simple("int"), "order_id")),
+                        Ast.TypeRef.simple("int"))));
         DurableExecutionManifest manifest = DurableExecutionManifest.analyze(
                 replaceWorkflow(original, query));
         String json = new String(manifest.canonicalBytes(), StandardCharsets.UTF_8);
-        assertTrue(json.contains("\"queries\":[{\"endpoint\":\"run\""));
+        assertTrue(json.contains("\"queries\":[{\"endpoint\":\"status\""));
         assertTrue(json.contains("\"commands\":[]"));
         assertFalse(json.contains("\"id\":\"query\""),
                 "read-only queries do not occupy durable history or receive command IDs");
