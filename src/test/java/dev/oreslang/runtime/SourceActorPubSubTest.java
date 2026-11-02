@@ -197,6 +197,31 @@ final class SourceActorPubSubTest {
     }
 
     @Test
+    void pubSubRejectsClosuresAndBoundMethodsBeforeEnqueueIncludingNestedValues() {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Topic topic =
+                    pubsub.group("data-only").topic("values", "reliable", 2);
+            java.util.List<String> captured = new java.util.ArrayList<>();
+            Runnable closure = () -> captured.add("must-not-execute");
+            Runnable boundMethod = captured::clear;
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> topic.publish(closure));
+            assertThrows(IllegalArgumentException.class,
+                    () -> topic.publish(boundMethod));
+            assertThrows(IllegalArgumentException.class,
+                    () -> topic.publish(java.util.List.of(closure)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> topic.publish(java.util.Map.of("nested", java.util.List.of(boundMethod))));
+            assertEquals(0, captured.size(),
+                    "rejected callable payloads must not invoke their lexical captures");
+            assertTrue(topic.publish("data-only").isDone(),
+                    "failed callable admission must not poison a subsequent data publication");
+        }
+    }
+
+    @Test
     void memberActorCannotCloseTheRuntimePubSubDirectory() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
