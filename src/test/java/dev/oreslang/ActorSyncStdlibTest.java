@@ -192,6 +192,67 @@ final class ActorSyncStdlibTest {
                 """,run(fixture));
     }
 
+
+    @Test
+    void crossEpochDeltaRequiresSnapshotBeforeReplicaCanAdvance() throws Exception {
+        assertEquals("""
+                false
+                false
+                5
+                true
+                true
+                7
+                5
+                """,run("""
+                import * as sync from "std/actor_sync";
+                pub routine main(): void {
+                  let c=sync.replica_cursor(4,5);
+                  stdio.println(c.apply_delta(5,6));
+                  stdio.println(c.needs_resync());
+                  stdio.println(c.applied());
+                  stdio.println(c.apply_snapshot(5,6));
+                  stdio.println(c.apply_delta(5,7));
+                  stdio.println(c.applied());
+                  stdio.println(c.owner_epoch());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void realOreslangIsoactorCanUseOwnedSyncProgressDuringActorTurn() throws Exception {
+        assertEquals("1",run("""
+                import * as sync from "std/actor_sync";
+                define isoactor SyncWorker as
+                  let int version;
+                  on_start(): void {
+                    self.version = 0;
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    let window = sync.commit_window(1,self.version);
+                    if window.begin(1,self.version,mail.value); do
+                      if window.acknowledge(1,mail.value,self.version+1); do
+                        self.version = window.committed();
+                        self.send(self.version);
+                      fi
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+                pub suspends routine main(): void {
+                  val worker = spawn SyncWorker();
+                  await worker.get_ready();
+                  worker.send("op1");
+                  val reply = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(reply.value);
+                  await worker.get_done();
+                  return;
+                }
+                """));
+    }
+
     @Test
     void invalidGenerationsAndRevisionsFailClosed() {
         assertThrows(PolyglotException.class,()->run("""
