@@ -37,4 +37,23 @@ final class OresMainSourceBudgetTest {
         Files.write(source, new byte[] {(byte) 0xFF, (byte) 0xFE, (byte) 0xFF});
         assertEquals(1, OresMain.exitStatusForArgs(new String[] {source.toString()}));
     }
+
+    @Test
+    void checkRejectsAttoSourceThroughSymlinkedDirectory() throws Exception {
+        Path real = temp.resolve("real-cli-source");
+        Files.createDirectories(real);
+        Files.writeString(real.resolve("main.atto"), "pub fnc main(): void { return; }");
+        Path alias = temp.resolve("alias-cli-source");
+        try {
+            Files.createSymbolicLink(alias, real.getFileName());
+        } catch (java.io.IOException | UnsupportedOperationException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks not available");
+            return;
+        }
+        // This is intentionally a direct CLI admission probe, not a linked
+        // guest test. The reader must deny the path before parsing.
+        assertEquals(1, OresMain.exitStatusForArgs(
+                new String[] {"--check", alias.resolve("main.atto").toString()}));
+    }
+
 }
