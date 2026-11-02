@@ -107,12 +107,19 @@ public final class OresEtsTable<K, V> implements AutoCloseable {
         usedBytes.set(0);
     }
 
-    private void enter() {
-        // Host-only guard: CHM can synchronize/park when keys collide, so an
-        // actor carrier must not invoke this reference directly.
-        if (ActorRuntime.isActorCarrierThread()) {
+    private static void requireHost() {
+        // A direct guest turn may run on a host-backed executor while
+        // remaining an actor or CONTROL execution. Only a trusted host
+        // thread may use CHM (which is not proven nonparking).
+        if (ActorRuntime.isActorCarrierThread()
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException("host ETS reference is not a nonparking guest table");
         }
+    }
+
+    private void enter() {
+        requireHost();
         for (;;) {
             long state = lifecycle.get();
             if ((state & CLOSED) != 0) throw new IllegalStateException("ETS table is closed");
@@ -264,11 +271,9 @@ public final class OresEtsTable<K, V> implements AutoCloseable {
 
     @Override
     public void close() {
-        // Even an empty ConcurrentHashMap.clear() is not a scheduler-proof
-        // nonparking operation. Never retire this host reference on a carrier.
-        if (ActorRuntime.isActorCarrierThread()) {
-            throw new IllegalStateException("host ETS retirement is forbidden on actor carrier");
-        }
+        // Never retire this host reference from actor or CONTROL execution;
+        // even an empty ConcurrentHashMap.clear() is not scheduler-proof.
+        requireHost();
         for (;;) {
             long state = lifecycle.get();
             if ((state & CLOSED) != 0) return;
