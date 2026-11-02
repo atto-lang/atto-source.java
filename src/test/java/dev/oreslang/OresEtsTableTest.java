@@ -1,6 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.OresEtsTable;
+import dev.oreslang.runtime.OresSymbol;
+import java.math.BigInteger;
+import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -119,6 +122,92 @@ final class OresEtsTableTest {
             for (var t : threads) t.join();
             assertTrue(failures.isEmpty(), failures.toString());
             assertEquals(Long.valueOf(10_000L), table.lookup("counter").orElseThrow());
+        }
+    }
+
+    @Test
+    void symbolsUseNominalLogicalKeysWithoutInterning() {
+        try (var table = new OresEtsTable<Object, String>(5, 1024)) {
+            var first = OresSymbol.process("caf\u00e9");
+            var normalized = OresSymbol.process("cafe\u0301");
+            assertNotSame(first, normalized);
+            assertEquals(first, normalized);
+            assertTrue(table.insertNew(first, "symbol"));
+            assertFalse(table.insertNew(normalized, "duplicate"));
+            assertTrue(table.insertNew("caf\u00e9", "string"));
+            assertTrue(table.insertNew(OresSymbol.stable("00000000-0000-0000-0000-000000000001"), "stable"));
+            assertEquals("symbol", table.lookup(normalized).orElseThrow());
+            assertEquals("string", table.lookup("caf\u00e9").orElseThrow());
+            assertEquals(3, table.size());
+        }
+    }
+
+    @Test
+    void byteQuotaIsEnforcedForInsertsAndReplacementsAndRefunds() {
+        try (var table = new OresEtsTable<String, String>(3, 8)) {
+            assertTrue(table.insertNew("a", "aa")); // 3 bytes
+            assertTrue(table.insertNew("b", "bb")); // 3 bytes
+            assertEquals(6L, table.byteSize());
+            assertThrows(IllegalStateException.class, () -> table.insertNew("c", "cccc"));
+            assertThrows(IllegalStateException.class, () -> table.insert("a", "longer"));
+            assertThrows(IllegalStateException.class, () -> table.compareExchange("a", "aa", "longer"));
+            assertEquals(6L, table.byteSize());
+            assertEquals("aa", table.lookup("a").orElseThrow());
+            assertTrue(table.compareExchange("a", "aa", "b")); // refund 1
+            assertEquals(5L, table.byteSize());
+            assertEquals("bb", table.take("b").orElseThrow()); // refund 3
+            assertEquals(2L, table.byteSize());
+            assertTrue(table.insertNew("c", "1234")); // reserve 5
+            assertEquals(7L, table.byteSize());
+            assertEquals(2, table.size());
+        }
+    }
+
+    @Test
+    void failedReservationsAndOversizedScalarsNeverLeakQuota() {
+        try (var table = new OresEtsTable<Object, Object>(1, 2)) {
+            assertThrows(IllegalStateException.class, () -> table.insertNew("a", "zzzz"));
+            assertEquals(0, table.size());
+            assertEquals(0L, table.byteSize());
+            assertTrue(table.insertNew("a", "b"));
+            assertThrows(IllegalStateException.class, () -> table.insert("a", "too big"));
+            assertEquals(1, table.size());
+            assertEquals(2L, table.byteSize());
+            assertThrows(IllegalArgumentException.class, () -> table.insert("x".repeat(4097), "x"));
+            assertThrows(IllegalArgumentException.class, () -> table.insert("\uD800", "x"));
+            assertThrows(IllegalArgumentException.class, () -> table.insert(BigInteger.ONE.shiftLeft(4097), "x"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> table.insert(new BigDecimal(BigInteger.ONE, Integer.MIN_VALUE), "x"));
+            assertEquals("b", table.lookup("a").orElseThrow());
+        }
+    }
+
+    @Test
+    void concurrentDistinctKeysCannotOversubscribeByteQuota() throws Exception {
+        final int workers = 10;
+        try (var table = new OresEtsTable<Integer, Integer>(workers, 16)) {
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(workers);
+            var winners = new AtomicInteger();
+            var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            for (int i = 0; i < workers; i++) {
+                int key = i;
+                Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        if (table.insertNew(key, key)) winners.incrementAndGet();
+                    } catch (IllegalStateException full) {
+                        // Other distinct keys hit the byte budget.
+                    } catch (Throwable error) { failures.add(error); }
+                    finally { done.countDown(); }
+                });
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            assertTrue(failures.isEmpty(), failures.toString());
+            assertEquals(1, winners.get());
+            assertEquals(16L, table.byteSize());
+            assertEquals(1, table.size());
         }
     }
 }
