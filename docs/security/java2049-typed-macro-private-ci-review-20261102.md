@@ -55,6 +55,21 @@ Target compiler PR: #2049, reviewed candidate head
 - Source-free carrier run [41395135081](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41395135081) completed eight hosted workflow steps and reports 73/73 Node contract assertions passed. This is carrier/contract evidence only, not private Java-source, JUnit, or guest-AOT evidence.
 - No source transfer is authorized: source `main` was last observed `protected=false`, the approved-destination file has no authorization row, and independent approval remains outstanding.
 
+## Fresh seven-file semantic reconciliation notes (2026-11-02)
+
+These observations compare the current source `main` blobs with macro PR #2049 head `d2d0ba9b4ddb14167e6e7bbdd6fd3904419fa2b7`. They are deliberately not a textual merge:
+
+| File | Current-main behavior to retain | Macro-branch behavior to retain / reconciliation rule |
+| --- | --- | --- |
+| `Ast.java` | The central `copyCheckedMetadata()` policy transfers `CheckedOptionDepth`, `CheckedClassView` and `CheckedStructuralFieldDomain` only across compatible expression node types. | Macro AST declarations/arguments/invocations and source-site models are branch additions. The new unquote leaf copier calls both `copyCheckedMetadata()` and `MacroSyntaxProvenance.copyOrigins()`; internal generated/captured identities remain fail-closed. |
+| `OresCompiler.java` | `compileProtectedScalarI64(String)` is present only on current `main`. Its implementation depends on `ProtectedScalarMirV1`, which is **absent** from the macro branch, as is `ProtectedScalarMirV1Test`. Do not add only the API method; port and review the implementation and tests together. | Preserve `MacroSourceUnitIdentity.attach()`, `planFiniteAotGenerics()` and `lowerFiniteAotHir()`. Final API should expose both independently gated features after their combined dependency graph compiles. |
+| `OresEvalRootNode.java` | Current `main` imports and invokes `Utf8StringAbi.encode(text)` at host-string admission/marshalling boundaries. `Utf8StringAbi.java` is **absent** from the macro branch. Port the helper and its exact tests together; do not drop the UTF-8 rejection of unpaired UTF-16 surrogates. | Preserve the macro branch's runtime erasure: executable evaluation must never expand macros or introduce a runtime compiler. |
+| `Lexer.java` / `Token.java` | Current `main` has the existing template/string and lexical token behavior but no `MACRO` token. | Keep the macro keyword/token and contextual `quote`/`unquote` handling. The merge must be a union, not replacing the enum or keyword map wholesale. |
+| `Parser.java` | Both heads contain the same-scope `declare` forward-type validation (`ForwardType`, root/module scopes, and exact definition checks). Keep it. | The macro branch adds `define macro`, typed parameters/results, declaration and expression invocation nodes, and block-position rejection. Retain all of these alongside the forward-type logic. |
+| `LinkedProgramRunner.java` | Current `main` checks capabilities against a separately parsed `programs` map after compilation. | The macro branch uses `checkCompiledCapabilities(build, ...)` over `build.units().values()` and the exact `CompiledUnit.program()`. Preserve this stronger compiled-tree check; do not regress to re-parsing a pre-expansion source tree for capability evidence. |
+| `TypeChecker.java` | Keep all current-main ownership/effect, HTTP response, and native runtime admission changes through a three-way merge. | Keep macro expansion before semantic checking, residual macro rejection, and post-annotation revalidation so no macro node or unchecked generated declaration escapes into executable analysis. |
+
+The two missing support files above are hard dependencies for a complete feature union. The next safe action is a reviewed three-way merge against common base `f40b9c3a3b5b4691eb4f4a5d5d0558a112f237aa`, followed by tests covering both sets of invariants. No bulk overwrite, textual-only merge, or PR promotion is appropriate before that compile/test pass.
 ## Current compiler merge risk
 
 The typed-macro branch and `main` have independently advanced by 229
