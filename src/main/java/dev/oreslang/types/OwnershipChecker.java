@@ -53,14 +53,21 @@ public final class OwnershipChecker {
     public static final class CriticalPublishAuthority {
         private final Ast.Program program;
         private final long epoch;
+        private final long typingGeneration;
 
-        private CriticalPublishAuthority(Ast.Program program, long epoch) {
+        private CriticalPublishAuthority(
+                Ast.Program program, long epoch, long typingGeneration) {
             this.program = program;
             this.epoch = epoch;
+            this.typingGeneration = typingGeneration;
         }
 
-        public boolean permits(Ast.Program expectedProgram, long expectedEpoch) {
-            return program == expectedProgram && epoch > 0 && epoch == expectedEpoch;
+        public boolean permits(
+                Ast.Program expectedProgram, long expectedEpoch,
+                long expectedTypingGeneration) {
+            return program == expectedProgram
+                    && epoch > 0 && epoch == expectedEpoch
+                    && typingGeneration == expectedTypingGeneration;
         }
     }
 
@@ -166,9 +173,8 @@ public final class OwnershipChecker {
         // critical node was seen but this exact Program has no successful
         // independent type-check proof. Public ownership-only entry points
         // must not partially commit a task epoch before discovering this.
-        if (!pendingCriticalAdmissions.isEmpty()) {
-            TypeChecker.requireCriticalTypeProof(checkedProgram);
-        }
+        long typingGeneration = pendingCriticalAdmissions.isEmpty()
+                ? 0L : TypeChecker.requireCriticalTypeProof(checkedProgram);
         Ast.CheckedTaskCaptures.publish(
                 checkedProgram,
                 taskCheckEpoch,
@@ -180,7 +186,8 @@ public final class OwnershipChecker {
                 checkedProgram,
                 taskCheckEpoch,
                 pendingCriticalAdmissions,
-                new CriticalPublishAuthority(checkedProgram, taskCheckEpoch));
+                new CriticalPublishAuthority(
+                        checkedProgram, taskCheckEpoch, typingGeneration));
     }
 
     private void index(Ast.Program program) {
