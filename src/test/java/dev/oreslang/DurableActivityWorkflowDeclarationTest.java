@@ -2,6 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.ast.AnnotationExpander;
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.TreeShaker;
+import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -85,5 +91,26 @@ final class DurableActivityWorkflowDeclarationTest {
                 "define suspends workflow Checkout as run() -> void { return; } end"));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "define workflow fnc Checkout() -> void { return; }"));
+    }
+    @Test void directCompilerPassesRejectDurableDeclarationsUntilTheirContractsExist() {
+        String source = "define workflow Checkout as run(int id) -> int { return id; } end";
+        Ast.Program program = Parser.parse(source);
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> AnnotationExpander.expand(program)).getMessage()
+                .contains("WORKFLOW_ANNOTATION_EXPANSION_UNSUPPORTED"));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> TreeShaker.shake(program, BuildOptions.library(java.util.Map.of()))).getMessage()
+                .contains("WORKFLOW_TREE_SHAKING_UNSUPPORTED"));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas())).getMessage()
+                .contains("WORKFLOW_CAPABILITY_CHECK_UNSUPPORTED"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(java.util.Map.of("workflow.ores", source)));
+    }
+
+    @Test void declarationAnnotationListsAreImmutable() {
+        Ast.Program program = Parser.parse("@DurablePolicy define activity Email as send() -> void { return; } end");
+        Ast.ActivityDecl activity = assertInstanceOf(Ast.ActivityDecl.class, first(program));
+        assertThrows(UnsupportedOperationException.class, () -> activity.annotations().clear());
     }
 }
