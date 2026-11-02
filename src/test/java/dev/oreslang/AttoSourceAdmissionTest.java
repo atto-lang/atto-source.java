@@ -213,4 +213,47 @@ final class AttoSourceAdmissionTest {
         assertTrue(denied.getMessage().contains("symlinked .atto"));
     }
 
+
+    @Test
+    void attoEntrypointThroughSymlinkedDirectoryIsRejected() throws Exception {
+        Path real = temp.resolve("real-source");
+        Files.createDirectories(real);
+        Files.writeString(real.resolve("entry.atto"), "pub fnc main(): void { return; }");
+        Path alias = temp.resolve("alias-source");
+        try {
+            Files.createSymbolicLink(alias, real.getFileName());
+        } catch (java.io.IOException | UnsupportedOperationException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks not available");
+            return;
+        }
+        SecurityException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                SecurityException.class,
+                () -> LinkedProgramRunner.validate(alias.resolve("entry.atto"), Map.of()));
+        assertTrue(denied.getMessage().contains("symlinked .atto"));
+    }
+
+    @Test
+    void attoImportThroughSymlinkedDirectoryIsRejected() throws Exception {
+        Path real = temp.resolve("real-import");
+        Files.createDirectories(real);
+        Files.writeString(real.resolve("helper.atto"),
+                "pub fnc answer(): int { return 42; }");
+        Path alias = temp.resolve("alias-import");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(entry, """
+                import fnc answer from "./alias-import/helper.atto";
+                pub fnc main(): void { return; }
+                """);
+        try {
+            Files.createSymbolicLink(alias, real.getFileName());
+        } catch (java.io.IOException | UnsupportedOperationException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks not available");
+            return;
+        }
+        SecurityException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                SecurityException.class,
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+        assertTrue(denied.getMessage().contains("symlinked .atto"));
+    }
+
 }
