@@ -375,4 +375,27 @@ final class OresEtsActorRegistryTest {
             registry.close();
         }
     }
+
+    @Test
+    void registryChurnUsesOneDaemonReaperAndDoesNotRetainCanceledTasks() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var executorField = OresEtsActorRegistry.class.getDeclaredField("HOST_REAPER");
+            executorField.setAccessible(true);
+            var executor = (java.util.concurrent.ScheduledThreadPoolExecutor)
+                    executorField.get(null);
+            int baseline = executor.getQueue().size();
+            for (int i = 0; i < 48; i++) {
+                try (var registry = new OresEtsActorRegistry(runtime, 1)) {
+                    // No private actor source or guest access is needed for a
+                    // supervisor-owned registry to be properly disposed.
+                    assertEquals(0, registry.liveTableCount());
+                }
+            }
+            assertEquals(baseline, executor.getQueue().size(),
+                    "closed registries must cancel and remove their periodic cleanup task");
+            assertTrue(executor.getPoolSize() <= 1,
+                    "host ETS retirement must not allocate a thread per registry");
+            assertTrue(executor.getRemoveOnCancelPolicy());
+        }
+    }
 }
