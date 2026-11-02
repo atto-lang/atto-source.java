@@ -96,8 +96,8 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         }
         this.maxTables = maxTables;
         // One shared cleanup carrier for all trusted host registries.
-        // Actor completion callbacks only mark a table retired and never
-        // synchronously call CHM.clear or wait for this daemon thread.
+        // Actor termination is observed by liveness and supervisor sweeps;
+        // no per-table completion callback runs on a carrier.
         reaperTask = HOST_REAPER.scheduleWithFixedDelay(
                 this::safeReap, 100, 100, TimeUnit.MILLISECONDS);
     }
@@ -142,10 +142,12 @@ public final class OresEtsActorRegistry implements AutoCloseable {
             TableId<K, V> id = new TableId<>(this);
             Entry entry = new Entry(owner, access, maxEntries, maxBytes);
             entries.put(id, entry);
-            // The done callback runs on a completion thread. It may be a
-            // carrier, so its ONLY responsibility is atomic revocation.
-            owner.done().whenCompleteRuntime((value, failure) ->
-                    entry.retire());
+            // Do not subscribe one callback per table to owner.done().
+            // Retired tables can otherwise pin their Entry until the actor
+            // eventually terminates, and bulk table churn consumes Future
+            // waiter slots. Every access rechecks ActorRuntime liveness;
+            // the shared host reaper observes STOP/cancellation and revokes
+            // all owner tables without invoking callbacks on actor carriers.
             if (!owner.isAlive()) entry.retire();
             return id;
         }
