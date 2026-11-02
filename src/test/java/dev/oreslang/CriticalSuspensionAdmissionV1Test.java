@@ -145,6 +145,40 @@ final class CriticalSuspensionAdmissionV1Test {
                 "tree-shaking must not erase or flatten protected operations");
     }
 
+    @Test void capabilityPolicyAuditsBusyFallbackRatherThanSkippingCriticalNode() {
+        String source = """
+                pub fnc main(): void {
+                  val gate = Mutex.new(0);
+                  try critical gate { }
+                  else { val foreign = SharedMutex.new(0); }
+                  return;
+                }
+                """;
+        var checked = dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source);
+        assertThrows(SecurityException.class, () ->
+                dev.oreslang.runtime.CapabilityChecker.check(
+                        checked, dev.oreslang.runtime.IsolatePolicy.strictFaas()));
+    }
+
+    @Test void treeShakerKeepsCallablesReferencedOnlyByBusyFallback() {
+        String source = """
+                fnc on_busy(): void { return; }
+                pub fnc main(): void {
+                  val gate = Mutex.new(0);
+                  try critical gate { }
+                  else { on_busy(); }
+                  return;
+                }
+                """;
+        var build = dev.oreslang.compiler.OresCompiler.compileForBuild(
+                source, dev.oreslang.compiler.BuildOptions.executable());
+        boolean retainedBusy = build.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .anyMatch(decl -> decl instanceof dev.oreslang.ast.Ast.FunctionDecl fn
+                        && fn.name().equals("on_busy"));
+        assertTrue(retainedBusy, "busy fallback must preserve its function dependency");
+    }
+
     @Test void immediateCriticalCannotAccessUntrustedGateOrAsyncCaller() {
         for (String source : new String[] {
             "pub fnc main(): void { let int n = 0;"
