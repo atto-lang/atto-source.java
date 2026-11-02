@@ -1831,6 +1831,9 @@ public final class Ast {
             java.util.Objects.requireNonNull(checked, "critical admissions");
             if (CheckedTaskCaptures.requireProgramEpoch(program) != epoch)
                 throw new IllegalStateException("critical ownership epoch mismatch");
+            // The public OwnershipChecker API cannot turn raw parsed ASTs
+            // into executable critical authority without a successful type pass.
+            dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
             expunge();
             ADMISSIONS.keySet().removeIf(key -> key.program() == program);
             for (CriticalStmt node : checked) {
@@ -1848,6 +1851,9 @@ public final class Ast {
             if (actualEpoch != expectedEpoch)
                 throw new IllegalStateException(
                         "critical Program ownership proof was revoked or superseded");
+            // Rechecking typing invalidates old permits even if ownership
+            // was not rerun. The type proof is an independent safety gate.
+            dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
             expunge();
             Long admitted = ADMISSIONS.get(new CriticalKey(program, node, null));
             if (admitted == null || admitted.longValue() != expectedEpoch)
