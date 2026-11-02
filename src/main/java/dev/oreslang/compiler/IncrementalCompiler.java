@@ -350,6 +350,16 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.ActivityDecl activity) {
+            throw new IllegalArgumentException(
+                    "ACTIVITY_ABI_UNSUPPORTED: '" + activity.name()
+                            + "' requires a versioned durable activity manifest before ABI hashing");
+        }
+        if (decl instanceof Ast.WorkflowDecl workflow) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ABI_UNSUPPORTED: '" + workflow.name()
+                            + "' requires a replay-compatible workflow manifest before ABI hashing");
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
