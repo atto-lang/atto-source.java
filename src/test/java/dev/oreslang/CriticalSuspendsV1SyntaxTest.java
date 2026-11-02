@@ -226,6 +226,35 @@ final class CriticalSuspendsV1SyntaxTest {
                         typed, actorCritical(equivalentButUntyped), epoch));
     }
 
+    @Test void successfulTypeRecheckAlsoRevokesOldCriticalOwnershipPermit() {
+        Ast.Program first = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        dev.oreslang.types.OwnershipChecker.check(first);
+        long firstEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(first);
+        long firstTypingGeneration =
+                dev.oreslang.types.TypeChecker.requireCriticalTypeProof(first);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                first, actorCritical(first), firstEpoch));
+
+        // Even a SUCCESSFUL second type analysis must not silently restore
+        // permissions published by the earlier ownership epoch. Expansion
+        // may preserve the Program object or return another immutable one.
+        Ast.Program retyped = dev.oreslang.types.TypeChecker.checkTypes(first);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        first, actorCritical(first), firstEpoch));
+        if (retyped == first) {
+            assertNotEquals(firstTypingGeneration,
+                    dev.oreslang.types.TypeChecker.requireCriticalTypeProof(first));
+        }
+
+        // Only a new complete ownership pass can authorize the retyped AST.
+        dev.oreslang.types.OwnershipChecker.check(retyped);
+        long newEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(retyped);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                retyped, actorCritical(retyped), newEpoch));
+    }
+
     @Test void failedLinkedTypeRecheckRevokesPreviouslyExecutablePermit() {
         Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(
                 Parser.parse(TYPED_CRITICAL_ACTOR));
