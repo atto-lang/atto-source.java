@@ -326,6 +326,122 @@ public final class MacroExpander {
                 && call.arguments().size() == 1;
     }
 
+    /**
+     * Copy the deliberately bounded caller-syntax expression subset.
+     *
+     * <p>Every expression receives a fresh identity. Checked semantic metadata
+     * and macro origins follow that exact copied node. Compiler-internal names,
+     * authority-bearing identifiers and unsupported nodes fail closed rather
+     * than being shared or cloned without their identity-bound proof.</p>
+     */
+    private Ast.Expr copyCallerSyntax(Ast.Expr source, int depth, int[] visited) {
+        if (source == null) {
+            throw new IllegalArgumentException("unquote syntax cannot contain a null AST node");
+        }
+        if (depth > MAX_TEMPLATE_DEPTH || ++visited[0] > MAX_TEMPLATE_NODES) {
+            throw new IllegalArgumentException(
+                    "unquote syntax copy budget exceeded (nodes/depth); runtime fallback is forbidden");
+        }
+
+        Ast.Expr copy;
+        if (source instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            if (!(value instanceof Long || value instanceof Double
+                    || value instanceof String || value instanceof Boolean
+                    || value instanceof dev.oreslang.runtime.OresSymbol
+                    || value instanceof Ast.Imaginary)) {
+                throw new IllegalArgumentException(
+                        "unquote literal is not an admitted immutable scalar");
+            }
+            copy = new Ast.LiteralExpr(value);
+        } else if (source instanceof Ast.NameExpr name) {
+            if (name.name().startsWith("$")
+                    || MacroIdentifierHygiene.lookup(name) != null) {
+                throw new IllegalArgumentException(
+                        "unquote of compiler-internal or authority-bearing identifier is denied");
+            }
+            copy = new Ast.NameExpr(name.name());
+        } else if (source instanceof Ast.UnaryExpr unary) {
+            copy = new Ast.UnaryExpr(
+                    unary.operator(),
+                    copyCallerSyntax(unary.operand(), depth + 1, visited));
+        } else if (source instanceof Ast.BinaryExpr binary) {
+            copy = new Ast.BinaryExpr(
+                    binary.operator(),
+                    copyCallerSyntax(binary.left(), depth + 1, visited),
+                    copyCallerSyntax(binary.right(), depth + 1, visited));
+        } else if (source instanceof Ast.AssignExpr assignment) {
+            copy = new Ast.AssignExpr(
+                    copyCallerSyntax(assignment.target(), depth + 1, visited),
+                    copyCallerSyntax(assignment.value(), depth + 1, visited));
+        } else if (source instanceof Ast.ConditionalExpr conditional) {
+            copy = new Ast.ConditionalExpr(
+                    copyCallerSyntax(conditional.condition(), depth + 1, visited),
+                    copyCallerSyntax(conditional.whenTrue(), depth + 1, visited),
+                    copyCallerSyntax(conditional.whenFalse(), depth + 1, visited));
+        } else if (source instanceof Ast.SpreadExpr spread) {
+            copy = new Ast.SpreadExpr(
+                    copyCallerSyntax(spread.expression(), depth + 1, visited));
+        } else if (source instanceof Ast.MemberExpr member) {
+            copy = new Ast.MemberExpr(
+                    copyCallerSyntax(member.receiver(), depth + 1, visited),
+                    member.member());
+        } else if (source instanceof Ast.IndexExpr index) {
+            copy = new Ast.IndexExpr(
+                    copyCallerSyntax(index.receiver(), depth + 1, visited),
+                    copyCallerSyntax(index.index(), depth + 1, visited));
+        } else if (source instanceof Ast.CallExpr call) {
+            copy = call.rewrite(
+                    copyCallerSyntax(call.callee(), depth + 1, visited),
+                    call.typeArguments(),
+                    call.typeArgumentsPresent(),
+                    call.arguments().stream()
+                            .map(argument -> copyCallerSyntax(argument, depth + 1, visited))
+                            .toList());
+        } else if (source instanceof Ast.RuntimeCallExpr runtimeCall) {
+            copy = new Ast.RuntimeCallExpr(
+                    runtimeCall.operation(),
+                    runtimeCall.arguments().stream()
+                            .map(argument -> copyCallerSyntax(argument, depth + 1, visited))
+                            .toList());
+        } else if (source instanceof Ast.NewExpr created) {
+            copy = new Ast.NewExpr(
+                    created.type(),
+                    created.arguments().stream()
+                            .map(argument -> copyCallerSyntax(argument, depth + 1, visited))
+                            .toList());
+        } else if (source instanceof Ast.AwaitExpr awaited) {
+            copy = new Ast.AwaitExpr(
+                    copyCallerSyntax(awaited.expression(), depth + 1, visited));
+        } else if (source instanceof Ast.ListExpr list) {
+            copy = new Ast.ListExpr(list.elements().stream()
+                    .map(item -> copyCallerSyntax(item, depth + 1, visited))
+                    .toList());
+        } else if (source instanceof Ast.TupleExpr tuple) {
+            copy = new Ast.TupleExpr(tuple.elements().stream()
+                    .map(item -> copyCallerSyntax(item, depth + 1, visited))
+                    .toList());
+        } else if (source instanceof Ast.ObjectExpr object
+                && object.kind() != Ast.ObjectKind.EXPLICIT_STRUCT) {
+            List<Ast.ObjectField> fields = new ArrayList<>(object.fields().size());
+            for (Ast.ObjectField field : object.fields()) {
+                fields.add(Ast.ObjectField.named(
+                        field.name(),
+                        copyCallerSyntax(field.value(), depth + 1, visited)));
+            }
+            copy = new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
+        } else {
+            throw new IllegalArgumentException(
+                    "unquote syntax node " + source.getClass().getSimpleName()
+                            + " is outside the bounded deep-copy allowlist; "
+                            + "runtime fallback is forbidden");
+        }
+
+        Ast.copyCheckedMetadata(source, copy);
+        MacroSyntaxProvenance.copyOrigins(source, copy);
+        return copy;
+    }
+
     private Ast.Expr instantiateTemplate(
             Ast.Expr expression,
             Map<String, Ast.Expr> syntaxBindings) {
@@ -338,36 +454,7 @@ public final class MacroExpander {
                 throw new IllegalStateException(
                         "validated unquote references unknown syntax parameter '" + name.name() + "'");
             }
-            // Spliced syntax must never alias caller-owned nodes: provenance and
-            // semantic side tables are keyed by exact AST identity. Until an
-            // exhaustive bounded copier exists for composite expressions and all
-            // compiler-issued identity metadata, admit only ordinary names and
-            // immutable scalar literals. Unknown/composite nodes fail closed.
-            if (bound instanceof Ast.NameExpr callerName
-                    && !callerName.name().startsWith("$")) {
-                Ast.NameExpr copy = new Ast.NameExpr(callerName.name());
-                Ast.copyCheckedMetadata(callerName, copy);
-                MacroSyntaxProvenance.copyOrigins(callerName, copy);
-                return copy;
-            }
-            if (bound instanceof Ast.LiteralExpr literal) {
-                Object value = literal.value();
-                if (!(value instanceof Long || value instanceof Double
-                        || value instanceof String || value instanceof Boolean
-                        || value instanceof dev.oreslang.runtime.OresSymbol)) {
-                    throw new IllegalArgumentException(
-                            "unquote literal is not an admitted immutable scalar; "
-                                    + "composite syntax copying is not implemented");
-                }
-                Ast.LiteralExpr copy = new Ast.LiteralExpr(value);
-                Ast.copyCheckedMetadata(literal, copy);
-                MacroSyntaxProvenance.copyOrigins(literal, copy);
-                return copy;
-            }
-            throw new IllegalArgumentException(
-                    "unquote of composite or compiler-internal syntax is denied until "
-                            + "bounded identity-preserving AST copying is implemented; "
-                            + "runtime fallback is forbidden");
+            return copyCallerSyntax(bound, 0, new int[] {0});
         }
         if (expression instanceof Ast.LiteralExpr literal) {
             // Each template instantiation owns its own AST identity. Reusing the
