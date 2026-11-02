@@ -249,6 +249,10 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
         assertEquals(2, ((List<?>) ((ChannelRuntime.WriteCase<?>)
                 original.cases().getFirst()).value()).size());
         assertEquals(0, channel.size(), "constructing a SelectSet must not enqueue");
+        assertTrue(detached.trySelect(ChannelRuntime.SelectPolicy.PRIORITY).isPresent());
+        producer.add(9L);
+        assertEquals(List.of(7L), channel.tryRead().orElseThrow(),
+                "committed channel message must not observe later producer writes");
 
         java.lang.reflect.Field cursor = ChannelRuntime.SelectSet.class
                 .getDeclaredField("fairCursor");
