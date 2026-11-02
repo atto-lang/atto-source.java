@@ -17,7 +17,7 @@ final class DenseIndexTableTest {
             assertEquals(0L, zero.index());
             assertEquals(2, one.encodedWord());
             assertEquals(1L, one.index());
-            assertEquals(4, Integer.BYTES);
+            assertEquals(Integer.BYTES, DenseIndex32.storageWordBytes());
             assertTrue(table.isLive(zero));
             assertEquals(1, table.checkedStorageWord(zero).orElseThrow());
         }
