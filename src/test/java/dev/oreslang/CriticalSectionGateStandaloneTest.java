@@ -130,6 +130,47 @@ public final class CriticalSectionGateStandaloneTest {
             gate.retire();
             check(gate.quiescent(),"cancel-vs-execute race did not reclaim lease");
         }
+        // A scheduler-owned executor, not the releasing carrier, must run
+        // guest continuation callbacks. Rejected dispatch revokes its permit.
+        for (int round = 0; round < 300; round++) {
+            CriticalSectionGate gate = new CriticalSectionGate(81,2);
+            var owner = gate.enter(new Object(),81);
+            var waiting = gate.enter(new Object(),81);
+            java.util.ArrayDeque<Runnable> controlLane = new java.util.ArrayDeque<>();
+            var stage = waiting.whenReadyOn(controlLane::addLast);
+            AtomicInteger callback = new AtomicInteger();
+            stage.thenAccept(ticket -> callback.incrementAndGet());
+            owner.execute(() -> {});
+            check(controlLane.size() == 1,"scheduler handoff was not enqueued");
+            check(callback.get() == 0,"guest continuation executed inline on release");
+            controlLane.removeFirst().run();
+            check(stage.toCompletableFuture().join() == waiting,"resume lost granted ticket");
+            check(callback.get() == 1,"queued continuation was not dispatched");
+            waiting.execute(() -> {});
+            gate.retire();
+            check(gate.quiescent(),"scheduler handoff leaked owner");
+
+            CriticalSectionGate rejectGate = new CriticalSectionGate(82,2);
+            var rejectOwner = rejectGate.enter(new Object(),82);
+            var rejected = rejectGate.enter(new Object(),82);
+            var successor = rejectGate.enter(new Object(),82);
+            var failureStage = rejected.whenReadyOn(task -> {
+                throw new java.util.concurrent.RejectedExecutionException("scheduler closed");
+            });
+            rejectOwner.execute(() -> {});
+            try {
+                failureStage.toCompletableFuture().join();
+                throw new AssertionError("rejected executor did not fail stage");
+            } catch (java.util.concurrent.CompletionException expected) {
+                check(expected.getCause() instanceof java.util.concurrent.RejectedExecutionException,
+                        "rejected executor did not report dispatch failure");
+            }
+            check(successor.whenReady().toCompletableFuture().join() == successor,
+                    "rejected scheduler delivery stranded FIFO successor");
+            successor.execute(() -> {});
+            rejectGate.retire();
+            check(rejectGate.quiescent(),"rejected scheduler dispatch leaked gate");
+        }
         for (int round = 0; round < 300; round++) {
             CriticalSectionGate gate = new CriticalSectionGate(37,2);
             var owner=gate.enter(new Object(),37);

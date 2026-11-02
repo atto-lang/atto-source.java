@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Supplier;
 
@@ -41,8 +42,55 @@ public final class CriticalSectionGate {
             this.state = state;
         }
 
-        /** Observing this stage cannot grant a permit to another continuation. */
+        /**
+         * Host-only observation: default CompletableFuture continuations may
+         * run inline on the thread that releases the prior owner. The actor
+         * scheduler must NOT attach guest callbacks to this stage directly.
+         */
         public CompletionStage<Ticket> whenReady() { return ready.minimalCompletionStage(); }
+
+        /**
+         * Dispatch a granted continuation through a trusted scheduler executor
+         * instead of executing its completion callbacks on the release/control
+         * lane. The executor must enqueue asynchronously (not Runnable::run),
+         * and may not run guest closures in the critical gate itself.
+         *
+         * Cancellation between granting and scheduler dispatch is checked a
+         * second time. Executor rejection revokes the permit and hands off the
+         * next FIFO waiter rather than stranding the logical owner.
+         */
+        public CompletionStage<Ticket> whenReadyOn(Executor scheduler) {
+            Objects.requireNonNull(scheduler, "trusted scheduler");
+            CompletableFuture<Ticket> dispatched = new CompletableFuture<>();
+            ready.whenComplete((granted, failure) -> {
+                if (failure != null) {
+                    dispatched.completeExceptionally(failure);
+                    return;
+                }
+                try {
+                    scheduler.execute(() -> {
+                        CancellationException cancellation = null;
+                        synchronized (CriticalSectionGate.this) {
+                            if (terminalCancellation != null) {
+                                cancellation = terminalCancellation;
+                            } else if (retired || owner != this || state != State.GRANTED) {
+                                cancellation = new CancellationException(
+                                        "critical grant no longer admits execution");
+                            }
+                        }
+                        if (cancellation != null) {
+                            dispatched.completeExceptionally(cancellation);
+                        } else {
+                            dispatched.complete(granted);
+                        }
+                    });
+                } catch (RuntimeException rejection) {
+                    cancel();
+                    dispatched.completeExceptionally(rejection);
+                }
+            });
+            return dispatched.minimalCompletionStage();
+        }
 
         /**
          * Cancel an unstarted request. A running body cannot be preemptively
