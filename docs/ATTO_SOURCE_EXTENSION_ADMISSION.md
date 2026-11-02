@@ -12,3 +12,10 @@ This change supports `.atto` as a second native guest source extension, preservi
 - The full private `lru-cache-atto/lru-cache.atto` source tree is **not** mirrored into this repo. Those seven native fixtures and their compiler-dependent language syntax still require separate source-authorized exact-head guest verification.
 
 This is source admission only: it is not proof of the LRU cache's `critical fnc`, `InvertedArray`, zero-GC, native-image, or multi-backend parity. Keep the PR draft until exact-head executed JUnit and guest receipts.
+
+## Threat-model regressions
+
+- A `.atto` file containing a mixed `java { ... }` declaration is subjected to the same `JAVA_SOURCE_INTEROP` capability gate as `.ores`; extension renaming must never grant ambient host compilation.
+- A malformed UTF-8 **transitive** `.atto` import fails through the bounded reader, even when the entrypoint itself is valid. This disallows source-admission bypass by dependencies.
+
+These tests are committed but **not executed** while GitHub jobs report `steps=null`.

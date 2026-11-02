@@ -58,6 +58,37 @@ final class AttoSourceAdmissionTest {
     }
 
     @Test
+    void attoJavaIslandsDoNotBypassMixedSourceCapabilityChecks() throws Exception {
+        Path entry = temp.resolve("mixed.atto");
+        Files.writeString(entry, """
+                pub fnc main(): void { return; }
+                java { final class Helper {} }
+                """);
+        IsolatePolicy onlyHostInterop = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        SecurityException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                SecurityException.class,
+                () -> LinkedProgramRunner.run(entry, onlyHostInterop,
+                        ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(denied.getMessage().contains("JAVA_SOURCE_INTEROP"));
+    }
+
+    @Test
+    void importedAttoCannotBypassStrictUtf8Admission() throws Exception {
+        Path helper = temp.resolve("value.atto");
+        Path entry = temp.resolve("main.atto");
+        Files.write(helper, new byte[] {(byte) 0xC0, (byte) 0xAF});
+        Files.writeString(entry, """
+                import fnc answer from "./value.atto";
+                pub fnc main(): void { return; }
+                """);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                java.nio.charset.MalformedInputException.class,
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+    }
+
+    @Test
     void explicitAttoImportNeverResolvesToLegacyOresTwin() throws Exception {
         Path helper = temp.resolve("value.atto");
         Path legacy = temp.resolve("value.ores");
