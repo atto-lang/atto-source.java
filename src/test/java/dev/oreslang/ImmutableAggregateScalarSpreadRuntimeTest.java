@@ -222,7 +222,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
         // The wider runtime value also owns a nested non-Copy aggregate, but
         // the declared parameter exposes only "visible". Spread may project
         // only that static field; it must never enumerate the hidden object.
-        assertEquals("7\\n", execute("""
+        assertEquals("7\n", execute("""
                 fnc narrow(record{visible: int} source): record{visible: int} {
                     return record{...source};
                 }
@@ -241,7 +241,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
 
     @Test
     void structuralNarrowingStillAdmitsExplicitScalarOverride() {
-        assertEquals("42\\n", execute("""
+        assertEquals("42\n", execute("""
                 fnc override(record{visible: int} source): record{visible: int} {
                     return record{...source, visible: 42};
                 }
