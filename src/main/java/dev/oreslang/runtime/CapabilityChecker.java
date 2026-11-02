@@ -36,6 +36,7 @@ public final class CapabilityChecker {
 
     private CapabilityChecker(Ast.Program program, PermissionCheckMode permissionCheckMode) {
         this.permissionCheckMode = permissionCheckMode;
+        rejectUnloweredDurableDeclarations(program);
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (imported.wildcard()) {
@@ -63,6 +64,22 @@ public final class CapabilityChecker {
         }
     }
 
+    private static void rejectUnloweredDurableDeclarations(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ActivityDecl activity) {
+                    throw new IllegalArgumentException(
+                            "ACTIVITY_CAPABILITY_CHECK_UNSUPPORTED: '" + activity.name()
+                                    + "' requires activity effect and external capability admission");
+                }
+                if (declaration instanceof Ast.WorkflowDecl workflow) {
+                    throw new IllegalArgumentException(
+                            "WORKFLOW_CAPABILITY_CHECK_UNSUPPORTED: '" + workflow.name()
+                                    + "' requires replay-safe effect and durable state admission");
+                }
+            }
+        }
+    }
     public static void check(Ast.Program program, IsolatePolicy policy) {
         check(program, policy, PermissionCheckMode.COMPILE);
     }
