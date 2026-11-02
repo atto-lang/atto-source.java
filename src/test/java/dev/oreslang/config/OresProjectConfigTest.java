@@ -107,6 +107,27 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void attoOnlyImportsResolveAndLegacyResolutionIsStable() throws Exception {
+        Path importer = temp.resolve("entry.atto");
+        Files.writeString(importer, "pub routine main(): void { return; }");
+        Path attoOnly = temp.resolve("cache.atto");
+        Files.writeString(attoOnly, "pub fnc cache(): int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(attoOnly.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache").orElseThrow());
+        assertEquals(attoOnly.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache.atto").orElseThrow());
+
+        Path legacy = temp.resolve("cache.ores");
+        Files.writeString(legacy, "pub fnc cache(): int { return 17; }");
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache").orElseThrow());
+        assertEquals(attoOnly.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache.atto").orElseThrow());
+        assertTrue(config.resolveImport(importer, "./missing.atto").isEmpty());
+    }
+
+    @Test
     void rejectsUnsupportedSchemaVersion() throws Exception {
         Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
         Files.writeString(manifest, "schema_version = \"999\"\n");

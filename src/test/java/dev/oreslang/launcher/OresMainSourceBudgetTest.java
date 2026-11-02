@@ -18,6 +18,20 @@ final class OresMainSourceBudgetTest {
     }
 
     @Test
+    void rejectsOversizedAttoInputBeforeParsingOrExecuting() throws Exception {
+        Path source = temp.resolve("oversized.atto");
+        Files.write(source, new byte[16 * 1024 * 1024 + 1]);
+        assertEquals(1, OresMain.exitStatusForArgs(new String[] {source.toString()}));
+    }
+
+    @Test
+    void rejectsMalformedAttoUtf8BeforeParsingOrExecuting() throws Exception {
+        Path source = temp.resolve("invalid-utf8.atto");
+        Files.write(source, new byte[] {(byte) 0xFF, (byte) 0xFE, (byte) 0xFF});
+        assertEquals(1, OresMain.exitStatusForArgs(new String[] {source.toString()}));
+    }
+
+    @Test
     void rejectsMalformedUtf8BeforeParsingOrExecuting() throws Exception {
         Path source = temp.resolve("invalid-utf8.ores");
         Files.write(source, new byte[] {(byte) 0xFF, (byte) 0xFE, (byte) 0xFF});

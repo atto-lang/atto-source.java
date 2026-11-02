@@ -257,13 +257,21 @@ public final class OresProjectConfig {
         if (Files.isRegularFile(normalized)) return Optional.of(normalized);
 
         String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+        if (text.endsWith(".atto") || text.endsWith(".ores") || text.endsWith(".java")) {
+            return Optional.empty();
+        }
 
         Path ores = Path.of(normalized.toString() + ".ores");
         if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
 
         Path java = Path.of(normalized.toString() + ".java");
         if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
+
+        // Backwards-compatible unqualified import fallback. Existing .ores
+        // and .java imports retain precedence; an explicit .atto path is
+        // always exact, and a .atto-only project resolves without flags.
+        Path atto = Path.of(normalized.toString() + ".atto");
+        if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
 
         return Optional.empty();
     }
