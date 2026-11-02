@@ -86,9 +86,6 @@ public final class DurableExecutionManifest {
     }
 
     private static String methodJson(Ast.MethodDecl method) {
-        List<String> parameters = method.parameters().stream()
-                .map(p -> quote(typeName(p.type())))
-                .toList();
         List<String> parameterNames = method.parameters().stream()
                 .map(p -> "{\"name\":" + quote(p.name())
                         + ",\"type\":" + quote(typeName(p.type()))
