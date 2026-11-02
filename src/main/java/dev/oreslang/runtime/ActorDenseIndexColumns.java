@@ -156,6 +156,32 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
         putEncoded(offset(row, field), encodedWord);
     }
 
+    /**
+     * Store a compact word only after its table identity, epoch and generation
+     * have been validated. The four-byte column still stores only the word;
+     * callers must retain the typed handle for later boundary validation.
+     */
+    public <TTag> void writeHandle(
+            int row, int field, DenseIndex32<TTag> handle, DenseIndexTable<TTag> table) {
+        requireOwner();
+        Objects.requireNonNull(table, "table");
+        int word = table.checkedStorageWord(handle).orElseThrow(() ->
+                new IllegalStateException("foreign, stale or retired dense index handle"));
+        putEncoded(offset(row, field), word);
+    }
+
+    /**
+     * Check that a stored row word still denotes the supplied live table
+     * identity. A matching integer without a live typed handle is insufficient.
+     */
+    public <TTag> boolean matchesHandle(
+            int row, int field, DenseIndex32<TTag> handle, DenseIndexTable<TTag> table) {
+        requireOwner();
+        Objects.requireNonNull(table, "table");
+        var checked = table.checkedStorageWord(handle);
+        return checked.isPresent() && getEncoded(offset(row, field)) == checked.getAsInt();
+    }
+
     /** Copy encoded 32-bit words without allocating per-index wrapper objects. */
     public void copyEncodedColumnInto(int field, int[] destination, int destinationOffset) {
         requireOwner();
