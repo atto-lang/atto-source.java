@@ -30,6 +30,11 @@ public final class DenseIndex32<TTag> {
         this.generation = generation;
     }
 
+    /** Physical width of the compact storage word, excluding this boundary wrapper. */
+    public static int storageWordBytes() {
+        return Integer.BYTES;
+    }
+
     /** Unsigned compact storage bits; do not use these bits as a standalone identity. */
     public int encodedWord() {
         return encodedWord;
