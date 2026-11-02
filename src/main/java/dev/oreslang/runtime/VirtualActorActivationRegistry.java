@@ -51,14 +51,26 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         this.mailboxCapacity = mailboxCapacity;
     }
 
+    private static void checkUnicode(String value, String kind) {
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isISOControl(ch))
+                throw new IllegalArgumentException("control character in " + kind);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1)))
+                    throw new IllegalArgumentException("unpaired UTF-16 surrogate in " + kind);
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired UTF-16 surrogate in " + kind);
+            }
+        }
+    }
+
     private static String requireName(String value, String kind) {
         Objects.requireNonNull(value, kind);
         if (value.isBlank() || value.length() > 128)
             throw new IllegalArgumentException("invalid virtual actor " + kind);
-        for (int i = 0; i < value.length(); i++) {
-            if (Character.isISOControl(value.charAt(i)))
-                throw new IllegalArgumentException("control character in " + kind);
-        }
+        checkUnicode(value, kind);
         return value;
     }
 
@@ -71,8 +83,9 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public LogicalRef resolve(String declaration, String key) {
         declaration = requireName(declaration, "declaration");
         Objects.requireNonNull(key, "key");
+        checkUnicode(key, "key");
         String canonical = Normalizer.normalize(key, Normalizer.Form.NFC);
-        if (canonical.isEmpty() || canonical.indexOf('\u0000') >= 0 ||
+        if (canonical.isEmpty() ||
                 canonical.getBytes(StandardCharsets.UTF_8).length > MAX_KEY_BYTES) {
             throw new IllegalArgumentException("invalid virtual actor key");
         }
