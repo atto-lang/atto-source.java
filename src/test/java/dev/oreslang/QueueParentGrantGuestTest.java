@@ -75,7 +75,7 @@ final class QueueParentGrantGuestTest {
                 .out(output)
                 .build()) {
             context.eval(Source.newBuilder(OresLanguage.ID, PROGRAM,
-                    "queue-parent-grant-guest.ores")
+                    "queue-parent-grant-guest.atto")
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral());
         }
