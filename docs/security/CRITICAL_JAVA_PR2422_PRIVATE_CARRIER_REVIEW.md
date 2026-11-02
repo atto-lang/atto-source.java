@@ -16,8 +16,18 @@ for this candidate. This packet cannot be used as an authorization token.
 - New source PR head after a documentation-only safety correction on 2026-11-02:
   `6154046b6e38167226aed3c841f732089773c5ce`, complete root Git tree
   `57f7f10f601422bfabddb59b45862eae05dfbe3e`.
-  The prior head above is historical; **only this latest pin can be reviewed for a future exact-head plan**, and any subsequent source change again invalidates it.
-  Neither pin has stepful compiler/guest CI evidence.
+  The previous two heads above are historical. The current security-hardening
+  candidate is Java PR #2422 head
+  `d4e1fd1af08264bf928bde0cdcfddfb3d025eaf1`, complete Git root tree
+  `f09ffb5fffac56094a9a9dca68917f807d75fbd4`.
+  This is the only source pin eligible for *new independent review*, and any
+  head movement again invalidates it. The candidate adds an exact-Program
+  type-check proof, a compiler-owned publisher capability, fail-closed
+  ownership-only admission for critical ASTs, and authored negative tests.
+  Current focused workflow run 41394993544 failed before any steps
+  (`steps=null`); **no compiler, JUnit or guest result is established**.
+  Source-free alternate runner run 41391572866 attempt 2 independently
+  succeeded with five executed steps; this does not authorize private export.
 - Private candidate carrier: `gha-indie-worker/gha-indie-worker-docs`,
   numeric repository ID **1351003564**. Source-free capacity branch
   `ci/critical-source-free-runner-canary-20261101`, commit
