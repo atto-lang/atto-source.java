@@ -137,6 +137,7 @@ public final class DurableDeclarationAnalyzer {
             }
         }
         if (checks.isEmpty()) return workflow.body();
+        checks.add(new Ast.ReturnStmt(null));
 
         Set<String> occupied = new HashSet<>();
         workflow.body().methods().forEach(method -> occupied.add(method.name()));
