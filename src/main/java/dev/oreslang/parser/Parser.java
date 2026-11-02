@@ -844,6 +844,22 @@ public final class Parser {
     private void rejectUnloweredRuntimeEntityDeclaration() {
         if (check(EOF)) return;
         String name = peek().lexeme();
+        // Reserve the two-word declaration heads without mislowering them as
+        // ordinary actor/class declarations. These are contextual identifiers,
+        // so 'state' and 'virtual' remain valid names outside declaration heads.
+        if (current + 1 < tokens.size()) {
+            Token next = tokens.get(current + 1);
+            if (name.equals("state") && next.lexeme().equals("container")) {
+                throw error(peek(), "source state container declarations require "
+                        + "compiler-checked protected-heap ownership, critical access "
+                        + "and cross-backend lowering; not yet enabled");
+            }
+            if (name.equals("virtual") && next.type() == ACTOR) {
+                throw error(peek(), "source virtual actor declarations require "
+                        + "compiler-checked stable logical identity, activation fencing "
+                        + "and cross-backend lowering; not yet enabled");
+            }
+        }
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
             if (current + 2 < tokens.size()

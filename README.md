@@ -7,6 +7,8 @@ This repository contains the Java/Truffle reference implementation. The LLVM ver
 Do not use python for anything, use Rust instead of python to support the language.
 
 
+**Experimental declaration substrates:** [State container and virtual actor VM admission](docs/STATE_CONTAINER_VIRTUAL_ACTOR_SUBSTRATES.md). Guest `define state container` and `define virtual actor` are not yet compiled; this implementation currently supplies bounded access and activation capability primitives with distinct fail-closed parser diagnostics. Do not treat this as runtime parity.
+
 Notes on the compiler and runtime:
 
 - Strive for min gc or zero gc where possible. Having separate heaps/arenas per actor helps reduce gc overhead. Our borrow checking should reduce need for gc to zero.
