@@ -24,6 +24,24 @@ import org.junit.jupiter.api.Timeout;
 /** Adversarial admission/lifetime checks for the in-memory, actor-owned pub/sub path. */
 @Timeout(20)
 final class ActorPubSubAdversarialAdmissionTest {
+
+    @Test
+    void dynamicCallableAndNestedCallablePayloadsAreRejectedBeforeFanout() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            group.events().topic("data-only", ActorEventBus.DeliveryPolicy.LATEST, 2);
+            Runnable dynamicCallable = () -> { };
+            assertThrows(IllegalArgumentException.class,
+                    () -> group.events().publishSystem("data-only", dynamicCallable));
+            assertThrows(IllegalArgumentException.class,
+                    () -> group.events().publishSystem("data-only",
+                            List.of("ordinary-data", dynamicCallable)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> group.events().publishSystem("data-only",
+                            new Object[] { 42, dynamicCallable }));
+        }
+    }
+
     @Test
     void reliableRejectionRollsBackEverySubscriberReservation() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
