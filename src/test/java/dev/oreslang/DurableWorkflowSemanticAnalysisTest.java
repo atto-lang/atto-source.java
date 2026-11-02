@@ -157,7 +157,8 @@ final class DurableWorkflowSemanticAnalysisTest {
                 replaceWorkflow(original, query));
         String json = new String(manifest.canonicalBytes(), StandardCharsets.UTF_8);
         assertTrue(json.contains("\"kind\":\"query\""));
-        assertTrue(json.contains("\"id\":\"query\""));
+        assertFalse(json.contains("\"id\":\"query\""),
+                "read-only queries do not occupy durable history or receive command IDs");
     }
 
     private static Ast.Program replaceWorkflow(
