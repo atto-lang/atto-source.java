@@ -110,7 +110,8 @@ final class ActorCriticalGateIdentityTest {
             CountDownLatch delivered, AtomicReference<CriticalGate> gate)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (gate.get() == null && System.nanoTime() < deadline) {
+        while ((gate.get() == null || delivered.getCount() != 1)
+                && System.nanoTime() < deadline) {
             Thread.sleep(1);
         }
         return gate.get() != null && delivered.getCount() == 1;
