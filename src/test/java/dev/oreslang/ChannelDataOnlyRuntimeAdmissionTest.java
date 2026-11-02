@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.runtime.ChannelRuntime;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -224,6 +225,55 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
         };
         reject(forged);
         assertEquals(0, reads.get(), "size budget must fail before any indexed reads");
+    }
+
+    @Test
+    void dynamicSelectCopiesRawWriteCasesBeforeArmingAndKeepsFairCursor() throws Throwable {
+        ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(1);
+        ArrayList<Object> producer = new ArrayList<>(List.of(7L));
+        ChannelRuntime.SelectSet original = new ChannelRuntime.SelectSet(
+                List.of(ChannelRuntime.write(channel, producer),
+                        ChannelRuntime.defaultCase()));
+        ChannelRuntime.SelectSet detached = original.snapshotWritePayloads(value -> {
+            try {
+                return snapshot(value);
+            } catch (Throwable failure) {
+                throw new IllegalStateException(failure);
+            }
+        });
+        producer.add(8L);
+        ChannelRuntime.WriteCase<?> write =
+                (ChannelRuntime.WriteCase<?>) detached.cases().getFirst();
+        assertEquals(List.of(7L), write.value());
+        assertTrue(write.value() != producer);
+        assertEquals(2, ((List<?>) ((ChannelRuntime.WriteCase<?>)
+                original.cases().getFirst()).value()).size());
+        assertEquals(0, channel.size(), "constructing a SelectSet must not enqueue");
+
+        java.lang.reflect.Field cursor = ChannelRuntime.SelectSet.class
+                .getDeclaredField("fairCursor");
+        cursor.setAccessible(true);
+        assertTrue(cursor.get(original) == cursor.get(detached),
+                "detachment must preserve the reusable FAIR arbitration cursor");
+    }
+
+    @Test
+    void dynamicSelectRejectsHostInjectedCallableBeforeArming() {
+        ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectSet injected = new ChannelRuntime.SelectSet(
+                List.of(ChannelRuntime.write(channel, (Runnable) () -> { })));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> injected.snapshotWritePayloads(value -> {
+                    try {
+                        return snapshot(value);
+                    } catch (RuntimeException failure) {
+                        throw failure;
+                    } catch (Throwable failure) {
+                        throw new IllegalStateException(failure);
+                    }
+                }));
+        assertTrue(error.getMessage().contains("channel payload"), error.getMessage());
+        assertEquals(0, channel.size());
     }
 
     @Test
