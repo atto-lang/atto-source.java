@@ -27,7 +27,6 @@ public final class DurableDeclarationAnalyzer {
 
     public static DurableExecutionManifest analyze(Ast.Program program) {
         java.util.Objects.requireNonNull(program, "durable declaration program");
-        validateDurableTypeNamespace(program);
         List<Ast.ModuleDecl> rewrittenModules = new ArrayList<>();
         boolean found = false;
         for (Ast.ModuleDecl module : program.modules()) {
@@ -57,6 +56,7 @@ public final class DurableDeclarationAnalyzer {
                     module.name(), module.annotations(), module.contracts(), declarations));
         }
         if (!found) return DurableExecutionManifest.empty();
+        validateDurableTypeNamespace(program);
         validateCommandTargets(program);
         // Re-enter the normal checker using exact class bodies plus synthetic
         // checker-only methods that bind each recorded command payload to the
