@@ -27,7 +27,7 @@ public final class ScalarDeclarationI64Cli {
             throw new IllegalArgumentException("restricted guest source must be a regular file <=8192 bytes");
         }
         String source = Files.readString(file, StandardCharsets.UTF_8);
-        var declaration = ScalarDeclarationI64Compiler.compile(source);
+        var declaration = OresCompiler.compileProtectedScalarI64(source);
         long[] deltas = new long[args.length - 1];
         for (int i = 1; i < args.length; i++) {
             deltas[i - 1] = Long.parseLong(args[i]);
