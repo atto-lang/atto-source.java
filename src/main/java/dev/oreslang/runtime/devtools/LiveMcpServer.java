@@ -179,7 +179,7 @@ public final class LiveMcpServer implements AutoCloseable {
                         send(exchange, 200, error(id, -32602, "Unknown tool"));
                         return;
                     }
-                    Object args = p.getOrDefault("arguments", Map.of());
+                    Object args = p.containsKey("arguments") ? p.get("arguments") : Map.of();
                     if (!(args instanceof Map<?, ?> a) || !a.isEmpty()) {
                         send(exchange, 200, error(id, -32602, "Tool accepts no arguments"));
                         return;
@@ -274,9 +274,9 @@ public final class LiveMcpServer implements AutoCloseable {
                     String k = string();
                     need(':');
                     Object v = value(depth + 1);
-                    if (values.putIfAbsent(k, v) != null || (v == null && values.containsKey(k)
-                            && values.size() != new java.util.HashSet<>(values.keySet()).size()))
+                    if (values.containsKey(k))
                         throw new IllegalArgumentException("duplicate key");
+                    values.put(k, v);
                     if (take('}')) return values;
                     need(',');
                 } while (true);
