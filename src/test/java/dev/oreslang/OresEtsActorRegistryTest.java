@@ -404,4 +404,52 @@ final class OresEtsActorRegistryTest {
             assertTrue(executor.getRemoveOnCancelPolicy());
         }
     }
+
+    @Test
+    void tableChurnDoesNotAccumulateOwnerDoneFutureSubscribers() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 128)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var waitersField = dev.oreslang.runtime.OresFuture.class.getDeclaredField("waiters");
+            waitersField.setAccessible(true);
+            var doneWaiters = (java.util.Collection<?>) waitersField.get(owner.done());
+            int before = doneWaiters.size();
+            for (int i = 0; i < 96; i++) {
+                var id = registry.<String, Long>create(owner, Access.PUBLIC, 1, 64);
+                assertTrue(registry.insertNew(id, owner, "sequence", (long) i));
+                registry.retire(id, owner);
+            }
+            assertEquals(before, doneWaiters.size(),
+                    "retired tables must not pin owner completion listeners");
+            assertEquals(0, registry.liveTableCount());
+            var live = registry.<String, Long>create(owner, Access.PUBLIC, 1, 64);
+            owner.stop();
+            assertThrows(IllegalStateException.class,
+                    () -> registry.lookup(live, owner, "sequence"));
+            registry.reap();
+            assertEquals(0, registry.liveTableCount());
+        }
+    }
+
+    @Test
+    void actorTerminationReapsWithoutPerTableCompletionCallbacks() {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 64)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var peer = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var handles = new java.util.ArrayList<OresEtsActorRegistry.TableId<String, Integer>>();
+            for (int i = 0; i < 48; i++) {
+                var id = registry.<String, Integer>create(owner, Access.PUBLIC, 1, 64);
+                registry.insert(id, peer, "k", i);
+                handles.add(id);
+            }
+            assertEquals(48, registry.liveTableCount());
+            owner.stop();
+            for (var id : handles) {
+                assertThrows(IllegalStateException.class, () -> registry.lookup(id, peer, "k"));
+            }
+            registry.reap();
+            assertEquals(0, registry.liveTableCount());
+        }
+    }
 }
