@@ -6,6 +6,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
@@ -111,6 +112,17 @@ final class DurableActivityWorkflowDeclarationTest {
                 .contains("WORKFLOW_CAPABILITY_CHECK_UNSUPPORTED"));
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(java.util.Map.of("workflow.ores", source)));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source)).getMessage()
+                .contains("WORKFLOW_EXECUTION_UNSUPPORTED"));
+
+        Ast.Program duplicateType = Parser.parse("""
+                define class Checkout as end
+                define workflow Checkout as run(int id) -> int { return id; } end
+                """);
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(duplicateType)).getMessage()
+                .contains("DURABLE_TYPE_NAMESPACE_DUPLICATE"));
     }
 
     @Test void declarationAnnotationListsAreImmutable() {
