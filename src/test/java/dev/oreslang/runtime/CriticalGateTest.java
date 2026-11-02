@@ -190,6 +190,15 @@ final class CriticalGateTest {
             Thread cancelling = Thread.ofPlatform().start(() -> cancelled.cancel(false));
             releasing.join();
             cancelling.join();
+            // Cancellation after an already-successful grant cannot revoke
+            // committed ownership. In that ordering, the winner must explicitly
+            // finish its critical body and release before the survivor advances.
+            if (!cancelled.isCancelled()) {
+                assertTrue(cancelled.isDone(), "grant/cancel left waiter unsettled");
+                CriticalGate.Ticket granted = cancelled.join();
+                assertTrue(gate.holds(granted));
+                gate.release(granted);
+            }
             assertTrue(survivor.isDone(), "survivor must never starve");
             assertTrue(gate.holds(survivor.join()), "survivor not admitted");
             assertFalse(gate.holds(owner), "old owner survived handoff");
