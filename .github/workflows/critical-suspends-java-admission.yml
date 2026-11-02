@@ -1,4 +1,4 @@
-name: Critical suspends Java admission (no guest critical execution)
+name: Critical suspends Java compiler and guest verification
 
 on:
   pull_request:
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  source-admission-only:
+  critical-guest-verification:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -52,5 +52,5 @@ jobs:
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
       - name: Mark evidence scope
         run: |
-          echo "Source parser, conservative effects and host-ticket tests only."
+          echo "Scoped Java host-ticket tests plus native Graal actor critical guest fixture."
           echo "Graal actor-critical guest fixture was included; cross-backend parity remains unverified."
