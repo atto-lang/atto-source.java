@@ -57,15 +57,21 @@ final class DurableActivityWorkflowDeclarationTest {
         assertInstanceOf(Ast.WorkflowDecl.class, program.modules().getFirst().declarations().get(1));
     }
 
-    @Test void declarationsDoNotFallBackToOrdinaryClassTypeChecking() {
-        Ast.Program activity = Parser.parse("define activity Email as send(int id) -> int { return id; } end");
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(activity));
-        assertTrue(failure.getMessage().contains("ACTIVITY_EXECUTION_UNSUPPORTED"));
-        Ast.Program workflow = Parser.parse("define workflow Checkout as run(int id) -> int { return id; } end");
-        IllegalArgumentException workflowFailure = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(workflow));
-        assertTrue(workflowFailure.getMessage().contains("WORKFLOW_EXECUTION_UNSUPPORTED"));
+    @Test void activityAndWorkflowMembersUseTheOrdinaryCheckedMemberTypeRules() {
+        Ast.Program program = Parser.parse("""
+                define activity PaymentProvider as
+                    charge(int cents) -> int { return cents; }
+                    refund(int cents) -> bool { return cents > 0; }
+                end
+                define workflow Checkout as
+                    run(int order_id) -> int { return order_id; }
+                end
+                """);
+        Ast.Program checked = assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+        assertInstanceOf(Ast.ActivityDecl.class, checked.modules().getFirst().declarations().get(0));
+        assertInstanceOf(Ast.WorkflowDecl.class, checked.modules().getFirst().declarations().get(1));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
+                "define activity Broken as charge(int cents) -> int { return \"wrong\"; } end")));
     }
 
     @Test void ordinaryClassDeclarationRemainsDistinct() {
@@ -95,9 +101,8 @@ final class DurableActivityWorkflowDeclarationTest {
     @Test void directCompilerPassesRejectDurableDeclarationsUntilTheirContractsExist() {
         String source = "define workflow Checkout as run(int id) -> int { return id; } end";
         Ast.Program program = Parser.parse(source);
-        assertTrue(assertThrows(IllegalArgumentException.class,
-                () -> AnnotationExpander.expand(program)).getMessage()
-                .contains("WORKFLOW_ANNOTATION_EXPANSION_UNSUPPORTED"));
+        Ast.Program expanded = assertDoesNotThrow(() -> AnnotationExpander.expand(program));
+        assertInstanceOf(Ast.WorkflowDecl.class, expanded.modules().getFirst().declarations().getFirst());
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> TreeShaker.shake(program, BuildOptions.library(java.util.Map.of()))).getMessage()
                 .contains("WORKFLOW_TREE_SHAKING_UNSUPPORTED"));
