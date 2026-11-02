@@ -62,10 +62,17 @@ final class MacroUnquoteIdentityIsolationTest {
     }
 
     @Test
-    void supportedScalarSpliceUsesFreshIdentityAndCopiesExistingProvenance() {
+    void supportedScalarSpliceUsesFreshIdentityAndPreservesPriorProvenance() {
         Ast.Program program = parse("2");
         Ast.Expr original = input(program).expression();
         assertInstanceOf(Ast.LiteralExpr.class, original);
+        MacroSyntaxProvenance.Origin prior = new MacroSyntaxProvenance.Origin(
+                new MacroSyntaxProvenance.HygieneIdentity(
+                        "test-unit", "Main", "Main", "prior",
+                        new Ast.SourceSite(1, 1), 0),
+                new Ast.SourceSite(1, 1),
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE);
+        MacroSyntaxProvenance.record(original, prior);
 
         Ast.Program expanded = assertDoesNotThrow(() -> MacroExpander.expand(program));
         Ast.BinaryExpr result = assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded));
@@ -74,10 +81,12 @@ final class MacroUnquoteIdentityIsolationTest {
         assertNotSame(original, emitted,
                 "each emitted splice occurrence must have a distinct AST identity");
         assertEquals(original, emitted);
-        assertTrue(MacroSyntaxProvenance.lookup(emitted).size() > 0,
-                "the emitted leaf must receive its expansion provenance");
-        assertTrue(MacroSyntaxProvenance.lookup(original).isEmpty(),
-                "provenance must not be published on the original caller-owned leaf");
+        assertTrue(MacroSyntaxProvenance.lookup(emitted).contains(prior),
+                "existing compiler-issued provenance must follow the copied syntax identity");
+        assertTrue(MacroSyntaxProvenance.lookup(emitted).size() > 1,
+                "the emitted leaf must also receive the current expansion provenance");
+        assertEquals(java.util.List.of(prior), MacroSyntaxProvenance.lookup(original),
+                "the original caller-owned leaf must retain only its preexisting provenance");
     }
 
     @Test
