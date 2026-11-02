@@ -235,6 +235,25 @@ final class StateBackedOwnedInstanceV1Test {
     }
 
     @Test
+    void inactiveAnnotationsInNestedCommentsDoNotGrantStateBackingAuthority() {
+        String source = """
+                /* @StateBacked(MutableStateContainer(scope = #shared))
+                   /* @Inject(SecretProvider) is also a comment */
+                */
+                define class Plain as
+                    let int value = 5;
+                end
+                """;
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(source);
+        Ast.ClassDecl plain = checked.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl)
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        assertTrue(plain.annotations().isEmpty(),
+                "commented annotations cannot manufacture backing capabilities");
+    }
+
+    @Test
     void unannotatedClassStillRetainsPreviousFrontendBehavior() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 "define class Plain as let int count = 0; end\n"));
