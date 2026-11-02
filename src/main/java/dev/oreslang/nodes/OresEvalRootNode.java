@@ -4882,6 +4882,13 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
 
+                                    try {
+                                        requireDataOnlyChannelPayload(value);
+                                    } catch (RuntimeException | Error invalidPayload) {
+                                        continuation.accept(t2, null, invalidPayload);
+                                        return;
+                                    }
+
                                     if (operation.callback()) {
                                         try {
                                             if (!ActorRuntime.inActorExecution()) {
@@ -6634,9 +6641,13 @@ public final class OresEvalRootNode extends RootNode {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
                             requireChannel(eval(arm.channel(), env), "readch select case")));
-                    case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
-                            eval(arm.value(), env)));
+                    case WRITE -> {
+                        Object value = eval(arm.value(), env);
+                        requireDataOnlyChannelPayload(value);
+                        cases.add(ChannelRuntime.write(
+                                requireChannel(eval(arm.channel(), env), "writech select case"),
+                                value));
+                    }
                     case AWAIT -> {
                         Object future = eval(arm.channel(), env);
                         if (!(future instanceof OresFuture<?> typedFuture)) {
@@ -6739,6 +6750,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Object value = eval(operation.value(), env);
+            requireDataOnlyChannelPayload(value);
             if (operation.callback()) {
                 if (!ActorRuntime.inActorExecution()) {
                     throw new IllegalStateException(
@@ -6782,6 +6794,88 @@ public final class OresEvalRootNode extends RootNode {
                     yield null;
                 }
             };
+        }
+
+        /**
+         * Defensive runtime admission for all source-visible channel writes.
+         * Compiler Sendable checks run first, but dynamically sourced values
+         * must not smuggle callable lexical environments through a channel.
+         * Do not apply this to runtime-internal ChannelRuntime completions.
+         */
+        private static void requireDataOnlyChannelPayload(Object value) {
+            requireDataOnlyChannelPayload(
+                    value, new IdentityHashMap<>(), 0);
+        }
+
+        private static void requireDataOnlyChannelPayload(
+                Object value, IdentityHashMap<Object, Boolean> visiting, int depth) {
+            if (depth > 128 || visiting.size() > 65536) {
+                throw new IllegalArgumentException(
+                        "channel payload exceeds safe data graph limits");
+            }
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "channel payload cannot be null; use Option<T>");
+            }
+            if (value instanceof Invokable
+                    || value instanceof Runnable
+                    || value instanceof java.util.concurrent.Callable<?>
+                    || value instanceof java.lang.invoke.MethodHandle
+                    || value instanceof java.lang.reflect.Method) {
+                throw new IllegalArgumentException(
+                        "channel payload cannot contain a function, bound method, closure, or lexical environment");
+            }
+            if (value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Enum<?> || value instanceof java.util.UUID
+                    || value instanceof Complex || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>) {
+                return;
+            }
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException(
+                        "cyclic channel payload graph cannot be verified as data-only");
+            }
+            try {
+                if (value instanceof OptionValue option) {
+                    if (option.present()) {
+                        requireDataOnlyChannelPayload(option.value(), visiting, depth + 1);
+                    }
+                } else if (value instanceof ResultValue result) {
+                    requireDataOnlyChannelPayload(result.value(), visiting, depth + 1);
+                } else if (value instanceof ReadonlyRecordValue record) {
+                    requireDataOnlyChannelPayload(record.fields, visiting, depth + 1);
+                } else if (value instanceof OresObject object) {
+                    for (Object field : object.fields.values()) {
+                        requireDataOnlyChannelPayload(field, visiting, depth + 1);
+                    }
+                } else if (value instanceof List<?> list) {
+                    for (Object field : list) {
+                        requireDataOnlyChannelPayload(field, visiting, depth + 1);
+                    }
+                } else if (value instanceof Set<?> set) {
+                    for (Object field : set) {
+                        requireDataOnlyChannelPayload(field, visiting, depth + 1);
+                    }
+                } else if (value instanceof Map<?, ?> map) {
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        requireDataOnlyChannelPayload(entry.getKey(), visiting, depth + 1);
+                        requireDataOnlyChannelPayload(entry.getValue(), visiting, depth + 1);
+                    }
+                } else if (value.getClass().isArray()) {
+                    int length = java.lang.reflect.Array.getLength(value);
+                    for (int i = 0; i < length; i++) {
+                        requireDataOnlyChannelPayload(
+                                java.lang.reflect.Array.get(value, i), visiting, depth + 1);
+                    }
+                } else {
+                    throw new IllegalArgumentException(
+                            "channel payload is not a recognized data-only value: "
+                                    + value.getClass().getName());
+                }
+            } finally {
+                visiting.remove(value);
+            }
         }
 
         private Object awaitBlockingChannelFuture(
@@ -11231,6 +11325,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
             }
+            Evaluator.requireDataOnlyChannelPayload(args.get(1));
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
                     args.get(1));
