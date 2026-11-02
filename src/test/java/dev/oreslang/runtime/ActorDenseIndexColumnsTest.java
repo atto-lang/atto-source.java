@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Timeout;
 
 @Timeout(20)
 final class ActorDenseIndexColumnsTest {
+    private static final class EntityTag { }
+
     @Test
     void allLayoutsPreserveCompactIndexWords() throws Exception {
         for (ActorShardColumns.Layout layout : ActorShardColumns.Layout.values()) {
