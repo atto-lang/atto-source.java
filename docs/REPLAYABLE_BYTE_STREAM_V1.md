@@ -56,3 +56,7 @@ An immutable `ReplayCheckpoint` is a coherent copy of the current offsets only: 
 - Add encoder/decoder differential integration with an explicitly selected codec and native adapter (FFmpeg first), packet fragmentation, frame loss, IDR/keyframe resync, bitrate changes and 2 MiB quota stress. Record unsupported backends as unsupported, never passing by fallback to a host-only model.
 
 **Release gate:** no production designation until the same guest semantics, ownership and failure outcomes have stepful exact-head evidence on Java/GraalVM, LLVM, .NET NativeAOT, Wasm/Wasmtime and Cranelift. The reference file currently has no verified such result.
+
+## Additional v1 admission checks (source-only, not executed)
+
+The shared guest fixture now contains 80 unique `REPLAY-PASS|...` assertions. The seven added checks cover regressive/duplicate transport send markers, idempotent repeated ACKs, negative and oversized read requests, and invalid trailing byte rejection without advancing the produced watermark. These are candidate Oreslang guest checks, **not** compiler, actor, codec, or NativeAOT execution evidence. No private-source CI mirroring is authorized under the current incident hold.
