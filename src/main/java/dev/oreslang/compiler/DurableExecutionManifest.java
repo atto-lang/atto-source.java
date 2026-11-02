@@ -89,21 +89,74 @@ public final class DurableExecutionManifest {
     }
 
     private static String commandJson(int order, Ast.WorkflowCommand command) {
-        String id = "query";
+        String id = null;
         String kind;
         String target = "";
-        if (command instanceof Ast.ActivityStepCommand c) { id = c.commandId(); kind = "activity_step"; target = c.activityName() + "." + c.operation(); }
-        else if (command instanceof Ast.TimerCommand c) { id = c.commandId(); kind = "timer"; }
+        List<Ast.Expr> arguments = List.of();
+        if (command instanceof Ast.ActivityStepCommand c) { id = c.commandId(); kind = "activity_step"; target = c.activityName() + "." + c.operation(); arguments = c.arguments(); }
+        else if (command instanceof Ast.TimerCommand c) { id = c.commandId(); kind = "timer"; arguments = List.of(c.delay()); }
         else if (command instanceof Ast.WaitForEventCommand c) { id = c.commandId(); kind = "wait_event"; target = c.eventType(); }
-        else if (command instanceof Ast.SignalCommand c) { id = c.commandId(); kind = "signal"; target = c.endpoint(); }
+        else if (command instanceof Ast.SignalCommand c) { id = c.commandId(); kind = "signal"; target = c.endpoint(); arguments = c.arguments(); }
         else if (command instanceof Ast.QueryCommand c) { kind = "query"; target = c.endpoint(); }
-        else if (command instanceof Ast.UpdateCommand c) { id = c.commandId(); kind = "update"; target = c.endpoint(); }
-        else if (command instanceof Ast.ChildWorkflowCommand c) { id = c.commandId(); kind = "child_workflow"; target = c.workflowName(); }
-        else if (command instanceof Ast.ContinueAsNewCommand c) { id = c.commandId(); kind = "continue_as_new"; }
-        else if (command instanceof Ast.CompensationCommand c) { id = c.commandId(); kind = "compensation"; target = c.activityName() + "." + c.operation(); }
+        else if (command instanceof Ast.UpdateCommand c) { id = c.commandId(); kind = "update"; target = c.endpoint(); arguments = c.arguments(); }
+        else if (command instanceof Ast.ChildWorkflowCommand c) { id = c.commandId(); kind = "child_workflow"; target = c.workflowName(); arguments = List.of(c.input()); }
+        else if (command instanceof Ast.ContinueAsNewCommand c) { id = c.commandId(); kind = "continue_as_new"; arguments = List.of(c.input()); }
+        else if (command instanceof Ast.CompensationCommand c) { id = c.commandId(); kind = "compensation"; target = c.activityName() + "." + c.operation(); arguments = c.arguments(); }
         else throw new IllegalArgumentException("unknown workflow command node " + command.getClass().getName());
-        return "{\"order\":" + order + ",\"kind\":" + quote(kind)
-                + ",\"id\":" + quote(id) + ",\"target\":" + quote(target) + "}";
+        String stableId = id == null ? "" : ",\\"id\\":" + quote(id);
+        return "{\\"order\\":" + order + ",\\"kind\\":" + quote(kind)
+                + stableId + ",\\"target\\":" + quote(target)
+                + ",\\"arguments\\":[" + String.join(",", arguments.stream()
+                        .map(DurableExecutionManifest::expressionJson).toList()) + "]}";
+    }
+
+    private static String expressionJson(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            if (value instanceof String text) return "{\\"kind\\":\\"string\\",\\"value\\":" + quote(text) + "}";
+            if (value instanceof Boolean bool) return "{\\"kind\\":\\"bool\\",\\"value\\":" + bool + "}";
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                return "{\\"kind\\":\\"int\\",\\"value\\":" + value + "}";
+            }
+            if (value instanceof Float || value instanceof Double) {
+                double number = ((Number) value).doubleValue();
+                if (!Double.isFinite(number)) throw new IllegalArgumentException("non-finite workflow command literal");
+                return "{\\"kind\\":\\"float\\",\\"value\\":" + Double.toString(number) + "}";
+            }
+            if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
+                return "{\\"kind\\":\\"symbol\\",\\"value\\":" + quote(symbol.toString()) + "}";
+            }
+            throw new IllegalArgumentException("workflow command literal is not canonical/serializable: "
+                    + (value == null ? "null" : value.getClass().getSimpleName()));
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            if (name.name().startsWith("$")) throw new IllegalArgumentException("internal names are not workflow command values");
+            return "{\\"kind\\":\\"name\\",\\"value\\":" + quote(name.name()) + "}";
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return "{\\"kind\\":\\"unary\\",\\"op\\":" + quote(unary.operator())
+                    + ",\\"value\\":" + expressionJson(unary.operand()) + "}";
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return "{\\"kind\\":\\"binary\\",\\"op\\":" + quote(binary.operator())
+                    + ",\\"left\\":" + expressionJson(binary.left())
+                    + ",\\"right\\":" + expressionJson(binary.right()) + "}";
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return "{\\"kind\\":\\"conditional\\",\\"condition\\":" + expressionJson(conditional.condition())
+                    + ",\\"true\\":" + expressionJson(conditional.whenTrue())
+                    + ",\\"false\\":" + expressionJson(conditional.whenFalse()) + "}";
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return "{\\"kind\\":\\"list\\",\\"items\\":[" + String.join(",", list.elements().stream()
+                    .map(DurableExecutionManifest::expressionJson).toList()) + "]}";
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return "{\\"kind\\":\\"tuple\\",\\"items\\":[" + String.join(",", tuple.elements().stream()
+                    .map(DurableExecutionManifest::expressionJson).toList()) + "]}";
+        }
+        throw new IllegalArgumentException("workflow command expression is outside the canonical serializable subset: "
+                + expression.getClass().getSimpleName());
     }
 
     private static String typeName(Ast.TypeRef type) {
