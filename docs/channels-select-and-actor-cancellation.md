@@ -153,6 +153,15 @@ instance may pass as a nominal object. Host-only regression suites cover
 post-send producer mutation, dynamic case admission, cyclic graphs, and
 oversized data.
 
+**P0 unresolved nominal-object safety:** `OresObject` snapshots currently
+copy fields but retain the original `Evaluator owner`, which carries
+execution and callable-dispatch authority. This does **not** prove nominal
+values are owner-free `MessageData`. See
+[Java issue #2462](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/2462).
+Until an explicit fail-closed compiler/runtime restriction or an independently
+verified owner-free nominal representation is implemented, **do not merge,
+release or claim nominal channel payload isolation**.
+
 The compiler/runtime equality of this policy is currently **under review**.
 This Java interpreter snapshot is not a proof of simultaneous hostile-host
 mutation safety, global lock-free publication, or cross-backend compiler parity.
