@@ -137,7 +137,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private final Map<Object, Set<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
     private final Set<Object> retiredDomains = ConcurrentHashMap.newKeySet();
     // Every retired actor domain owns at most one round-robin maintenance ticket.
-    private final ConcurrentLinkedQueue<Object> retiredDomainQueue = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<WeakReference<Object>> retiredDomainQueue = new ConcurrentLinkedQueue<>();
     private final ReferenceQueue<Object> referenceQueue = new ReferenceQueue<>();
     private final AtomicLong collections = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -288,7 +288,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             // Actors without resources are the common case. Do not retain their
             // domain (and potentially their heap) indefinitely in a tombstone set.
             if (trackedByDomain.containsKey(actorDomain) && retiredDomains.add(actorDomain)) {
-                retiredDomainQueue.offer(actorDomain);
+                retiredDomainQueue.offer(new WeakReference<>(actorDomain));
             }
         }
         // Actor termination runs on a latency-sensitive path. Defer remaining
@@ -387,9 +387,10 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             int retiredWorkLimit = maxEntriesToInspect == Integer.MAX_VALUE
                     ? maxTracked : maxEntriesToInspect;
             while (inspected < retiredWorkLimit) {
-                Object retired = retiredDomainQueue.poll();
-                if (retired == null) break;
-                if (!retiredDomains.contains(retired)) {
+                WeakReference<Object> ticket = retiredDomainQueue.poll();
+                if (ticket == null) break;
+                Object retired = ticket.get();
+                if (retired == null || !retiredDomains.contains(retired)) {
                     inspected++;
                     continue;
                 }
@@ -421,7 +422,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     }
                 }
                 if (retiredDomains.contains(retired)) {
-                    retiredDomainQueue.offer(retired);
+                    retiredDomainQueue.offer(ticket);
                 }
             }
         } else {
