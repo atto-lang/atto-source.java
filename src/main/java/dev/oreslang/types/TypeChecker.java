@@ -153,6 +153,11 @@ public final class TypeChecker {
      * projection could silently discard the metadata.
      */
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
+        // This performs semantic/member checking and produces the canonical
+        // metadata contract, but does not enable runtime execution. The
+        // lowerer, tree shaker, capability gate and incremental ABI gate
+        // continue to reject until durable runtime contracts are implemented.
+        DurableDeclarationAnalyzer.analyze(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
@@ -160,18 +165,9 @@ public final class TypeChecker {
                             "checked exceptional effect on function '" + fn.name()
                                     + "' is parsed but not yet enabled for type checking");
                 }
-                if (declaration instanceof Ast.ActivityDecl activity) {
-                    throw new IllegalArgumentException(
-                            "ACTIVITY_EXECUTION_UNSUPPORTED: '" + activity.name()
-                                    + "' is parsed as a class-shaped activity declaration but requires "
-                                    + "typed external-effect admission, dispatch, retry, idempotency and durable result recording");
-                }
-                if (declaration instanceof Ast.WorkflowDecl workflow) {
-                    throw new IllegalArgumentException(
-                            "WORKFLOW_EXECUTION_UNSUPPORTED: '" + workflow.name()
-                                    + "' is parsed as a class-shaped workflow declaration but requires "
-                                    + "deterministic replay, durable history, timers, signals and recovery lowering");
-                }
+                // Durable declarations are analyzed as distinct declaration kinds.
+                // Their member bodies are type-checked through the shared class
+                // checker, while executable dispatch/history remains a separate gate.
                 if (declaration instanceof Ast.StateContainerDecl state) {
                     throw new IllegalArgumentException(
                             "STATE_CONTAINER_MIR_UNSUPPORTED: '" + state.name()
