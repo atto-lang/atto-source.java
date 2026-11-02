@@ -519,6 +519,30 @@ final class MutableShareCompilerTest {
         assertTrue(denial.getMessage().contains("rt mut share"), denial.getMessage());
     }
     @Test
+    void sixBackendSharedDenialVectorsCannotBecomeOrdinaryAliases() {
+        // Exact six-expression intersection with Wasm, Cranelift and .NET.
+        // These are intentionally invalid; positive sharing still requires
+        // an owned builtin SharedMutex<T> handle plus an exclusive guard.
+        for (String expression : new String[] {
+                "rt mut share 42",
+                "(rt mut share 42)",
+                "1 + (rt mut share 2)",
+                "rt mut share (rt borrow 3)",
+                "rt mut share (rt mut borrow 4)",
+                "rt mut share (rt mut share 5)"
+        }) {
+            String source = """
+                    fnc bad(): int {
+                      return %s;
+                    }
+                    """.formatted(expression);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OwnershipChecker.check(TypeChecker.check(Parser.parse(source))),
+                    "invalid shared writable alias must not be compiled: " + expression);
+        }
+    }
+
+    @Test
     void commentSeparatedMutableSharingKeepsGuardedOperation() {
         for (String expression : new String[] {
                 "rt /* space */ mut /* guard */ share mutex",
