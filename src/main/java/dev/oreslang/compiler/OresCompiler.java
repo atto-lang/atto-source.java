@@ -18,7 +18,9 @@ public final class OresCompiler {
      * admission for general compilation and does not claim native AOT.
      */
     public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(String source) {
-        return ProtectedScalarMirV1.lower(Parser.parse(source));
+        Ast.Program parsed = Parser.parse(source);
+        rejectUnloweredDurableExecution(parsed, "protected scalar MIR");
+        return ProtectedScalarMirV1.lower(parsed);
     }
 
     public static Ast.Program parseAndTypeCheck(String source) {
@@ -29,6 +31,7 @@ public final class OresCompiler {
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        rejectUnloweredDurableExecution(checked.program(), "executable compiler admission");
         return checked.program();
     }
 
@@ -39,6 +42,7 @@ public final class OresCompiler {
                 TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                         program, java.util.Map.of(), java.util.Map.of(), importedContracts);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        rejectUnloweredDurableExecution(checked.program(), "linked executable compiler admission");
         return checked.program();
     }
 
@@ -54,7 +58,28 @@ public final class OresCompiler {
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        rejectUnloweredDurableExecution(checked.program(), "diagnostic executable compiler admission");
         return new AnalysisResult(checked.program(), checked.warnings());
+    }
+
+    /** Member semantics are inspectable through TypeChecker, but no executable
+     * compiler entry point may hand an unlowered durable declaration to a
+     * backend which could silently ignore its wrapper. */
+    private static void rejectUnloweredDurableExecution(Ast.Program program, String phase) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ActivityDecl activity) {
+                    throw new IllegalArgumentException(
+                            "ACTIVITY_EXECUTION_UNSUPPORTED: '" + module.name() + "." + activity.name()
+                                    + "' passed member semantic checking but has no executable dispatcher/ABI in " + phase);
+                }
+                if (declaration instanceof Ast.WorkflowDecl workflow) {
+                    throw new IllegalArgumentException(
+                            "WORKFLOW_EXECUTION_UNSUPPORTED: '" + module.name() + "." + workflow.name()
+                                    + "' passed member semantic checking but has no durable replay/history lowering in " + phase);
+                }
+            }
+        }
     }
 
     /**
