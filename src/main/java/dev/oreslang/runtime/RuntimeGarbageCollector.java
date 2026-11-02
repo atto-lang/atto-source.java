@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -24,6 +25,8 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private static final int DEFAULT_MAX_TRACKED = 100_000;
     private static final int DEFAULT_MAX_TRACKED_PER_ACTOR = 4_096;
     private static final int DEFAULT_MAX_ACTOR_SWEEP_ENTRIES = 256;
+    private static final int DEFAULT_MAX_ACTOR_EXIT_SWEEP_ENTRIES = 32;
+    private static final int DEFAULT_RETIRED_DOMAIN_SWEEP_QUANTUM = 32;
     private static final int DEFAULT_MAX_PERIODIC_SWEEP_ENTRIES = 256;
     private static final Object PROCESS_DOMAIN = new Object();
     private static final ScheduledThreadPoolExecutor SWEEP_TIMER = createSweepTimer();
@@ -133,6 +136,8 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private final Set<TrackedCleanup> retryableFailures = ConcurrentHashMap.newKeySet();
     private final Map<Object, Set<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
     private final Set<Object> retiredDomains = ConcurrentHashMap.newKeySet();
+    // Every retired actor domain owns at most one round-robin maintenance ticket.
+    private final ConcurrentLinkedQueue<Object> retiredDomainQueue = new ConcurrentLinkedQueue<>();
     private final ReferenceQueue<Object> referenceQueue = new ReferenceQueue<>();
     private final AtomicLong collections = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -282,9 +287,14 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             ensureOpen();
             // Actors without resources are the common case. Do not retain their
             // domain (and potentially their heap) indefinitely in a tombstone set.
-            if (trackedByDomain.containsKey(actorDomain)) retiredDomains.add(actorDomain);
+            if (trackedByDomain.containsKey(actorDomain) && retiredDomains.add(actorDomain)) {
+                retiredDomainQueue.offer(actorDomain);
+            }
         }
-        return sweep(actorDomain, false, Integer.MAX_VALUE);
+        // Actor termination runs on a latency-sensitive path. Defer remaining
+        // cleanup instead of visiting thousands of hooks synchronously.
+        return sweep(actorDomain, false,
+                Math.min(maxActorSweepEntries, DEFAULT_MAX_ACTOR_EXIT_SWEEP_ENTRIES));
     }
 
     private boolean requestJvmGcIfAllowed() {
@@ -315,10 +325,18 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         int cleanupFailures = 0;
 
         if (requestedDomain == null) {
+            // Reserve a bounded maintenance slice for retired actor heaps:
+            // retry storms and dead-owner queue bursts cannot starve them.
+            boolean pendingRetirements = !retiredDomainQueue.isEmpty();
+            int retryLimit = pendingRetirements && maxEntriesToInspect != Integer.MAX_VALUE
+                    ? Math.max(1, maxEntriesToInspect / 4) : maxEntriesToInspect;
+            int weakQueueLimit = pendingRetirements && maxEntriesToInspect != Integer.MAX_VALUE
+                    ? maxEntriesToInspect - Math.max(1, maxEntriesToInspect / 4)
+                    : maxEntriesToInspect;
             // Weakly-consistent concurrent iterators avoid allocating a full
             // snapshot of potentially thousands of registrations per tick.
             for (TrackedCleanup entry : retryableFailures) {
-                if (inspected >= maxEntriesToInspect) break;
+                if (inspected >= retryLimit) break;
                 // Stale retry notifications still cost time to scan. Charge
                 // them against the same quantum as live registrations.
                 inspected++;
@@ -338,7 +356,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 }
             }
 
-            while (inspected < maxEntriesToInspect) {
+            while (inspected < weakQueueLimit) {
                 TrackedCleanup entry = (TrackedCleanup) referenceQueue.poll();
                 if (entry == null) break;
                 // A closed handle may enqueue later; stale reference-queue
@@ -363,25 +381,37 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 }
             }
 
-            // Retired actor domains are deterministically cleanup-eligible even
-            // if a stale host reference keeps an owner strongly reachable.
-            for (Object retired : retiredDomains) {
-                if (inspected >= maxEntriesToInspect) break;
-                Set<TrackedCleanup> entries = trackedByDomain.getOrDefault(retired, Set.of());
-                // Even a stale/empty retired domain consumes a work quantum.
-                // Otherwise arbitrarily many tombstones could be traversed
-                // by a supposedly bounded maintenance pass.
-                if (entries.isEmpty()) {
+            // Rotate each retired domain after a small quantum. Stale queue
+            // tickets cost one unit, and failed cleanup cannot spin forever
+            // inside process.gc(), even if all hooks continually throw.
+            int retiredWorkLimit = maxEntriesToInspect == Integer.MAX_VALUE
+                    ? maxTracked : maxEntriesToInspect;
+            while (inspected < retiredWorkLimit) {
+                Object retired = retiredDomainQueue.poll();
+                if (retired == null) break;
+                if (!retiredDomains.contains(retired)) {
                     inspected++;
                     continue;
                 }
-                for (TrackedCleanup entry : entries) {
-                    if (inspected >= maxEntriesToInspect) break;
+                Set<TrackedCleanup> entries = trackedByDomain.getOrDefault(retired, Set.of());
+                if (entries.isEmpty()) {
+                    retiredDomains.remove(retired);
                     inspected++;
+                    continue;
+                }
+                int domainBudget = Math.min(
+                        DEFAULT_RETIRED_DOMAIN_SWEEP_QUANTUM, retiredWorkLimit - inspected);
+                int domainInspected = 0;
+                for (TrackedCleanup entry : entries) {
+                    if (domainInspected >= domainBudget) break;
+                    inspected++;
+                    domainInspected++;
                     try {
                         if (entry.tryClean()) {
                             cleanedCount++;
                             removeTracked(entry);
+                        } else if (!entry.cleaned.get()) {
+                            retainRetry(entry);
                         }
                     } catch (VirtualMachineError | ThreadDeath fatal) {
                         throw fatal;
@@ -389,6 +419,9 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                         retainRetry(entry);
                         cleanupFailures++;
                     }
+                }
+                if (retiredDomains.contains(retired)) {
+                    retiredDomainQueue.offer(retired);
                 }
             }
         } else {
@@ -506,6 +539,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             retryableFailures.clear();
             trackedByDomain.clear();
             retiredDomains.clear();
+            retiredDomainQueue.clear();
             while (referenceQueue.poll() != null) { /* drain */ }
         }
     }
