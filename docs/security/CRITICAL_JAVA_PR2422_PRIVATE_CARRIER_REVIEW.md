@@ -21,16 +21,17 @@ for this candidate. This packet cannot be used as an authorization token.
   `d4e1fd1af08264bf928bde0cdcfddfb3d025eaf1`, complete Git root tree
   `f09ffb5fffac56094a9a9dca68917f807d75fbd4`.
   This is a historical security-hardening candidate. The **current**
-  source PR head is `27565e1a5b5c26e23b266e771d752212501b86e8`, with
-  complete Git root tree `09e6934c0c14d1a9ae8aee5b836848886b6327da`.
+  source PR head is `02fdbb11888c717e6e7bc997e8667fccf2b26586`, with
+  complete Git root tree `e0c61eb76b93e181e0f18e1209ca3b30f9d6ac91`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
   The current candidate adds an exact-Program type-check proof, a
   compiler-owned publisher capability, fail-closed ownership-only critical
   admission, and a typing-generation fence so even successful rechecks
-  cannot restore stale critical permissions. Seven new adversarial and
-  compatibility JUnit tests are authored. The latest focused Java workflow
+  cannot restore stale critical permissions. Eight new adversarial and
+  compatibility JUnit tests are authored, including a Program alias that
+  retains the identical nested critical AST node but changes Program identity. The latest focused Java workflow
   run 41396262327 failed with `steps=null`; **no compiler, JUnit or guest
   test has executed**.
   Source-free alternate runner run 41391572866 attempt 2 independently
