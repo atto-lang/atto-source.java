@@ -173,6 +173,16 @@ public final class CriticalGate {
         }
     }
 
+    /** No logical owner, queued tickets or retained scheduler admission. */
+    public boolean quiescent() {
+        metadata.lock();
+        try {
+            return owner == null && waiters.isEmpty() && admissions.isEmpty();
+        } finally {
+            metadata.unlock();
+        }
+    }
+
     /**
      * Invalidate old-generation tickets at actor/isolate retirement.
      * The runtime MUST first quiesce the physically executing critical body;
