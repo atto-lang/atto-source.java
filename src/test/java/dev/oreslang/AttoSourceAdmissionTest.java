@@ -153,7 +153,7 @@ final class AttoSourceAdmissionTest {
                     return;
                   }
                   pub peek(): Option<int> {
-                    if self.slots.size() == 0; then
+                    if self.slots.size == 0; then
                       return None;
                     fi
                     return Some(self.slots.get(0));
