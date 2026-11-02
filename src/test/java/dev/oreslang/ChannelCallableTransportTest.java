@@ -115,6 +115,37 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void sendableIsNotEnoughForChannelMessageData() {
+        for (String payload : new String[] {
+                "Box<int>", "Arc<int>", "Mutex<int>",
+                "SharedMutex<int>", "RefCell<int>", "RwLock<int>",
+                "Option<Box<int>>", "List<Arc<int>>",
+                "Result<int, SharedMutex<int>>"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "fnc bad(Channel<" + payload + "> input): void { return; }")));
+            assertTrue(error.getMessage().contains("MessageData"),
+                    () -> "expected data-only rejection for " + payload
+                            + " but got: " + error.getMessage());
+        }
+    }
+
+    @Test
+    void aNominalFieldCannotLaunderASynchronizedCapability() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class WrappedState as
+                  val Mutex<int> locked;
+                end
+                fnc bad(Channel<WrappedState> input): void { return; }
+                """)));
+        assertTrue(error.getMessage().contains("MessageData"),
+                () -> "expected nested MessageData rejection, got: " + error.getMessage());
+    }
+
+    @Test
     void borrowedTypesRemainRejectedForChannels() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(Channel<Option<&int>> values): void { return; }
