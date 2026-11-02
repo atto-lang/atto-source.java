@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -351,4 +352,51 @@ final class ActorPubSubAdversarialAdmissionTest {
             assertEquals(0L, runtime.sharedMemoryBytes());
         }
     }
+    @Test
+    void repeatedLeaveAndRejoinNeverReplaysPreviousMembershipDeliveries()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "epochs", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            LinkedBlockingQueue<ActorEventBus.Subscription<String>> admissions =
+                    new LinkedBlockingQueue<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            join.join();
+                            ActorEventBus.Subscription<String> current = topic.subscribe();
+                            assertTrue(current.tryRead().isEmpty(),
+                                    "new membership observed delivery from a retired membership");
+                            admissions.add(current);
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        }
+                    });
+
+            for (int epoch = 0; epoch < 24; epoch++) {
+                actor.send("join");
+                ActorEventBus.Subscription<String> current =
+                        admissions.poll(5, TimeUnit.SECONDS);
+                assertNull(failure.get());
+                assertTrue(current != null, "actor did not complete rejoin " + epoch);
+                assertFalse(current.closed());
+                assertEquals(1, group.events().topics().getFirst().subscribers());
+
+                // Do not drain this event. The membership transition must
+                // retire it, not transplant it into the next delivery edge.
+                group.events().publishSystem("epochs", "old-" + epoch);
+                group.leave(actor);
+                assertTrue(current.closed());
+                assertEquals(0, group.events().topics().getFirst().subscribers());
+            }
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "repeated revocation/rejoin must not retain abandoned payloads");
+        }
+    }
+
 }
