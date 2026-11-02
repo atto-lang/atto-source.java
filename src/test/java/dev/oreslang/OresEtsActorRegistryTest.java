@@ -385,16 +385,20 @@ final class OresEtsActorRegistryTest {
             executorField.setAccessible(true);
             var executor = (java.util.concurrent.ScheduledThreadPoolExecutor)
                     executorField.get(null);
-            int baseline = executor.getQueue().size();
+            var taskField = OresEtsActorRegistry.class.getDeclaredField("reaperTask");
+            taskField.setAccessible(true);
             for (int i = 0; i < 48; i++) {
-                try (var registry = new OresEtsActorRegistry(runtime, 1)) {
-                    // No private actor source or guest access is needed for a
-                    // supervisor-owned registry to be properly disposed.
+                var registry = new OresEtsActorRegistry(runtime, 1);
+                var task = (java.util.concurrent.ScheduledFuture<?>) taskField.get(registry);
+                try {
                     assertEquals(0, registry.liveTableCount());
+                } finally {
+                    registry.close();
                 }
+                assertTrue(task.isCancelled());
+                assertFalse(executor.getQueue().contains(task),
+                        "closed registry must not leave a scheduled task in the shared queue");
             }
-            assertEquals(baseline, executor.getQueue().size(),
-                    "closed registries must cancel and remove their periodic cleanup task");
             assertTrue(executor.getPoolSize() <= 1,
                     "host ETS retirement must not allocate a thread per registry");
             assertTrue(executor.getRemoveOnCancelPolicy());
