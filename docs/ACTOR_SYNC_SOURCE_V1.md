@@ -24,7 +24,7 @@ These two files have **identical Git blobs** in [platform-conformance PR #300](h
 
 | File | Git blob SHA-1 |
 |---|---|
-| `stdlib/actor_sync.ores` | `7f5f8bf970a73fa055e353082692a200aad4cdcd` |
+| `stdlib/actor_sync.ores` | `246c10b8b27d49a271308d00f23e8bcad4b5c6c2` |
 | `src/test/resources/actor-sync-v1/cursor-progression.ores` | `a454e7107ab62bbaa38cca44627c794b3bf0d4c2` |
 
 `ActorSyncStdlibTest` uses `LinkedProgramRunner` to compile/interpret real Oreslang source and assert exact outputs. GitHub workflow `actor-sync-source-guest.yml` pins those Git blobs, head/tree, built JAR SHA-256, and runs `mvn -Dtest=ActorSyncStdlibTest test`.
