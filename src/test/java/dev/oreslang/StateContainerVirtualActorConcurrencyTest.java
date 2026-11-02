@@ -31,8 +31,9 @@ final class StateContainerVirtualActorConcurrencyTest {
                             lease = write ? gate.tryWrite() : gate.tryRead();
                             if (lease == null) Thread.onSpinWait();
                         } while (lease == null);
-                        try (lease) {
-                            lease.requireActive(write ? WRITE : READ);
+                        final var acquired = lease;
+                        try (acquired) {
+                            acquired.requireActive(write ? WRITE : READ);
                             if (write) {
                                 if (gate.readerCount() != 0)
                                     throw new AssertionError("writer overlaps readers");
