@@ -21,8 +21,8 @@ for this candidate. This packet cannot be used as an authorization token.
   `d4e1fd1af08264bf928bde0cdcfddfb3d025eaf1`, complete Git root tree
   `f09ffb5fffac56094a9a9dca68917f807d75fbd4`.
   This is a historical security-hardening candidate. The **current**
-  source PR head is `02fdbb11888c717e6e7bc997e8667fccf2b26586`, with
-  complete Git root tree `e0c61eb76b93e181e0f18e1209ca3b30f9d6ac91`.
+  source PR head is `b0a8ea1a0835dbe9d4124edec0c5a943900f0b64`, with
+  complete Git root tree `1f2fa3ca62b4ffd5442de45e8c6a94b61e09a13a`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
