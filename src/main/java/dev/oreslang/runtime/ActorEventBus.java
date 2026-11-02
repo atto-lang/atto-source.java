@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -23,6 +24,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * exposed through this API.</p>
  */
 public final class ActorEventBus implements AutoCloseable {
+    // Independent of topic capacity: a single actor cannot allocate one
+    // channel per topic across the group's 1024-topic definition budget.
+    private static final int MAX_SUBSCRIPTIONS_PER_ACTOR_PER_GROUP = 64;
     public enum DeliveryPolicy {
         /** Every active subscriber receives every event; publishers may await backpressure. */
         RELIABLE,
@@ -185,6 +189,11 @@ public final class ActorEventBus implements AutoCloseable {
     private final Map<String, TopicState> topics = new ConcurrentHashMap<>();
     private final Map<String, DoubleReductionState> doubleReductions = new ConcurrentHashMap<>();
     private final Object definitionLock = new Object();
+    private final Object subscriptionCreditLock = new Object();
+    // All accesses are guarded by subscriptionCreditLock. Do not use a
+    // per-actor AtomicInteger that can be removed while another thread
+    // still holds an unregistered reference to the old counter.
+    private final Map<ActorRuntime.ActorId, Integer> subscriptionCredits = new HashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorEventBus(ActorRuntime runtime, ActorRuntime.ActorGroup group) {
@@ -302,6 +311,8 @@ public final class ActorEventBus implements AutoCloseable {
         int actorLimit =
                 Math.max(1, ActorRuntime.currentActorPolicy().maxMailboxMessages());
         int capacity = Math.min(topic.capacity, actorLimit);
+        int subscriptionLimit = Math.min(
+                MAX_SUBSCRIPTIONS_PER_ACTOR_PER_GROUP, actorLimit);
 
         synchronized (topic.deliveryLock) {
             requireOpen();
@@ -320,8 +331,14 @@ public final class ActorEventBus implements AutoCloseable {
                     continue;
                 }
 
-                Subscription<T> created =
-                        new Subscription<>(topic, subscriber, capacity);
+                reserveSubscriptionCredit(subscriber, subscriptionLimit);
+                Subscription<T> created;
+                try {
+                    created = new Subscription<>(topic, subscriber, capacity);
+                } catch (RuntimeException | Error failure) {
+                    releaseSubscriptionCredit(subscriber);
+                    throw failure;
+                }
                 Subscription<?> raced =
                         topic.subscriptions.putIfAbsent(subscriber, created);
                 if (raced != null) {
@@ -414,6 +431,30 @@ public final class ActorEventBus implements AutoCloseable {
         DoubleReductionState reduction = requireDoubleReduction(name);
         synchronized (reduction) {
             return reduction.current();
+        }
+    }
+
+    private void reserveSubscriptionCredit(
+            ActorRuntime.ActorId subscriber, int limit) {
+        synchronized (subscriptionCreditLock) {
+            int held = subscriptionCredits.getOrDefault(subscriber, 0);
+            if (held >= limit) {
+                throw new IllegalStateException(
+                        "ActorGroup subscription limit exceeded: " + limit);
+            }
+            subscriptionCredits.put(subscriber, held + 1);
+        }
+    }
+
+    private void releaseSubscriptionCredit(ActorRuntime.ActorId subscriber) {
+        synchronized (subscriptionCreditLock) {
+            int held = subscriptionCredits.getOrDefault(subscriber, 0);
+            if (held <= 0) {
+                throw new IllegalStateException(
+                        "ActorGroup subscription credit underflow");
+            }
+            if (held == 1) subscriptionCredits.remove(subscriber);
+            else subscriptionCredits.put(subscriber, held - 1);
         }
     }
 
@@ -984,22 +1025,23 @@ public final class ActorEventBus implements AutoCloseable {
 
         private void closeChannelOnly() {
             if (!subscriptionClosed.compareAndSet(false, true)) return;
-            channel.close();
+            try {
+                channel.close();
 
-            // Use the runtime-only drain primitive rather than re-entering the
-            // guest-visible tryRead() path while holding the channel monitor.
-            // That keeps closed-and-empty teardown terminal rather than
-            // exceptional and releases delivery/accounting callbacks outside
-            // the channel lock.
-            while (channel.drainOne(buffered -> {
-                if (topic.policy == DeliveryPolicy.RELIABLE) {
-                    releaseReliableEvent();
+                // Drain buffered deliveries without guest-visible read authority
+                // checks. Pending writers fail their own admission reservations.
+                while (channel.drainOne(buffered -> {
+                    if (topic.policy == DeliveryPolicy.RELIABLE) {
+                        releaseReliableEvent();
+                    }
+                    buffered.releaseDelivery();
+                })) {
+                    // Drain every already-buffered immutable event.
                 }
-                buffered.releaseDelivery();
-            })) {
-                // Drain every already-buffered immutable delivery. Pending
-                // writers were failed by channel.close() and release their own
-                // delivery/accounting reservations from completion callbacks.
+            } finally {
+                // Reclaimed even when channel completion invokes a failing
+                // callback; this credit is owned by the subscription lifetime.
+                releaseSubscriptionCredit(subscriber);
             }
         }
     }
