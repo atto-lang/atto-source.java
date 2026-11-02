@@ -131,4 +131,58 @@ final class OresEtsActorRegistryTest {
             assertThrows(IllegalStateException.class, () -> registry.create(owner, Access.PUBLIC, 1, 64));
         }
     }
+
+    @Test
+    void publicWriteDoesNotGrantLifecycleAuthority() {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 2)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var peer = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, Integer>create(owner, Access.PUBLIC, 2, 128);
+            registry.insert(id, peer, "key", 1);
+            assertThrows(SecurityException.class, () -> registry.retire(id, peer));
+            assertEquals(1, registry.lookup(id, owner, "key").orElseThrow());
+            assertEquals(java.util.Map.of("key", 1), registry.snapshot(id, peer));
+            registry.retire(id, owner);
+            assertThrows(IllegalStateException.class, () -> registry.retire(id, owner));
+        }
+    }
+
+    @Test
+    void concurrentTableCreationIsBoundedAndCannotReuseRetiredIdentity() throws Exception {
+        final int attempts = 32;
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 3)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(attempts);
+            var created = new java.util.concurrent.ConcurrentLinkedQueue<OresEtsActorRegistry.TableId<String, String>>();
+            var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            for (int n = 0; n < attempts; n++) {
+                Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        created.add(registry.<String, String>create(owner, Access.PRIVATE, 1, 64));
+                    } catch (IllegalStateException full) {
+                        // Table count quota reached, fail closed.
+                    } catch (Throwable error) {
+                        failures.add(error);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            assertTrue(failures.isEmpty(), failures.toString());
+            assertEquals(3, created.size());
+            assertEquals(3, registry.liveTableCount());
+            var previous = created.peek();
+            registry.retire(previous, owner);
+            var next = registry.<String, String>create(owner, Access.PRIVATE, 1, 64);
+            assertNotSame(previous, next);
+            assertThrows(IllegalStateException.class, () -> registry.lookup(previous, owner, "key"));
+            assertEquals(3, registry.liveTableCount());
+        }
+    }
 }
