@@ -581,6 +581,25 @@ an existing type alias. `const T x = infer<T> record {...}` or the proven
 short named-inference form may instead capture a *lexical*, readonly structural
 type alias, but must not manufacture nominal identity or a runtime type object.
 
+The equivalent name-first declaration syntax is supported for explicit
+inferred-struct capture. It preserves the same lexical type identity and
+closed-shape checking as the type-first spelling:
+
+```ores
+fnc create(): float {
+    const point: Point = infer<Point> struct { x: 3.0, y: 4.0 };
+    const next: Point = infer struct { x: 5.0, y: 6.0 };
+    return next.y;
+}
+```
+
+The checked short capture `const point: Point = infer struct {...}` may
+also introduce `Point` if that name is unbound and safe to introduce. The
+corresponding type-first spelling is `const Point point = infer struct {...}`.
+These are compile-time aliases, not runtime type objects; they do not
+permit record-to-struct coercion, field-set growth, or mutation through a
+readonly `const` value.
+
 Type declarations are immutable by definition. `const type T = ...` is invalid;
 `type T = ...` defines a type, whereas `const type T x = ...` may use
 `type T` as an explicit named-type marker in a value binding.
