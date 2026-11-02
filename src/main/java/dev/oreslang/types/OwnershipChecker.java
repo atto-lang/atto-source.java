@@ -447,6 +447,13 @@ public final class OwnershipChecker {
             checkBlock(block.body(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.CriticalStmt critical) {
+            CriticalBodyPreflight.verify(critical);
+            checkExpr(new Ast.NameExpr(critical.gateName()), scope, false);
+            checkBlock(critical.body(), scope, returnType);
+            checkBlock(critical.elseBody(), scope, returnType);
+            return;
+        }
         if (stmt instanceof Ast.TaskScopeStmt taskScope) {
             checkBlock(taskScope.body(), scope, returnType);
             // Structured scope exit is an implicit asynchronous wait for
@@ -2962,6 +2969,13 @@ public final class OwnershipChecker {
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.CriticalStmt s) {
+                if (s.gateName() != null) {
+                    scanExpr(new Ast.NameExpr(s.gateName()), blockLocals,
+                            outer, recursiveBinding, captures, false);
+                }
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                scanStatements(s.elseBody(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {

@@ -6209,9 +6209,24 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
             }
-            if (stmt instanceof Ast.CriticalStmt) {
-                throw new IllegalStateException(
-                        "E_CRITICAL_UNLOWERED: synchronous critical execution requires scheduler lowering");
+            if (stmt instanceof Ast.CriticalStmt critical) {
+                dev.oreslang.types.CriticalBodyPreflight.verify(critical);
+                if (ActorRuntime.inActorExecution())
+                    throw new IllegalStateException(
+                            "E_CRITICAL_UNLOWERED: actor critical needs scheduler lowering");
+                Object gate = env.lookup(critical.gateName());
+                if (!(gate instanceof OresMutex.Local<?> mutex))
+                    throw new IllegalStateException(
+                            "E_CRITICAL_GATE_TYPE: named try critical requires local Mutex<T>");
+                var permit = mutex.tryLock();
+                if (permit.isEmpty()) {
+                    executeBlock(critical.elseBody(), env, true);
+                } else {
+                    try (OresMutex.Guard<?> lease = permit.get()) {
+                        executeBlock(critical.body(), env, true);
+                    }
+                }
+                return;
             }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();

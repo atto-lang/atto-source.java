@@ -57,7 +57,9 @@ final class CriticalSuspensionAdmissionV1Test {
         }) {
             var error = assertThrows(IllegalArgumentException.class,
                     () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
-            assertTrue(error.getMessage().contains("E_CRITICAL_UNLOWERED"), error.getMessage());
+            assertTrue(error.getMessage().contains("E_CRITICAL_UNLOWERED")
+                    || error.getMessage().contains("E_CRITICAL_BODY_EFFECT"),
+                    error.getMessage());
         }
     }
 
@@ -65,6 +67,72 @@ final class CriticalSuspensionAdmissionV1Test {
         rejected("fnc run(): void { try critical { return; } }", "try critical requires an explicit else");
         rejected("fnc run(): void { try critical gate { return; } catch(e) { return; } }",
                 "try critical requires an explicit else");
+    }
+
+    @Test void namedTryCriticalAdmitsOnlyCallFreeScalarBodies() {
+        String accepted = """
+                pub fnc main(): void {
+                  let int count = 1;
+                  val gate = Mutex.new(0);
+                  try critical gate { count = count + 1; }
+                  else { count = count + 2; }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(accepted));
+        for (String effect : new String[] {
+            "other();", "stdio.stdout.write(1);", "return;",
+            "defer count = 2;", "count = object.field;",
+            "count = values[0];", "critical { count = 1; }"
+        }) {
+            String source = "pub fnc main(): void { let int count = 1; "
+                    + "val gate = Mutex.new(0); try critical gate { " + effect
+                    + " } else { count = 3; } return; }";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("E_CRITICAL_BODY_EFFECT"), error.getMessage());
+        }
+    }
+
+    @Test void namedTryCriticalExecutesSuccessAndBusyFallbackInGuest() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  let int count = 1;
+                  val gate = Mutex.new(0);
+                  try critical gate { count = count + 10; }
+                  else { count = count + 100; }
+                  val held = gate.lock();
+                  try critical gate { count = count + 1000; }
+                  else { count = count + 20; }
+                  held.release();
+                  stdio.stdout.write(count);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (org.graalvm.polyglot.Context context =
+                org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).out(out).build()) {
+            context.eval(org.graalvm.polyglot.Source.newBuilder(
+                    OresLanguage.ID, source, "try-critical-executed.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertTrue(out.toString().contains("31"), out::toString);
+    }
+
+    @Test void immediateCriticalCannotAccessUntrustedGateOrAsyncCaller() {
+        for (String source : new String[] {
+            "pub fnc main(): void { let int n = 0;"
+                    + "val gate = SharedMutex.new(0);"
+                    + "try critical gate { n = 1; } else { n = 2; } }",
+            "pub suspends fnc main(): void { let int n = 0;"
+                    + "val gate = Mutex.new(0);"
+                    + "try critical gate { n = 1; } else { n = 2; } }"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+        }
     }
 
     @Test void lexerDoesNotTreatCommentsAndStringsAsCriticalSyntax() {
