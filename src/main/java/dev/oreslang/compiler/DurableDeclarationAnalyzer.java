@@ -159,55 +159,121 @@ public final class DurableDeclarationAnalyzer {
     private static void validateCommandTargets(Ast.Program program) {
         java.util.Map<String, Ast.ActivityDecl> activities = new java.util.LinkedHashMap<>();
         java.util.Map<String, Ast.WorkflowDecl> workflows = new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.List<String>> activitySimpleNames = new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.List<String>> workflowSimpleNames = new java.util.LinkedHashMap<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ActivityDecl activity) {
-                    activities.put(module.name() + "." + activity.name(), activity);
-                    activities.putIfAbsent(activity.name(), activity);
+                    String qualified = module.name() + "." + activity.name();
+                    if (activities.putIfAbsent(qualified, activity) != null) {
+                        throw new IllegalArgumentException("WORKFLOW_DUPLICATE_ACTIVITY: duplicate activity '" + qualified + "'");
+                    }
+                    activitySimpleNames.computeIfAbsent(activity.name(), ignored -> new ArrayList<>()).add(qualified);
                 } else if (declaration instanceof Ast.WorkflowDecl workflow) {
-                    workflows.put(module.name() + "." + workflow.name(), workflow);
-                    workflows.putIfAbsent(workflow.name(), workflow);
+                    String qualified = module.name() + "." + workflow.name();
+                    if (workflows.putIfAbsent(qualified, workflow) != null) {
+                        throw new IllegalArgumentException("WORKFLOW_DUPLICATE_WORKFLOW: duplicate workflow '" + qualified + "'");
+                    }
+                    workflowSimpleNames.computeIfAbsent(workflow.name(), ignored -> new ArrayList<>()).add(qualified);
                 }
             }
         }
+
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.WorkflowDecl workflow)) continue;
-                Set<String> endpoints = new HashSet<>();
-                workflow.body().methods().forEach(m -> endpoints.add(m.name()));
+                java.util.Map<String, Ast.MethodDecl> endpoints = new java.util.LinkedHashMap<>();
+                for (Ast.MethodDecl method : workflow.body().methods()) {
+                    String key = method.name() + "#" + method.parameters().size();
+                    if (endpoints.putIfAbsent(key, method) != null) {
+                        throw new IllegalArgumentException(
+                                "WORKFLOW_DUPLICATE_ENDPOINT: duplicate workflow endpoint '" + key + "'");
+                    }
+                }
                 for (Ast.WorkflowCommand command : workflow.commands()) {
                     if (command instanceof Ast.ActivityStepCommand step) {
-                        requireActivityOperation(activities, step.activityName(), step.operation(),
+                        Ast.ActivityDecl target = resolveActivity(
+                                activities, activitySimpleNames, module.name(), step.activityName());
+                        requireActivityOperation(target, step.activityName(), step.operation(),
                                 step.arguments().size(), "activity step");
                     } else if (command instanceof Ast.CompensationCommand compensation) {
-                        requireActivityOperation(activities, compensation.activityName(), compensation.operation(),
+                        Ast.ActivityDecl target = resolveActivity(
+                                activities, activitySimpleNames, module.name(), compensation.activityName());
+                        requireActivityOperation(target, compensation.activityName(), compensation.operation(),
                                 compensation.arguments().size(), "compensation");
                     } else if (command instanceof Ast.ChildWorkflowCommand child) {
-                        if (!workflows.containsKey(child.workflowName())
-                                && !workflows.containsKey(module.name() + "." + child.workflowName())) {
-                            throw new IllegalArgumentException(
-                                    "WORKFLOW_CHILD_TARGET_UNKNOWN: '" + child.workflowName() + "' is not a declared workflow");
-                        }
+                        resolveWorkflow(workflows, workflowSimpleNames, module.name(), child.workflowName());
                     } else if (command instanceof Ast.SignalCommand signal) {
-                        requireEndpoint(endpoints, signal.endpoint(), "signal");
-                    } else if (command instanceof Ast.QueryCommand query) {
-                        requireEndpoint(endpoints, query.endpoint(), "query");
+                        requireEndpoint(endpoints, signal.endpoint(), signal.arguments().size(), "signal");
                     } else if (command instanceof Ast.UpdateCommand update) {
-                        requireEndpoint(endpoints, update.endpoint(), "update");
+                        requireEndpoint(endpoints, update.endpoint(), update.arguments().size(), "update");
+                    } else if (command instanceof Ast.QueryCommand query) {
+                        Ast.MethodDecl endpoint = requireEndpoint(
+                                endpoints, query.endpoint(), query.parameters().size(), "query");
+                        List<Ast.TypeRef> actual = endpoint.parameters().stream().map(Ast.Param::type).toList();
+                        List<Ast.TypeRef> declared = query.parameters().stream().map(Ast.Param::type).toList();
+                        if (!actual.equals(declared) || !java.util.Objects.equals(endpoint.returnType(), query.returnType())) {
+                            throw new IllegalArgumentException(
+                                    "WORKFLOW_QUERY_SIGNATURE_MISMATCH: query endpoint '" + query.endpoint()
+                                            + "' does not match its method parameter/return signature");
+                        }
                     }
                 }
             }
         }
     }
 
-    private static void requireActivityOperation(
-            java.util.Map<String, Ast.ActivityDecl> activities,
-            String activityName, String operation, int arity, String context) {
-        Ast.ActivityDecl activity = activities.get(activityName);
-        if (activity == null) {
-            throw new IllegalArgumentException(
-                    "WORKFLOW_ACTIVITY_TARGET_UNKNOWN: " + context + " references undeclared activity '" + activityName + "'");
+    private static Ast.ActivityDecl resolveActivity(
+            java.util.Map<String, Ast.ActivityDecl> qualified,
+            java.util.Map<String, java.util.List<String>> simpleNames,
+            String currentModule,
+            String requested) {
+        if (requested.indexOf('.') >= 0) {
+            Ast.ActivityDecl exact = qualified.get(requested);
+            if (exact == null) throw new IllegalArgumentException(
+                    "WORKFLOW_ACTIVITY_TARGET_UNKNOWN: unknown qualified activity '" + requested + "'");
+            return exact;
         }
+        Ast.ActivityDecl local = qualified.get(currentModule + "." + requested);
+        if (local != null) return local;
+        List<String> candidates = simpleNames.getOrDefault(requested, List.of());
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ACTIVITY_TARGET_AMBIGUOUS: activity '" + requested
+                            + "' exists in multiple modules; use a qualified name");
+        }
+        if (candidates.isEmpty()) throw new IllegalArgumentException(
+                "WORKFLOW_ACTIVITY_TARGET_UNKNOWN: undeclared activity '" + requested + "'");
+        return qualified.get(candidates.getFirst());
+    }
+
+    private static Ast.WorkflowDecl resolveWorkflow(
+            java.util.Map<String, Ast.WorkflowDecl> qualified,
+            java.util.Map<String, java.util.List<String>> simpleNames,
+            String currentModule,
+            String requested) {
+        if (requested.indexOf('.') >= 0) {
+            Ast.WorkflowDecl exact = qualified.get(requested);
+            if (exact == null) throw new IllegalArgumentException(
+                    "WORKFLOW_CHILD_TARGET_UNKNOWN: unknown qualified workflow '" + requested + "'");
+            return exact;
+        }
+        Ast.WorkflowDecl local = qualified.get(currentModule + "." + requested);
+        if (local != null) return local;
+        List<String> candidates = simpleNames.getOrDefault(requested, List.of());
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_CHILD_TARGET_AMBIGUOUS: workflow '" + requested
+                            + "' exists in multiple modules; use a qualified name");
+        }
+        if (candidates.isEmpty()) throw new IllegalArgumentException(
+                "WORKFLOW_CHILD_TARGET_UNKNOWN: undeclared workflow '" + requested + "'");
+        return qualified.get(candidates.getFirst());
+    }
+
+    private static void requireActivityOperation(
+            Ast.ActivityDecl activity, String activityName,
+            String operation, int arity, String context) {
         boolean found = activity.body().methods().stream().anyMatch(method ->
                 method.name().equals(operation) && method.parameters().size() == arity);
         if (!found) {
@@ -217,11 +283,16 @@ public final class DurableDeclarationAnalyzer {
         }
     }
 
-    private static void requireEndpoint(Set<String> endpoints, String name, String kind) {
-        if (!endpoints.contains(name)) {
+    private static Ast.MethodDecl requireEndpoint(
+            java.util.Map<String, Ast.MethodDecl> endpoints,
+            String name, int arity, String kind) {
+        Ast.MethodDecl endpoint = endpoints.get(name + "#" + arity);
+        if (endpoint == null) {
             throw new IllegalArgumentException(
-                    "WORKFLOW_" + kind.toUpperCase() + "_ENDPOINT_UNKNOWN: no workflow member '" + name + "'");
+                    "WORKFLOW_" + kind.toUpperCase() + "_ENDPOINT_UNKNOWN: no workflow member '"
+                            + name + "#" + arity + "'");
         }
+        return endpoint;
     }
 
     private static String commandId(Ast.WorkflowCommand command) {
