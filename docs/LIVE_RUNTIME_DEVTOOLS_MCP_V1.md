@@ -30,15 +30,21 @@ binding has **not** been implemented.
 
 Implemented:
 - `server/discover` for the 2026-07-28 protocol profile;
-- `tools/list`, advertising exactly `atto.runtime_info`;
-- `tools/call` for that read-only tool;
-- actor count, configured maximum actor count and physical carrier backend
-  from the attached **real ActorRuntime** instance;
+- `tools/list`, advertising `atto.runtime_info`, and (when available)
+  `atto.list_actors`, `atto.inspect_actor`, and `atto.list_tasks`;
+- `tools/call` with mandatory per-request 2026 metadata and complete results;
+- actor count, maximum actor count, and actual carrier backend from the
+  attached **real ActorRuntime** instance;
+- at most 64 detached weakly consistent actor descriptors with logical ID,
+  kind, parent, generation, lifecycle and pending mailbox count;
+- at most 64 logical Task IDs/lifecycle states when an `AsyncRuntime` is
+  explicitly provided to `ActorRuntimeDevtools.start(actors, tasks, token, port)`;
+- no source TaskLocal/ActorLocal data, actor heap or OS carrier identity;
 - response bounds, JSON nesting bounds, duplicate-key denial, bearer checks,
   HTTP header checks, and sanitized errors.
 
-Not implemented: listing actor identities, consistent typed actor snapshots,
-heap dumps, thread/task introspection, external OAuth, remote transport,
+Not implemented: consistent typed actor state snapshots,
+heap dumps, OS thread introspection, TaskLocal access, external OAuth, remote transport,
 subscriptions, hotload staging, actor-state migration, code generation
 retirement, automatic prod enablement or AOT support. No arbitrary memory
 reads, reflection or actor-private state escape. Do not advertise or assume
@@ -52,8 +58,10 @@ Host-only, no external libraries (Java 21):
 mkdir -p /tmp/atto-live-mcp-classes
 javac --release 21 -d /tmp/atto-live-mcp-classes \
   src/main/java/dev/oreslang/runtime/devtools/LiveMcpServer.java \
-  tools/live-mcp-smoke/Smoke.java
+  tools/live-mcp-smoke/Smoke.java \\
+  tools/live-mcp-smoke/DiscoverySmoke.java
 java -cp /tmp/atto-live-mcp-classes dev.oreslang.runtime.devtools.Smoke
+java -cp /tmp/atto-live-mcp-classes dev.oreslang.runtime.devtools.DiscoverySmoke
 ```
 
 Full runtime/JUnit integration, subject to Maven/Graal dependencies:
@@ -62,7 +70,10 @@ Full runtime/JUnit integration, subject to Maven/Graal dependencies:
 mvn -Dtest=LiveMcpServerTest test
 ```
 
-The standalone smoke verifies only the host protocol and security gates.
+The standalone smoke verifies only host protocol and security gates. The
+private carrier additionally runs the official MCP TypeScript SDK v2 against
+a localhost-only JDK21 fixture and exact-SHA source blobs. These tests are
+not evidence that the full Java runtime/guest compiler ran.
 The JUnit tests exercise a real ActorRuntime instance and actor-count change,
 but **do not compile or execute guest .atto code**. Genuine guest tests and
 other backend ports require separate execution evidence.
