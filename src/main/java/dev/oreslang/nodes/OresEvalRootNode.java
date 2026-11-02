@@ -6997,16 +6997,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
-            if (value instanceof ChannelRuntime.SelectSet set) return set;
+            // Host-injected WriteCase and SelectSet values must not bypass the
+            // source-only SelectCase.write admission path. Preserve the
+            // reusable set's existing fairness cursor when detaching cases.
+            if (value instanceof ChannelRuntime.SelectSet set) {
+                return set.snapshotWritePayloads(Evaluator::snapshotChannelMessageData);
+            }
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
                 for (Object item : list) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return new ChannelRuntime.SelectSet(cases)
+                        .snapshotWritePayloads(Evaluator::snapshotChannelMessageData);
             }
             if (value instanceof Map<?, ?> map) {
                 for (Object item : map.values()) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return new ChannelRuntime.SelectSet(cases)
+                        .snapshotWritePayloads(Evaluator::snapshotChannelMessageData);
             }
             throw new IllegalArgumentException(
                     "dynamic select requires SelectSet or list/map of SelectCase values");
