@@ -8,8 +8,8 @@ import java.util.OptionalInt;
  *
  * <p>The hot representation is still a single unsigned 32-bit index+1 word.
  * This table owns the out-of-line incarnation metadata needed when an identity
- * survives a row deletion/reuse, table clear, persistence boundary or transfer
- * between components. It is not an ActorRef and does not authorize access to
+ * survives row deletion/reuse, table clear or transfer between in-process
+ * components. It is not an ActorRef and does not authorize access to
  * actor memory; actor confinement and borrow rules remain independently
  * required.</p>
  *
