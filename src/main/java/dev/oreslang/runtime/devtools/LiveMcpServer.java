@@ -94,7 +94,9 @@ public final class LiveMcpServer implements AutoCloseable {
                 send(exchange, 403, "{\"error\":\"invalid origin\"}");
                 return;
             }
-            String auth = exchange.getRequestHeaders().getFirst("Authorization");
+            List<String> authHeaders = exchange.getRequestHeaders().get("Authorization");
+            String auth = authHeaders != null && authHeaders.size() == 1
+                    ? authHeaders.getFirst() : null;
             byte[] offered = auth != null && auth.startsWith("Bearer ")
                     ? auth.substring(7).getBytes(StandardCharsets.UTF_8) : new byte[0];
             if (!MessageDigest.isEqual(expectedToken, offered)) {
@@ -127,8 +129,13 @@ public final class LiveMcpServer implements AutoCloseable {
             }
             Object parsed;
             try {
-                parsed = Json.parse(new String(request, StandardCharsets.UTF_8));
-            } catch (IllegalArgumentException badJson) {
+                String decoded = StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(request)).toString();
+                parsed = Json.parse(decoded);
+            } catch (IllegalArgumentException
+                     | java.nio.charset.CharacterCodingException badJson) {
                 send(exchange, 400, error(null, -32700, "Invalid JSON"));
                 return;
             }
