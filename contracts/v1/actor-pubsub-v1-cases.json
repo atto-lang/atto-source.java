@@ -20,6 +20,18 @@
       "diagnostic_contains": "Topic.publish value"
     },
     {
+      "id": "callable-topic-payload",
+      "fixture": "contracts/v1/fixtures/actor-pubsub-reject-callable-topic.ores",
+      "expect": "compile-reject",
+      "diagnostic_contains": "Topic payload"
+    },
+    {
+      "id": "nested-callable-topic-payload",
+      "fixture": "contracts/v1/fixtures/actor-pubsub-reject-nested-callable-topic.ores",
+      "expect": "compile-reject",
+      "diagnostic_contains": "Topic payload"
+    },
+    {
       "id": "actor-cannot-define-topic",
       "fixture": "contracts/v1/fixtures/actor-pubsub-reject-actor-authority.ores",
       "expect": "compile-reject",
