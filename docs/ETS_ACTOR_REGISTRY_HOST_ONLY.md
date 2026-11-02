@@ -154,3 +154,31 @@ or subset cross-organization transfer was made.** Exact-head real Java/Graal
 execution is still blocked pending independently approved destination policy
 and runner admission. A source-free CI canary cannot prove these source changes
 pass a compiler or the production actor runtime.
+
+
+## 2026-11-02 bounded in-flight operations / STOP contention
+
+Each table now permits **at most 256 simultaneously admitted host operations**.
+Admission checks the active-count and RETIRED flag in the same atomic CAS
+word, refusing permit #257 without changing any state. The operation's
+try-with-resources pin release reduces the count and triggers host-only
+reclamation after the retired table becomes quiescent. This is a bounded
+concurrency admission policy; it is not a timeout, a fair queue, or a
+scheduler-integrated nonparking guest operation path.
+
+A deterministic reflection fixture pins 256 operations, verifies that
+admission #257 fails closed, retires the table, and verifies the table cannot
+be physically reclaimed until all pins drain. Another authored source test
+uses the real ActorRuntime identities with 1, 10, and 100 host workers
+racing owner STOP. It checks fail-closed new admission, host-worker
+completion, and eventual cleanup. It **does not** establish that an operation
+admitted before STOP cannot commit after STOP; that remains P0 and requires
+a shared atomic lifecycle/commit boundary.
+
+The separately executed [source-free carrier run #41397941031]
+(https://github.com/networking-components-test/ncc-integration-tests/actions/runs/41397941031)
+verified a model-only 256-permit seal/drain/underflow protocol and 200
+contention rounds on Java 25 with nine executed steps. That is runner and
+algorithm-model evidence, **not** execution of these private Java files,
+real actor runtime tests, or native/AOT compiler evidence. Current private
+source copying remains blocked pending independent authorization #2461.
