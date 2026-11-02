@@ -139,6 +139,23 @@ final class OresProjectConfigTest {
 
 
     @Test
+    void nonRegularCanonicalAttoEntryDoesNotFallBackToLegacySibling() throws Exception {
+        Path src = temp.resolve("directory-atto-src");
+        Files.createDirectories(src);
+        Path importer = src.resolve("main.atto");
+        Path canonicalDirectory = src.resolve("helper.atto");
+        Path legacy = src.resolve("helper.ores");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Files.createDirectory(canonicalDirectory);
+        Files.writeString(legacy, "pub fnc helper() => int { return 41; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        Path selected = config.resolveImport(importer, "./helper").orElseThrow();
+        assertEquals(canonicalDirectory.toAbsolutePath().normalize(), selected);
+        assertTrue(Files.isDirectory(selected),
+                "canonical .atto directory must be selected for later non-regular-file rejection");
+    }
+
+    @Test
     void danglingCanonicalAttoEntryDoesNotFallBackToLegacySibling() throws Exception {
         Path src = temp.resolve("dangling-atto-src");
         Files.createDirectories(src);
