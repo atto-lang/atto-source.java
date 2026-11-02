@@ -161,6 +161,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (check(ACTIVITY) || check(WORKFLOW)) {
+                    rootDeclarations.add(parseDurableClassDeclaration(modifiers, true));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -387,6 +391,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (check(ACTIVITY) || check(WORKFLOW)) {
+                return parseDurableClassDeclaration(modifiers, false);
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -590,6 +597,18 @@ public final class Parser {
                 returnType, annotations, body, specs, effects);
     }
 
+    /** Parse `define activity X as ... end` or `define workflow X as ... end`. */
+    private Ast.Decl parseDurableClassDeclaration(Modifiers modifiers, boolean filePrivateScope) {
+        Token kind = advance();
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+            throw error(kind, "activity/workflow declarations accept only visibility modifiers; "
+                    + "put execution semantics on their members");
+        }
+        Ast.ClassDecl body = parseClass(modifiers.visibility, false, filePrivateScope);
+        return kind.type() == ACTIVITY ? new Ast.ActivityDecl(body) : new Ast.WorkflowDecl(body);
+    }
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
