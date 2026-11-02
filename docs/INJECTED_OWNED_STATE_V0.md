@@ -2,7 +2,7 @@
 
 **Status: draft; not executed on exact head.** This first compiler step
 supports `@Inject(MutableStateContainer())` on a concrete, non-generic,
-non-inheriting, exclusively owned `define class` with one initialized
+non-inheriting, exclusively owned `define class` with one literal-initialized
 `state { ... }` block. It lowers private `int`/`bool` state fields
 to ordinary class storage before type/ownership checking and guest execution.
 
@@ -15,6 +15,11 @@ to ordinary class storage before type/ownership checking and guest execution.
   whole-object loan checks govern mutation and aliasing.
 - A mutating method needs an explicitly mutable receiver. Immutable
   `borrow T` must not invoke mutable receiver methods.
+- Initializers in this first slice are restricted to exact `int`/`bool`
+  literal AST values, not arbitrary constant expressions, method calls,
+  field dependencies or `self` references. This avoids effects or escaping
+  an incompletely published instance; negative values expressed as unary
+  operations require a later verified constant-folding admission stage.
 - Initialized primitive-only fields are deliberate: no object graphs, raw
   pointers, uninitialized values, custom constructors, inheritance, duplicate
   blocks, state-field export or cross-isolate publication are admitted.
@@ -27,7 +32,9 @@ to ordinary class storage before type/ownership checking and guest execution.
 ## Test receipt
 
 `examples/injected-owned-state-v0.ores` is a real guest source, expected
-stdout `1|2` with exit 0. The JDK25 exact-head workflow runs
+stdout `1|2` with exit 0. A second candidate,
+`examples/injected-owned-bool-state-v0.ores`, expects `false|true` and
+checks that mutating one owned instance leaves another unchanged. The JDK25 exact-head workflow runs
 `InjectedOwnedStateV0Test` and `AnnotatedMutableHeapStateAdmissionTest`.
 Negative tests prove private field denial, immutable-borrow rejection, actor/
 callable annotation refusal, and unsupported heap/reentrant state constructs.
