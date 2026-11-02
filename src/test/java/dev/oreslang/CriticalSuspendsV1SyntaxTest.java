@@ -172,6 +172,20 @@ final class CriticalSuspendsV1SyntaxTest {
                         raw, actorCritical(raw), epoch));
     }
 
+    @Test void failedOrdinaryTypeCheckCannotBeReplacedByStandaloneOwnership() {
+        String invalidSource = TYPED_CRITICAL_ACTOR
+                + "\npub fnc invalid(): int { return \"not-an-int\"; }\n";
+        Ast.Program raw = Parser.parse(invalidSource);
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(raw));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.TypeChecker.requireCriticalTypeProof(raw));
+        // Regardless of which checker catches the unrelated source error,
+        // the critical AST from this Program must never receive permission.
+        assertThrows(RuntimeException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(raw));
+    }
+
     @Test void successfulTypingAndOwnershipPermitExactProgramOnly() {
         Ast.Program parsed = Parser.parse(TYPED_CRITICAL_ACTOR);
         Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(parsed);
