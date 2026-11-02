@@ -93,6 +93,28 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void smartPointerWrappersCannotLaunderCallablePayloads() {
+        for (String wrapper : new String[] {
+                "Box<Fnc<int, int>>",
+                "Arc<Fnc<int, int>>",
+                "Option<Box<Fnc<int, int>>>",
+                "Result<int, Arc<Fnc<int, int>>>",
+                "SharedMutex<Fnc<int, int>>"
+        }) {
+            rejectCallable("fnc bad(Channel<" + wrapper + "> channel): void { return; }");
+        }
+    }
+
+    @Test
+    void deeplyNestedCollectionCannotLaunderCallablePayloads() {
+        rejectCallable("""
+                fnc bad(Channel<Option<Result<int, List<Fnc<int, int>>>>> channel): void {
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void borrowedTypesRemainRejectedForChannels() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(Channel<Option<&int>> values): void { return; }
