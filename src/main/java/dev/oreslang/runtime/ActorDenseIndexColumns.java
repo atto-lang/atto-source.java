@@ -165,6 +165,12 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
             int row, int field, DenseIndex32<TTag> handle, DenseIndexTable<TTag> table) {
         requireOwner();
         Objects.requireNonNull(table, "table");
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        ActorRuntime.ActorId actor = ActorRuntime.currentActorId().orElseThrow(() ->
+                new SecurityException("typed dense index access requires an executing actor"));
+        if (!table.ownedBy(runtime, actor)) {
+            throw new SecurityException("dense index table belongs to a different actor");
+        }
         int word = table.checkedStorageWord(handle).orElseThrow(() ->
                 new IllegalStateException("foreign, stale or retired dense index handle"));
         putEncoded(offset(row, field), word);
@@ -178,6 +184,12 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
             int row, int field, DenseIndex32<TTag> handle, DenseIndexTable<TTag> table) {
         requireOwner();
         Objects.requireNonNull(table, "table");
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        ActorRuntime.ActorId actor = ActorRuntime.currentActorId().orElseThrow(() ->
+                new SecurityException("typed dense index access requires an executing actor"));
+        if (!table.ownedBy(runtime, actor)) {
+            throw new SecurityException("dense index table belongs to a different actor");
+        }
         var checked = table.checkedStorageWord(handle);
         return checked.isPresent() && getEncoded(offset(row, field)) == checked.getAsInt();
     }
