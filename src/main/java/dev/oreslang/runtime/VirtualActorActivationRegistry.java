@@ -31,11 +31,16 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     private static final class Slot {
         final Identity identity;
+        final VirtualActorActivationRegistry owner;
         long incarnation;
         boolean active;
+        boolean published;
         int outstanding;
 
-        Slot(Identity identity) { this.identity = identity; }
+        Slot(Identity identity, VirtualActorActivationRegistry owner) {
+            this.identity = identity;
+            this.owner = owner;
+        }
     }
 
     public VirtualActorActivationRegistry(String domain, int maxIdentities, int mailboxCapacity) {
@@ -78,7 +83,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (slot == null) {
                 if (slots.size() == maxIdentities)
                     throw new IllegalStateException("virtual actor identity capacity exhausted");
-                slot = new Slot(identity);
+                slot = new Slot(identity, this);
                 slots.put(identity, slot);
             }
             return new LogicalRef(slot);
@@ -88,17 +93,21 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public final class Activation {
         private final Slot slot;
         private final long incarnation;
+        private final boolean initializer;
 
-        private Activation(Slot slot, long incarnation) {
+        private Activation(Slot slot, long incarnation, boolean initializer) {
             this.slot = slot;
             this.incarnation = incarnation;
+            this.initializer = initializer;
         }
+
+        public boolean initializer() { return initializer; }
 
         public Identity identity() { return slot.identity; }
         public long incarnation() { return incarnation; }
         public boolean active() {
             synchronized (monitor) {
-                return !closed && slot.active && slot.incarnation == incarnation;
+                return !closed && slot.active && slot.published && slot.incarnation == incarnation;
             }
         }
         public void requireActive() {
@@ -116,13 +125,40 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         synchronized (monitor) {
             if (closed) throw new IllegalStateException("virtual actor registry closed");
             Slot slot = logical.slot;
-            if (!slot.active) {
+            if (slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
+            boolean initializer = !slot.active;
+            if (initializer) {
                 if (nextIncarnation == Long.MAX_VALUE)
                     throw new IllegalStateException("virtual actor incarnation budget exhausted");
                 slot.incarnation = ++nextIncarnation;
                 slot.active = true;
+                slot.published = false;
             }
-            return new Activation(slot, slot.incarnation);
+            return new Activation(slot, slot.incarnation, initializer);
+        }
+    }
+
+    /** Commit activation only after the guest instance has initialized successfully. */
+    public void publish(Activation activation) {
+        Objects.requireNonNull(activation, "activation");
+        synchronized (monitor) {
+            Slot slot = activation.slot;
+            if (slot.owner != this || closed || !slot.active || slot.published ||
+                    slot.incarnation != activation.incarnation || !activation.initializer)
+                throw new IllegalStateException("activation publication denied");
+            slot.published = true;
+        }
+    }
+
+    /** A failed initializer fences all pending handles for that incarnation. */
+    public void abort(Activation activation) {
+        Objects.requireNonNull(activation, "activation");
+        synchronized (monitor) {
+            Slot slot = activation.slot;
+            if (slot.owner != this || closed || !slot.active || slot.published ||
+                    slot.incarnation != activation.incarnation || !activation.initializer)
+                throw new IllegalStateException("activation abort denied");
+            slot.active = false;
         }
     }
 
@@ -153,7 +189,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
             Slot slot = activation.slot;
-            if (closed || !slot.active || slot.incarnation != activation.incarnation)
+            if (slot.owner != this || closed || !slot.active || !slot.published ||
+                    slot.incarnation != activation.incarnation)
                 throw new IllegalStateException("inactive virtual actor activation");
             if (slot.outstanding == mailboxCapacity) return null;
             slot.outstanding++;
@@ -166,7 +203,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
             Slot slot = activation.slot;
-            if (closed || !slot.active || slot.incarnation != activation.incarnation)
+            if (slot.owner != this || closed || !slot.active || !slot.published ||
+                    slot.incarnation != activation.incarnation)
                 throw new IllegalStateException("stale virtual actor activation");
             if (slot.outstanding != 0)
                 throw new IllegalStateException("cannot deactivate with accepted work outstanding");
@@ -176,7 +214,10 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     public int outstanding(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
-        synchronized (monitor) { return logical.slot.outstanding; }
+        synchronized (monitor) {
+            if (logical.slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
+            return logical.slot.outstanding;
+        }
     }
 
     /** Force-close is intentionally absent: no accepted work is discarded. */
