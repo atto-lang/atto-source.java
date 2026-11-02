@@ -6825,10 +6825,18 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "channel payload cannot contain a function, bound method, closure, or lexical environment");
             }
-            if (value instanceof String || value instanceof Number
-                    || value instanceof Boolean || value instanceof Character
-                    || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId
+            // Do not admit arbitrary Number/Enum subclasses: they may carry
+            // mutable fields, Java callbacks, or executable host state.
+            if (value instanceof String || value instanceof Boolean
+                    || value instanceof Character || value instanceof Byte
+                    || value instanceof Short || value instanceof Integer
+                    || value instanceof Long || value instanceof Float
+                    || value instanceof Double || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof java.util.UUID
+                    || value instanceof dev.oreslang.runtime.OresSymbol
+                    || value instanceof Complex
+                    || value instanceof ActorRuntime.ActorId
                     || value instanceof ActorRuntime.ActorRef<?>) {
                 return;
             }
