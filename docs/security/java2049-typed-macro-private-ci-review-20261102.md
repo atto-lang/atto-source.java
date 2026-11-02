@@ -3,7 +3,7 @@
 Status: **CANDIDATE ONLY — no authorization to transfer private source**.
 Owner: `ores-truffle-oreslang/oreslang-source.java`.
 Target compiler PR: #2049, reviewed candidate head
-`ae38cdf1e177255475f3102677ff02212bd54be8`.
+`de6fbd8eaa2aac11f6059b0da9b2abc2682961b0`.
 
 ## Candidate destination (must be independently approved)
 
@@ -45,6 +45,15 @@ Target compiler PR: #2049, reviewed candidate head
    for typed macro source examples MA001/MA002, and compiler rejection of
    MA003–MA006/MA008 with no partial artifacts. A supported scalar-only
    backend cannot be credited as full-language parity.
+
+## Current exact candidate snapshot (2026-11-02 20:05 UTC)
+
+- PR #2049 exact head: `de6fbd8eaa2aac11f6059b0da9b2abc2682961b0`.
+- Source root tree: `fa800a1109511fc4daac860bdc1481fd2b539a26`.
+- New source change closes the identified unquote AST-identity alias: ordinary name/scalar literal leaves are cloned with provenance copied to the new identity; composite and compiler-internal syntax now fail closed pending an exhaustive metadata-preserving copier.
+- Three JUnit regressions were added in `MacroUnquoteIdentityIsolationTest`; none has executed yet. Source-org private Actions admission issue #963 remains open.
+- Source-free carrier run [41395135081](https://github.com/scintilla-run/scintilla-e2e/actions/runs/41395135081) completed eight hosted workflow steps and reports 73/73 Node contract assertions passed. This is carrier/contract evidence only, not private Java-source, JUnit, or guest-AOT evidence.
+- No source transfer is authorized: source `main` was last observed `protected=false`, the approved-destination file has no authorization row, and independent approval remains outstanding.
 
 ## Current compiler merge risk
 
