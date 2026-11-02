@@ -60,6 +60,14 @@ bash "$verifier" "$receipt" portable-scalar-v1 16 "$portable"
 # Synthetic logs verify the verifier only; do not credit guest test passes.
 expected40="$root/tests/native-testing-regressions-40.expected-ids.txt"
 [ "$(wc -l < "$expected40")" -eq 40 ]
+# Check the trusted inventory against the actual declarations, in order.
+# This is a source-level inventory check, not guest compilation.
+sed -nE 's/^[[:space:]]*new TestCase\("([A-Za-z0-9][A-Za-z0-9._\/-]*)", case_[0-9]{2}, false, ""\),?[[:space:]]*$/\1/p' \
+  "$root/examples/native-testing-regressions-40.ores" > "$tmp/declared-40.txt"
+if ! cmp -s "$expected40" "$tmp/declared-40.txt"; then
+  echo '40-case trusted identity inventory differs from Oreslang TestCase declarations' >&2
+  exit 1
+fi
 summary40='ORES_TEST|SUMMARY|total=40|passed=40|failed=0|skipped=0|filtered=0'
 emit40() {
   : > "$receipt"
