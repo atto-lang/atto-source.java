@@ -104,7 +104,7 @@ public final class CriticalSectionGateStandaloneTest {
             Thread executing = Thread.ofPlatform().start(() -> {
                 try {
                     race.await();
-                    ticket.execute(callbacks::incrementAndGet);
+                    ticket.execute(() -> { callbacks.incrementAndGet(); });
                 } catch (CancellationException expected) {
                     denied.incrementAndGet();
                 } catch (Throwable unexpected) {
