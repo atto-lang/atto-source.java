@@ -537,11 +537,116 @@ public final class Ast {
         public Visibility visibility() { return body.visibility(); }
     }
 
-    /** Class-shaped durable orchestration container; not an ordinary executable class. */
-    public record WorkflowDecl(ClassDecl body, List<Annotation> annotations) implements Decl {
+    /**
+     * Compiler-recognized, typed durable workflow command IR. These are not
+     * ordinary calls: step/timer/event/update/child/continue/compensation nodes
+     * are replay-visible and therefore carry stable IDs. Query is intentionally
+     * a read-only endpoint and has no command ID/history position.
+     */
+    public sealed interface WorkflowCommand permits ActivityStepCommand, TimerCommand,
+            WaitForEventCommand, SignalCommand, QueryCommand, UpdateCommand,
+            ChildWorkflowCommand, ContinueAsNewCommand, CompensationCommand { }
+
+    private static String requireDurableCommandId(String id) {
+        if (id == null || !id.matches("[A-Za-z][A-Za-z0-9_.-]{0,127}")) {
+            throw new IllegalArgumentException("durable command ID must be a canonical identifier (1..128 ASCII characters)");
+        }
+        return id;
+    }
+
+    public record ActivityStepCommand(
+            String commandId, String activityName, String operation, List<Expr> arguments)
+            implements WorkflowCommand {
+        public ActivityStepCommand {
+            commandId = requireDurableCommandId(commandId);
+            if (activityName == null || activityName.isBlank()
+                    || operation == null || operation.isBlank()) {
+                throw new IllegalArgumentException("activity step target and operation are required");
+            }
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    public record TimerCommand(String commandId, Expr delay) implements WorkflowCommand {
+        public TimerCommand {
+            commandId = requireDurableCommandId(commandId);
+            java.util.Objects.requireNonNull(delay, "durable timer delay");
+        }
+    }
+
+    public record WaitForEventCommand(String commandId, String eventType) implements WorkflowCommand {
+        public WaitForEventCommand {
+            commandId = requireDurableCommandId(commandId);
+            if (eventType == null || eventType.isBlank()) throw new IllegalArgumentException("event type is required");
+        }
+    }
+
+    public record SignalCommand(String commandId, String endpoint, List<Expr> arguments)
+            implements WorkflowCommand {
+        public SignalCommand {
+            commandId = requireDurableCommandId(commandId);
+            if (endpoint == null || endpoint.isBlank()) throw new IllegalArgumentException("signal endpoint is required");
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    public record QueryCommand(String endpoint, List<Param> parameters, TypeRef returnType)
+            implements WorkflowCommand {
+        public QueryCommand {
+            if (endpoint == null || endpoint.isBlank()) throw new IllegalArgumentException("query endpoint is required");
+            parameters = List.copyOf(parameters);
+            java.util.Objects.requireNonNull(returnType, "query return type");
+        }
+    }
+
+    public record UpdateCommand(String commandId, String endpoint, List<Expr> arguments)
+            implements WorkflowCommand {
+        public UpdateCommand {
+            commandId = requireDurableCommandId(commandId);
+            if (endpoint == null || endpoint.isBlank()) throw new IllegalArgumentException("update endpoint is required");
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    public record ChildWorkflowCommand(String commandId, String workflowName, Expr input)
+            implements WorkflowCommand {
+        public ChildWorkflowCommand {
+            commandId = requireDurableCommandId(commandId);
+            if (workflowName == null || workflowName.isBlank()) throw new IllegalArgumentException("child workflow name is required");
+            java.util.Objects.requireNonNull(input, "child workflow input");
+        }
+    }
+
+    public record ContinueAsNewCommand(String commandId, Expr input) implements WorkflowCommand {
+        public ContinueAsNewCommand {
+            commandId = requireDurableCommandId(commandId);
+            java.util.Objects.requireNonNull(input, "continue-as-new input");
+        }
+    }
+
+    public record CompensationCommand(
+            String commandId, String activityName, String operation, List<Expr> arguments)
+            implements WorkflowCommand {
+        public CompensationCommand {
+            commandId = requireDurableCommandId(commandId);
+            if (activityName == null || activityName.isBlank()
+                    || operation == null || operation.isBlank()) {
+                throw new IllegalArgumentException("compensation activity and operation are required");
+            }
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    /** Class-shaped durable orchestration container with an ordered command IR. */
+    public record WorkflowDecl(
+            ClassDecl body, List<Annotation> annotations, List<WorkflowCommand> commands) implements Decl {
         public WorkflowDecl {
             java.util.Objects.requireNonNull(body, "workflow body");
             annotations = List.copyOf(annotations);
+            commands = List.copyOf(commands);
+        }
+        public WorkflowDecl(ClassDecl body, List<Annotation> annotations) {
+            this(body, annotations, List.of());
         }
         public String name() { return body.name(); }
         public Visibility visibility() { return body.visibility(); }
