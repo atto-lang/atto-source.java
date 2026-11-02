@@ -49,9 +49,16 @@ public final class OresEtsActorRegistry implements AutoCloseable {
             }
         }
         boolean unpin() {
-            long old = admission.getAndDecrement();
-            if ((old & COUNT) == 0) throw new AssertionError("ETS pin underflow");
-            return (old & RETIRED) != 0 && (old & COUNT) == 1;
+            for (;;) {
+                long old = admission.get();
+                long count = old & COUNT;
+                // Never mutate the sign-bit retirement fence on underflow.
+                if (count == 0) throw new AssertionError("ETS pin underflow");
+                long next = (old & RETIRED) | (count - 1);
+                if (admission.compareAndSet(old, next)) {
+                    return (old & RETIRED) != 0 && count == 1;
+                }
+            }
         }
         void retire() { admission.getAndUpdate(old -> old | RETIRED); }
         boolean retired() { return (admission.get() & RETIRED) != 0; }
