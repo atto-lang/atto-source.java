@@ -493,4 +493,52 @@ final class OresEtsActorRegistryTest {
             assertThrows(IllegalStateException.class, () -> registry.lookup(id, owner, "k"));
         }
     }
+
+    @Test
+    void actualActorStopRejectsHostOperationsUnderOneTenAndHundredWorkerContention()
+            throws Exception {
+        for (int workerCount : new int[]{1, 10, 100}) {
+            try (var runtime = new ActorRuntime();
+                 var registry = new OresEtsActorRegistry(runtime, 2)) {
+                var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+                var peer = runtime.<String>spawnShared(() -> (message, context) -> {});
+                var id = registry.<String, Long>create(owner, Access.PUBLIC, 1, 128);
+                registry.insert(id, owner, "counter", 0L);
+                var begin = new CountDownLatch(1);
+                var finished = new CountDownLatch(workerCount);
+                var unexpected = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+                for (int i = 0; i < workerCount; i++) {
+                    Thread.ofPlatform().start(() -> {
+                        try {
+                            begin.await();
+                            for (int j = 0; j < 50; j++) {
+                                try {
+                                    long value = registry.lookup(id, peer, "counter").orElseThrow();
+                                    registry.compareExchange(id, peer, "counter", value, value + 1L);
+                                } catch (IllegalStateException retired) {
+                                    // STOP closed admission, or admission hit
+                                    // the bounded host-operation quota.
+                                    break;
+                                }
+                            }
+                        } catch (Throwable failure) {
+                            unexpected.add(failure);
+                        } finally {
+                            finished.countDown();
+                        }
+                    });
+                }
+                begin.countDown();
+                owner.stop();
+                assertTrue(finished.await(15, TimeUnit.SECONDS),
+                        "host workers did not finish at contention " + workerCount);
+                assertTrue(unexpected.isEmpty(), unexpected.toString());
+                assertFalse(owner.isAlive());
+                assertThrows(IllegalStateException.class,
+                        () -> registry.lookup(id, peer, "counter"));
+                registry.reap();
+                assertEquals(0, registry.liveTableCount());
+            }
+        }
+    }
 }
