@@ -8,10 +8,12 @@ so the high bit may make the Java value negative. Treat it as an unsigned
 storage word and decode with `Integer.toUnsignedLong`.
 
 `DenseIndex32<TTag>` is a boundary-level logical identity, not a four-byte
-Java object. It carries an out-of-line table identity, table epoch, encoded
-word and 64-bit slot generation. The wrapper is intended for API, migration,
-persistence and ownership boundaries—not one allocation per relationship in
-a hot SoA/AoSoA loop.
+Java object. It carries an out-of-line in-process table identity, table epoch,
+encoded word and 64-bit slot generation. The wrapper is intended for in-process
+API and ownership boundaries—not one allocation per relationship in a hot
+SoA/AoSoA loop. It is not Serializable or a wire format. Persistence or
+cross-process migration requires a separate, versioned stable table identity,
+epoch and generation encoding; the in-memory Object identity is not portable.
 
 ## Table identity and lifetime
 
