@@ -83,6 +83,10 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public LogicalRef resolve(String declaration, String key) {
         declaration = requireName(declaration, "declaration");
         Objects.requireNonNull(key, "key");
+        // A key must be bounded BEFORE normalization and UTF-8 encoding:
+        // prohibit adversarial allocations from huge untrusted identifiers.
+        if (key.length() > MAX_KEY_BYTES * 4)
+            throw new IllegalArgumentException("virtual actor key exceeds pre-normalization budget");
         checkUnicode(key, "key");
         String canonical = Normalizer.normalize(key, Normalizer.Form.NFC);
         if (canonical.isEmpty() ||
