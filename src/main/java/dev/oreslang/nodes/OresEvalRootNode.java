@@ -6921,19 +6921,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new MutableStructValue(copy);
                 }
-                if (value instanceof OresObject object) {
-                    if (object.klass == null
-                            || object.klass.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException(
-                                "channel payload cannot contain an actor instance or untyped nominal object");
-                    }
-                    requireChannelGraphBudget(object.fields.size(), nodes);
-                    LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> field : object.fields.entrySet()) {
-                        copy.put(field.getKey(), snapshotChannelMessageData(
-                                field.getValue(), visiting, nodes, depth + 1));
-                    }
-                    return new OresObject(object.owner, object.klass, copy);
+                if (value instanceof OresObject) {
+                    // Nominal objects retain an Evaluator owner reference even
+                    // when their visible fields are recursively detached.
+                    // Never publish that lexical/execution authority through
+                    // a source channel until an owner-free data ABI exists.
+                    throw new IllegalArgumentException(
+                            "channel payload cannot transport nominal objects with evaluator ownership");
                 }
                 if (value instanceof List<?> list) {
                     requireTrustedChannelContainer(list);
