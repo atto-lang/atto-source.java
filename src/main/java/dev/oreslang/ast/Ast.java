@@ -1825,15 +1825,21 @@ public final class Ast {
          * ownership epoch, even if a critical node object was reused.
          */
         public static synchronized void publish(Program program, long epoch,
-                java.util.Set<CriticalStmt> checked) {
+                java.util.Set<CriticalStmt> checked,
+                dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
             if (epoch <= 0) throw new IllegalArgumentException(
                     "critical check epoch must be positive");
             java.util.Objects.requireNonNull(checked, "critical admissions");
+            if (authority == null || !authority.permits(program, epoch))
+                throw new IllegalStateException(
+                        "critical publish requires compiler-owned ownership authority");
             if (CheckedTaskCaptures.requireProgramEpoch(program) != epoch)
                 throw new IllegalStateException("critical ownership epoch mismatch");
-            // The public OwnershipChecker API cannot turn raw parsed ASTs
-            // into executable critical authority without a successful type pass.
-            dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            // Ownership-only checking remains supported for programs without
+            // critical blocks; only active critical authority needs type proof.
+            if (!checked.isEmpty()) {
+                dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            }
             expunge();
             ADMISSIONS.keySet().removeIf(key -> key.program() == program);
             for (CriticalStmt node : checked) {
