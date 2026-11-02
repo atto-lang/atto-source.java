@@ -184,7 +184,7 @@ final class ActorPubSubConcurrencyTest {
             int perPublisher = 64;
             CountDownLatch subscribed = new CountDownLatch(1);
             CountDownLatch publishersJoined = new CountDownLatch(2);
-            CountDownLatch published = new CountDownLatch(perPublisher * 2L);
+            CountDownLatch published = new CountDownLatch(perPublisher * 2);
             CountDownLatch drained = new CountDownLatch(1);
             AtomicReference<ActorEventBus.Subscription<String>> subscription =
                     new AtomicReference<>();
