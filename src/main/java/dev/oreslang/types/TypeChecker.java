@@ -3395,6 +3395,7 @@ public final class TypeChecker {
                                 throw new IllegalArgumentException(
                                         "Topic<void> is invalid");
                             }
+                            validateTopicPayloadType(payload, "Topic payload");
                             validateActorCallableBoundaryType(
                                     payload,
                                     Ast.ActorKind.SHARED,
@@ -4839,7 +4840,7 @@ public final class TypeChecker {
         // SharedMutex, Box and Arc can have Send implementations while carrying
         // mutable identity or synchronization authority that the source channel
         // runtime cannot safely detach. Fail at type admission, not first write.
-        if (containsChannelExecutionCapability(element, new LinkedHashSet<>(), Map.of())) {
+        if (containsChannelExecutionCapability(element, new LinkedHashSet<>(), Map.of(), true)) {
             throw new IllegalArgumentException(
                     where + " requires MessageData: channel payload cannot contain "
                             + "synchronization, storage, task, transport or executable capabilities");
@@ -4850,34 +4851,47 @@ public final class TypeChecker {
      * ActorRef<T> remains the one explicit typed reply capability exception;
      * a future pure-data-only channel policy can remove it deliberately.
      */
+    /** Pub/sub fanout must freeze data, never transfer ActorRef authority.
+     * Channel<T> allows a separately validated typed ActorRef reply endpoint,
+     * but Topic<T> does not. All nested wrapper checks remain recursive.
+     */
+    private void validateTopicPayloadType(Type payload, String where) {
+        validateChannelPayloadType(payload, where);
+        if (containsChannelExecutionCapability(
+                payload, new LinkedHashSet<>(), Map.of(), false)) {
+            throw new IllegalArgumentException(
+                    where + " requires MessageData without ActorRef or executable capabilities");
+        }
+    }
+
     private boolean containsChannelExecutionCapability(
             Type type,
             Set<Ast.ClassDecl> seen,
-            Map<String, Type> genericBindings) {
+            Map<String, Type> genericBindings, boolean allowTypedActorRef) {
         if (type instanceof Borrow || type instanceof Function) return true;
         type = deref(type);
         if (type instanceof SelfType receiver) {
-            return containsChannelExecutionCapability(receiver.bound(), seen, genericBindings);
+            return containsChannelExecutionCapability(receiver.bound(), seen, genericBindings, allowTypedActorRef);
         }
         if (type instanceof ListType list) {
-            return containsChannelExecutionCapability(list.element(), seen, genericBindings);
+            return containsChannelExecutionCapability(list.element(), seen, genericBindings, allowTypedActorRef);
         }
         if (type instanceof Tuple tuple) {
             return tuple.elements().stream().anyMatch(
-                    child -> containsChannelExecutionCapability(child, seen, genericBindings));
+                    child -> containsChannelExecutionCapability(child, seen, genericBindings, allowTypedActorRef));
         }
         if (type instanceof Union union) {
             return union.options().stream().anyMatch(
-                    child -> containsChannelExecutionCapability(child, seen, genericBindings));
+                    child -> containsChannelExecutionCapability(child, seen, genericBindings, allowTypedActorRef));
         }
         if (type instanceof Record record) {
             return record.members().values().stream().anyMatch(
-                    child -> containsChannelExecutionCapability(child, seen, genericBindings));
+                    child -> containsChannelExecutionCapability(child, seen, genericBindings, allowTypedActorRef));
         }
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
             return bound == null || bound == type
-                    || containsChannelExecutionCapability(bound, seen, genericBindings);
+                    || containsChannelExecutionCapability(bound, seen, genericBindings, allowTypedActorRef);
         }
         if (!(type instanceof Named named)) return false;
         switch (named.name()) {
@@ -4893,6 +4907,7 @@ public final class TypeChecker {
                     "NetworkCodec", "ActorMessageCodec", "Pointer",
                     "Stream", "Observable" -> { return true; }
             case "ActorRef" -> {
+                if (!allowTypedActorRef) return true;
                 // The exception is for a verified typed actor address, not
                 // an opaque nominal value that happens to be named ActorRef.
                 actorClassForRef(named);
@@ -4901,7 +4916,7 @@ public final class TypeChecker {
             default -> { }
         }
         for (Type argument : named.arguments()) {
-            if (containsChannelExecutionCapability(argument, seen, genericBindings)) {
+            if (containsChannelExecutionCapability(argument, seen, genericBindings, allowTypedActorRef)) {
                 return true;
             }
         }
@@ -4916,7 +4931,7 @@ public final class TypeChecker {
             }
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(classFieldType(klass, field), classBindings);
-                if (containsChannelExecutionCapability(fieldType, seen, classBindings)) {
+                if (containsChannelExecutionCapability(fieldType, seen, classBindings, allowTypedActorRef)) {
                     return true;
                 }
             }
@@ -4926,7 +4941,7 @@ public final class TypeChecker {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Type parentType = resolveSharedGeneric(
                         resolve(parentRef, classGenerics, nominal), classBindings);
-                if (containsChannelExecutionCapability(parentType, seen, classBindings)) {
+                if (containsChannelExecutionCapability(parentType, seen, classBindings, allowTypedActorRef)) {
                     return true;
                 }
             }
@@ -9917,6 +9932,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             ref.name() + "<void> is invalid");
                 }
+                validateTopicPayloadType(payload, ref.name() + " payload");
                 validateActorCallableBoundaryType(
                         payload,
                         Ast.ActorKind.SHARED,
