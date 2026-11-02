@@ -334,6 +334,89 @@ final class CriticalGateTest {
         assertThrows(IllegalStateException.class, gate::request);
     }
 
+    @Test void retirementDuringPromotedFutureNotificationDoesNotDeadlockOrLeak()
+            throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CriticalGate.Ticket first = gate.requestAwaitable().join();
+        OresFuture<CriticalGate.Ticket> promoted = gate.requestAwaitable();
+        java.util.concurrent.CountDownLatch notified =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch releaseNotification =
+                new java.util.concurrent.CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        promoted.whenCompleteRuntime((value, error) -> {
+            notified.countDown();
+            try {
+                if (!releaseNotification.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    throw new AssertionError("notification release timed out");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+        Thread releasing = Thread.ofPlatform().start(() -> {
+            try {
+                gate.release(first);
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        });
+        try {
+            assertTrue(notified.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "promoted Future notification never reached");
+            // The future has already reported its ticket, but the releasing
+            // worker's callback is still running. Retirement must not hold
+            // gate metadata while awaiting the callback, and must revoke
+            // ownership even across this unsettled physical notification.
+            assertTrue(promoted.isDone());
+            gate.retire();
+            assertTrue(gate.retired());
+            assertFalse(gate.holds(promoted.join()));
+        } finally {
+            releaseNotification.countDown();
+            releasing.join(5_000);
+        }
+        assertFalse(releasing.isAlive(), "notification deadlocked retirement");
+        assertNull(failure.get(), "unexpected release/callback failure");
+        assertTrue(gate.quiescent());
+        assertEquals(0, gate.waiting());
+    }
+
+    @Test void retirementRacingAdmissionAndCancellationAlwaysSettlesFutures()
+            throws Exception {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            CriticalGate gate = new CriticalGate();
+            CriticalGate.Ticket owner = gate.requestAwaitable().join();
+            OresFuture<CriticalGate.Ticket> second = gate.requestAwaitable();
+            OresFuture<CriticalGate.Ticket> third = gate.requestAwaitable();
+            java.util.concurrent.CountDownLatch start =
+                    new java.util.concurrent.CountDownLatch(1);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            Thread releaser = Thread.ofPlatform().start(() -> {
+                try { start.await(); gate.release(owner); }
+                catch (Throwable thrown) { error.compareAndSet(null, thrown); }
+            });
+            Thread canceller = Thread.ofPlatform().start(() -> {
+                try { start.await(); second.cancel(false); }
+                catch (Throwable thrown) { error.compareAndSet(null, thrown); }
+            });
+            Thread retire = Thread.ofPlatform().start(() -> {
+                try { start.await(); gate.retire(); }
+                catch (Throwable thrown) { error.compareAndSet(null, thrown); }
+            });
+            start.countDown();
+            releaser.join();
+            canceller.join();
+            retire.join();
+            assertNull(error.get(), "unexpected concurrent gate failure");
+            assertTrue(second.isDone(), "promoted or cancelled admission leaked");
+            assertTrue(third.isDone(), "queued admission leaked after retirement");
+            assertTrue(gate.quiescent());
+            assertEquals(0, gate.waiting());
+            assertTrue(gate.retired());
+        }
+    }
+
     @Test void logicalTicketCanBeReleasedOnAnotherCarrier() throws InterruptedException {
         CriticalGate gate = new CriticalGate();
         var owner = gate.request();
