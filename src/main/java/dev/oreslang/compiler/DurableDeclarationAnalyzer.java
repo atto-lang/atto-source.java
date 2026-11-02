@@ -46,7 +46,8 @@ public final class DurableDeclarationAnalyzer {
                     if (!localDurableNames.add(workflow.name())) {
                         throw new IllegalArgumentException("duplicate durable declaration '" + module.name() + "." + workflow.name() + "'");
                     }
-                    declarations.add(workflow.body());
+                    declarations.add(withCommandPayloadValidation(
+                            program, module, workflow));
                 } else {
                     declarations.add(declaration);
                 }
@@ -56,13 +57,257 @@ public final class DurableDeclarationAnalyzer {
         }
         if (!found) return DurableExecutionManifest.empty();
         validateCommandTargets(program);
-        // Re-enter the normal checker using the exact class bodies, not wrappers.
-        // This validates every activity/workflow member's parameter, return,
-        // expression and control-flow types through the ordinary class pipeline.
+        // Re-enter the normal checker using exact class bodies plus synthetic
+        // checker-only methods that bind each recorded command payload to the
+        // target member's declared parameter types. No synthetic method is
+        // returned in the caller's AST or executable program.
         TypeChecker.TypeCheckResult memberChecks = TypeChecker.checkTypesWithDiagnostics(
                 new Ast.Program(program.namespace(), program.imports(), rewrittenModules));
         OwnershipChecker.check(memberChecks.program(), memberChecks.shortInferredAliases());
         return DurableExecutionManifest.fromValidated(program);
+    }
+
+    /**
+     * Command payload expressions live in WorkflowDecl rather than in a
+     * MethodDecl body. Re-home each payload into a synthetic, non-executable
+     * checker-only method with the exact run parameters and destination types.
+     * This makes the existing checker validate lexical names, expression types,
+     * and overload resolution without introducing a guest/runtime fallback.
+     */
+    private static Ast.ClassDecl withCommandPayloadValidation(
+            Ast.Program program, Ast.ModuleDecl module, Ast.WorkflowDecl workflow) {
+        Ast.MethodDecl run = workflow.body().methods().stream()
+                .filter(method -> method.name().equals("run"))
+                .findFirst().orElseThrow();
+        List<Ast.Stmt> checks = new ArrayList<>();
+        int ordinal = 0;
+        for (Ast.WorkflowCommand command : workflow.commands()) {
+            if (command instanceof Ast.ActivityStepCommand step) {
+                Ast.ActivityDecl activity = resolveActivityForPayload(
+                        program, module.name(), step.activityName());
+                Ast.MethodDecl operation = findActivityOperation(
+                        activity, step.operation(), step.arguments().size(), "activity step");
+                ordinal = appendPayloadChecks(checks, operation.parameters(),
+                        step.arguments(), ordinal, "activity step " + step.activityName() + "." + step.operation());
+            } else if (command instanceof Ast.CompensationCommand compensation) {
+                Ast.ActivityDecl activity = resolveActivityForPayload(
+                        program, module.name(), compensation.activityName());
+                Ast.MethodDecl operation = findActivityOperation(
+                        activity, compensation.operation(), compensation.arguments().size(), "compensation");
+                ordinal = appendPayloadChecks(checks, operation.parameters(),
+                        compensation.arguments(), ordinal,
+                        "compensation " + compensation.activityName() + "." + compensation.operation());
+            } else if (command instanceof Ast.SignalCommand signal) {
+                Ast.MethodDecl endpoint = findWorkflowEndpoint(
+                        workflow, signal.endpoint(), signal.arguments().size(), "signal");
+                ordinal = appendPayloadChecks(checks, endpoint.parameters(), signal.arguments(),
+                        ordinal, "signal " + signal.endpoint());
+            } else if (command instanceof Ast.UpdateCommand update) {
+                Ast.MethodDecl endpoint = findWorkflowEndpoint(
+                        workflow, update.endpoint(), update.arguments().size(), "update");
+                ordinal = appendPayloadChecks(checks, endpoint.parameters(), update.arguments(),
+                        ordinal, "update " + update.endpoint());
+            } else if (command instanceof Ast.QueryCommand query) {
+                Ast.MethodDecl endpoint = findWorkflowEndpoint(
+                        workflow, query.endpoint(), query.parameters().size(), "query");
+                requireSameSignature(endpoint, query.parameters(), query.returnType(), query.endpoint());
+            } else if (command instanceof Ast.ChildWorkflowCommand child) {
+                Ast.WorkflowDecl target = resolveWorkflowForPayload(
+                        program, module.name(), child.workflowName());
+                Ast.MethodDecl childRun = target.body().methods().stream()
+                        .filter(method -> method.name().equals("run")).findFirst().orElseThrow();
+                if (childRun.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "WORKFLOW_CHILD_INPUT_ARITY_UNSUPPORTED: child workflow '"
+                                    + child.workflowName() + "' must have exactly one run input for v1");
+                }
+                ordinal = appendPayloadChecks(checks, childRun.parameters(),
+                        List.of(child.input()), ordinal, "child workflow " + child.workflowName());
+            } else if (command instanceof Ast.ContinueAsNewCommand next) {
+                if (run.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "WORKFLOW_CONTINUE_INPUT_ARITY_UNSUPPORTED: continue-as-new requires exactly one run input for v1");
+                }
+                ordinal = appendPayloadChecks(checks, run.parameters(),
+                        List.of(next.input()), ordinal, "continue-as-new");
+            } else if (command instanceof Ast.TimerCommand timer) {
+                ordinal = appendPayloadChecks(checks,
+                        List.of(new Ast.Param(Ast.TypeRef.simple("int"), "delay_ms")),
+                        List.of(timer.delay()), ordinal, "timer delay in integer milliseconds");
+            }
+        }
+        if (checks.isEmpty()) return workflow.body();
+
+        Set<String> occupied = new HashSet<>();
+        workflow.body().methods().forEach(method -> occupied.add(method.name()));
+        String name = "__atto_durable_command_payloads";
+        int suffix = 0;
+        while (occupied.contains(name)) name = "__atto_durable_command_payloads_" + (++suffix);
+
+        Ast.MethodDecl validationMethod = new Ast.MethodDecl(
+                name,
+                Ast.Visibility.PRIVATE,
+                false,
+                false,
+                false,
+                false,
+                false,
+                null,
+                List.of(),
+                run.parameters(),
+                Ast.TypeRef.simple("void"),
+                List.of(),
+                checks,
+                Ast.EffectSpec.none());
+        List<Ast.MethodDecl> methods = new ArrayList<>(workflow.body().methods());
+        methods.add(validationMethod);
+        Ast.ClassDecl body = workflow.body();
+        return new Ast.ClassDecl(
+                body.name(), body.visibility(), body.isAbstract(), body.actorKind(),
+                body.genericParameters(), body.parents(), body.interfaces(), body.fields(),
+                body.constructor(), methods, body.actorConcurrency());
+    }
+
+    private static int appendPayloadChecks(
+            List<Ast.Stmt> checks,
+            List<Ast.Param> parameters,
+            List<Ast.Expr> arguments,
+            int ordinal,
+            String context) {
+        if (parameters.size() != arguments.size()) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_COMMAND_ARGUMENT_ARITY: " + context + " expects "
+                            + parameters.size() + " arguments but received " + arguments.size());
+        }
+        for (int index = 0; index < arguments.size(); index++) {
+            Ast.Param parameter = parameters.get(index);
+            String binding = "__atto_durable_arg_" + ordinal++;
+            checks.add(new Ast.BindingStmt(
+                    Ast.BindingKind.CONST,
+                    parameter.type(),
+                    binding,
+                    arguments.get(index),
+                    false));
+        }
+        return ordinal;
+    }
+
+    private static void requireSameSignature(
+            Ast.MethodDecl endpoint,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType,
+            String name) {
+        List<Ast.TypeRef> actual = endpoint.parameters().stream().map(Ast.Param::type).toList();
+        List<Ast.TypeRef> declared = parameters.stream().map(Ast.Param::type).toList();
+        if (!actual.equals(declared) || !java.util.Objects.equals(endpoint.returnType(), returnType)) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_QUERY_SIGNATURE_MISMATCH: query endpoint '" + name
+                            + "' does not match its method parameter/return signature");
+        }
+    }
+
+    private static Ast.MethodDecl findWorkflowEndpoint(
+            Ast.WorkflowDecl workflow, String name, int arity, String kind) {
+        Ast.MethodDecl found = null;
+        for (Ast.MethodDecl method : workflow.body().methods()) {
+            if (!method.name().equals(name) || method.parameters().size() != arity) continue;
+            if (found != null) {
+                throw new IllegalArgumentException(
+                        "WORKFLOW_ENDPOINT_AMBIGUOUS: " + kind + " endpoint '" + name + "#" + arity + "'");
+            }
+            found = method;
+        }
+        if (found == null) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_" + kind.toUpperCase() + "_ENDPOINT_UNKNOWN: no workflow member '"
+                            + name + "#" + arity + "'");
+        }
+        return found;
+    }
+
+    private static Ast.MethodDecl findActivityOperation(
+            Ast.ActivityDecl activity, String operation, int arity, String context) {
+        Ast.MethodDecl found = null;
+        for (Ast.MethodDecl method : activity.body().methods()) {
+            if (!method.name().equals(operation) || method.parameters().size() != arity) continue;
+            if (found != null) {
+                throw new IllegalArgumentException(
+                        "WORKFLOW_ACTIVITY_OPERATION_AMBIGUOUS: " + operation + "#" + arity);
+            }
+            found = method;
+        }
+        if (found == null) {
+            throw new IllegalArgumentException(
+                    "WORKFLOW_ACTIVITY_OPERATION_UNKNOWN: " + context + " references missing operation '"
+                            + activity.name() + "." + operation + "#" + arity + "'");
+        }
+        return found;
+    }
+
+    private static Ast.ActivityDecl resolveActivityForPayload(
+            Ast.Program program, String currentModule, String requested) {
+        List<Ast.ActivityDecl> exact = new ArrayList<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.ActivityDecl activity)) continue;
+                String qualified = module.name() + "." + activity.name();
+                if (requested.equals(qualified)
+                        || (!requested.contains(".") && module.name().equals(currentModule)
+                                && requested.equals(activity.name()))) {
+                    exact.add(activity);
+                }
+            }
+        }
+        if (exact.size() == 1) return exact.getFirst();
+        if (requested.contains(".")) {
+            throw new IllegalArgumentException("WORKFLOW_ACTIVITY_TARGET_UNKNOWN: " + requested);
+        }
+        if (exact.isEmpty()) {
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.ActivityDecl activity
+                            && activity.name().equals(requested)) exact.add(activity);
+                }
+            }
+        }
+        if (exact.size() > 1) throw new IllegalArgumentException(
+                "WORKFLOW_ACTIVITY_TARGET_AMBIGUOUS: '" + requested + "' requires a qualified module name");
+        if (exact.isEmpty()) throw new IllegalArgumentException(
+                "WORKFLOW_ACTIVITY_TARGET_UNKNOWN: " + requested);
+        return exact.getFirst();
+    }
+
+    private static Ast.WorkflowDecl resolveWorkflowForPayload(
+            Ast.Program program, String currentModule, String requested) {
+        List<Ast.WorkflowDecl> exact = new ArrayList<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.WorkflowDecl workflow)) continue;
+                String qualified = module.name() + "." + workflow.name();
+                if (requested.equals(qualified)
+                        || (!requested.contains(".") && module.name().equals(currentModule)
+                                && requested.equals(workflow.name()))) {
+                    exact.add(workflow);
+                }
+            }
+        }
+        if (exact.size() == 1) return exact.getFirst();
+        if (requested.contains(".")) {
+            throw new IllegalArgumentException("WORKFLOW_CHILD_TARGET_UNKNOWN: " + requested);
+        }
+        if (exact.isEmpty()) {
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.WorkflowDecl workflow
+                            && workflow.name().equals(requested)) exact.add(workflow);
+                }
+            }
+        }
+        if (exact.size() > 1) throw new IllegalArgumentException(
+                "WORKFLOW_CHILD_TARGET_AMBIGUOUS: '" + requested + "' requires a qualified module name");
+        if (exact.isEmpty()) throw new IllegalArgumentException(
+                "WORKFLOW_CHILD_TARGET_UNKNOWN: " + requested);
+        return exact.getFirst();
     }
 
     private static void validateActivity(Ast.ActivityDecl activity, String module) {
