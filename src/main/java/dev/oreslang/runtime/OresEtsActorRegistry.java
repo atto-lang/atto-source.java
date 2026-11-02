@@ -76,13 +76,7 @@ public final class OresEtsActorRegistry implements AutoCloseable {
     private final int maxTables;
     private final Object admissionLock = new Object();
     private final Map<TableId<?, ?>, Entry> entries = new ConcurrentHashMap<>();
-    /**
-     * One supervisor-owned daemon reaper across all host registries. Never
-     * create a carrier or background thread per table/registry. Cancellation
-     * removes periodic tasks immediately, avoiding an unbounded cancelled
-     * task queue when registries are repeatedly created and retired.
-     */
-    /** Global quota also bounds how many periodic reaper tasks may exist. */
+    /** Bounds active host registries and their periodic reaper tasks. */
     private static final int MAX_HOST_REGISTRIES = 1024;
     private static final AtomicInteger ACTIVE_HOST_REGISTRIES = new AtomicInteger();
 
@@ -96,6 +90,10 @@ public final class OresEtsActorRegistry implements AutoCloseable {
         }
     }
 
+    /**
+     * Shared trusted-host cleanup lane. Cancellation removes registry tasks
+     * promptly; actor/CONTROL carriers never execute map cleanup here.
+     */
     private static final ScheduledThreadPoolExecutor HOST_REAPER =
             new ScheduledThreadPoolExecutor(1,
                     Thread.ofPlatform().daemon(true).name("ores-ets-host-reaper").factory());
