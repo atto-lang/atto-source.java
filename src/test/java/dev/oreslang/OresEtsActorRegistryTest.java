@@ -272,4 +272,31 @@ final class OresEtsActorRegistryTest {
             assertEquals(99L, registry.lookup(newer, reader, "value").orElseThrow());
         }
     }
+
+    @Test
+    void unbalancedPinCannotReopenRetiredCapability() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 1)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, String>create(owner, Access.PRIVATE, 1, 128);
+            var mapField = OresEtsActorRegistry.class.getDeclaredField("entries");
+            mapField.setAccessible(true);
+            var map = (java.util.Map<?, ?>) mapField.get(registry);
+            Object entry = map.get(id);
+            var retire = entry.getClass().getDeclaredMethod("retire");
+            var pin = entry.getClass().getDeclaredMethod("pin");
+            var unpin = entry.getClass().getDeclaredMethod("unpin");
+            retire.setAccessible(true);
+            pin.setAccessible(true);
+            unpin.setAccessible(true);
+            retire.invoke(entry);
+            var underflow = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> unpin.invoke(entry));
+            assertInstanceOf(AssertionError.class, underflow.getCause());
+            var denied = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> pin.invoke(entry));
+            assertInstanceOf(IllegalStateException.class, denied.getCause());
+            assertThrows(IllegalStateException.class, () -> registry.lookup(id, owner, "key"));
+        }
+    }
 }
