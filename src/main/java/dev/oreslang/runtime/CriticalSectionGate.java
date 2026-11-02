@@ -188,6 +188,14 @@ public final class CriticalSectionGate {
         }
     }
 
+    // CompletableFuture completion can synchronously invoke observers.
+    // A rejecting scheduler can cancel the just-granted ticket, hand off to
+    // another ticket and reject it again. Without an iterative trampoline,
+    // an 8192-entry FIFO becomes recursive release -> completion -> cancel.
+    // The buffer is thread-local only for the duration of this notification
+    // batch; never retained as actor or guest state.
+    private static final ThreadLocal<ArrayDeque<Runnable>> NOTIFICATIONS = new ThreadLocal<>();
+
     private final int capacity;
     private final long generation;
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
@@ -259,7 +267,23 @@ public final class CriticalSectionGate {
     }
 
     private static void publish(Ticket ticket) {
-        if (ticket != null) ticket.ready.complete(ticket);
+        if (ticket == null) return;
+        ArrayDeque<Runnable> pending = NOTIFICATIONS.get();
+        if (pending != null) {
+            pending.addLast(() -> ticket.ready.complete(ticket));
+            return;
+        }
+        pending = new ArrayDeque<>();
+        NOTIFICATIONS.set(pending);
+        pending.addLast(() -> ticket.ready.complete(ticket));
+        try {
+            while (!pending.isEmpty()) {
+                pending.removeFirst().run();
+            }
+        } finally {
+            pending.clear();
+            NOTIFICATIONS.remove();
+        }
     }
 
     /**

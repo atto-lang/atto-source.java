@@ -261,6 +261,30 @@ public final class CriticalSectionGateStandaloneTest {
             cancelledGate.retire();
             check(cancelledGate.quiescent(),"cancel before dispatch leaked critical owner");
         }
+        // Reject a deep bounded FIFO. Each rejection cancels the current
+        // owner and wakes the next waiter; all notifications must be iterated,
+        // not recursively nested on the original release/CONTROL carrier.
+        {
+            CriticalSectionGate gate = new CriticalSectionGate(90,4096);
+            var owner = gate.enter(new Object(),90);
+            java.util.ArrayList<java.util.concurrent.CompletionStage<
+                    CriticalSectionGate.Ticket>> failures = new java.util.ArrayList<>();
+            for (int i = 0; i < 2048; i++) {
+                var ticket = gate.enter(new Object(),90);
+                failures.add(ticket.whenReadyOn(command -> {
+                    throw new java.util.concurrent.RejectedExecutionException("scheduler shutdown");
+                }));
+            }
+            check(gate.queued()==2048,"deep FIFO queue size");
+            owner.execute(() -> {});
+            check(gate.queued()==0,"rejected FIFO chain left pending waiters");
+            for (var failure : failures) {
+                check(failure.toCompletableFuture().isCompletedExceptionally(),
+                        "one rejected FIFO ticket never settled");
+            }
+            gate.retire();
+            check(gate.quiescent(),"deep reject chain leaked physical ownership");
+        }
         for (int round = 0; round < 300; round++) {
             CriticalSectionGate gate = new CriticalSectionGate(37,2);
             var owner=gate.enter(new Object(),37);
