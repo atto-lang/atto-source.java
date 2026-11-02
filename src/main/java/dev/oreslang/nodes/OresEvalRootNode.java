@@ -2516,6 +2516,9 @@ public final class OresEvalRootNode extends RootNode {
                         "critical source requires checked resource-bound admission");
             }
             CriticalEffectPreflight.verify(critical.body());
+            ActorRuntime ownerRuntime = ActorRuntime.currentActorRuntime();
+            ActorRuntime.ActorId ownerId = ActorRuntime.currentActorId().orElseThrow(
+                    () -> new IllegalStateException("critical entry lost actor execution identity"));
             CriticalGate gate = actorCriticalGate();
             OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
             SourceCleanupFrame cleanup = task.registerSourceCleanup((owner, finished) -> {
@@ -2536,6 +2539,32 @@ public final class OresEvalRootNode extends RootNode {
                     continuation.accept(owner, SourceFlow.throwing(
                             new IllegalStateException(
                                     "critical admission ticket was revoked before execution")));
+                    return;
+                }
+                // The scheduler may resume this source Task on another
+                // carrier. A ticket alone cannot establish which actor
+                // incarnation owns the resumed continuation.
+                Throwable staleOwnership = null;
+                try {
+                    if (ActorRuntime.currentActorRuntime() != ownerRuntime
+                            || ActorRuntime.currentActorId().isEmpty()
+                            || !ownerId.equals(ActorRuntime.currentActorId().orElseThrow())
+                            || ownerRuntime.currentActorCriticalGate() != gate) {
+                        staleOwnership = new IllegalStateException(
+                                "critical ticket resumed in wrong actor/runtime incarnation");
+                    }
+                } catch (RuntimeException | Error failedActorAdmission) {
+                    staleOwnership = failedActorAdmission;
+                }
+                if (staleOwnership != null) {
+                    try {
+                        gate.release(ticket);
+                    } catch (RuntimeException | Error releaseFailure) {
+                        suppressCleanupFailure(staleOwnership, releaseFailure);
+                    } finally {
+                        owner.disarmSourceCleanup(cleanup);
+                    }
+                    continuation.accept(owner, SourceFlow.throwing(staleOwnership));
                     return;
                 }
                 boolean[] delivered = { false };
