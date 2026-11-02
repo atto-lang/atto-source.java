@@ -528,15 +528,21 @@ public final class Ast {
     }
 
     /** Class-shaped durable operation container; not an ordinary executable class. */
-    public record ActivityDecl(ClassDecl body) implements Decl {
-        public ActivityDecl { java.util.Objects.requireNonNull(body, "activity body"); }
+    public record ActivityDecl(ClassDecl body, List<Annotation> annotations) implements Decl {
+        public ActivityDecl {
+            java.util.Objects.requireNonNull(body, "activity body");
+            annotations = List.copyOf(annotations);
+        }
         public String name() { return body.name(); }
         public Visibility visibility() { return body.visibility(); }
     }
 
     /** Class-shaped durable orchestration container; not an ordinary executable class. */
-    public record WorkflowDecl(ClassDecl body) implements Decl {
-        public WorkflowDecl { java.util.Objects.requireNonNull(body, "workflow body"); }
+    public record WorkflowDecl(ClassDecl body, List<Annotation> annotations) implements Decl {
+        public WorkflowDecl {
+            java.util.Objects.requireNonNull(body, "workflow body");
+            annotations = List.copyOf(annotations);
+        }
         public String name() { return body.name(); }
         public Visibility visibility() { return body.visibility(); }
     }
