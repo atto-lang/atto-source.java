@@ -4,7 +4,7 @@ import * as sync from "std/actor_sync";
 pub routine main(): void {
   let c = sync.replica_cursor(4,5);
   stdio.println(c.apply_delta(5,6));
-  stdio.println(c.needs_resync());
+  stdio.println(c.needs_resync()); // true: newer epoch poisoned old stream
   stdio.println(c.applied());
   stdio.println(c.apply_snapshot(5,6));
   stdio.println(c.apply_delta(5,7));
