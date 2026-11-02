@@ -61,7 +61,7 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, ActivityDecl, WorkflowDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -527,6 +527,19 @@ public final class Ast {
         }
     }
 
+    /** Class-shaped durable operation container; not an ordinary executable class. */
+    public record ActivityDecl(ClassDecl body) implements Decl {
+        public ActivityDecl { java.util.Objects.requireNonNull(body, "activity body"); }
+        public String name() { return body.name(); }
+        public Visibility visibility() { return body.visibility(); }
+    }
+
+    /** Class-shaped durable orchestration container; not an ordinary executable class. */
+    public record WorkflowDecl(ClassDecl body) implements Decl {
+        public WorkflowDecl { java.util.Objects.requireNonNull(body, "workflow body"); }
+        public String name() { return body.name(); }
+        public Visibility visibility() { return body.visibility(); }
+    }
     public record ConstructorDecl(
             Visibility visibility,
             List<Param> parameters,
