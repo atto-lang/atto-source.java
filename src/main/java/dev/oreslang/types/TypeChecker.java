@@ -4835,6 +4835,100 @@ public final class TypeChecker {
                     where + " requires concrete Sendable data; runtime capabilities, unresolved types, "
                             + "and non-Sendable mutable state cannot be channel payloads");
         }
+        // Sendability alone is not the data-only transport contract: Mutex,
+        // SharedMutex, Box and Arc can have Send implementations while carrying
+        // mutable identity or synchronization authority that the source channel
+        // runtime cannot safely detach. Fail at type admission, not first write.
+        if (containsChannelExecutionCapability(element, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " requires MessageData: channel payload cannot contain "
+                            + "synchronization, storage, task, transport or executable capabilities");
+        }
+    }
+
+    /** Never let nested generic/nominal values launder a runtime capability.
+     * ActorRef<T> remains the one explicit typed reply capability exception;
+     * a future pure-data-only channel policy can remove it deliberately.
+     */
+    private boolean containsChannelExecutionCapability(
+            Type type,
+            Set<Ast.ClassDecl> seen,
+            Map<String, Type> genericBindings) {
+        if (type instanceof Borrow || type instanceof Function) return true;
+        type = deref(type);
+        if (type instanceof SelfType receiver) {
+            return containsChannelExecutionCapability(receiver.bound(), seen, genericBindings);
+        }
+        if (type instanceof ListType list) {
+            return containsChannelExecutionCapability(list.element(), seen, genericBindings);
+        }
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(
+                    child -> containsChannelExecutionCapability(child, seen, genericBindings));
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(
+                    child -> containsChannelExecutionCapability(child, seen, genericBindings));
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(
+                    child -> containsChannelExecutionCapability(child, seen, genericBindings));
+        }
+        if (type instanceof Generic generic) {
+            Type bound = genericBindings.get(generic.name());
+            return bound == null || bound == type
+                    || containsChannelExecutionCapability(bound, seen, genericBindings);
+        }
+        if (!(type instanceof Named named)) return false;
+        switch (named.name()) {
+            case "Box", "Arc", "Weak", "Rc", "RefCell",
+                    "Mutex", "SharedMutex", "RwLock", "MutexGuard",
+                    "Future", "Channel", "SelectCase", "SelectSet",
+                    "SelectResult", "ActorMail", "ActorOutput",
+                    "ActorOutputStream", "ActorStream", "StreamOperator",
+                    "ActorGroup", "Topic", "Subscription", "Iterator",
+                    "AsyncIterator", "TcpConnection", "HttpExchange",
+                    "HttpServer", "HttpHandler", "HttpResponse",
+                    "HttpResponseDraft", "HttpClientResponse", "HttpClientBody",
+                    "NetworkCodec", "ActorMessageCodec", "Pointer",
+                    "Stream", "Observable" -> { return true; }
+            case "ActorRef" -> { return false; }
+            default -> { }
+        }
+        for (Type argument : named.arguments()) {
+            if (containsChannelExecutionCapability(argument, seen, genericBindings)) {
+                return true;
+            }
+        }
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null || !seen.add(klass)) return false;
+        try {
+            if (named.arguments().size() != klass.genericParameters().size()) return true;
+            Map<String, Type> classBindings = new HashMap<>(genericBindings);
+            for (int i = 0; i < klass.genericParameters().size(); i++) {
+                classBindings.put(klass.genericParameters().get(i),
+                        resolveSharedGeneric(named.arguments().get(i), genericBindings));
+            }
+            for (Ast.FieldDecl field : klass.fields()) {
+                Type fieldType = resolveSharedGeneric(classFieldType(klass, field), classBindings);
+                if (containsChannelExecutionCapability(fieldType, seen, classBindings)) {
+                    return true;
+                }
+            }
+            Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+            Type nominal = nominalClassType(klass);
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Type parentType = resolveSharedGeneric(
+                        resolve(parentRef, classGenerics, nominal), classBindings);
+                if (containsChannelExecutionCapability(parentType, seen, classBindings)) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            seen.remove(klass);
+        }
     }
 
     private boolean containsChannelCallable(
