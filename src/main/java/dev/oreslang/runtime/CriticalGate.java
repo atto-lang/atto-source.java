@@ -184,6 +184,25 @@ public final class CriticalGate {
     }
 
     /**
+     * Atomically fence new admission ONLY if no critical body or queued
+     * waiter can still own logical state. Unlike quiescent(); retire(), this
+     * cannot race a new request between observation and retirement.
+     * A successful call never has waiters to notify under an actor monitor.
+     */
+    public boolean retireIfQuiescent() {
+        metadata.lock();
+        try {
+            if (retired) return true;
+            if (owner != null || !waiters.isEmpty() || !admissions.isEmpty())
+                return false;
+            retired = true;
+            return true;
+        } finally {
+            metadata.unlock();
+        }
+    }
+
+    /**
      * Invalidate old-generation tickets at actor/isolate retirement.
      * The runtime MUST first quiesce the physically executing critical body;
      * revocation does not preempt arbitrary mutations or provide rollback.
