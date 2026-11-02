@@ -48,6 +48,9 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    private final Set<Ast.CriticalStmt> pendingCriticalAdmissions =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private boolean insideSuspendingActorMethod;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -144,6 +147,13 @@ public final class OwnershipChecker {
                 checkedProgram,
                 taskCheckEpoch,
                 pendingTaskCaptures);
+        // Only an entire successful ownership pass may publish critical
+        // authority. Exact AST + Program + epoch prevent post-check swaps
+        // and revocation bypass by rechecking the same Program.
+        Ast.CheckedCriticalBlocks.publish(
+                checkedProgram,
+                taskCheckEpoch,
+                pendingCriticalAdmissions);
     }
 
     private void index(Ast.Program program) {
@@ -337,8 +347,15 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            boolean previousActorMethod = insideSuspendingActorMethod;
+            insideSuspendingActorMethod = klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic() && method.suspends() && !method.generator();
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                insideSuspendingActorMethod = previousActorMethod;
+                scope.close();
+            }
         }
     }
 
@@ -398,8 +415,16 @@ public final class OwnershipChecker {
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
         if (stmt instanceof Ast.CriticalStmt critical) {
             CriticalEffectPreflight.verify(critical.body());
-            throw new IllegalArgumentException(
-                    "critical block has no authenticated scheduler ticket or scoped ownership admission");
+            if (!insideSuspendingActorMethod)
+                throw new IllegalArgumentException(
+                        "critical ownership admission requires a suspending actor method");
+            // Verify ownership/loans for every binding in the protected body.
+            // Never treat it as an opaque statement after the type pass.
+            checkBlock(critical.body(), scope, returnType);
+            if (!pendingCriticalAdmissions.add(critical))
+                throw new IllegalArgumentException(
+                        "critical AST node reused in multiple ownership scopes");
+            return;
         }
         if (stmt instanceof Ast.TryCriticalStmt attempted) {
             CriticalEffectPreflight.verify(attempted.body());
