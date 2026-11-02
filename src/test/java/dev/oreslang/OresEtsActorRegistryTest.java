@@ -459,4 +459,38 @@ final class OresEtsActorRegistryTest {
             assertEquals(0, registry.liveTableCount());
         }
     }
+
+    @Test
+    void perTableOperationAdmissionIsBoundedWithoutLeakingRetirementPins() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var registry = new OresEtsActorRegistry(runtime, 1)) {
+            var owner = runtime.<String>spawnShared(() -> (message, context) -> {});
+            var id = registry.<String, Long>create(owner, Access.PRIVATE, 2, 128);
+            var entriesField = OresEtsActorRegistry.class.getDeclaredField("entries");
+            entriesField.setAccessible(true);
+            var entries = (java.util.Map<?, ?>) entriesField.get(registry);
+            Object entry = entries.get(id);
+            var pin = entry.getClass().getDeclaredMethod("pin");
+            var unpin = entry.getClass().getDeclaredMethod("unpin");
+            var retire = entry.getClass().getDeclaredMethod("retire");
+            pin.setAccessible(true);
+            unpin.setAccessible(true);
+            retire.setAccessible(true);
+
+            for (int i = 0; i < 256; i++) pin.invoke(entry);
+            var exhausted = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class, () -> pin.invoke(entry));
+            assertInstanceOf(IllegalStateException.class, exhausted.getCause());
+            assertEquals(0, registry.reap(), "in-flight table must not be reclaimed");
+            retire.invoke(entry);
+            assertEquals(0, registry.reap(), "retired table must wait for all admitted pins");
+            assertSame(entry, entries.get(id));
+            for (int i = 0; i < 255; i++) assertEquals(Boolean.FALSE, unpin.invoke(entry));
+            assertEquals(0, registry.reap());
+            assertEquals(Boolean.TRUE, unpin.invoke(entry));
+            registry.reap(); // may already have been reclaimed by the daemon.
+            assertTrue(entries.isEmpty());
+            assertThrows(IllegalStateException.class, () -> registry.lookup(id, owner, "k"));
+        }
+    }
 }
