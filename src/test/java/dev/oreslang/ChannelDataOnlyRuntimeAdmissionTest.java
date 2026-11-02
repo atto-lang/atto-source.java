@@ -93,6 +93,38 @@ final class ChannelDataOnlyRuntimeAdmissionTest {
     }
 
     @Test
+    void preservesGuestStructTagWhileDetachingNestedFields() throws Throwable {
+        Class<?> type = Class.forName("dev.oreslang.nodes.OresEvalRootNode$MutableStructValue");
+        java.lang.reflect.Constructor<?> ctor = type.getDeclaredConstructor(Map.class);
+        ctor.setAccessible(true);
+        ArrayList<Object> nested = new ArrayList<>(List.of("before"));
+        Object struct = ctor.newInstance(Map.of("nested", nested));
+        Object detached = snapshot(struct);
+        assertEquals(type, detached.getClass(), "snapshot must not turn a struct into a plain Map");
+        nested.add("after");
+        assertEquals(List.of("before"), ((Map<?, ?>) detached).get("nested"));
+        assertTrue(detached != struct);
+    }
+
+    @Test
+    void nominalObjectSnapshotPreservesNominalTagAndDetachesFields() throws Throwable {
+        Class<?> type = Class.forName("dev.oreslang.nodes.OresEvalRootNode$OresObject");
+        java.lang.reflect.Constructor<?> ctor = type.getDeclaredConstructors()[0];
+        ctor.setAccessible(true);
+        ArrayList<Object> nested = new ArrayList<>(List.of(1L));
+        Object nominal = ctor.newInstance(null, null, new LinkedHashMap<>(Map.of("nested", nested)));
+        Object detached = snapshot(nominal);
+        assertEquals(type, detached.getClass());
+        java.lang.reflect.Field fields = type.getDeclaredField("fields");
+        fields.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> received = (Map<String, Object>) fields.get(detached);
+        nested.add(2L);
+        assertEquals(List.of(1L), received.get("nested"));
+        assertTrue(detached != nominal);
+    }
+
+    @Test
     void failedSnapshotDoesNotPublishACyclicOrCallableGraph() {
         ArrayList<Object> producer = new ArrayList<>();
         producer.add((Runnable) () -> {});
