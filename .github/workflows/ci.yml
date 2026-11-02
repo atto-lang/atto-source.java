@@ -47,6 +47,8 @@ jobs:
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
+      - name: Execute 7-receipt replay guest (actual Java/Graal Oreslang compiler)
+        run: bash scripts/run-replay-video-smoke.sh
       - name: Load native stdlib through the modular JVM launcher
         run: |
           mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
