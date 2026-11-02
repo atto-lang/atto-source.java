@@ -489,13 +489,13 @@ public final class ActorEventBus implements AutoCloseable {
                         frozenPayload.value(),
                         frozenPayload.reservation());
                 event = created;
-                // Commit only after the topic's admission/close fence, before readers
-                // can observe the notification. Reduction callers hold their state lock.
-                commitState.run();
-
+                // Do not commit reduction state before RELIABLE preflight. A
+                // rejected fanout must leave both deliveries and reductions
+                // unchanged. The publisher reservation is released in finally.
                 List<Subscription<?>> snapshot =
                         List.copyOf(topic.subscriptions.values());
                 if (snapshot.isEmpty()) {
+                    commitState.run();
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
                             0, 0, 0, 0, OresFuture.completed(List.of()));
@@ -514,6 +514,7 @@ public final class ActorEventBus implements AutoCloseable {
                     }
                 }
                 if (active.isEmpty()) {
+                    commitState.run();
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
                             0, 0, 0, 0, OresFuture.completed(List.of()));
@@ -535,6 +536,10 @@ public final class ActorEventBus implements AutoCloseable {
                         reserved.add(subscription);
                     }
 
+                    // All bounded credits have been acquired. Only now may
+                    // a reduction become visible; readers cannot observe a
+                    // half-admitted RELIABLE fanout.
+                    commitState.run();
                     List<OresFuture<Void>> writes =
                             new ArrayList<>(reserved.size());
                     int started = 0;
@@ -565,6 +570,9 @@ public final class ActorEventBus implements AutoCloseable {
                             combineReliableWrites(writes));
                 }
 
+                // LATEST/LOSSY admit without waiting for per-subscriber
+                // credits; preserve their existing single-lock commit order.
+                commitState.run();
                 int accepted = 0;
                 int dropped = 0;
                 int coalesced = 0;
