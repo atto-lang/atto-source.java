@@ -5,7 +5,7 @@ This change supports `.atto` as a second native guest source extension, preservi
 ## Scope and safety
 
 - CLI `--check`, `--build-analysis` and direct execution now recognize `.atto` and retain `.ores` compatibility.
-- Both explicit `./file.atto` and extensionless imports work. Existing `.ores` and `.java` extensionless resolution retains priority to avoid silent import retargeting; write an explicit `.atto` suffix if sibling files share a basename.
+- Both explicit `./file.atto` and extensionless imports work. Extensionless imports deterministically prefer `.atto`, then legacy `.ores`, then `.java`. Explicit suffixes remain authoritative: `./helper.atto` always selects the canonical AttoLang file and `./helper.ores` continues to select the legacy file.
 - `.atto` is not Java source and does not grant mixed-Java interop capabilities. Native Truffle MIME/language identity remains unchanged for compatibility.
 - Invalid UTF-8, oversized inputs, transitive import budgets, dependency capabilities, and owner paths must obey the same checks as legacy guest source.
 - JUnit `AttoSourceAdmissionTest` constructs actual `.atto` entry/helper files and runs an `answer() == 42` import through the linked Java/Graal guest pipeline, plus a colliding legacy-name control.
