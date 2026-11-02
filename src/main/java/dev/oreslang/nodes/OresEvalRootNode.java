@@ -7036,11 +7036,19 @@ public final class OresEvalRootNode extends RootNode {
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
+                requireTrustedChannelContainer(list);
+                if (list.size() > ChannelRuntime.MAX_SELECT_CASES) {
+                    throw new IllegalArgumentException("dynamic select exceeds maximum case count");
+                }
                 for (Object item : list) cases.add(requireSelectCase(item));
                 return new ChannelRuntime.SelectSet(cases)
                         .snapshotWritePayloads(Evaluator::snapshotChannelMessageData);
             }
             if (value instanceof Map<?, ?> map) {
+                requireTrustedChannelContainer(map);
+                if (map.size() > ChannelRuntime.MAX_SELECT_CASES) {
+                    throw new IllegalArgumentException("dynamic select exceeds maximum case count");
+                }
                 for (Object item : map.values()) cases.add(requireSelectCase(item));
                 return new ChannelRuntime.SelectSet(cases)
                         .snapshotWritePayloads(Evaluator::snapshotChannelMessageData);
