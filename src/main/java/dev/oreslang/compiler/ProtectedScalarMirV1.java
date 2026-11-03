@@ -110,7 +110,10 @@ public final class ProtectedScalarMirV1 {
 
     public static Plan lower(String source) {
         Objects.requireNonNull(source, "source");
-        if (source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 8192)
+        // UTF-16 length is a cheap lower bound on encoded UTF-8 bytes;
+        // reject obviously huge inputs before allocating an encoded copy.
+        if (source.length() > 8192
+                || source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 8192)
             throw invalid("source budget exceeded");
         return lower(Parser.parse(source));
     }
