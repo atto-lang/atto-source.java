@@ -41,6 +41,24 @@ final class CriticalSuspendsV1SyntaxTest {
                 "'critical suspends' is forbidden");
     }
 
+    @Test void forbiddenModifierPairsHaveStableCriticalEffectDiagnostic() {
+        // This is parser/semantic admission only. A diagnostics match is NOT
+        // evidence of executable actor gates, cancellation or guest runtime.
+        for (String source : java.util.List.of(
+                "critical suspends fnc work(): void { return; }",
+                "suspends critical fnc work(): void { return; }",
+                "pub critical suspends routine work(): void { return; }",
+                "pub suspends critical routine work(): void { return; }")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(rejected.getMessage().contains("E_CRITICAL_SUSPENDS_DECL"),
+                    rejected::toString);
+            assertTrue(rejected.getMessage().contains("critical bodies cannot suspend"),
+                    rejected::toString);
+        }
+    }
+
     @Test void unloweredCriticalCallableNeverExecutesWithoutExclusion() {
         rejectsWith("pub critical fnc work(): void { return; }",
                 "critical callable requires");
