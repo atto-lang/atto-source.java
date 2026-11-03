@@ -72,9 +72,22 @@ public final class LinkedMacroImports {
         Objects.requireNonNull(sourcePrograms, "linked source programs");
         Objects.requireNonNull(importResolutions, "macro import resolutions");
         LinkedHashMap<String, Binding> linked = new LinkedHashMap<>();
+        java.util.HashSet<String> aliases = new java.util.HashSet<>();
         for (Ast.ImportDecl imported : importer.imports()) {
             if (imported.kind() != Ast.ImportKind.ALL || !imported.wildcard()) {
                 continue; // M1 requires a qualified, explicit wildcard alias.
+            }
+            // An alias names one import source, not a merged namespace of
+            // unrelated source units or a preexisting local source module.
+            String alias = imported.namespace();
+            if (!aliases.add(alias)) {
+                throw new IllegalArgumentException(
+                        "duplicate compile-time macro import alias '" + alias + "'");
+            }
+            if (importer.modules().stream().anyMatch(module -> module.name().equals(alias))) {
+                throw new IllegalArgumentException(
+                        "compile-time macro import alias '" + alias
+                                + "' collides with a local source module");
             }
             String sourceId = ImportGraph.resolveImportUnitId(
                     importerUnitId, imported, sourcePrograms.keySet(), importResolutions);
@@ -103,6 +116,6 @@ public final class LinkedMacroImports {
                 }
             }
         }
-        return Map.copyOf(linked);
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(linked));
     }
 }
