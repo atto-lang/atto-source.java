@@ -22,13 +22,14 @@ case "${RECORD_GATE_INJECT-}" in
   tracked) printf '\n# changed during Maven\n' >> scripts/check-record-parser.sh ;;
   untracked) printf 'late source injection\n' > late-source.txt ;;
   ignored-source) printf '// hidden source injection\n' > scripts/injected.java ;;
+  ignored-maven-config) mkdir -p .mvn; printf '<extensions/>\n' > .mvn/extensions.xml ;;
 esac
 STUB_MVN
 chmod +x "$tmp/bin/mvn"
 export RECORD_GATE_MVN_LOG="$tmp/mvn-invocations"
 # The gate sees this harmless synthetic Maven stub, never a real compiler.
 export PATH="$tmp/bin:$PATH"
-printf '*.java\n' > "$repo/.gitignore"
+printf '*.java\n.mvn/\n' > "$repo/.gitignore"
 
 git -C "$repo" init -q
 git -C "$repo" -c user.name=CI-Gate -c user.email=ci-gate@example.invalid \
@@ -81,6 +82,10 @@ rm "$repo/late-source.txt"
 # but source trees must not gain ignored inputs during testing.
 assert_exit 6 env RECORD_GATE_INJECT=ignored-source bash scripts/check-record-inference.sh --tree "$tree"
 rm "$repo/scripts/injected.java"
+# An ignored Maven extension can alter the next Maven invocation even when
+# no source paths change. Treat ignored .mvn inputs as untrusted too.
+assert_exit 6 env RECORD_GATE_INJECT=ignored-maven-config bash scripts/check-record-inference.sh --tree "$tree"
+rm -rf "$repo/.mvn"
 
 # Validate the missing-tool guard without depending on whether CI happens
 # to have a global Maven binary. Give the test only the required early tools.
