@@ -20,6 +20,8 @@ import java.util.OptionalInt;
  */
 public final class DenseIndexTable<TTag> implements AutoCloseable {
     private static final int MAX_CAPACITY = 1_000_000;
+    /** One byte of liveness, one long generation and one int free-list entry. */
+    private static final int SIDECAR_BYTES_PER_SLOT = 1 + Long.BYTES + Integer.BYTES;
 
     private final Object identity = new Object();
     private final boolean[] live;
@@ -28,6 +30,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
     private final int capacity;
     private final ActorRuntime ownerRuntime;
     private final ActorRuntime.ActorId ownerActor;
+    private final ActorRuntime.ActorShardLease sidecarLease;
     private int nextSlot;
     private int freeCount;
     private int liveCount;
@@ -35,24 +38,38 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
     private boolean closed;
 
     public DenseIndexTable(int capacity) {
-        this(capacity, null, null);
+        this(capacity, null, null, null);
     }
 
     private DenseIndexTable(
-            int capacity, ActorRuntime ownerRuntime, ActorRuntime.ActorId ownerActor) {
-        if (capacity <= 0 || capacity > MAX_CAPACITY) {
-            throw new IllegalArgumentException("dense index table capacity outside bounded range");
-        }
+            int capacity,
+            ActorRuntime ownerRuntime,
+            ActorRuntime.ActorId ownerActor,
+            ActorRuntime.ActorShardLease sidecarLease) {
+        requireValidCapacity(capacity);
         this.capacity = capacity;
         this.ownerRuntime = ownerRuntime;
         this.ownerActor = ownerActor;
+        this.sidecarLease = sidecarLease;
         this.live = new boolean[capacity];
         this.generations = new long[capacity];
         this.freeSlots = new int[capacity];
         Arrays.fill(generations, 1L);
     }
 
-    /** Create a table permanently confined to the currently executing actor. */
+    private static void requireValidCapacity(int capacity) {
+        if (capacity <= 0 || capacity > MAX_CAPACITY) {
+            throw new IllegalArgumentException("dense index table capacity outside bounded range");
+        }
+    }
+
+    /**
+     * Create a table permanently confined to the currently executing actor.
+     *
+     * <p>The sidecar arrays are charged to the actor heap limit before they are
+     * allocated, so identity metadata cannot escape per-actor accounting. The
+     * charge is refunded by {@link #close()} or by actor finalization.</p>
+     */
     public static <TTag> DenseIndexTable<TTag> forCurrentActor(int capacity) {
         ActorRuntime runtime = ActorRuntime.currentActorRuntime();
         ActorRuntime.ActorId actor = ActorRuntime.currentActorId().orElseThrow(() ->
@@ -60,7 +77,15 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
         if (runtime == null) {
             throw new SecurityException("actor-bound dense table requires an actor runtime");
         }
-        return new DenseIndexTable<>(capacity, runtime, actor);
+        requireValidCapacity(capacity);
+        ActorRuntime.ActorShardLease lease =
+                runtime.reserveActorShard(capacity * SIDECAR_BYTES_PER_SLOT);
+        try {
+            return new DenseIndexTable<>(capacity, runtime, actor, lease);
+        } catch (RuntimeException | Error failure) {
+            lease.close();
+            throw failure;
+        }
     }
 
     boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
@@ -154,6 +179,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
     }
 
     public synchronized int size() {
+        requireOwner();
         return liveCount;
     }
 
@@ -182,6 +208,7 @@ public final class DenseIndexTable<TTag> implements AutoCloseable {
         nextSlot = 0;
         freeCount = 0;
         liveCount = 0;
+        if (sidecarLease != null) sidecarLease.close();
     }
 
     private void ensureOpen() {

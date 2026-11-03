@@ -12,6 +12,10 @@ import org.junit.jupiter.api.Timeout;
 final class ActorDenseIndexColumnsTest {
     private static final class EntityTag { }
 
+    private static final AtomicReference<ActorDenseIndexColumns> PRIVATE_CONFINED =
+            new AtomicReference<>();
+    private static final AtomicReference<Throwable> PRIVATE_FAILURE = new AtomicReference<>();
+
     @Test
     void allLayoutsPreserveCompactIndexWords() throws Exception {
         for (ActorShardColumns.Layout layout : ActorShardColumns.Layout.values()) {
@@ -68,19 +72,23 @@ final class ActorDenseIndexColumnsTest {
     void foreignCloseCannotRevokeSharedOrPrivateIndexBacking() throws Exception {
         for (boolean privateActor : new boolean[] {false, true}) {
             try (ActorRuntime runtime = new ActorRuntime()) {
-                AtomicReference<ActorDenseIndexColumns> confined = new AtomicReference<>();
-                AtomicReference<Throwable> failure = new AtomicReference<>();
+                AtomicReference<ActorDenseIndexColumns> confined = PRIVATE_CONFINED;
+                AtomicReference<Throwable> failure = PRIVATE_FAILURE;
+                confined.set(null);
+                failure.set(null);
+                // spawnPrivate rejects factories that capture host state, so the
+                // private branch reaches its test probes through static finals.
                 ActorRuntime.ActorRef<Integer> actor = privateActor
                         ? runtime.spawnPrivate(context -> {
                             ActorDenseIndexColumns shard = new ActorDenseIndexColumns(
                                     ActorShardColumns.Layout.SOA, 8, 1, 1);
-                            confined.set(shard);
+                            PRIVATE_CONFINED.set(shard);
                             return (message, turn) -> {
                                 try {
                                     if (message == 1) shard.writeIndex(0, 0, 17);
                                     else assertEquals(17, shard.readIndex(0, 0).orElseThrow());
                                 } catch (Throwable problem) {
-                                    failure.compareAndSet(null, problem);
+                                    PRIVATE_FAILURE.compareAndSet(null, problem);
                                 }
                             };
                         })
@@ -244,6 +252,58 @@ final class ActorDenseIndexColumnsTest {
             owner.send(2);
             owner.drain().get(5, TimeUnit.SECONDS);
             owner.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void typedTableSidecarIsChargedToActorQuotaAndRefunded() throws Exception {
+        IsolatePolicy sixteenMiB = new IsolatePolicy(
+                java.util.Set.of(IsolatePolicy.Capability.SHARED_MEMORY), 16L * 1024 * 1024, 64, java.time.Duration.ofSeconds(30));
+        try (ActorRuntime runtime = new ActorRuntime(sixteenMiB)) {
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(factory ->
+                    (message, turn) -> {
+                        try {
+                            long before = runtime.sharedMemoryBytes();
+                            DenseIndexTable<EntityTag> first =
+                                    DenseIndexTable.forCurrentActor(1_000_000);
+                            assertTrue(runtime.sharedMemoryBytes() - before >= 13_000_000L,
+                                    "sidecar arrays must be charged before allocation");
+                            assertThrows(IllegalStateException.class,
+                                    () -> DenseIndexTable.forCurrentActor(1_000_000),
+                                    "a second table must not escape the actor heap limit");
+                            first.close();
+                            first.close();
+                            assertEquals(before, runtime.sharedMemoryBytes(),
+                                    "close must refund exactly once");
+                            // Left open: actor finalization owns this refund.
+                            DenseIndexTable.forCurrentActor(1_000_000).allocate();
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        }
+                    });
+            actor.send(1);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+            actor.gracefulStop().get(5, TimeUnit.SECONDS);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.sharedMemoryBytes(),
+                    "actor finalization must refund an unclosed sidecar");
+        }
+    }
+
+    @Test
+    void actorBoundTableOccupancyIsNotReadableFromTheHost() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<DenseIndexTable<EntityTag>> escaped = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(factory -> {
+                escaped.set(DenseIndexTable.forCurrentActor(4));
+                return (message, turn) -> { };
+            });
+            actor.send(1);
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertThrows(SecurityException.class, () -> escaped.get().size());
+            actor.gracefulStop().get(5, TimeUnit.SECONDS);
         }
     }
 
