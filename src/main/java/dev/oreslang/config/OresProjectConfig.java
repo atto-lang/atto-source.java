@@ -257,9 +257,18 @@ public final class OresProjectConfig {
         if (Files.isRegularFile(normalized)) return Optional.of(normalized);
 
         String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+        if (text.endsWith(".atto") || text.endsWith(".ores") || text.endsWith(".java"))
+            return Optional.empty();
 
+        Path atto = Path.of(normalized.toString() + ".atto");
         Path ores = Path.of(normalized.toString() + ".ores");
+        // A suffixless import must never silently change its resolved module
+        // when both old and new source extensions exist. Explicit .atto/.ores
+        // imports remain available during the migration.
+        if (Files.isRegularFile(atto) && Files.isRegularFile(ores))
+            throw new IllegalArgumentException("ambiguous AttoLang import; use explicit .atto or .ores: "
+                                               + normalized);
+        if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
         if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
 
         Path java = Path.of(normalized.toString() + ".java");
