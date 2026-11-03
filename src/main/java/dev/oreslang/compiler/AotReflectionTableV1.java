@@ -42,8 +42,15 @@ final class AotReflectionTableV1 {
     record ResolvedType(String packageIdentity, String resolvedSymbol,
                         List<String> genericArguments, List<Field> fields) {
         ResolvedType {
-            genericArguments = List.copyOf(genericArguments);
-            fields = List.copyOf(fields);
+            if (genericArguments == null || fields == null) {
+                throw new IllegalArgumentException("null resolved type collection");
+            }
+            try {
+                genericArguments = List.copyOf(genericArguments);
+                fields = List.copyOf(fields);
+            } catch (NullPointerException e) {
+                throw new IllegalArgumentException("null resolved type element", e);
+            }
         }
     }
 
@@ -140,20 +147,22 @@ final class AotReflectionTableV1 {
         if (text == null || text.isBlank() || !Normalizer.isNormalized(text, Normalizer.Form.NFC)) {
             throw new IllegalArgumentException("empty or noncanonical resolved metadata text");
         }
-        for (int i = 0; i < text.length(); i++) {
+        // Validate Unicode scalar values, not UTF-16 code units: bidi isolates,
+        // zero-width marks and noncharacters must never enter signed/AOT metadata.
+        for (int i = 0; i < text.length();) {
             char ch = text.charAt(i);
-            if (Character.isISOControl(ch) || Character.getDirectionality(ch) == Character.DIRECTIONALITY_RIGHT_TO_LEFT_OVERRIDE
-                    || Character.getDirectionality(ch) == Character.DIRECTIONALITY_LEFT_TO_RIGHT_OVERRIDE) {
-                throw new IllegalArgumentException("unsafe metadata text");
-            }
-            if (Character.isHighSurrogate(ch)) {
-                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {
-                    throw new IllegalArgumentException("malformed UTF-16 metadata text");
-                }
-                i++;
-            } else if (Character.isLowSurrogate(ch)) {
+            if (Character.isLowSurrogate(ch) ||
+                    (Character.isHighSurrogate(ch) &&
+                     (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))))) {
                 throw new IllegalArgumentException("malformed UTF-16 metadata text");
             }
+            int codePoint = text.codePointAt(i);
+            if (Character.isISOControl(codePoint) || Character.getType(codePoint) == Character.FORMAT ||
+                    (codePoint >= 0xFDD0 && codePoint <= 0xFDEF) ||
+                    (codePoint & 0xFFFE) == 0xFFFE) {
+                throw new IllegalArgumentException("unsafe metadata text");
+            }
+            i += Character.charCount(codePoint);
         }
         if (text.getBytes(StandardCharsets.UTF_8).length > MAX_TEXT_BYTES) {
             throw new IllegalArgumentException("metadata text exceeds bound");
