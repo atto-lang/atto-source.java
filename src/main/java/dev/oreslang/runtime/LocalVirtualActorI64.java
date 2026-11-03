@@ -130,7 +130,12 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
             if (slot.activation != null) return slot.activation.active();
             if (slot.initializing) return false;
             slot.initializing = true;
-            incarnation = registry.activate(slot.logical);
+            try {
+                incarnation = registry.activate(slot.logical);
+            } catch (RuntimeException | Error failure) {
+                slot.initializing = false;
+                throw failure;
+            }
             if (!incarnation.initializer()) {
                 slot.initializing = false;
                 return false;
@@ -163,8 +168,13 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     public SendResult try_send(Ref reference, long value) {
         Slot slot = requireLocal(reference);
         if (closed || closing) return new SendResult(AdmissionKind.CLOSED, null);
-        if (!activate(reference)) return new SendResult(
-                slot.initializing ? AdmissionKind.ACTIVATING : AdmissionKind.UNAVAILABLE, null);
+        if (!activate(reference)) {
+            synchronized (slot) {
+                return new SendResult(
+                        slot.initializing ? AdmissionKind.ACTIVATING : AdmissionKind.UNAVAILABLE,
+                        null);
+            }
+        }
         synchronized (slot) {
             if (closed || closing || slot.failed || slot.retiring
                     || slot.activation == null || !slot.activation.active())
@@ -339,7 +349,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                 dispose(item.slot(), item.handler());
             } catch (Throwable failure) {
                 if (firstFailure == null) firstFailure = failure;
-                else firstFailure.addSuppressed(failure);
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
         if (firstFailure instanceof Error fatal) throw fatal;
