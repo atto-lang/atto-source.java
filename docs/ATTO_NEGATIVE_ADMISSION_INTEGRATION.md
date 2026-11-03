@@ -38,13 +38,15 @@ all non-Copy values and preserves `rt share` on copyable immutable scalars.
 The source-owned workflow
 `.github/workflows/atto-semantic-negative-admission.yml` must execute
 on the **exact PR head Git tree**, with nonzero recorded runner steps.
-It compiles the Java source and requires four nonempty zero-failure JUnit
+It compiles the Java source and requires six nonempty zero-failure JUnit
 Surefire suites:
 
 - `AttoNegativeDiagnosticsAdmissionTest` (negative parser/ownership admission, plus a real `.atto` copyable scalar-share guest-output `42` candidate)
 - `AttoSourceAdmissionTest` (extension imports and linked `.atto` guest)
 - `AttoCacheShapeAdmissionTest` (tiny linked integer-column/cache-like `.atto` guest)
 - `ProtectedScalarMirV1Test` (dedicated parser AST -> scalar protected MIR, read-only lease, false-write and lexical alias escape rejection, including three independently authored `.atto` fixture files)
+- `StateContainerAccessGateTest` (concurrent reader/writer lease exclusivity and shutdown fencing)
+- `StateContainerVirtualActorConcurrencyTest` (concurrent read/write exclusion and single-activation fencing)
 
 The latter two classes and the new positive scalar-share method contain actual guest compile/execute test candidates,
 but their successful **hosted execution has NOT yet been established**.
@@ -55,7 +57,7 @@ Run on a source-authorized JDK 21 Java runner:
 
 ```sh
 mvn -B -ntp -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
-  -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest,ProtectedScalarMirV1Test \
+  -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest,ProtectedScalarMirV1Test,StateContainerAccessGateTest,StateContainerVirtualActorConcurrencyTest \
   clean test
 ```
 
@@ -119,3 +121,24 @@ nonempty Surefire case receipts.
 
 This scoped acceptance does not alter the private LRU fixture hashes or
 authorize importing its source into another repository or organization.
+
+## Strict .atto scalar source admission
+
+`OresCompiler.compileProtectedScalarI64(String)` now passes directly through
+`ProtectedScalarMirV1.lower(String)` before calling the production Parser.
+This closes an older source-budget bypass where the API called
+`lower(Parser.parse(source))` directly and skipped the bounded 8 KiB
+preparse check.
+
+The new `OresCompiler.compileProtectedScalarI64(Path)` overload accepts
+only `.atto` files, uses `BoundedSourceReader.readUtf8` (strict UTF-8,
+symlink/ancestor fencing and provider-pinned directory access), and then
+enforces the protected compiler's tighter 8 KiB source limit.
+JUnit covers malformed UTF-8, forbidden `.ores` path admission on this
+new opt-in overload, leaf symlink rejection and byte-budget failure.
+This does **not** remove `.ores` support from the ordinary compiler or
+from the existing string-based scalar experimental API.
+
+A passing native JUnit run on the exact head will prove only the opt-in
+scalar-host VM source gate. The general linked compiler still deliberately
+rejects unlowered state-container object heaps.
