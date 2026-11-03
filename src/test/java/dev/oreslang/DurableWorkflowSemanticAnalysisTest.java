@@ -316,6 +316,131 @@ final class DurableWorkflowSemanticAnalysisTest {
                 .getMessage().contains("WORKFLOW_QUERY_ENDPOINT_VISIBILITY"));
     }
 
+    @Test
+    void manifestNormalizesLocalAndQualifiedActivityTargets() {
+        Ast.Program source = parseValidPair();
+        Ast.WorkflowDecl old = workflow(source);
+        String qualified = source.modules().getFirst().name() + ".PaymentProvider";
+
+        Ast.WorkflowDecl local = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-1", "PaymentProvider", "charge",
+                        List.of(new Ast.NameExpr("order_id")))));
+        Ast.WorkflowDecl explicit = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-1", qualified, "charge",
+                        List.of(new Ast.NameExpr("order_id")))));
+
+        DurableExecutionManifest localManifest =
+                DurableExecutionManifest.analyze(replaceWorkflow(source, local));
+        DurableExecutionManifest qualifiedManifest =
+                DurableExecutionManifest.analyze(replaceWorkflow(source, explicit));
+        assertArrayEquals(localManifest.canonicalBytes(), qualifiedManifest.canonicalBytes());
+        assertEquals(localManifest.sha256(), qualifiedManifest.sha256());
+        assertTrue(new String(localManifest.canonicalBytes(), StandardCharsets.UTF_8)
+                .contains("\"target\":\"" + qualified + ".charge\""));
+    }
+
+    @Test
+    void manifestIsIndependentOfDeclarationOrdering() {
+        Ast.Program source = parseValidPair();
+        Ast.ModuleDecl originalModule = source.modules().getFirst();
+        List<Ast.Decl> reverse = new java.util.ArrayList<>(originalModule.declarations());
+        java.util.Collections.reverse(reverse);
+        Ast.Program reordered = new Ast.Program(source.namespace(), source.imports(), List.of(
+                new Ast.ModuleDecl(originalModule.name(), originalModule.annotations(),
+                        originalModule.contracts(), reverse)));
+        DurableExecutionManifest first = DurableExecutionManifest.analyze(source);
+        DurableExecutionManifest second = DurableExecutionManifest.analyze(reordered);
+        assertArrayEquals(first.canonicalBytes(), second.canonicalBytes());
+        assertEquals(first.sha256(), second.sha256());
+    }
+
+    @Test
+    void duplicateReadOnlyQueryDescriptorsFailClosed() {
+        Ast.Program source = parseValidPair();
+        Ast.WorkflowDecl original = workflow(source);
+        Ast.QueryCommand descriptor = new Ast.QueryCommand(
+                "status", List.of(new Ast.Param(Ast.TypeRef.simple("int"), "order_id")),
+                Ast.TypeRef.simple("int"));
+        Ast.WorkflowDecl duplicate = new Ast.WorkflowDecl(
+                original.body(), original.annotations(), List.of(descriptor, descriptor));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> DurableDeclarationAnalyzer.analyze(replaceWorkflow(source, duplicate)))
+                .getMessage().contains("WORKFLOW_DUPLICATE_QUERY_ENDPOINT"));
+    }
+
+    @Test
+    void workflowRawTimeEntropyInteropAndActivityCallsFailClosed() {
+        Ast.Program source = parseValidPair();
+        Ast.WorkflowDecl original = workflow(source);
+        Ast.MethodDecl run = original.body().methods().stream()
+                .filter(method -> method.name().equals("run")).findFirst().orElseThrow();
+        List<Ast.Expr> forbidden = List.of(
+                new Ast.CallExpr(new Ast.NameExpr("now"), List.of()),
+                new Ast.CallExpr(new Ast.NameExpr("random"), List.of()),
+                new Ast.CallExpr(new Ast.MemberExpr(
+                        new Ast.NameExpr("PaymentProvider"), "charge"),
+                        List.of(new Ast.LiteralExpr(5L))),
+                new Ast.CallExpr(new Ast.MemberExpr(
+                        new Ast.NameExpr("Java"), "currentTimeMillis"), List.of()),
+                new Ast.RuntimeCallExpr("clock", List.of()),
+                new Ast.AwaitExpr(new Ast.NameExpr("order_id")));
+        for (Ast.Expr expression : forbidden) {
+            Ast.MethodDecl altered = withBody(run, List.of(new Ast.ReturnStmt(expression)));
+            Ast.ClassDecl changedBody = copyClassWithMethods(original.body(),
+                    original.body().methods().stream()
+                            .map(method -> method.name().equals("run") ? altered : method).toList());
+            Ast.WorkflowDecl changed =
+                    new Ast.WorkflowDecl(changedBody, original.annotations(), original.commands());
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> DurableDeclarationAnalyzer.analyze(replaceWorkflow(source, changed)))
+                    .getMessage().contains("FORBIDDEN"), expression.toString());
+        }
+    }
+
+    @Test
+    void stateAndLiveBorrowAcrossDurableWaitRemainUnsupported() {
+        Ast.Program source = parseValidPair();
+        Ast.WorkflowDecl original = workflow(source);
+        for (String typeName : List.of("int", "any")) {
+            Ast.FieldDecl field = new Ast.FieldDecl("checkpoint", Ast.Visibility.PRIVATE,
+                    Ast.BindingKind.CONST, Ast.TypeRef.simple(typeName),
+                    new Ast.LiteralExpr(0L));
+            Ast.ClassDecl changedBody = new Ast.ClassDecl(
+                    original.body().name(), original.body().visibility(), original.body().isAbstract(),
+                    original.body().actorKind(), original.body().genericParameters(),
+                    original.body().parents(), original.body().interfaces(), List.of(field),
+                    original.body().constructor(), original.body().methods(), original.body().actorConcurrency());
+            Ast.WorkflowDecl changed =
+                    new Ast.WorkflowDecl(changedBody, original.annotations(), original.commands());
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> DurableDeclarationAnalyzer.analyze(replaceWorkflow(source, changed)))
+                    .getMessage().contains("WORKFLOW_STATE_SCHEMA_UNSUPPORTED"));
+        }
+
+        Ast.MethodDecl run = original.body().methods().stream()
+                .filter(method -> method.name().equals("run")).findFirst().orElseThrow();
+        Ast.MethodDecl borrowed = withBody(run, List.of(
+                new Ast.UsingBorrowStmt(new Ast.NameExpr("order_id"), "held", List.of()),
+                new Ast.ReturnStmt(new Ast.NameExpr("order_id"))));
+        Ast.ClassDecl borrowedBody = copyClassWithMethods(original.body(),
+                original.body().methods().stream()
+                        .map(method -> method.name().equals("run") ? borrowed : method).toList());
+        Ast.WorkflowDecl waiting = new Ast.WorkflowDecl(borrowedBody, original.annotations(),
+                List.of(new Ast.WaitForEventCommand("wait-approval", "approved")));
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> DurableDeclarationAnalyzer.analyze(replaceWorkflow(source, waiting)))
+                .getMessage().contains("WORKFLOW_CONCURRENCY_FORBIDDEN"));
+    }
+
+    private static Ast.MethodDecl withBody(Ast.MethodDecl original, List<Ast.Stmt> body) {
+        return new Ast.MethodDecl(
+                original.name(), original.visibility(), original.isStatic(), original.isAbstract(),
+                original.async(), original.suspends(), original.structural(),
+                original.explicitReceiverType(), original.genericParameters(),
+                original.parameters(), original.returnType(), original.annotations(),
+                body, original.effects());
+    }
+
     private static Ast.MethodDecl copyMethod(
             Ast.MethodDecl original, Ast.Visibility visibility, List<Ast.Annotation> annotations) {
         return new Ast.MethodDecl(
