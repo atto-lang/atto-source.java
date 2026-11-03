@@ -72,6 +72,24 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in compiler-only AOT metadata closure for explicit, public,
+     * non-actor, non-generic source classes and closed scalar public fields.
+     *
+     * Runs the regular parser, type checker and ownership checker first.
+     * Returns immutable descriptor bytes, NOT an AttoLang guest value,
+     * executable code, GraalVM image, or type_of<T>() intrinsic.
+     *
+     * Unsupported type shapes, private roots and missing symbols reject.
+     */
+    public static byte[] compileAotReflectionTableV1(
+            String source, String verifiedPackageIdentity,
+            java.util.List<String> explicitQualifiedRoots) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return AotReflectionSourceRootsV1.lowerChecked(
+                checked, verifiedPackageIdentity, explicitQualifiedRoots).bytes();
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
