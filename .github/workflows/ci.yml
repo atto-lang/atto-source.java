@@ -49,7 +49,7 @@ jobs:
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - name: Adversarial receipt-gate selftest (source-free, not a guest pass)
         run: bash scripts/test-replay-video-smoke-runner.sh
-      - name: Execute 7-receipt replay guest (actual Java/Graal Oreslang compiler)
+      - name: Execute 7-receipt replay guest (actual Java/Graal AttoLang compiler)
         run: bash scripts/run-replay-video-smoke.sh
       - name: Load native stdlib through the modular JVM launcher
         run: |

@@ -6,13 +6,13 @@ tmpdir=$(mktemp -d)
 trap 'rm -rf -- "$tmpdir"' EXIT
 mkdir -p "$tmpdir/work/scripts" "$tmpdir/work/examples" "$tmpdir/bin"
 cp "$src/run-replay-video-smoke.sh" "$tmpdir/work/scripts/run-replay-video-smoke.sh"
-printf '// source-free stub fixture\n' > "$tmpdir/work/examples/replay-video-disconnect-smoke.ores"
+printf '// source-free stub fixture\n' > "$tmpdir/work/examples/replay-video-disconnect-smoke.atto"
 cat > "$tmpdir/bin/mvn" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
   *package*) if [[ "$CASE" == build_fail ]]; then exit 12; fi; exit 0 ;;
-  *exec:java*) ;;
+  *exec:java*) [[ "$*" == *"-Dexec.args=examples/replay-video-disconnect-smoke.atto"* ]] || exit 22 ;;
   *) exit 19 ;;
 esac
 lines=$(cat <<'EXPECTED'

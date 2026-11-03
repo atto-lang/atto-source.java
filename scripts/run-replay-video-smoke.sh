@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Executes the actual Oreslang guest via the Java/Graal launcher.
+# Executes the actual AttoLang .atto guest via the Java/Graal launcher.
 # Do NOT replace this with a host-model test or claim success on zero-step CI.
 set -euo pipefail
 
@@ -13,7 +13,7 @@ if ! command -v java >/dev/null 2>&1; then
   exit 2
 fi
 
-if [[ ! -f examples/replay-video-disconnect-smoke.ores ]]; then
+if [[ ! -f examples/replay-video-disconnect-smoke.atto ]]; then
   echo 'UNCONFIGURED: guest source file is missing' >&2
   exit 2
 fi
@@ -38,7 +38,7 @@ mvn -B -ntp -DskipTests package >"$tmpdir/build.log" 2>&1 || {
   exit 1
 }
 mvn -B -ntp -q -DskipTests exec:java \
-  -Dexec.args="examples/replay-video-disconnect-smoke.ores" \
+  -Dexec.args="examples/replay-video-disconnect-smoke.atto" \
   >"$tmpdir/guest.log" 2>"$tmpdir/guest.err" || {
   cat "$tmpdir/guest.log" >&2
   cat "$tmpdir/guest.err" >&2

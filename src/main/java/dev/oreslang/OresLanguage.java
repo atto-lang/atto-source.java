@@ -18,7 +18,7 @@ import java.nio.file.Path;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
-        name = "Oreslang",
+        name = "AttoLang",
         version = "0.1.0",
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,

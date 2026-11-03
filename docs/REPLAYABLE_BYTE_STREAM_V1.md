@@ -1,8 +1,8 @@
 # Bounded replayable byte streams v1 — actor-owned source contract
 
-Status (2026-11-01): **initial pure-Oreslang reference implementation and guest test fixture**. NOT a verified native compiler/backend parity result; NOT a production media codec, network transport, or memory-isolation guarantee.
+Status (2026-11-01): **initial pure-AttoLang reference implementation and guest test fixture**. NOT a verified native compiler/backend parity result; NOT a production media codec, network transport, or memory-isolation guarantee.
 
-Implementation: `stdlib/replay_stream.ores`; guest fixture: `examples/native-replay-stream-contract.ores`. The same file must be compiled and *executed* using pinned exact-head Java/GraalVM, LLVM, .NET NativeAOT, Wasm/Wasmtime, and Cranelift paths before marking a backend supported. A rejected fixture, source-only check, or zero-step GHA run is **not** a pass.
+Implementation: `stdlib/replay_stream.atto`; guest fixture: `examples/native-replay-stream-contract.atto`. The same file must be compiled and *executed* using pinned exact-head Java/GraalVM, LLVM, .NET NativeAOT, Wasm/Wasmtime, and Cranelift paths before marking a backend supported. A rejected fixture, source-only check, or zero-step GHA run is **not** a pass.
 
 ## Decisions
 
