@@ -66,6 +66,16 @@ This increment hardens the source-local semantic and metadata boundary without e
 - `sha256()` is the digest of the **full canonical manifest bytes**. It is not yet an independently versioned upgrade compatibility digest, nor evidence of an executable replay interpreter.
 - Java JUnit/regression evidence must be collected from an exact checked-out commit/tree with nonzero executed job steps. Source-free canaries and zero-step GitHub jobs do not count.
 
+## M0 receipt integrity and cross-organization runner gate
+
+The M0 CI job does **not** claim guest workflow execution. It runs four focused JUnit classes totaling 35 authored test methods, and a standalone Java Surefire receipt verifier before accepting the result. The verifier rejects missing/extra or linked XML reports, wrong suite and test identities, inflated summary totals, hidden failed/skipped cases, and external-entity XML. Its source-free mutation harness exercises eight negative cases and an accepted 35-case synthetic control.
+
+The `DurableWorkflowSemanticAnalysisTest` compiler test prints both the SHA-256 digest and hexadecimal bytes of a deterministic canonical manifest. The independent receipt verifier requires exactly one of each marker, decodes the bytes as strict UTF-8, checks the `atto.durable.manifest.v1` prefix, and recomputes the SHA-256 rather than trusting either marker. The test also checks that modifying a returned `canonicalBytes()` array does not mutate the underlying manifest.
+
+The admission record `target/durable-m0-proof.txt` binds the GitHub run ID/attempt, exact source head/tree and SHA-256 of the source-local verifier and XML reports. A valid local synthetic receipt **never** counts as a compiler- or guest-backed pass. A GitHub Actions job with `steps=null` or `steps=[]` is `NOT_EXECUTED`, regardless of conclusion.
+
+A different GitHub organization may offer available Actions runners, but copying this private compiler Git tree requires all of these *independent* gates before any private source object leaves the source org: a specifically approved private destination/branch, separate security reviewer approval, validated source and destination branch protection, non-exporting workflow/artifact permissions, and post-copy exact root-tree/blob readback with a bounded lifetime and cleanup plan. The source repository and the candidate private carrier both reported `main.protected=false` on November 3, 2026, and the V3 destination approval was absent. The source transfer therefore remains prohibited even though source-free JDK/GraalVM carrier canaries executed successfully.
+
 ## Execution boundary remains closed
 
 The analyzer and manifest are compiler metadata, not a runtime:
