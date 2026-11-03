@@ -91,6 +91,20 @@ final class AotV2StrictSignedAdmissionTest {
         reject(()->admit(MANIFEST.replace("\"size_bytes\":128","\"size_bytes\":1e100000000"),
                 SIGNATURE,AotV2DetachedByteProofTest.ARTIFACT,keys,Set.of()));
     }
+    @Test void enforcesJcsUnicodeOrderingAndControlEscapes() {
+        var text=Map.<String,Object>of("\uE000",new java.math.BigDecimal("2"),
+                "😀",new java.math.BigDecimal("1"));
+        String expected="{\"😀\":1,\"\uE000\":2}";
+        if(!expected.equals(AotV2StrictSignedAdmission.canonicalize(text)))
+            throw new AssertionError("JCS UTF16 key ordering drift");
+        if(!"{\"x\":0}".equals(AotV2StrictSignedAdmission.canonicalize(
+                Map.of("x",new java.math.BigDecimal("-0.0000")))))
+            throw new AssertionError("JCS negative zero drift");
+        if(!"{\"x\":\"\\\\\\\"\\\\\\\\\\\\b\\\\t\\\\n\"}".equals(
+                AotV2StrictSignedAdmission.canonicalize(Map.of("x","\"\\\\\b\t\n"))))
+            throw new AssertionError("JCS escape drift");
+        reject(()->AotV2StrictSignedAdmission.canonicalize(Map.of("broken","\uD800")));
+    }
     public static void main(String[] args) throws Exception {
         var self=new AotV2StrictSignedAdmissionTest();
         self.validatesCompleteRawSignedVectorWithoutPromotingRelease();
@@ -98,6 +112,7 @@ final class AotV2StrictSignedAdmissionTest {
         self.enforcesExternallyPinnedAndRevocableTrustAnchors();
         self.strictRawJsonDeniesDuplicateKeysWrongSchemaInvalidSizesAndJit();
         self.parsesMathematicallyExactExponentNumbersWithoutChangingSignature();
+        self.enforcesJcsUnicodeOrderingAndControlEscapes();
         System.out.println("JAVA_V2_STRICT_SIGNED_INGRESS_5_TESTS_OK");
     }
 }
