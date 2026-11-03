@@ -17,11 +17,11 @@ Compile with the project build or with these runtime/compiler sources on a suppo
 
 ```bash
 java -cp <classes> dev.oreslang.compiler.ScalarDeclarationI64Cli \
-  examples/experimental/state-container-i64.ores 5 7
+  examples/experimental/state-container-i64.atto 5 7
 # 12
 
 java -cp <classes> dev.oreslang.compiler.ScalarDeclarationI64Cli \
-  examples/experimental/virtual-actor-i64.ores 5 7
+  examples/experimental/virtual-actor-i64.atto 5 7
 # processed=2
 ```
 
