@@ -16,6 +16,13 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/check-soa-snapshot.sh"
 cat > "$tmp/bin/mvn" <<'STUB_MVN'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${RECORD_GATE_MVN_LOG:?}"
+# Synthetic post-admission mutations must be rejected before the gate passes.
+# These test controls never execute a real Maven/compiler build.
+case "${RECORD_GATE_INJECT-}" in
+  tracked) printf '\n# changed during Maven\n' >> scripts/check-record-parser.sh ;;
+  untracked) printf 'late source injection\n' > late-source.txt ;;
+  ignored-source) printf '// hidden source injection\n' > scripts/injected.java ;;
+esac
 STUB_MVN
 chmod +x "$tmp/bin/mvn"
 export RECORD_GATE_MVN_LOG="$tmp/mvn-invocations"
@@ -63,6 +70,17 @@ if ! grep -Fq -- '-Dores.runtime.carriers=native verify' "$RECORD_GATE_MVN_LOG";
   echo "native carrier verification missing from Maven gate invocation" >&2
   exit 1
 fi
+
+# A correct initial Git tree is insufficient if an executed stage later
+# changes tracked source or injects files before the next compiler stage.
+assert_exit 6 env RECORD_GATE_INJECT=tracked bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" checkout -q -- scripts/check-record-parser.sh
+assert_exit 6 env RECORD_GATE_INJECT=untracked bash scripts/check-record-inference.sh --tree "$tree"
+rm "$repo/late-source.txt"
+# Ignore patterns can hide compiler inputs. Generated target/ is permitted,
+# but source trees must not gain ignored inputs during testing.
+assert_exit 6 env RECORD_GATE_INJECT=ignored-source bash scripts/check-record-inference.sh --tree "$tree"
+rm "$repo/scripts/injected.java"
 
 # Validate the missing-tool guard without depending on whether CI happens
 # to have a global Maven binary. Give the test only the required early tools.
