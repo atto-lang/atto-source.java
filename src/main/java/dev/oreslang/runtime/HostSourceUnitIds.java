@@ -79,6 +79,9 @@ final class HostSourceUnitIds {
         private final Map<String, Path> logicalOwners = new HashMap<>();
         private final Map<Object, Path> fileKeyOwners = new HashMap<>();
         private final List<Path> noFileKey = new ArrayList<>();
+        private record Snapshot(Object fileKey, long size,
+                                java.nio.file.attribute.FileTime lastModified) { }
+        private final Map<Path, Snapshot> snapshots = new HashMap<>();
 
         String id(Path sourceFile, OresProjectConfig project) throws IOException {
             String logicalId = HostSourceUnitIds.of(sourceFile, project);
@@ -89,6 +92,7 @@ final class HostSourceUnitIds {
                     throw new IllegalArgumentException(
                             "source path changed its canonical logical identity during linking");
                 }
+                verifyRead(path, project, known);
                 return known;
             }
             Path claimed = logicalOwners.get(logicalId);
@@ -128,7 +132,36 @@ final class HostSourceUnitIds {
             }
             admittedPaths.put(path, logicalId);
             logicalOwners.put(logicalId, path);
+            snapshots.put(path, new Snapshot(fileKey,
+                    attributes.size(), attributes.lastModifiedTime()));
             return logicalId;
+        }
+
+        /**
+         * Verify that the source is still the admitted object after the
+         * bounded reader returns. This closes ordinary path-replacement and
+         * in-place edit races; fully adversarial concurrent filesystem writers
+         * still require handle-based secure-directory reads.
+         */
+        void verifyRead(Path sourceFile, OresProjectConfig project, String expectedId)
+                throws IOException {
+            Path path = sourceFile.toAbsolutePath().normalize();
+            Snapshot before = snapshots.get(path);
+            String registered = admittedPaths.get(path);
+            if (before == null || !expectedId.equals(registered)
+                    || !expectedId.equals(HostSourceUnitIds.of(path, project))) {
+                throw new IllegalArgumentException(
+                        "source-unit identity was replaced after admission");
+            }
+            BasicFileAttributes after = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!after.isRegularFile()
+                    || !Objects.equals(before.fileKey(), after.fileKey())
+                    || before.size() != after.size()
+                    || !before.lastModified().equals(after.lastModifiedTime())) {
+                throw new IllegalArgumentException(
+                        "source file changed between admission and bounded read");
+            }
         }
     }
 
