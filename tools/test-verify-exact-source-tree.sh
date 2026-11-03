@@ -48,7 +48,8 @@ assert_status 67 'modified tracked file rejected' "$expected" source
 git restore -- source/main.ores
 printf 'staged\n' > source/main.ores
 git add source/main.ores
-assert_status 67 'staged modification rejected' "$expected" source
+# Staged changes are caught by index-vs-tree comparison without invoking git diff.
+assert_status 68 'staged modification rejected by raw manifest' "$expected" source
 git restore --staged --worktree -- source/main.ores
 printf 'untracked\n' > source/new.ores
 assert_status 67 'untracked source rejected' "$expected" source
@@ -61,6 +62,19 @@ git commit -qm ignored-input-setup
 printf 'ignored yet visible to compiler\n' > source/ignored.ores
 assert_status 67 'ignored untracked source rejected' "$expected" source
 rm source/ignored.ores
+# A checked-out .gitattributes may nominate an executable clean filter.
+# Verification must use raw blobs, without calling git diff/status.
+printf 'source/main.ores filter=untrusted-clean\n' > .gitattributes
+git add .gitattributes
+git commit -qm untrusted-clean-attributes
+git config filter.untrusted-clean.clean "sh -c 'touch $work/filter-ran; cat'"
+touch source/main.ores  # Force re-stat if a future verifier uses git diff.
+assert_status 0 'source attributes cannot execute a clean filter' "$expected" source
+if [[ -e "$work/filter-ran" ]]; then
+  echo "clean filter executed during source verification" >&2
+  exit 1
+fi
+git config --unset filter.untrusted-clean.clean
 # Index intent-to-ignore flags can suppress ordinary git diff output while
 # Maven still reads changed source bytes. The proof must hash tracked bytes.
 git update-index --assume-unchanged source/main.ores
