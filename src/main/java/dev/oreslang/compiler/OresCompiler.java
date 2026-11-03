@@ -82,11 +82,11 @@ public final class OresCompiler {
      * Unsupported type shapes, private roots and missing symbols reject.
      */
     public static byte[] compileAotReflectionTableV1(
-            String source, String verifiedPackageIdentity,
+            String source, String packageIdentityClaim,
             java.util.List<String> explicitQualifiedRoots) {
         Ast.Program checked = parseAndTypeCheck(source);
         return AotReflectionSourceRootsV1.lowerChecked(
-                checked, verifiedPackageIdentity, explicitQualifiedRoots).bytes();
+                checked, packageIdentityClaim, explicitQualifiedRoots).bytes();
     }
 
     /**
@@ -113,11 +113,15 @@ public final class OresCompiler {
      * checked program through AotReflectionSourceRootsV1. Its name cannot be
      * shadowed by a user-declared same-name callable.
      *
+     * The caller's package identity is a CLAIM, not authenticated provenance.
+     * A separate build admission gate must bind it to a reviewed manifest,
+     * exact source tree and compiler artifact before any parity promotion.
+     *
      * THIS DOES NOT make type_of<T>() valid inside an AttoLang guest function,
      * lower guest bytecode, or prove native execution. Those are separate gates.
      */
     public static StaticTypeOfQueryV1 compileStaticTypeOfQueryV1(
-            String sourceDeclarations, String verifiedPackageIdentity,
+            String sourceDeclarations, String packageIdentityClaim,
             String staticQuery) {
         Ast.Program checked = parseAndTypeCheck(sourceDeclarations);
         for (Ast.ModuleDecl module : checked.modules()) {
@@ -132,7 +136,7 @@ public final class OresCompiler {
         Ast.TypeRef nominal = Parser.parseStaticTypeOfQueryV1(staticQuery);
         String qualified = "__root__." + nominal.name();
         byte[] encoded = AotReflectionSourceRootsV1.lowerChecked(
-                checked, verifiedPackageIdentity, java.util.List.of(qualified)).bytes();
+                checked, packageIdentityClaim, java.util.List.of(qualified)).bytes();
         AotReflectionTableV1Reader.Table table = AotReflectionTableV1Reader.decode(encoded);
         if (table.types().size() != 1 ||
                 !table.types().getFirst().resolvedSymbol().equals(qualified)) {
