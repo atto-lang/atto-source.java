@@ -65,8 +65,18 @@ final class HostSourceUnitIds {
         }
         for (int i = 0; i < id.length(); i++) {
             char c = id.charAt(i);
-            if (Character.isISOControl(c) || Character.isSurrogate(c)) {
+            if (Character.isISOControl(c)
+                    || Character.getType(c) == Character.FORMAT
+                    || Character.getType(c) == Character.LINE_SEPARATOR
+                    || Character.getType(c) == Character.PARAGRAPH_SEPARATOR) {
                 throw new IllegalArgumentException("source unit ID contains invalid Unicode/control data");
+            }
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= id.length() || !Character.isLowSurrogate(id.charAt(i))) {
+                    throw new IllegalArgumentException("source unit ID contains malformed UTF-16");
+                }
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("source unit ID contains malformed UTF-16");
             }
         }
         return id;
