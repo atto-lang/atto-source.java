@@ -177,4 +177,68 @@ final class HostSourceUnitIdsTest {
         assertTrue(denied.getMessage().contains("symlink"),
                 denied::toString);
     }
+
+    @Test
+    void linkedImportRejectsHardlinkedPublicMacroSource() throws Exception {
+        Path producer = temp.resolve("producer.atto");
+        Path alias = temp.resolve("alias.atto");
+        Path consumer = temp.resolve("consumer.atto");
+        Files.writeString(producer, """
+                define pub macro literal(Const<int> value) -> Syntax<Expr> {
+                    return quote(value);
+                }
+                """);
+        try {
+            Files.createLink(alias, producer);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            Assumptions.assumeTrue(false, "hardlinks unavailable on this runner");
+        }
+        Files.writeString(consumer, """
+                import * as first from "./producer.atto";
+                import * as second from "./alias.atto";
+                pub fnc main() -> int { return first.literal!(const 42); }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(consumer, Map.of()));
+        assertTrue(denied.getMessage().contains("hardlink")
+                        || denied.getMessage().contains("alias"),
+                denied::toString);
+    }
+
+    @Test
+    void hardlinkOutsideImportClosureFailsClosedOnUnixFileSystems() throws Exception {
+        Path project = temp.resolve("project");
+        Path outside = temp.resolve("outside");
+        Files.createDirectories(project);
+        Files.createDirectories(outside);
+        Path original = outside.resolve("source.atto");
+        Path alias = project.resolve("alias.atto");
+        Files.writeString(original, "pub fnc answer() -> int { return 42; }");
+        try {
+            Files.createLink(alias, original);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            Assumptions.assumeTrue(false, "hardlinks unavailable on this runner");
+        }
+        try {
+            Files.getAttribute(alias, "unix:nlink");
+        } catch (UnsupportedOperationException unsupported) {
+            Assumptions.assumeTrue(false,
+                    "no Unix hardlink count; per-build file-key checks remain active");
+        }
+        OresProjectConfig projectConfig = OresProjectConfig.discover(alias, Map.of());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> HostSourceUnitIds.of(alias, projectConfig));
+        assertTrue(denied.getMessage().contains("hardlink"), denied::toString);
+    }
+
+    @Test
+    void fileIdentityRegistryIsIdempotentAcrossRepeatedImports() throws Exception {
+        Path source = temp.resolve("single.atto");
+        Files.writeString(source, "pub fnc answer() -> int { return 42; }");
+        OresProjectConfig projectConfig = OresProjectConfig.discover(source, Map.of());
+        HostSourceUnitIds.Admission admission = new HostSourceUnitIds.Admission();
+        assertEquals("project/single.atto", admission.id(source, projectConfig));
+        assertEquals("project/single.atto",
+                admission.id(source.toAbsolutePath().normalize(), projectConfig));
+    }
 }
