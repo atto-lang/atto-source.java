@@ -154,8 +154,6 @@ public final class QueueAdmissionTransaction<T> {
             closed = true;
             return rejected(AdmissionStatus.CLOSED);
         }
-        nextAdmissionId = id + 1;
-        if (queueOwner == null) queueOwner = queueActor;
         Delivery<T> delivery = new Delivery<>(
                 this, id, generation, sender, mailboxSequence, payload);
         // Charge both independent budgets before attempting channel publication.
@@ -169,6 +167,10 @@ public final class QueueAdmissionTransaction<T> {
             reservedCompletions--;
             return rejected(AdmissionStatus.FULL);
         }
+        // Commit identity state only after the bounded channel accepts the
+        // delivery, so a rejected write leaves no queue binding or ID gap.
+        nextAdmissionId = id + 1;
+        if (queueOwner == null) queueOwner = queueActor;
         return new AdmissionResult<>(AdmissionStatus.ADMITTED, Optional.of(delivery));
     }
 
