@@ -112,12 +112,14 @@ public final class IncrementalCompiler {
                     id, parsed.get(id), parsed, normalizedImportResolutions);
             Map<String, Ast.InterfaceDecl> contracts = linkedImportedContracts(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
+            Map<String, LinkedMacroImports.Binding> linkedMacros = LinkedMacroImports.collect(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 MacroSourceUnitIdentity.attach(
                                         Parser.parse(normalized.get(id)), id),
-                                linked.classes(), linked.aliases(), contracts);
+                                linked.classes(), linked.aliases(), contracts, linkedMacros);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.classes(), analysis.shortInferredAliases());
