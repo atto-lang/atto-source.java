@@ -46,23 +46,15 @@ fi
   echo 'AOT_GUEST_EXECUTION_FAILED' >&2
   exit 1
 }
-if LC_ALL=C grep -Fq 'VIDEO-REPLAY-' "$tmpdir/guest.err"; then
+# A bare Native Image has no Maven wrapper stdout to discard. Treat every
+# extra byte on stdout and any stderr as a failed guest attestation rather
+# than silently ignoring unmarked diagnostics or duplicated receipts.
+if [[ -s "$tmpdir/guest.err" ]]; then
   cat "$tmpdir/guest.err" >&2
-  echo 'AOT_GUEST_STDERR_RECEIPT_MARKER' >&2
+  echo 'AOT_GUEST_UNEXPECTED_STDERR' >&2
   exit 1
 fi
-if ! LC_ALL=C awk '
-  /VIDEO-REPLAY-/ {
-    if ($0 ~ /^VIDEO-REPLAY-PASS\|[A-Za-z0-9-]+$/ || $0 == "VIDEO-REPLAY-SMOKE-DONE") print
-    else invalid=1
-  }
-  END { if (invalid) exit 1 }
-' "$tmpdir/guest.out" > "$tmpdir/observed"; then
-  cat "$tmpdir/guest.out" >&2
-  echo 'AOT_GUEST_INVALID_RECEIPT' >&2
-  exit 1
-fi
-if ! diff -u "$tmpdir/expected" "$tmpdir/observed"; then
+if ! diff -u "$tmpdir/expected" "$tmpdir/guest.out"; then
   echo 'AOT_GUEST_RECEIPT_MISMATCH' >&2
   exit 1
 fi
