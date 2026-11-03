@@ -70,7 +70,20 @@
       <resource>
         <directory>stdlib</directory>
         <targetPath>dev/oreslang/std</targetPath>
-        <includes><include>**/*.ores</include></includes>
+        <includes>
+          <!-- Legacy runtime resource paths remain until the ABI migration. -->
+          <include>**/*.ores</include>
+          <!-- New AttoLang standard library sources use .atto. -->
+          <include>**/*.atto</include>
+        </includes>
+      </resource>
+      <resource>
+        <directory>examples/atto-canonical</directory>
+        <targetPath>dev/attolang/examples/canonical</targetPath>
+        <includes>
+          <include>.atto.pkg.toml</include>
+          <include>src/**/*.atto</include>
+        </includes>
       </resource>
     </resources>
     <plugins>
