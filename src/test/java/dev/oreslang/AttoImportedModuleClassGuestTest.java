@@ -126,6 +126,29 @@ final class AttoImportedModuleClassGuestTest {
                 """);
         org.junit.jupiter.api.Assertions.assertThrows(
                 RuntimeException.class, () -> run(entry));
+
+        // A public class does not imply public access to its private fields.
+        // Keep this inside the existing negative JUnit case so the pinned
+        // eight-test receipt contract continues to match its method roster.
+        Files.writeString(temp.resolve("field_contract.atto"), """
+                define module field_contract as
+                  pub define class Request as
+                    val int secret;
+                    pub constructor(int secret) { self.secret = secret; }
+                  end
+                end
+                """);
+        Path privateField = temp.resolve("private-field.atto");
+        Files.writeString(privateField, """
+                import module field_contract from "./field_contract.atto";
+                pub fnc main(): void {
+                  val field_contract.Request request = new field_contract.Request(7);
+                  stdio.stdout.write(request.secret);
+                  return;
+                }
+                """);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RuntimeException.class, () -> run(privateField));
     }
 
     @Test

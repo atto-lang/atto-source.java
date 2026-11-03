@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -39,6 +40,9 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    /** Imported layouts are type-only metadata; their private fields remain inaccessible. */
+    private final Set<Ast.ClassDecl> linkedClassLayouts =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -110,7 +114,7 @@ public final class OwnershipChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (name == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
             }
@@ -122,17 +126,29 @@ public final class OwnershipChecker {
                     == Ast.ActorKind.NONE
                     ? Ast.ImportKind.CLASS
                     : Ast.ImportKind.ACTOR;
-            boolean imported = program.imports().stream().anyMatch(use ->
+            boolean directlyNamed = name.equals(declaration.name());
+            boolean imported = directlyNamed && program.imports().stream().anyMatch(use ->
                     use.kind() == expectedKind && !use.wildcard()
                             && use.names().contains(name)
                             && (use.namespace() == null
                                     || use.namespace().equals(name)));
+            if (!directlyNamed && declaration.actorKind() == Ast.ActorKind.NONE) {
+                // An import of module M only authorizes the exact M.Class
+                // name exposed by that import, not Class or another module's
+                // identically named class. The linker validates source identity.
+                imported = program.imports().stream().anyMatch(use ->
+                        use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                                && use.names().stream().anyMatch(moduleName ->
+                                        name.equals(ImportRules.localName(use, moduleName)
+                                                + "." + declaration.name())));
+            }
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
                         "linked ownership class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
+            checker.linkedClassLayouts.add(declaration);
         }
         checker.validate(program);
         checker.publishTaskAdmissions();
@@ -2680,6 +2696,11 @@ public final class OwnershipChecker {
                     ResolvedField target = findFieldTarget(
                             klass, type, member.member(), new LinkedHashSet<>());
                     if (target != null) {
+                        if (linkedClassLayouts.contains(klass)
+                                && target.field().visibility() != Ast.Visibility.PUBLIC) {
+                            throw error("cannot project private imported class field '"
+                                    + member.member() + "'");
+                        }
                         fieldType = substituteType(ownershipFieldType(target.field()),
                                 genericBindings(target.owner().genericParameters(),
                                         target.ownerType().arguments()));
