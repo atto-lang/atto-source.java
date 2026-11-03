@@ -459,4 +459,100 @@ final class LocalVirtualActorQuiescentDisposalTest {
         }
     }
 
+
+    @Test void initializingFactoryFencesShutdownAndConcurrentAdmission() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var destroyed = new AtomicInteger();
+        var senderFailure = new AtomicReference<Throwable>();
+        var sent = new AtomicReference<LocalVirtualActorI64.SendResult>();
+        var runtime = new LocalVirtualActorI64("app", "Factory", 1, 1,
+                ignored -> {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("initializer timed out");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("initializer interrupted", interrupted);
+                    }
+                    return new LocalVirtualActorI64.Turn() {
+                        @Override public void on_message(long value) { }
+                        @Override public void close() { destroyed.incrementAndGet(); }
+                    };
+                }, notice -> fail("unexpected supervisor notice"));
+        var ref = runtime.resolve("only");
+        Thread initializer = new Thread(() -> {
+            try {
+                sent.set(runtime.try_send(ref, 11));
+            } catch (Throwable failure) {
+                senderFailure.set(failure);
+            }
+        }, "actor-physical-initializer");
+        initializer.start();
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(LocalVirtualActorI64.AdmissionKind.ACTIVATING,
+                    runtime.try_send(ref, 12).kind(),
+                    "a second sender may not pass incomplete guest initialization");
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "shutdown must wait for actual guest initializer completion");
+            assertEquals(0, destroyed.get());
+        } finally {
+            release.countDown();
+            initializer.join(5_000);
+        }
+        assertFalse(initializer.isAlive());
+        assertNull(senderFailure.get());
+        assertNotNull(sent.get());
+        assertTrue(sent.get().admitted());
+        assertTrue(runtime.run_one(ref));
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, sent.get().completion().join());
+        runtime.close();
+        assertEquals(1, destroyed.get());
+    }
+
+    @Test void failedFactoryCanRetryFreshIncarnationWithoutLostCredit() {
+        var attempts = new AtomicInteger();
+        var destroyed = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Factory", 1, 1,
+                ignored -> {
+                    if (attempts.incrementAndGet() == 1)
+                        throw new IllegalStateException("synthetic initializer rejection");
+                    return new LocalVirtualActorI64.Turn() {
+                        @Override public void on_message(long value) { }
+                        @Override public void close() { destroyed.incrementAndGet(); }
+                    };
+                }, notice -> fail("unexpected supervisor notice"))) {
+            var ref = runtime.resolve("one");
+            assertThrows(IllegalStateException.class, () -> runtime.try_send(ref, 1));
+            assertEquals(0, destroyed.get(), "nothing was published for failed initialization");
+            var recovered = runtime.try_send(ref, 2);
+            assertTrue(recovered.admitted(), "fresh initialization must recover");
+            assertTrue(runtime.run_one(ref));
+            assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, recovered.completion().join());
+            assertEquals(2, attempts.get());
+        }
+        assertEquals(1, destroyed.get(), "only published incarnation is disposed");
+    }
+
+    @Test void writableCancellationCopyDoesNotCancelOriginalAcceptedTurn() {
+        var handled = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Protected", 1, 1,
+                ignored -> value -> handled.incrementAndGet(),
+                notice -> fail("unexpected supervisor notice"))) {
+            var ref = runtime.resolve("only");
+            var result = runtime.try_send(ref, 1);
+            assertTrue(result.admitted());
+            var writableCopy = result.completion().stage().toCompletableFuture();
+            assertTrue(writableCopy.cancel(true));
+            assertFalse(result.completion().isDone(),
+                    "cancel of a copied stage must not revoke a queued actor turn");
+            assertThrows(IllegalStateException.class, runtime::close);
+            assertTrue(runtime.run_one(ref));
+            assertEquals(1, handled.get());
+            assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, result.completion().join());
+        }
+    }
+
 }
