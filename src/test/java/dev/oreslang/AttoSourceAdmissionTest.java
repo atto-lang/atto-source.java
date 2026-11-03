@@ -109,6 +109,50 @@ final class AttoSourceAdmissionTest {
         assertEquals("42", out.toString(StandardCharsets.UTF_8));
     }
     @Test
+    void extensionlessAttoImportWinsOverLegacySiblingInGuestExecution() throws Exception {
+        Path modern = temp.resolve("value.atto");
+        Path legacy = temp.resolve("value.ores");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(modern, "pub fnc answer(): int { return 42; }");
+        Files.writeString(legacy, "pub fnc answer(): int { return 7; }");
+        Files.writeString(entry, """
+                import fnc answer from "./value";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var executed = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals(2, executed.units().size(), "legacy shadow must not enter linked graph");
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void explicitLegacyImportRemainsOptInEvenWhenCanonicalAttoExists() throws Exception {
+        Path modern = temp.resolve("value.atto");
+        Path legacy = temp.resolve("value.ores");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(modern, "pub fnc answer(): int { return 7; }");
+        Files.writeString(legacy, "pub fnc answer(): int { return 42; }");
+        Files.writeString(entry, """
+                import fnc answer from "./value.ores";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var executed = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals(2, executed.units().size());
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void attoPublicClassConstructorAndMutableReceiverLinkAcrossFiles() throws Exception {
         Path library = temp.resolve("column.atto");
         Path entry = temp.resolve("main-column.atto");
