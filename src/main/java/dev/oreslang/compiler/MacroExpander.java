@@ -38,6 +38,7 @@ public final class MacroExpander {
     static final int MAX_REWRITE_TRAVERSAL_NODES = 1_000_000;
 
     private final Map<String, Ast.MacroDecl> macros = new HashMap<>();
+    private final Map<String, LinkedMacroImports.Binding> importedMacros;
     private final Map<String, List<Ast.Decl>> declarationsByModule = new HashMap<>();
     private final Map<String, Set<String>> occupiedDeclarationNames = new HashMap<>();
     private final Set<String> active = new HashSet<>();
@@ -46,20 +47,30 @@ public final class MacroExpander {
     private int rewriteTraversalDepth;
     private int rewriteTraversalNodes;
 
-    private MacroExpander(String sourceUnitId) {
+    private MacroExpander(
+            String sourceUnitId,
+            Map<String, LinkedMacroImports.Binding> importedMacros) {
         this.sourceUnitId = sourceUnitId;
+        this.importedMacros = Map.copyOf(importedMacros);
     }
 
     public static Ast.Program expand(Ast.Program program) {
-        MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program);
+        return expand(program, Map.of());
+    }
+
+    public static Ast.Program expand(
+            Ast.Program program,
+            Map<String, LinkedMacroImports.Binding> importedMacros) {
+        MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program, importedMacros);
         boolean hasMacroDeclarations = program.modules().stream()
                 .flatMap(module -> module.declarations().stream())
                 .anyMatch(Ast.MacroDecl.class::isInstance);
         if (!plan.hasInvocations() && !hasMacroDeclarations) return program;
 
         MacroExpander expander =
-                new MacroExpander(MacroSourceUnitIdentity.unitId(program));
+                new MacroExpander(MacroSourceUnitIdentity.unitId(program), importedMacros);
         expander.index(program);
+        expander.indexImported();
         // A compile-time declaration must be validated even when unused.
         // Supported macros are then erased from executable AST; unsupported
         // bodies fail closed instead of becoming inert runtime metadata.
@@ -100,6 +111,27 @@ public final class MacroExpander {
                 macros.put(module.name() + "." + macro.name(), macro);
             }
             occupiedDeclarationNames.put(module.name(), occupied);
+        }
+    }
+
+    private void indexImported() {
+        for (Map.Entry<String, LinkedMacroImports.Binding> entry : importedMacros.entrySet()) {
+            LinkedMacroImports.Binding binding = entry.getValue();
+            binding.verify();
+            Ast.MacroDecl macro = binding.declaration();
+            // M1 import execution is restricted to the two previously validated,
+            // identifier-free scalar forms. No imported capture_fnc, generated
+            // identifiers, declaration synthesis, templates or authorizing syntax.
+            if (!isSyntaxExprPassthrough(macro) && !isConstLiteralQuote(macro)) {
+                throw new IllegalArgumentException(
+                        "imported macro '" + entry.getKey()
+                                + "' is outside M1's bounded identity/constant quote slice; "
+                                + "compile-time import fails closed");
+            }
+            if (macros.putIfAbsent(entry.getKey(), macro) != null) {
+                throw new IllegalArgumentException(
+                        "imported macro alias collides with local macro: " + entry.getKey());
+            }
         }
     }
 
@@ -743,6 +775,8 @@ public final class MacroExpander {
     }
 
     private String macroOwnerModule(String callerModule, String invocationName) {
+        LinkedMacroImports.Binding imported = importedMacros.get(invocationName);
+        if (imported != null) return imported.canonicalOwnerIdentity();
         int separator = invocationName.lastIndexOf('.');
         return separator >= 0
                 ? invocationName.substring(0, separator)
