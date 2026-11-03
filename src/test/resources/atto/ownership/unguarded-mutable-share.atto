@@ -1,0 +1,10 @@
+// AttoLang negative ownership fixture: the compiler must reject this operation.
+define class Counter as
+  pub let int value = 1;
+end
+
+fnc bad(): void {
+  val counter = new Counter();
+  val alias = rt mut share counter;
+  return;
+}
