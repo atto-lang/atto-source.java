@@ -82,7 +82,9 @@ public final class SourceActorPubSub implements AutoCloseable {
     private static String normalizeName(String value, String kind) {
         Objects.requireNonNull(value, kind + " name");
         String normalized = value.trim();
-        if (normalized.isEmpty() || normalized.length() > MAX_NAME_LENGTH) {
+        if (normalized.isEmpty() || normalized.length() > MAX_NAME_LENGTH ||
+                normalized.codePoints().allMatch(cp ->
+                        Character.isWhitespace(cp) || Character.isSpaceChar(cp))) {
             throw new IllegalArgumentException(
                     kind + " name must contain 1.." + MAX_NAME_LENGTH + " characters");
         }
