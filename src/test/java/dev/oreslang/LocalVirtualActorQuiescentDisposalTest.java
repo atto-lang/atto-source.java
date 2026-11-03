@@ -332,4 +332,33 @@ final class LocalVirtualActorQuiescentDisposalTest {
         runtime.close();
         assertEquals(1, disposed.get());
     }
+
+    @Test void rejectedBackpressureLeavesNoUnreceiptedMailboxEntry() {
+        var processed = new ArrayList<Long>();
+        var retired = new AtomicInteger();
+        var runtime = new LocalVirtualActorI64("app", "Queue", 1, 1,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) { processed.add(value); }
+                    @Override public void close() { retired.incrementAndGet(); }
+                }, notice -> fail("unexpected supervisor notice"));
+        var ref = runtime.resolve("one");
+        var first = runtime.try_send(ref, 11);
+        assertTrue(first.admitted());
+        assertEquals(LocalVirtualActorI64.AdmissionKind.BACKPRESSURE,
+                runtime.try_send(ref, 99).kind());
+        assertThrows(IllegalStateException.class, () -> runtime.deactivate(ref));
+        assertTrue(runtime.run_one(ref));
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, first.completion().join());
+        assertFalse(runtime.run_one(ref), "rejected message cannot enter mailbox");
+        var second = runtime.try_send(ref, 22);
+        assertTrue(second.admitted());
+        assertTrue(runtime.run_one(ref));
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, second.completion().join());
+        assertEquals(java.util.List.of(11L, 22L), processed);
+        runtime.deactivate(ref);
+        assertEquals(1, retired.get());
+        runtime.close();
+        assertEquals(1, retired.get());
+    }
+
 }
