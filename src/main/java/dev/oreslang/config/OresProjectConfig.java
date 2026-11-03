@@ -237,12 +237,17 @@ public final class OresProjectConfig {
 
         String unix = importPath.replace('\\', '/');
         Path raw = Path.of(unix);
-        if (raw.isAbsolute()) return existingSource(raw);
+        // A canonical .atto importer never silently captures a legacy
+        // extensionless .ores/.java sibling. Legacy paths must be explicit.
+        String entryName = importer.getFileName() == null
+                ? "" : importer.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        boolean canonicalAttoImporter = entryName.endsWith(".atto");
+        if (raw.isAbsolute()) return existingSource(raw, canonicalAttoImporter);
 
         if (unix.startsWith(".")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
-            return existingSource(parent.resolve(raw).normalize());
+            return existingSource(parent.resolve(raw).normalize(), canonicalAttoImporter);
         }
 
         for (Path root : searchRoots()) {
@@ -252,13 +257,13 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException(
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
-            Optional<Path> resolved = existingSource(candidate);
+            Optional<Path> resolved = existingSource(candidate, canonicalAttoImporter);
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
     }
 
-    private static Optional<Path> existingSource(Path candidate) {
+    private static Optional<Path> existingSource(Path candidate, boolean canonicalAttoImporter) {
         Path normalized = candidate.toAbsolutePath().normalize();
         if (Files.isRegularFile(normalized)) return Optional.of(normalized);
 
@@ -271,7 +276,10 @@ public final class OresProjectConfig {
         // Explicit legacy .ores/.java imports still resolve exactly as named.
         Path atto = Path.of(normalized.toString() + ".atto");
         if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
+        if (canonicalAttoImporter) return Optional.empty();
 
+        // Legacy importers still retain a compatibility fallback. New .atto
+        // code must spell an intentional .ores/.java import explicitly.
         Path ores = Path.of(normalized.toString() + ".ores");
         if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
 
