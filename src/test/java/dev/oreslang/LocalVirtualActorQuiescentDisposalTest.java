@@ -5,8 +5,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -193,6 +197,45 @@ final class LocalVirtualActorQuiescentDisposalTest {
         assertThrows(IllegalStateException.class, () -> runtime.resolve("new"));
         runtime.close();
         assertEquals(2, disposed.get(), "completed shutdown must not dispose twice");
+    }
+
+    @Test void disposerNeverRunsUnderDirectoryOrSlotMonitor() throws Exception {
+        var runtimeRef = new AtomicReference<LocalVirtualActorI64>();
+        var actorRef = new AtomicReference<LocalVirtualActorI64.Ref>();
+        var probe = Executors.newSingleThreadExecutor();
+        try {
+            var runtime = new LocalVirtualActorI64("app", "Cart", 1, 1,
+                    ignored -> new LocalVirtualActorI64.Turn() {
+                        @Override public void on_message(long value) { }
+                        @Override public void close() {
+                            // A second thread must enter both directory and slot
+                            // admission during disposal, observing the retirement
+                            // fence. If either monitor is held here, this times out.
+                            var observed = probe.submit(() ->
+                                    runtimeRef.get().try_send(actorRef.get(), 9).kind());
+                            try {
+                                if (observed.get(3, TimeUnit.SECONDS)
+                                        != LocalVirtualActorI64.AdmissionKind.UNAVAILABLE)
+                                    throw new IllegalStateException("retirement admission was not fenced");
+                            } catch (InterruptedException ex) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException("probe interrupted", ex);
+                            } catch (ExecutionException | TimeoutException ex) {
+                                throw new IllegalStateException("disposer ran with monitor held", ex);
+                            }
+                        }
+                    }, notice -> fail("unexpected supervisor notice"));
+            runtimeRef.set(runtime);
+            var ref = runtime.resolve("one");
+            actorRef.set(ref);
+            var ticket = runtime.try_send(ref, 1);
+            assertTrue(runtime.run_one(ref));
+            assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, ticket.completion().join());
+            runtime.deactivate(ref);
+            runtime.close();
+        } finally {
+            probe.shutdownNow();
+        }
     }
 
 }
