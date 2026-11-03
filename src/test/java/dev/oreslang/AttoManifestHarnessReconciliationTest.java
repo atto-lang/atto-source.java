@@ -85,6 +85,14 @@ final class AttoManifestHarnessReconciliationTest {
     }
 
     @Test
+    void canonicalManifestDirectoryBlocksLegacyFallback() throws Exception {
+        Files.createDirectory(temp.resolve(".atto.pkg.toml"));
+        Files.writeString(temp.resolve(".oreslangc.cfg.toml"), manifest("legacy"));
+        assertThrows(SecurityException.class,
+                () -> OresProjectConfig.discover(temp.resolve("main.atto"), Map.of()));
+    }
+
+    @Test
     void canonicalAttoImporterRequiresExplicitLegacySuffix() throws Exception {
         Path entry = temp.resolve("main.atto");
         Path legacy = temp.resolve("helper.ores");
