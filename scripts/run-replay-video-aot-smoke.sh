@@ -32,6 +32,13 @@ RECEIPTS
   echo 'AOT_GUEST_COMPILATION_CHECK_FAILED' >&2
   exit 1
 }
+# A compile-only check may not execute main or emit any guest receipt.
+if LC_ALL=C grep -Fq 'VIDEO-REPLAY-' "$tmpdir/check.out" ||
+   LC_ALL=C grep -Fq 'VIDEO-REPLAY-' "$tmpdir/check.err"; then
+  cat "$tmpdir/check.out" "$tmpdir/check.err" >&2
+  echo 'AOT_GUEST_CHECK_EXECUTED_MAIN' >&2
+  exit 1
+fi
 ./target/ores-aot --mode=aot --platform=linux \
   examples/replay-video-disconnect-smoke.atto \
   > "$tmpdir/guest.out" 2> "$tmpdir/guest.err" || {
