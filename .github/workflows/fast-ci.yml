@@ -46,6 +46,8 @@ jobs:
         run: bash tests/test_native_test_manifests.sh
       - name: Reject AttoLang harness .ores downgrades (source-free)
         run: bash tests/test_atto_harness_migration.sh
+      - name: Verify canonical AttoLang manifest/import/CLI admission (source-free)
+        run: bash tests/test_atto_manifest_reconciliation.sh
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Set up GraalVM
