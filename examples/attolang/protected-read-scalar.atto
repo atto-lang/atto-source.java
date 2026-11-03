@@ -1,0 +1,10 @@
+// Opt-in scalar MIR fixture, NOT general linked guest execution.
+// A read lease returns a copied int, never the protected region alias.
+define state container ReadCounter as
+  state { let int count: 41; }
+  peek(int unused) -> int ::
+    return handle_state(critical-read |snapshot| -> {
+      snapshot.count;
+    });
+  end
+end
