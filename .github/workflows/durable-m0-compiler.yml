@@ -7,6 +7,13 @@ on:
     paths:
       - "src/main/java/dev/oreslang/compiler/Durable*.java"
       - "src/test/java/dev/oreslang/Durable*.java"
+      - "src/test/java/dev/oreslang/AttoSourceExtensionTest.java"
+      - "src/test/java/dev/oreslang/launcher/AttoCliSourceExtensionTest.java"
+      - "src/test/resources/fixtures/durable/*.atto"
+      - "src/main/java/dev/oreslang/launcher/OresMain.java"
+      - "src/main/java/dev/oreslang/config/OresProjectConfig.java"
+      - "src/main/java/dev/oreslang/interop/MixedSourceUnit.java"
+      - "pom.xml"
       - "docs/DURABLE_ACTIVITY_WORKFLOW_DECLARATIONS_V1.md"
       - ".github/workflows/durable-m0-compiler.yml"
   workflow_dispatch:
@@ -65,16 +72,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp '-Dtest=DurableActivityWorkflowDeclarationTest,DurableWorkflowSemanticAnalysisTest' test
+          mvn -B -ntp '-Dtest=DurableActivityWorkflowDeclarationTest,DurableWorkflowSemanticAnalysisTest,AttoSourceExtensionTest,AttoCliSourceExtensionTest' test
 
       - name: Verify nonzero executed JUnit cases and report counts
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          reports=(target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml)
-          if (( ${#reports[@]} != 2 )); then
-            printf 'Expected 2 durable JUnit XML reports, found %s\n' "${#reports[@]}" >&2
+          reports=(target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml
+                   target/surefire-reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml
+                   target/surefire-reports/TEST-dev.oreslang.launcher.AttoCliSourceExtensionTest.xml)
+          if (( ${#reports[@]} != 4 )); then
+            printf 'Expected 4 AttoLang JUnit XML reports, found %s\n' "${#reports[@]}" >&2
             exit 1
           fi
           total=0
@@ -96,7 +105,7 @@ jobs:
             done
           done
           echo "DURABLE_M0_JUNIT|tests=$total|failures=$failed|errors=$errors|skipped=$skipped"
-          if (( total < 28 || failed != 0 || errors != 0 || skipped != 0 )); then
+          if (( total < 33 || failed != 0 || errors != 0 || skipped != 0 )); then
             echo "Durable M0 JUnit not fully executed/passing" >&2
             exit 1
           fi
@@ -109,5 +118,9 @@ jobs:
           path: |
             target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml
             target/surefire-reports/dev.oreslang.Durable*Test.txt
+            target/surefire-reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml
+            target/surefire-reports/dev.oreslang.AttoSourceExtensionTest.txt
+            target/surefire-reports/TEST-dev.oreslang.launcher.AttoCliSourceExtensionTest.xml
+            target/surefire-reports/dev.oreslang.launcher.AttoCliSourceExtensionTest.txt
           if-no-files-found: warn
           retention-days: 30
