@@ -235,6 +235,15 @@ final class SourceActorPubSubTest {
                 assertThrows(IllegalArgumentException.class,
                         () -> group.topic(invalidName));
             }
+            for (int codePoint : new int[]{0x20, 0x09, 0x00a0, 0x2003, 0x202f, 0x3000}) {
+                String whitespaceOnly = String.valueOf(Character.toChars(codePoint));
+                assertThrows(IllegalArgumentException.class,
+                        () -> pubsub.group(whitespaceOnly));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(whitespaceOnly, "latest", 1));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(whitespaceOnly));
+            }
             assertEquals("valid", group.topic("valid", "latest", 1).name());
         }
     }
