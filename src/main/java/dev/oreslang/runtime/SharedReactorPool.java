@@ -59,7 +59,10 @@ public final class SharedReactorPool implements AutoCloseable {
             queue[(head + size) % CAPACITY] = work; ++size;
             gate.notify();
         }
-        wake_reactor();
+        // The worker acquires the polling lease before testing the ready queue.
+        // If no lease exists, a future poller must observe the published work.
+        // Avoid a kernel/selector wake for every submission on a hot queue.
+        if (pollOwner.get() != -1) wake_reactor();
         return true;
     }
     public void execute(Runnable work) {
