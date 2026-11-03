@@ -15,10 +15,10 @@ import org.w3c.dom.NodeList;
 
 /** Source-owned, JDK-only, fail-closed Surefire guest evidence validator. */
 public final class AttoGuestReceiptVerifier {
-    private record Suite(String name, int count) { }
+    private record Suite(String name, List<String> methods) { int count() { return methods.size(); } }
     private static final List<Suite> REQUIRED = List.of(
-            new Suite("dev.oreslang.AttoCanonicalFixtureGuestTest", 3),
-            new Suite("dev.oreslang.AttoImportedModuleClassGuestTest", 5));
+            new Suite("dev.oreslang.AttoCanonicalFixtureGuestTest", List.of("canonicalAttoFixtureParsesTypechecksAndResolvesExtensionlessImport", "canonicalAttoFixtureLinksAndExecutesGuestWithExpectedOutput", "absentCanonicalAttoHelperFailsClosedBeforeGuestExecution")),
+            new Suite("dev.oreslang.AttoImportedModuleClassGuestTest", List.of("canonicalAttoPublicFileRootClassImportsAndRuns", "canonicalAttoPublicClassInsideImportedModuleResolvesAtExecution", "qualifiedConstructorCannotBindToUnrelatedLocalHomonym", "privateClassInImportedModuleIsNotConstructible", "unknownModuleAliasNeverResolvesLocalClass")));
 
     private static void require(boolean ok, String diagnostic) {
         if (!ok) throw new IllegalStateException(diagnostic);
@@ -56,7 +56,7 @@ public final class AttoGuestReceiptVerifier {
         for (Suite suite : REQUIRED) {
             Path path = reportDirectory.resolve("TEST-" + suite.name() + ".xml");
             require(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
-                    && !Files.isSymbolicLink(path) && Files.size(path) > 0,
+                    && !Files.isSymbolicLink(path) && Files.size(path) > 0 && Files.size(path) <= 1_048_576,
                     "missing, empty, or symlinked JUnit report for " + suite.name());
             Document document = secureParse(path);
             Element root = document.getDocumentElement();
@@ -78,13 +78,15 @@ public final class AttoGuestReceiptVerifier {
                 require(suite.name().equals(testCase.getAttribute("classname")),
                         "foreign testcase class: " + suite.name());
                 String name = testCase.getAttribute("name");
-                require(!name.isBlank() && names.add(name),
+                require(suite.methods().contains(name) && names.add(name),
                         "missing or duplicate testcase name: " + suite.name());
+                require(testCase.getParentNode() == root, "nested testcase: " + suite.name());
                 for (String failure : List.of("error", "failure", "skipped")) {
                     require(testCase.getElementsByTagName(failure).getLength() == 0,
                             "testcase failed/skipped: " + suite.name());
                 }
             }
+            require(names.containsAll(suite.methods()), "missing required testcase methods: " + suite.name());
             total += suite.count();
         }
         require(total == 8, "wrong aggregate test count");
@@ -102,7 +104,7 @@ public final class AttoGuestReceiptVerifier {
         for (int i = 0; i < count; i++) {
             xml.append("<testcase classname=\"")
                     .append(wrongClass && i == 0 ? "unrelated.ForgedTest" : suite.name())
-                    .append("\" name=\"case").append(duplicate && i == 1 ? 0 : i)
+                    .append("\" name=\"").append(suite.methods().get(duplicate && i == 1 ? 0 : i))
                     .append("\"/>");
         }
         xml.append("</testsuite>");
