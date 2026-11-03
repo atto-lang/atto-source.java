@@ -168,4 +168,31 @@ final class LocalVirtualActorQuiescentDisposalTest {
         runtime.close();
         assertEquals(2, retired.get());
     }
+    @Test void shutdownAttemptsEveryIdleDisposerDespiteOneFailure() {
+        var disposed = new AtomicInteger();
+        var runtime = new LocalVirtualActorI64("app", "Cart", 3, 1,
+                identity -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) { }
+                    @Override public void close() {
+                        disposed.incrementAndGet();
+                        if (identity.key().equals("bad"))
+                            throw new IllegalStateException("simulated disposal failure");
+                    }
+                }, notice -> fail("unexpected supervisor notice"));
+        var good = runtime.resolve("good");
+        var bad = runtime.resolve("bad");
+        var a = runtime.try_send(good, 1);
+        var b = runtime.try_send(bad, 2);
+        assertTrue(a.admitted() && b.admitted());
+        assertTrue(runtime.run_one(good));
+        assertTrue(runtime.run_one(bad));
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, a.completion().join());
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, b.completion().join());
+        assertThrows(IllegalStateException.class, runtime::close);
+        assertEquals(2, disposed.get(), "one broken disposer cannot starve other owners");
+        assertThrows(IllegalStateException.class, () -> runtime.resolve("new"));
+        runtime.close();
+        assertEquals(2, disposed.get(), "completed shutdown must not dispose twice");
+    }
+
 }
