@@ -92,7 +92,7 @@ final class WebSocketCounterLiveActorE2ETest {
 
     @Test
     void counterEventAndIdempotentReplayUseRealActorTurnAndSocket() throws Exception {
-        var count = new AtomicInteger();
+        var counter = new CounterLiveTurnModel();
         var delivered = new AtomicInteger();
         var replies = new ArrayBlockingQueue<String>(4);
         try (var runtime = new ActorRuntime()) {
@@ -129,13 +129,13 @@ final class WebSocketCounterLiveActorE2ETest {
                                                     handle, tenant, actor.address(), PATCH),
                                             "actor turn cannot perform physical host I/O");
                                     delivered.incrementAndGet();
-                                    if (count.compareAndSet(0, 1)) assertTrue(replies.offer(PATCH));
-                                    assertTrue(replies.offer(ACK));
+                                    var result = counter.increment("authenticated-loopback-user", ID, 0);
+                                    for (String reply : result.frames()) assertTrue(replies.offer(reply));
                                 }));
                         if (i == 0) hostReply(conn, handle, tenant, actor, replies, client, PATCH);
                         hostReply(conn, handle, tenant, actor, replies, client, ACK);
                     }
-                    assertEquals(1, count.get(), "duplicate event may not mutate actor state");
+                    assertEquals(1, counter.count(), "duplicate event may not mutate actor state");
                     assertEquals(2, delivered.get(), "each frame gets one mailbox turn");
                     long ticketDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
                     while (conn.pendingActorTicketCount() != 0
