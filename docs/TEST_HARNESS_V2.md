@@ -1,18 +1,20 @@
-# Oreslang native test harness v2 — design and admission contract
+# AttoLang native test harness v2 — design and admission contract
 
 **Status:** proposed v2 interfaces, NOT an implemented async/actor/cluster runner. The
-existing executable baseline is `stdlib/testing.ores` and the separate Rust
-`oreslang-test.cli` launcher. No Java/JUnit, C#, JavaScript, Python, or
+canonical source is `stdlib/testing.atto` (with legacy compatibility
+`stdlib/testing.ores`) and the separate Rust `oreslang-test.cli` launcher.
+Neither native guest execution nor async actor TestKit implementation has been
+established by hosted CI. No Java/JUnit, C#, JavaScript, Python, or
 foreign-language test framework is the implementation of Oreslang's public API.
 
 ## Division of responsibility
 
 | Layer | Owner | Contract |
 | --- | --- | --- |
-| Pure Oreslang stdlib (`std/test`, legacy `stdlib/testing.ores`) | Oreslang | Typed assertions, immutable suites, tables, expected failures, result semantics, fixtures and cancellation-safe lifecycle; no ambient global registry. |
+| Pure AttoLang stdlib (`std/test` design; canonical `stdlib/testing.atto`) | AttoLang | Typed assertions, immutable suites, tables, expected failures, result semantics, fixtures and cancellation-safe lifecycle; no ambient global registry. |
 | Compiler and link graph | Each Oreslang compiler | Discover explicit test descriptors at build time, emit static source location/test identity and reachability roots; **no runtime reflection**. Fail closed for unsupported test primitives. |
-| Oreslang runtime | Each backend | Capability-restricted task/test actor scopes, structured cancellation, monotonic deadlines, isolated per-test resources, virtual time where supported. |
-| `oreslang test` / `oreslang-test.cli` | Rust launcher | Discover tests, pin compiler/source identity, schedule files/processes, apply resource limits, gather typed results, render reporters and propagate exit status. |
+| AttoLang runtime | Each backend | Capability-restricted task/test actor scopes, structured cancellation, monotonic deadlines, isolated per-test resources, virtual time where supported. |
+| future `attolang test` / compatibility `oreslang-test.cli` | Rust launcher | Discover tests, pin compiler/source identity, schedule files/processes, apply resource limits, gather typed results, render reporters and propagate exit status. |
 | Conformance | Shared fixtures, independently executed | Cross-backend acceptance; reference models and host-only checks are not guest execution. |
 
 Preserve current `TestCase`, `TestOutcome`, `TestSuite`, `TestOptions`,
@@ -43,7 +45,7 @@ old output. The existing `run_suite` is sequential, not scheduler-backed.
 
 ## Public API target (illustrative; not yet implemented)
 
-```ores
+```atto
 import module Test from "std/test";
 
 @Test.case(name: "counter increments")
@@ -188,3 +190,22 @@ parity; protected run evidence and hardware profiles where applicable.
 Keep any older draft runner stacks and `oreslang-test.cli` integrated,
 not duplicated. No cross-org private source transfer is authorized by
 this document.
+
+
+## Canonical .atto migration gate (November 2026)
+
+The examples in this document are **illustrative** and use the
+`.atto` extension. The actual Java/GraalVM test-harness guest programs
+under `examples/native-testing*.atto` and `tests/*.atto` use existing
+implemented constructs; actor probe, deterministic test scheduler, and
+virtual-time APIs remain unimplemented proposals. Compiler .atto entry
+admission is tracked separately in #2460 and must be integrated rather than
+assuming its presence in the old harness base commit.
+
+Compatibility names `ores.std/testing`, the `ORES_TEST` protocol and
+`dev.oreslang` internal Java ABI remain stable until a versioned upgrade.
+The `stdlib/testing.ores` resource is a legacy explicit-suffix fallback;
+canonical imports must resolve to packaged `stdlib/testing.atto` and
+fail closed when that resource is not present. Actual runner step counts,
+source-tree identity, negative guests and independent review are still
+required; matching files or host unit tests alone do not establish parity.
