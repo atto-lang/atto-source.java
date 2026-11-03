@@ -386,11 +386,12 @@ public final class LinkedProgramRunner {
             Map<String, Map<String, String>> importResolutions,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
+        // Admission must precede realpath resolution (which performs host I/O).
+        // Cyclic imports remain bounded by the same finite depth policy.
+        budget.checkCanAdmitUnit(depth);
         Path normalized = unit.toAbsolutePath().normalize();
         String id = HostSourceUnitIds.of(normalized, projectConfig);
         if (units.containsKey(id)) return;
-        // Fail before any file I/O or parsing when import recursion is too deep.
-        budget.checkCanAdmitUnit(depth);
 
         BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
         budget.admit(source.byteCount(), depth);
