@@ -38,6 +38,90 @@ final class ProtectedScalarMirV1Test {
             end
             """;
 
+    private static final String READ_COUNTER = """
+            define state container Counter as
+              state { let int count: 11; }
+              peek(int ignored) -> int ::
+                return handle_state(critical-read |region| -> {
+                  region.count;
+                });
+              end
+            end
+            """;
+
+    @Test void checkedReadRegionReturnsOnlyOwnedScalarWithoutMutatingState() {
+        var read = OresCompiler.compileProtectedScalarI64(READ_COUNTER);
+        assertEquals(ProtectedScalarMirV1.Kind.STATE_CONTAINER, read.kind());
+        assertTrue(read.readOnly());
+        assertEquals(ProtectedScalarMirV1.Instruction.ACQUIRE_READ,
+                read.instructions().getFirst());
+        assertEquals(ProtectedScalarMirV1.Instruction.RELEASE_READ,
+                read.instructions().get(2));
+        assertEquals(4, read.instructions().size());
+        assertEquals(read, ProtectedScalarMirV1.lower(Parser.parse(READ_COUNTER)));
+        try (var state = read.new_state_container()) {
+            assertEquals(11L, read.invoke(state, Long.MIN_VALUE));
+            assertEquals(11L, read.invoke(state, Long.MAX_VALUE));
+            assertEquals(11L, state.tryRead().orElseThrow(),
+                    "a READ plan cannot modify protected state");
+            assertEquals(23L, state.tryAddChecked(12).orElseThrow());
+            assertEquals(23L, read.invoke(state, 1));
+            state.close();
+            assertThrows(IllegalStateException.class, () -> read.invoke(state, 0));
+            assertTrue(state.readyForReclamation());
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(READ_COUNTER),
+                "general TypeChecker must not silently admit protected source");
+    }
+
+    @Test void mutationUnderReadLeaseHasDistinctSemanticDiagnostic() {
+        for (String mutation : java.util.List.of(
+                READ_COUNTER.replace("region.count;", "region.count = region.count;"),
+                READ_COUNTER.replace("region.count;", "region.count = region.count + ignored;"),
+                COUNTER.replace("critical-write", "critical-read"))) {
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ProtectedScalarMirV1.lower(mutation), mutation);
+            assertTrue(denied.getMessage().contains("E_CRITICAL_READ_MUTATION"),
+                    denied::toString);
+        }
+    }
+
+    @Test void protectedRegionAliasCannotEscapeReadOrWriteScope() {
+        for (String escape : java.util.List.of(
+                READ_COUNTER.replace("region.count;", "region;"),
+                COUNTER.replace("s.count;\n", "s;\n"))) {
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.compileProtectedScalarI64(escape), escape);
+            assertTrue(denied.getMessage().contains("E_STATE_BORROW_ESCAPE"),
+                    denied::toString);
+        }
+    }
+
+    @Test void unsupportedProtectedEffectsAndUnsafeModeChangesRemainClosed() {
+        // An unknown method/call effect does not receive an invented READ
+        // proof. Other guard kinds and unverified returns are also denied.
+        assertRejected(READ_COUNTER.replace("region.count;", "region.count.get(ignored);"));
+        assertRejected(READ_COUNTER.replace("critical-read", "critical-write"));
+        assertRejected(READ_COUNTER.replace("critical-read", "critical-unknown"));
+        assertRejected(READ_COUNTER.replace("region.count;", "region.unknown;"));
+        assertRejected(READ_COUNTER.replace("|region|", "|ignored|"));
+        assertRejected(CART.replace("critical-write", "critical-read"));
+        var forged = assertThrows(IllegalArgumentException.class, () ->
+                new ProtectedScalarMirV1.Plan(
+                        ProtectedScalarMirV1.Kind.STATE_CONTAINER, "Counter",
+                        "count", "peek", "unused", 11L,
+                        java.util.List.of(
+                                ProtectedScalarMirV1.Instruction.ACQUIRE_READ,
+                                ProtectedScalarMirV1.Instruction.STORE_STATE_I64,
+                                ProtectedScalarMirV1.Instruction.RELEASE_READ,
+                                ProtectedScalarMirV1.Instruction.RETURN_I64)));
+        assertTrue(forged.getMessage().contains("invalid acquire/release"),
+                forged::toString);
+    }
+
     @Test void actualParserAndCompilerEntryPointProduceCheckedMIR() {
         var checked = OresCompiler.compileProtectedScalarI64(COUNTER);
         assertEquals(ProtectedScalarMirV1.Kind.STATE_CONTAINER, checked.kind());
