@@ -3,7 +3,7 @@
 # Do NOT replace this with a host-model test or claim success on zero-step CI.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 if ! command -v mvn >/dev/null 2>&1; then
   echo "UNCONFIGURED: Maven is required to build and execute the guest" >&2
   exit 2
@@ -13,8 +13,13 @@ if ! command -v java >/dev/null 2>&1; then
   exit 2
 fi
 
+if [[ ! -f examples/replay-video-disconnect-smoke.ores ]]; then
+  echo 'UNCONFIGURED: guest source file is missing' >&2
+  exit 2
+fi
+
 tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+trap 'rm -rf -- "$tmpdir"' EXIT
 cat >"$tmpdir/expected" <<'RECEIPTS'
 VIDEO-REPLAY-PASS|capacity
 VIDEO-REPLAY-PASS|first-chunk
@@ -40,16 +45,25 @@ mvn -B -ntp -q -DskipTests exec:java \
   echo "GUEST_EXECUTION_FAILED" >&2
   exit 1
 }
-# The guest's 7 distinct PASS receipts and terminal DONE must appear in exact order.
-# A nonzero runtime exit or missing/extra/duplicated/out-of-order/FAIL receipts fails.
-grep -E '^VIDEO-REPLAY-(PASS|FAIL)\||^VIDEO-REPLAY-SMOKE-DONE$' \
-  "$tmpdir/guest.log" >"$tmpdir/observed" || {
+# The exact seven receipts must be emitted in order by the real guest.
+# Reject malformed, embedded, extra, duplicated or explicit FAIL markers.
+# Maven's unrelated informational output is allowed, but never a spoofed marker.
+if ! LC_ALL=C awk '
+  /VIDEO-REPLAY-/ {
+    if ($0 ~ /^VIDEO-REPLAY-PASS\|[A-Za-z0-9-]+$/ || $0 == "VIDEO-REPLAY-SMOKE-DONE") {
+      print
+    } else {
+      invalid = 1
+    }
+  }
+  END { if (invalid) exit 1 }
+' "$tmpdir/guest.log" >"$tmpdir/observed"; then
   cat "$tmpdir/guest.log" >&2
-  echo "NO_GUEST_RECEIPTS" >&2
+  echo "MALFORMED_GUEST_RECEIPT" >&2
   exit 1
-}
-diff -u "$tmpdir/expected" "$tmpdir/observed" || {
+fi
+if ! diff -u "$tmpdir/expected" "$tmpdir/observed"; then
   echo "GUEST_RECEIPT_MISMATCH" >&2
   exit 1
-}
+fi
 echo "JAVA_GUEST_VIDEO_REPLAY_SMOKE_PASS (7/7 actual guest receipts)"
