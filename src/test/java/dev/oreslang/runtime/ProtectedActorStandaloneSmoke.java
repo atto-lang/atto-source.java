@@ -284,6 +284,10 @@ public final class ProtectedActorStandaloneSmoke {
             var accepted = runtime.try_send(ref, 7);
             check(accepted.admitted(), "forgery test must admit work");
             var receipt = accepted.completion();
+            check(LocalVirtualActorI64.Completion.class.getConstructors().length == 0,
+                    "external clients cannot mint completion handles");
+            check(LocalVirtualActorI64.SendResult.class.getConstructors().length == 0,
+                    "external clients cannot mint accepted results");
             check(!java.util.concurrent.CompletableFuture.class.isAssignableFrom(
                     receipt.getClass()), "sender must never receive a writable CompletableFuture");
             var downstream = receipt.thenRun(() -> { });
