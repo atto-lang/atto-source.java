@@ -1,0 +1,7 @@
+// Canonical AttoLang source: use .atto and an extensionless .atto-first import.
+import fnc answer from "./value";
+
+pub fnc main(): void {
+  stdio.stdout.write(answer());
+  return;
+}
