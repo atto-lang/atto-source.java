@@ -28,7 +28,7 @@ public final class SharedReactorPoolCheck {
         final Selector selector;
         final Pipe pipe;
         final AtomicInteger active = new AtomicInteger(), delivered = new AtomicInteger(), wakes = new AtomicInteger();
-        final Set<Long> polls = ConcurrentHashMap.newKeySet(), executions = ConcurrentHashMap.newKeySet();
+        final Set<Thread> polls = ConcurrentHashMap.newKeySet(), executions = ConcurrentHashMap.newKeySet();
         volatile SharedReactorPool pool;
         int pending;
         Io() throws Exception {
@@ -40,7 +40,7 @@ public final class SharedReactorPoolCheck {
         void emit() throws Exception { check(pipe.sink().write(ByteBuffer.wrap(new byte[]{1})) == 1); }
         @Override public void poll(boolean mayWait) {
             check(active.incrementAndGet() == 1); IN_POLL.set(true);
-            polls.add(Thread.currentThread().getId());
+            polls.add(Thread.currentThread());
             try {
                 if (mayWait && pending == 0) selector.select(10); else selector.selectNow();
                 if (!selector.selectedKeys().isEmpty()) {
@@ -50,7 +50,7 @@ public final class SharedReactorPoolCheck {
                 }
                 while (pending != 0 && pool != null) {
                     if (!pool.try_submit(() -> {
-                        check(!IN_POLL.get()); executions.add(Thread.currentThread().getId()); delivered.incrementAndGet();
+                        check(!IN_POLL.get()); executions.add(Thread.currentThread()); delivered.incrementAndGet();
                     })) break;
                     --pending;
                 }
