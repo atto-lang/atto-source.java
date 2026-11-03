@@ -40,7 +40,7 @@ public final class CoreLibrarySources {
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
     private static final Set<String> STD_SOURCES = Set.of(
-            "core.ores", "testing.ores", "assert.ores", "trace.ores",
+            "core.ores", "testing.atto", "testing.ores", "assert.ores", "trace.ores",
             "http_wire.ores", "compute.ores", "db_pool.ores",
             "actor_persistence.ores", "data_pool.ores");
 
@@ -137,14 +137,27 @@ public final class CoreLibrarySources {
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
+        String prefix;
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, STD_IMPORT_PREFIX);
+            prefix = STD_IMPORT_PREFIX;
+        } else if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
+            prefix = LEGACY_STD_IMPORT_PREFIX;
+        } else {
+            throw new IllegalArgumentException(
+                    "standard-library imports must start with 'ores.std/': " + importPath);
         }
-        if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX);
+
+        // New AttoLang source is authoritative for the native testing module.
+        // Preserve an explicit .ores request as an exact compatibility opt-in;
+        // never silently fall back to the older source if .atto is missing.
+        String body = importPath.substring(prefix.length());
+        if (body.equals("testing") || body.equals("testing.atto")) {
+            return "testing.atto";
         }
-        throw new IllegalArgumentException(
-                "standard-library imports must start with 'ores.std/': " + importPath);
+        if (body.equals("testing.ores")) {
+            return "testing.ores";
+        }
+        return canonicalPathBody(importPath, prefix);
     }
 
     private static String canonicalPathBody(String importPath, String prefix) {
