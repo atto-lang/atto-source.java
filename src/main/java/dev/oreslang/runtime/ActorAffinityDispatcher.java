@@ -118,13 +118,15 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         if (lane < 0 || lane >= lanes.size()) {
             throw new IllegalArgumentException("invalid actor dispatch lane");
         }
-        if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
-        if (!demandGrowth) {
-            startLaneCarrier(lanes.get(lane));
-            return;
-        }
-        if (lane < startedLanes) return;
+        // The admission bootstrap and close share one lock. The caller must
+        // not publish an actor after accepting a successful start on a lane
+        // that was concurrently shut down.
         synchronized (growLock) {
+            if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
+            if (!demandGrowth) {
+                startLaneCarrier(lanes.get(lane));
+                return;
+            }
             while (startedLanes <= lane) {
                 int next = startedLanes;
                 startLaneCarrier(lanes.get(next));
@@ -137,7 +139,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         if (lane instanceof NativeCarrierExecutor nativeLane) {
             nativeLane.ensureStarted();
         } else if (lane instanceof ThreadPoolExecutor pool && pool.getPoolSize() == 0) {
-            pool.prestartCoreThread();
+            // prestartCoreThread() may return false after shutdown. This must
+            // fail first-actor admission rather than return a dead ActorRef.
+            if (!pool.prestartCoreThread() && pool.getPoolSize() == 0) {
+                throw new RejectedExecutionException("actor lane worker failed to start");
+            }
         }
     }
 
@@ -287,14 +293,16 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     @Override public void execute(Runnable command) { executeOnLane(reserveLane(), command); }
     @Override public void shutdown() { shutdownNow(); }
     @Override public List<Runnable> shutdownNow() {
-        closed.set(true);
-        var abandoned = new ArrayList<Runnable>();
-        for (var lane : lanes) for (var pending : lane.shutdownNow()) {
-            QueuedTurn task = (QueuedTurn) pending;
-            task.rejectAdmission();
-            abandoned.add(task.command);
+        synchronized (growLock) {
+            closed.set(true);
+            var abandoned = new ArrayList<Runnable>();
+            for (var lane : lanes) for (var pending : lane.shutdownNow()) {
+                QueuedTurn task = (QueuedTurn) pending;
+                task.rejectAdmission();
+                abandoned.add(task.command);
+            }
+            return List.copyOf(abandoned);
         }
-        return List.copyOf(abandoned);
     }
     @Override public boolean isShutdown() { return closed.get(); }
     @Override public boolean isTerminated() { return lanes.stream().allMatch(ExecutorService::isTerminated); }
