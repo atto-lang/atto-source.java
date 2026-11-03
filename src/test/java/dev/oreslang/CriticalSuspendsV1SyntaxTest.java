@@ -187,10 +187,19 @@ final class CriticalSuspendsV1SyntaxTest {
             assertTrue(java.lang.reflect.Modifier.isPrivate(
                     constructor.getModifiers()));
         }
-        assertThrows(IllegalStateException.class,
+        IllegalStateException bypass = assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedCriticalBlocks.publish(
                         Parser.parse(TYPED_CRITICAL_ACTOR), 1L,
                         java.util.Set.of(), null));
+        assertTrue(bypass.getMessage().contains(
+                "full cross-ledger transaction locks"), bypass::toString);
+        IllegalStateException unguardedPreflight = assertThrows(
+                IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.preparePublish(
+                        Parser.parse(TYPED_CRITICAL_ACTOR), 1L,
+                        java.util.Set.of(), null));
+        assertTrue(unguardedPreflight.getMessage().contains(
+                "full cross-ledger transaction locks"), unguardedPreflight::toString);
     }
 
     @Test void failedOrdinaryTypeCheckCannotBeReplacedByStandaloneOwnership() {
@@ -319,6 +328,9 @@ final class CriticalSuspendsV1SyntaxTest {
             }
             assertTrue(atPublicationBarrier,
                     "ownership checker never reached critical publish barrier");
+            assertThrows(IllegalStateException.class,
+                    () -> Ast.CheckedTaskCaptures.requireProgramEpoch(program),
+                    "pending owner check must not expose a positive Task epoch");
             // A validation failure after the transaction is staged must
             // revoke the proof before either ledger becomes executable.
             assertThrows(IllegalArgumentException.class,
