@@ -167,7 +167,7 @@ public final class OresMain {
                 } else if (arg.startsWith("--")) {
                     throw new UsageException("unknown option: " + arg);
                 } else if (filename == null) filename = arg;
-                else throw new UsageException("only one .ores or .java source file may be supplied");
+                else throw new UsageException("only one .atto or .java source file may be supplied (legacy .ores is accepted)");
             } catch (IllegalArgumentException invalidOption) {
                 throw new UsageException(invalidOption.getMessage());
             }
@@ -217,7 +217,9 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
+        String nativeName = filename.toLowerCase(Locale.ROOT);
+        boolean isAttoSource = nativeName.endsWith(".atto") || nativeName.endsWith(".ores");
+        String directOresSource = isAttoSource ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -248,8 +250,8 @@ public final class OresMain {
         }
 
         if (buildAnalysis) {
-            if (!filename.endsWith(".ores")) {
-                throw new UsageException("--build-analysis currently requires a .ores source file");
+            if (!isAttoSource) {
+                throw new UsageException("--build-analysis requires an AttoLang .atto source file (legacy .ores accepted)");
             }
             String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
@@ -388,7 +390,7 @@ public final class OresMain {
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
-                        + "[file.ores|file.java]");
+                        + "[file.atto|file.java] (legacy .ores supported)");
     }
 
     static List<String> formatSyntaxWarnings(Path path, String source) {
