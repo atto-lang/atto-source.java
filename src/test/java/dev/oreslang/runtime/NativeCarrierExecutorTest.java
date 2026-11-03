@@ -46,4 +46,50 @@ final class NativeCarrierExecutorTest {
                     "completion accounting must publish after each carrier turn returns");
         }
     }
+
+    @Test
+    void nativeStartupRegistersEveryCarrierAndShutdownWaitsForPthreadJoins() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        // core=1, max=4: three compensation pthreads are parked, but must
+        // still enter their registered JNI carrier loops before startup returns.
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 4, 32, "ores-native-reaper-proof-" + System.nanoTime() + "-");
+        try {
+            assertEquals(0, executor.registeredCarrierCount());
+            assertFalse(executor.isStarted());
+            assertFalse(executor.awaitTermination(0, TimeUnit.SECONDS),
+                    "awaitTermination must not succeed before shutdown");
+            assertTrue(executor.ensureStarted());
+            assertEquals(4, executor.registeredCarrierCount(),
+                    "all JNI callbacks must be entered before successful startup");
+            assertFalse(executor.isTerminated());
+            assertFalse(executor.awaitTermination(0, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS),
+                "native reaper must join all four pthreads before reporting termination");
+        assertTrue(executor.isTerminated());
+        assertEquals(0, executor.registeredCarrierCount());
+        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                executor::ensureStarted);
+    }
+
+    @Test
+    void shutdownWithoutFirstActorNeedsNoNativeReaper() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 2, 16, "ores-native-no-start-" + System.nanoTime() + "-");
+        assertFalse(executor.isStarted());
+        assertFalse(executor.isTerminated());
+        executor.shutdownNow();
+        assertTrue(executor.isTerminated());
+        assertTrue(executor.awaitTermination(0, TimeUnit.SECONDS));
+        assertEquals(0, executor.registeredCarrierCount());
+    }
 }
