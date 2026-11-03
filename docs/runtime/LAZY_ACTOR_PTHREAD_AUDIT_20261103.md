@@ -25,6 +25,46 @@ PRIVATE, SHARED and UNTRUSTED presently use distinct host dispatchers. Merely pl
 - Do not mirror private Java source to another GitHub organization until the independently reviewed destination, exact snapshot and protected-source governance gates authorize it. Working source-free alternate-org runners are not transfer approval.
 - Full physical retirement after partial JNI attach, exact JNI reaper barrier, independent UNTRUSTED isolate semantics, saturation/compensation behavior, and compatibility with VM NIO drafts #2354/#2359/#2367 remain merge-blocking work.
 
+## November 3 JNI physical retirement hardening
+
+The audit identified a lifecycle gap after `nativeStart()`: the native barrier
+waited for `AttachCurrentThreadAsDaemon`, but did not wait for the Java
+`nativeCarrierLoop` callback to register its worker. As a result, an
+immediate `awaitTermination()` could observe all-null thread slots while
+native pthreads were still attaching. A stronger barrier and physical join
+receipt are now implemented:
+
+- `NativeCarrierExecutor.ensureStarted()` waits for a bounded, once-only
+  Java-loop-entry latch (all configured native slots), before reporting
+  successful startup. If callbacks never register, startup fails closed,
+  requests native retirement, and does not publish a live actor reference.
+- `src/main/c/oresthread.c` caches `nativeCarriersJoined()` and invokes
+  it from the dedicated reaper **after all `pthread_join()` calls**,
+  while the executor JNI global reference remains valid.
+- `awaitTermination()` / `isTerminated()` now require this reaper receipt
+  for a started pool, rather than inferring physical exit from Java thread
+  slots. A never-started pool still terminates without launching a reaper.
+  Failure to create/attach a reaper fails conservatively at timeout.
+- GraalVM Native Image JNI reachability metadata includes the reaper callback;
+  `NativeCarrierExecutorTest` covers max=4/core=1 callback entry, reaper
+  retirement, and no-start shutdown.
+
+**Independent local protocol smoke test:** a **source-free** JNI/pthread probe
+was compiled under OpenJDK 21.0.12.1 with `javac -Xlint:all -Werror`.
+Both GCC and Clang built its native shared library with
+`-std=c11 -O2 -fPIC -shared -Wall -Wextra -Werror -pthread`.
+Both completed 25 independent rounds × 4 pthreads, with the JNI reaper
+callback running only after all four native workers exited. This demonstrates
+the *callback protocol*, **not compilation or execution of the modified
+AttoLang source tree**.
+
+**Remaining gates:** compile the exact `NativeCarrierExecutor.java` and
+`oresthread.c` together with JDK25 and GraalVM Native Image, then execute
+the new JUnit tests and fault-inject `pthread_create` and JNI attachment
+failures; verify the reaper timeout/quarantine contract before merging.
+Private source mirroring remains prohibited without reviewed V3 governance
+approval and protected refs.
+
 ## Merge gate
 
 Keep PR #2493 draft. Require exact-head focused `ActorPoolLazyStartTest`, `NativeCarrierExecutorTest`, `ActorAffinityDispatcherTest`, `ActorRuntimeNativeCarrierTest`, ActorRuntime lifecycle and JNI shutdown suites on JDK25 and GraalVM Native Image. For future backends match the *observable* lazy-pool contract while retaining each backend's actual isolation and scheduler entry requirements. Do not count source-free canaries or host-only models as guest execution evidence.
