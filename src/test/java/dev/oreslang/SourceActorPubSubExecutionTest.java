@@ -4,6 +4,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -72,6 +73,19 @@ final class SourceActorPubSubExecutionTest {
                         "source-pubsub-try-publish-not-lowered.atto"));
         assertTrue(error.getMessage().contains("unknown Topic callable member"),
                 error.getMessage());
+    }
+
+    @Test
+    @Timeout(30)
+    void legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors() throws Exception {
+        // This executes compiled guest actor receive handlers, unlike a
+        // host-only EventBus unit test. It does not certify portable v1
+        // synchronous try_publish or sequence-bearing delivery envelopes.
+        assertEquals(
+                "ready|ready|event-42|event-42",
+                run(
+                        fixture("actor-pubsub-legacy-fanout-two.atto"),
+                        "actor-pubsub-legacy-fanout-two.atto"));
     }
 
     @Test
