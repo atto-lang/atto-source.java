@@ -202,7 +202,7 @@ public final class ProtectedScalarMirV1 {
         String ident() {
             if (index >= tokens.size()) throw invalid("missing protected state alias");
             String name = tokens.get(index++);
-            if (!name.matches("[A-Za-z_][A-Za-z_0-9]*"))
+            if (name.length() > 128 || !name.matches("[A-Za-z_][A-Za-z_0-9]*"))
                 throw invalid("invalid protected state alias");
             return name;
         }
@@ -246,9 +246,19 @@ public final class ProtectedScalarMirV1 {
         c.need("->");
         c.need("{");
         if (readOnly) {
-            // The alias is an affine, lexical state capability, not a
-            // returnable value. Only a scalar field projection can leave
-            // the protected region; returning the alias is an escape.
+            // This subexpression is returned from handle_state. The protected
+            // region alias is never Copy/Share/Take/Borrow regardless of the
+            // operator requested. A scoped lease cannot become the result.
+            if (c.at("rt")) {
+                c.need("rt");
+                String operation = c.ident();
+                if (!java.util.Set.of("borrow", "share", "take", "copy").contains(operation))
+                    throw invalid("unverified runtime operation in protected read");
+                c.need(alias);
+                throw new IllegalArgumentException(
+                        "E_STATE_BORROW_ESCAPE: protected region authority cannot cross its read guard");
+            }
+            // Only the owned scalar field projection can leave the region.
             c.need(alias);
             if (c.at(";") || c.at("}") || c.at(")"))
                 throw new IllegalArgumentException(
