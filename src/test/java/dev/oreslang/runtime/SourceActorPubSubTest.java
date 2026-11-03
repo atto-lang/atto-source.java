@@ -143,6 +143,31 @@ final class SourceActorPubSubTest {
     }
 
     @Test
+    void portableTopicNamesAreExactBoundedAsciiIdentifiers() {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("scope");
+            SourceActorPubSub.Topic topic = group.topic("events", "latest", 1);
+            assertEquals("events", topic.name());
+            for (String invalid : java.util.List.of(
+                    "", " events", "events ", "#ready", "1events",
+                    "a:b", "a b", "A".repeat(129))) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalid, "latest", 1), invalid);
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalid), invalid);
+            }
+            assertEquals("events", group.topic("events").name(),
+                    "invalid aliases must not affect an existing topic");
+            assertEquals("A", group.topic("A", "latest", 1).name());
+            assertEquals("E".repeat(128),
+                    group.topic("E".repeat(128), "latest", 1).name());
+            assertEquals("orders.created/v1_test-2",
+                    group.topic("orders.created/v1_test-2", "latest", 1).name());
+        }
+    }
+
+    @Test
     void topicPolicyIsBoundedAndDefinitionIsStable() {
         try (ActorRuntime runtime = new ActorRuntime();
              SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
