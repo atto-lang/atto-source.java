@@ -2,7 +2,13 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.OwnershipChecker;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Set;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
@@ -104,6 +110,27 @@ final class AttoNegativeDiagnosticsAdmissionTest {
                   return;
                 }
                 """)));
+    }
+
+    @Test
+    void copyableScalarShareCompilesAndExecutesAsAttoGuest() throws Exception {
+        // A positive compiler/runtime control on the same source-extension
+        // path. This has not been executed on hosted Java Actions yet.
+        Path entry = temp.resolve("share-copyable.atto");
+        Files.writeString(entry, """
+                pub fnc main(): void {
+                  let int source = 42;
+                  let int duplicate = rt share source;
+                  stdio.stdout.write(duplicate);
+                  return;
+                }
+                """);
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), stdout, new ByteArrayOutputStream());
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "42", stdout.toString(StandardCharsets.UTF_8));
     }
 
     @Test
