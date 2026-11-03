@@ -36,11 +36,11 @@ final class QueueAdmissionTransactionTest {
                         if (command.equals("setup")) {
                             var child = runtime.<String>spawnChildShared(
                                     startup -> (payload, queueContext) -> {
-                                        var mail = queueContext.currentMail().orElseThrow();
                                         var result = runtime.admitCurrentQueueCommand(
-                                                transaction, 0, transaction.generation(),
-                                                mail.value());
-                                        observed.add(result.status().name() + ":" + mail.value());
+                                                transaction, 0, transaction.generation());
+                                        String admittedPayload = queueContext.currentMail()
+                                                .orElseThrow().value();
+                                        observed.add(result.status().name() + ":" + admittedPayload);
                                     });
                             queueRef.set(child.ref());
                             runtime.grantCurrentQueueProducer(queueRef.get(), 0, producer);
