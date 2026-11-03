@@ -296,8 +296,8 @@ final class ActorSyncStdlibTest {
     }
 
     @Test
-    void realOreslangIsoactorCanUseOwnedSyncProgressDuringActorTurn() throws Exception {
-        assertEquals("1",run("""
+    void realAttoIsoactorCanUseOwnedSyncProgressDuringActorTurn() throws Exception {
+        assertEquals("1",runAtto("""
                 import * as sync from "std/actor_sync";
                 define isoactor SyncWorker as
                   let int version;
