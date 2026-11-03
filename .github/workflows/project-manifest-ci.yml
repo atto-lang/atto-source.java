@@ -1,30 +1,47 @@
-name: Project manifest CI
+name: AttoLang canonical project-manifest CI
 
 on:
   push:
     branches:
       - feat/project-manifest-oreslang-path-20261003
+      - feat/attolang-canonical-source-import-manifest-20261103
   pull_request:
     paths:
+      - '.atto.pkg.toml'
       - '.oreslangc.cfg.toml'
+      - '**/*.atto'
       - 'contracts/oreslangc-config.*'
+      - 'examples/atto-canonical/**'
       - 'src/**'
+      - 'scripts/verify-atto-exact-head-source.sh'
       - 'pom.xml'
       - '.github/workflows/project-manifest-ci.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: graalvm/setup-graalvm@v1
+      - name: Checkout exact PR source without retaining credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
           java-version: '25'
-          distribution: 'graalvm'
+          distribution: graalvm
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
-      - name: Verify
-        run: mvn -B -ntp verify
+      - name: Maven project-manifest and linked guest verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp verify
+          echo 'ATTO_PROJECT_MANIFEST_MAVEN_VERIFY=PASS'
