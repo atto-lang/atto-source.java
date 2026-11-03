@@ -27,7 +27,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `84c2829aa3662e9bf5766c40102f7880bc244c68` and tree
   `4cc2363496f486349be87216cf02d7f7452642fb` are historical.
   On 2026-11-03, the **current proposed source PR head** is
-  `c7c6d253f550d0940ce8df0d929bc75f04c47385`, with full Git root tree `95d46b6543c906255bc599c0f04920ec71c5873f`.
+  `ec5651117764ae85630c91b7f768b54bf3e889c4`, with full Git root tree `7240b6f2914983c686ff1616006092fffc59ef02`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
@@ -48,7 +48,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `clean test`, `-DfailIfNoTests=true`, five nonempty JUnit XML reports,
   both critical actor guest testcases, and both concurrency race testcases.
   Source workflow blob `67b5dbf3f8e67c6d4e0543a5fca370338cf2555c`
-  is part of current source tree `95d46b6543c906255bc599c0f04920ec71c5873f`, not a
+  is part of current source tree `7240b6f2914983c686ff1616006092fffc59ef02`, not a
   carrier-workflow authorization. New source workflow
   [run 41588063452](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41588063452)
   was still queued when this packet was updated; its verdict is not
@@ -163,11 +163,35 @@ Related tracking:
 
 ## 2026-11-03 failed-suspension critical admission cleanup
 
-Latest Java source head: `c7c6d253f550d0940ce8df0d929bc75f04c47385`; exact full Git root tree:
-`95d46b6543c906255bc599c0f04920ec71c5873f`. `OresEvalRootNode.java` blob
+Latest Java source head: `ec5651117764ae85630c91b7f768b54bf3e889c4`; exact full Git root tree:
+`7240b6f2914983c686ff1616006092fffc59ef02`. `OresEvalRootNode.java` blob
 `78faa483ad79076a39d8f28244afe71bd35a449b` adds immediate
 ticket revocation when critical cleanup registration fails or
 `SourceTask.suspend` rejects an invalid second terminal step. The
 change prevents a failed scheduler transition from retaining a gate ticket,
 subject to actual compiler/guest regression execution. Neither source
 testing nor private-source export is authorized by this packet.
+
+## 2026-11-03 focused ticket-unwind regression evidence (source remains private)
+
+Current restricted Java source PR #2422 head `ec5651117764ae85630c91b7f768b54bf3e889c4`; root Git tree
+`7240b6f2914983c686ff1616006092fffc59ef02`. This head extracts the exact `SourceTask` critical orphan
+ticket revocation into a package-private `CriticalTicketCleanup` helper
+(blob `da1365b7d3e31fc831779a92b3c6e2016996e22e`).
+Four authored JUnit tests cover immediate release, queued cancellation,
+retired admission, and 256 promotion/cancellation races. The exact-head
+workflow requires their non-empty Surefire report and method case entries.
+
+A **local JDK 21 standalone harness** compiled the SHA-matched helper
+against separately authored local test doubles and passed **1,027
+scenarios** (3 cases + 1,024 racing iterations). This does **NOT**
+execute the repository's production `OresFuture`, `CriticalGate`,
+`SourceTask`, Maven, JUnit, guest code, or GraalVM AOT.
+
+Exact-head Java critical [run 41589835415](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41589835415),
+synthetic smoke [41589835505](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41589835505),
+and fast CI [41589835375](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41589835375)
+failed with `steps=null`. These are runner-admission failures, not
+executed source test results. Source protection, exact independent security
+approval, carrier review, and the zero-active-entry source allowlist
+remain hard gates. **NO PRIVATE SOURCE EXPORT IS AUTHORIZED.**
