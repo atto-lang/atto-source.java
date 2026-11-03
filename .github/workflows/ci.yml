@@ -96,7 +96,7 @@ jobs:
             esac
             out="/tmp/ores-testing-negative-${variant}.out"
             set +e
-            timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-negative-${variant}.ores" > "$out" 2>&1
+            timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-negative-${variant}.atto" > "$out" 2>&1
             result=$?
             set -e
             if [ "$result" -eq 0 ] || [ "$result" -eq 124 ] || [ "$result" -eq 137 ]; then
