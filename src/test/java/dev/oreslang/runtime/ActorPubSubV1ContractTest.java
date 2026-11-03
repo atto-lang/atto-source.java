@@ -14,6 +14,20 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(15)
 final class ActorPubSubV1ContractTest {
     @Test
+    void admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText() {
+        ActorEventBus.PublishReceipt legacy = new ActorEventBus.PublishReceipt(
+                0, 0, 0, 0, OresFuture.completed(java.util.List.of()));
+        assertEquals(0L, legacy.sequence());
+        assertEquals("0", legacy.sequenceUnsignedString());
+        assertEquals(0, legacy.accepted());
+
+        ActorEventBus.PublishReceipt maximum = new ActorEventBus.PublishReceipt(
+                0, 0, 0, 0, OresFuture.completed(java.util.List.of()), -1L);
+        assertEquals("18446744073709551615", maximum.sequenceUnsignedString(),
+                "unsigned u64 receipts must never round through signed decimal");
+    }
+
+    @Test
     void publisherNeedNotSubscribeAndSubscriberReceivesAcceptedEvent() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
