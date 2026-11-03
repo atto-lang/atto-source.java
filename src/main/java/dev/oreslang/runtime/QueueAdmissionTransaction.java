@@ -176,13 +176,14 @@ public final class QueueAdmissionTransaction<T> {
         Objects.requireNonNull(delivery, "delivery");
         Objects.requireNonNull(status, "status");
         if (delivery.owner != this || delivery.completed
-                || inFlight.remove(delivery.admissionId) != delivery) {
+                || inFlight.get(delivery.admissionId) != delivery) {
             throw new IllegalStateException(
                     "delivery is foreign, pending, or already completed");
         }
         if (delivery.generation != generation && !closed) {
             throw new IllegalStateException("delivery generation is no longer current");
         }
+        inFlight.remove(delivery.admissionId);
         delivery.completed = true;
         outstandingIngress--;
         // reservedCompletions is deliberately retained until the consumer
