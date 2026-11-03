@@ -546,7 +546,14 @@ public final class IncrementalCompiler {
                     ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                     : Path.of(raw).normalize();
             String candidate = normalizeUnitId(candidatePath.toString());
-            if (!available.contains(candidate) && !candidate.endsWith(".ores") && available.contains(candidate + ".ores")) {
+            if (!available.contains(candidate)
+                    && !candidate.endsWith(".atto") && !candidate.endsWith(".ores")
+                    && available.contains(candidate + ".atto")) {
+                candidate += ".atto";
+            } else if (!available.contains(candidate)
+                    && !candidate.endsWith(".atto") && !candidate.endsWith(".ores")
+                    && available.contains(candidate + ".ores")) {
+                // Keep legacy imports functioning during the AttoLang rename.
                 candidate += ".ores";
             }
             if (available.contains(candidate)) {
@@ -600,7 +607,8 @@ public final class IncrementalCompiler {
     private static String packageId(String unitId, Ast.Program program) {
         if (program.namespace() != null) return program.namespace();
         String id = unitId;
-        if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
+        if (id.endsWith(".atto")) id = id.substring(0, id.length() - ".atto".length());
+        else if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
         return id;
     }
 
