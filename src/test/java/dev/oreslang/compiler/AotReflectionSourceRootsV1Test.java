@@ -93,4 +93,55 @@ final class AotReflectionSourceRootsV1Test {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileAotReflectionTableV1(
                 PUBLIC_SOURCE, "example@revision1", List.of("x".repeat(513))));
     }
+    @Test
+    void namespacedAndImportedSourceMustNotForgeClosedTypeIdentities() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(PUBLIC_SOURCE);
+        var namespaced = new Ast.Program("different_namespace", checked.imports(), checked.modules());
+        assertThrows(IllegalArgumentException.class, () -> AotReflectionSourceRootsV1.lowerChecked(
+                namespaced, "example@revision1", List.of("__root__.Person")));
+
+        var foreignImport = new Ast.ImportDecl(Ast.ImportKind.CLASS, List.of("Alien"),
+                false, null, "+external/alien");
+        var imported = new Ast.Program(null, List.of(foreignImport), checked.modules());
+        assertThrows(IllegalArgumentException.class, () -> AotReflectionSourceRootsV1.lowerChecked(
+                imported, "example@revision1", List.of("__root__.Person")));
+    }
+
+    @Test
+    void rootedModuleAnnotationsAndContractsNeedExplicitIdentityResolution() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(PUBLIC_SOURCE);
+        Ast.ModuleDecl module = checked.modules().getFirst();
+        var tagged = new Ast.ModuleDecl(module.name(),
+                List.of(new Ast.Annotation("requires_resolution", List.of())),
+                List.of(), module.declarations());
+        var contracted = new Ast.ModuleDecl(module.name(), List.of(),
+                List.of(Ast.TypeRef.simple("UnresolvedContract")), module.declarations());
+        for (Ast.ModuleDecl unsafe : List.of(tagged, contracted)) {
+            assertThrows(IllegalArgumentException.class, () -> AotReflectionSourceRootsV1.lowerChecked(
+                    new Ast.Program(List.of(unsafe)), "example@revision1", List.of("__root__.Person")));
+        }
+    }
+
+    @Test
+    void unrootedClassesDoNotExpandOrPolluteEmittedMetadata() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(PUBLIC_SOURCE);
+        byte[] expected = AotReflectionSourceRootsV1.lowerChecked(
+                checked, "example@revision1", List.of("__root__.Person")).bytes();
+        var declarations = new java.util.ArrayList<Ast.Decl>(
+                checked.modules().getFirst().declarations());
+        for (int i = 0; i < 2048; i++) {
+            declarations.add(new Ast.ClassDecl("Unrooted" + i,
+                    Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                    List.of(), List.of(), List.of(), List.of(), null, List.of()));
+        }
+        var expanded = new Ast.Program(List.of(new Ast.ModuleDecl("__root__", declarations)));
+        assertArrayEquals(expected, AotReflectionSourceRootsV1.lowerChecked(
+                expanded, "example@revision1", List.of("__root__.Person")).bytes());
+        declarations.add(checked.modules().getFirst().declarations().stream()
+                .filter(d -> d instanceof Ast.ClassDecl).findFirst().orElseThrow());
+        var duplicate = new Ast.Program(List.of(new Ast.ModuleDecl("__root__", declarations)));
+        assertThrows(IllegalArgumentException.class, () -> AotReflectionSourceRootsV1.lowerChecked(
+                duplicate, "example@revision1", List.of("__root__.Person")));
+    }
+
 }
