@@ -89,6 +89,8 @@ public final class QueueAdmissionTransaction<T> {
     private final ArrayDeque<Delivery<T>> pending = new ArrayDeque<>();
     private final Map<Long, Delivery<T>> inFlight = new HashMap<>();
     private final ArrayDeque<Completion> completions = new ArrayDeque<>();
+    /** Bound on first successful admission; one ledger belongs to one actor incarnation. */
+    private ActorRuntime.ActorId queueOwner;
     private long generation = 1;
     private long nextAdmissionId = 1;
     private int outstandingIngress;
@@ -123,10 +125,12 @@ public final class QueueAdmissionTransaction<T> {
      * Lock order is lifecycleLock -> QueueCommandAuthority -> this monitor.
      */
     synchronized AdmissionResult<T> admitAuthorized(
+            ActorRuntime.ActorId queueActor,
             ActorRuntime.ActorId sender,
             long mailboxSequence,
             long expectedGeneration,
             T payload) {
+        Objects.requireNonNull(queueActor, "queueActor");
         Objects.requireNonNull(sender, "sender");
         Objects.requireNonNull(payload, "payload");
         if (closed) return rejected(AdmissionStatus.CLOSED);
@@ -139,12 +143,16 @@ public final class QueueAdmissionTransaction<T> {
         if (reservedCompletions >= completionCapacity) {
             return rejected(AdmissionStatus.COMPLETION_FULL);
         }
+        if (queueOwner != null && !queueOwner.equals(queueActor)) {
+            return rejected(AdmissionStatus.INVALID);
+        }
         long id = nextAdmissionId;
         if (id <= 0 || id == Long.MAX_VALUE) {
             closed = true;
             return rejected(AdmissionStatus.CLOSED);
         }
         nextAdmissionId = id + 1;
+        if (queueOwner == null) queueOwner = queueActor;
         Delivery<T> delivery = new Delivery<>(
                 this, id, generation, sender, mailboxSequence, payload);
         // Reserve both resources before publishing the delivery.
