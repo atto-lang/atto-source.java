@@ -267,4 +267,39 @@ final class HostSourceUnitIdsTest {
         assertTrue(denied.getMessage().contains("verified source ownership"),
                 denied::toString);
     }
+
+    @Test
+    void sourceReplacementAfterAdmissionCannotReuseOriginalLogicalIdentity() throws Exception {
+        Path original = temp.resolve("replace.atto");
+        Path oldInode = temp.resolve("old-replace.atto");
+        Files.writeString(original, "pub fnc answer() -> int { return 42; }");
+        OresProjectConfig project = OresProjectConfig.discover(original, Map.of());
+        HostSourceUnitIds.Admission admission = new HostSourceUnitIds.Admission();
+        String id = admission.id(original, project);
+        assertDoesNotThrow(() -> admission.verifyRead(original, project, id));
+
+        // Retain the original file object so the OS cannot immediately reuse
+        // its inode/file key when a replacement appears under the same name.
+        Files.move(original, oldInode);
+        Files.writeString(original, "pub fnc answer() -> int { return 123456789; }");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> admission.verifyRead(original, project, id));
+        assertTrue(denied.getMessage().contains("changed between admission"),
+                denied::toString);
+    }
+
+    @Test
+    void inPlaceSourceEditAfterAdmissionIsAlsoRejected() throws Exception {
+        Path original = temp.resolve("mutated.atto");
+        Files.writeString(original, "pub fnc answer() -> int { return 42; }");
+        OresProjectConfig project = OresProjectConfig.discover(original, Map.of());
+        HostSourceUnitIds.Admission admission = new HostSourceUnitIds.Admission();
+        String id = admission.id(original, project);
+
+        Files.writeString(original, "pub fnc answer() -> int { return 42123456789; }");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> admission.verifyRead(original, project, id));
+        assertTrue(denied.getMessage().contains("changed between admission"),
+                denied::toString);
+    }
 }
