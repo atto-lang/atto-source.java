@@ -52,6 +52,8 @@ final class ActorPubSubAdversarialAdmissionTest {
             CountDownLatch aReady = new CountDownLatch(1);
             CountDownLatch bReady = new CountDownLatch(1);
             CountDownLatch bChecked = new CountDownLatch(1);
+            CountDownLatch acceptedRead = new CountDownLatch(1);
+            AtomicReference<Long> acceptedSequence = new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
 
             ActorRuntime.ActorRef<String> a = runtime.spawnShared(() -> (message, context) -> {
@@ -76,11 +78,18 @@ final class ActorPubSubAdversarialAdmissionTest {
                         assertTrue(topic.subscribe().tryRead().isEmpty(),
                                 "rejected RELIABLE fanout must deliver to no subscribers");
                         bChecked.countDown();
+                    } else if ("readAccepted".equals(message)) {
+                        ActorEventBus.Event<String> accepted =
+                                topic.subscribe().tryRead().orElseThrow();
+                        assertEquals("accepted", accepted.value());
+                        acceptedSequence.set(accepted.sequence());
+                        acceptedRead.countDown();
                     }
                 } catch (Throwable problem) {
                     failure.compareAndSet(null, problem);
                     bReady.countDown();
                     bChecked.countDown();
+                    acceptedRead.countDown();
                 }
             });
 
@@ -104,8 +113,17 @@ final class ActorPubSubAdversarialAdmissionTest {
 
             assertTrue(waiting.completion().cancel(false));
             a.stop();
-            b.stop();
             assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+            // No subscriber receives the rejected publication, and its
+            // attempt must not burn a topic-local sequence number.
+            assertTrue(group.events().publishSystem("atomic", "accepted")
+                    .completion().isDone());
+            b.send("readAccepted");
+            assertTrue(acceptedRead.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(3L, acceptedSequence.get(),
+                    "rejected RELIABLE fanout must not consume sequence 3");
+            b.stop();
             assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0L, runtime.sharedMemoryBytes(),
                     "failed admission, cancellation, and retirement must release frozen events");
