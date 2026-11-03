@@ -161,6 +161,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isProtectedDeclarationHead()) {
+                    rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
+                    continue;
+                }
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
@@ -383,6 +387,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isProtectedDeclarationHead()) {
+                return parseProtectedDeclaration(modifiers, annotations);
+            }
             rejectUnloweredRuntimeEntityDeclaration();
             ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
@@ -836,6 +843,98 @@ public final class Parser {
         return parseActorClass(kind, modifiers.visibility, prefix);
     }
 
+    /** Preserve first-class syntax; executable lowering stays type-gated. */
+    private boolean isProtectedDeclarationHead() {
+        if (current + 1 >= tokens.size()) return false;
+        return (isContextualIdentifier("state")
+                    && tokens.get(current + 1).lexeme().equals("container"))
+                || (isContextualIdentifier("virtual")
+                    && tokens.get(current + 1).type() == ACTOR);
+    }
+
+    private Ast.Decl parseProtectedDeclaration(
+            Modifiers modifiers, List<Ast.Annotation> annotations) {
+        validateOnlyVisibilityModifiers(modifiers, "protected declarations");
+        rejectCallableStructuralAnnotation(annotations, "protected declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "protected declarations");
+        boolean virtualActor = isContextualIdentifier("virtual");
+        if (virtualActor) {
+            consumeContextualIdentifier("virtual", "expected virtual");
+            consume(ACTOR, "expected actor after virtual");
+        } else {
+            consumeContextualIdentifier("state", "expected state");
+            consumeContextualIdentifier("container", "expected container after state");
+        }
+        String name = consume(IDENT, "expected protected declaration name").lexeme();
+        consume(AS, "protected declarations require 'as'");
+        consumeContextualIdentifier("state", "expected sealed state block");
+        consume(LBRACE, "expected '{' after state");
+        List<Ast.ProtectedStateField> fields = new ArrayList<>();
+        java.util.HashSet<String> fieldNames = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            consume(LET, "sealed state fields must begin with 'let'");
+            Ast.TypeRef type = parseTypeRef();
+            String field = consume(IDENT, "expected sealed state field name").lexeme();
+            consume(COLON, "sealed state field requires ':' initializer");
+            Ast.Expr initial = parseExpression();
+            consume(SEMICOLON, "sealed state field requires ';'");
+            if (!fieldNames.add(field))
+                throw error(previous(), "duplicate protected state field '" + field + "'");
+            fields.add(new Ast.ProtectedStateField(field, type, initial));
+            if (fields.size() > 128)
+                throw error(previous(), "protected state field budget exceeded (128)");
+        }
+        consume(RBRACE, "expected '}' after sealed state");
+        List<Ast.ProtectedMethod> methods = new ArrayList<>();
+        java.util.HashSet<String> methodsSeen = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            String method = consume(IDENT, "expected protected method name").lexeme();
+            consume(LPAREN, "expected '(' after protected method name");
+            List<Ast.Param> parameters = new ArrayList<>();
+            java.util.HashSet<String> parameterNames = new java.util.HashSet<>();
+            if (!check(RPAREN)) {
+                do {
+                    Ast.TypeRef type = parseTypeRef();
+                    String parameter = consume(IDENT, "expected protected method parameter").lexeme();
+                    if (!parameterNames.add(parameter))
+                        throw error(previous(), "duplicate protected parameter '" + parameter + "'");
+                    parameters.add(new Ast.Param(type, parameter));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after protected method parameters");
+            consume(ARROW, "protected method return type requires '->'");
+            Ast.TypeRef result = parseTypeRef();
+            consume(DOUBLE_COLON, "protected method body requires '::'");
+            List<String> body = new ArrayList<>();
+            int braceDepth = 0;
+            while (!check(EOF)) {
+                if (check(END) && braceDepth == 0) break;
+                if (check(DEFINE) || check(MODULE) || check(CLASS))
+                    throw error(peek(), "nested declarations are forbidden in protected methods");
+                Token t = advance();
+                if (t.type() == LBRACE) braceDepth++;
+                if (t.type() == RBRACE && --braceDepth < 0)
+                    throw error(t, "unbalanced protected method body braces");
+                body.add(t.lexeme());
+                if (body.size() > 1024)
+                    throw error(t, "protected method token budget exceeded (1024)");
+            }
+            if (braceDepth != 0 || body.isEmpty())
+                throw error(peek(), "unterminated or empty protected method body");
+            consume(END, "expected 'end' after protected method");
+            String methodIdentity = method + "/" + parameters.size();
+            if (!methodsSeen.add(methodIdentity))
+                throw error(previous(), "duplicate protected method name/arity '" + methodIdentity + "'");
+            methods.add(new Ast.ProtectedMethod(method, parameters, result, body));
+            if (methods.size() > 64)
+                throw error(previous(), "protected method budget exceeded (64)");
+        }
+        consume(END, "expected 'end' after protected declaration");
+        if (virtualActor)
+            return new Ast.VirtualActorDecl(name, modifiers.visibility, fields, methods);
+        return new Ast.StateContainerDecl(name, modifiers.visibility, fields, methods);
+    }
+
     /**
      * Do not treat supervision, proxying, scheduling or mail routing as a
      * class/actor alias before compiler-enforced CONTROL, isolation and
@@ -844,6 +943,22 @@ public final class Parser {
     private void rejectUnloweredRuntimeEntityDeclaration() {
         if (check(EOF)) return;
         String name = peek().lexeme();
+        // Reserve the two-word declaration heads without mislowering them as
+        // ordinary actor/class declarations. These are contextual identifiers,
+        // so 'state' and 'virtual' remain valid names outside declaration heads.
+        if (current + 1 < tokens.size()) {
+            Token next = tokens.get(current + 1);
+            if (name.equals("state") && next.lexeme().equals("container")) {
+                throw error(peek(), "source state container declarations require "
+                        + "compiler-checked protected-heap ownership, critical access "
+                        + "and cross-backend lowering; not yet enabled");
+            }
+            if (name.equals("virtual") && next.type() == ACTOR) {
+                throw error(peek(), "source virtual actor declarations require "
+                        + "compiler-checked stable logical identity, activation fencing "
+                        + "and cross-backend lowering; not yet enabled");
+            }
+        }
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
             if (current + 2 < tokens.size()

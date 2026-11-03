@@ -47,7 +47,8 @@ public final class TypeChecker {
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
-            "Channel", "Future", "Fnc", "Function");
+            "Channel", "Future", "Fnc", "Function",
+            "HttpClientResponse", "HttpClientBody");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -158,6 +159,18 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "checked exceptional effect on function '" + fn.name()
                                     + "' is parsed but not yet enabled for type checking");
+                }
+                if (declaration instanceof Ast.StateContainerDecl state) {
+                    throw new IllegalArgumentException(
+                            "STATE_CONTAINER_MIR_UNSUPPORTED: '" + state.name()
+                                    + "' is parsed with sealed state metadata but requires "
+                                    + "checked ownership and critical read/write MIR lowering");
+                }
+                if (declaration instanceof Ast.VirtualActorDecl actor) {
+                    throw new IllegalArgumentException(
+                            "VIRTUAL_ACTOR_MIR_UNSUPPORTED: '" + actor.name()
+                                    + "' is parsed with logical identity metadata but requires "
+                                    + "fenced activation, scheduler and CONTROL MIR lowering");
                 }
                 if (declaration instanceof Ast.ClassDecl klass) {
                     rejectUnloweredCheckedClassEffects(klass);
@@ -329,6 +342,7 @@ public final class TypeChecker {
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
+                "HttpClientResponse", "HttpClientBody",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -339,9 +353,10 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
                 else if (declaration instanceof Ast.ClassDecl klass) {
-                    if (klass.name().equals("HttpResponse")) {
+                    if (Set.of("HttpResponse", "HttpClientResponse", "HttpClientBody")
+                            .contains(klass.name())) {
                         throw new IllegalArgumentException(
-                                "HttpResponse is a sealed transport response type; user classes cannot shadow it");
+                                klass.name() + " is a sealed HTTP transport type; user classes cannot shadow it");
                     }
                     localNames.add(klass.name());
                 }
@@ -5575,19 +5590,6 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
-        if (named.name().equals("fs") || named.name().equals("File")) {
-            Type string = Primitive.STRING;
-            Type booleanType = Primitive.BOOL;
-            switch (name) {
-                case "list_dir": return new Function(List.of(string), new ListType(string));
-                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
-                case "read_text": return new Function(List.of(string), string);
-                case "write_text", "write_text_atomic", "append_text":
-                    return new Function(List.of(string, string), Primitive.VOID);
-                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
-                default: break;
-            }
-        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -5601,29 +5603,63 @@ public final class TypeChecker {
         switch (named.name()) {
             case "fs", "File" -> {
                 switch (name) {
-                    case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
-                    case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "read_text", "read_text_blocking" -> {
+                        result = Primitive.STRING; parameters = List.of(Primitive.STRING);
+                    }
+                    case "exists", "exists_blocking", "is_dir", "is_dir_blocking",
+                            "is_symlink", "is_symlink_blocking" -> {
+                        result = Primitive.BOOL; parameters = List.of(Primitive.STRING);
+                    }
+                    case "list_dir", "list_dir_blocking" -> {
+                        result = new ListType(Primitive.STRING);
+                        parameters = List.of(Primitive.STRING);
+                    }
+                    case "write_text", "write_text_blocking",
+                            "write_text_atomic", "write_text_atomic_blocking",
+                            "append_text", "append_text_blocking" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
+                    case "remove", "remove_blocking", "mkdir_all", "mkdir_all_blocking" -> {
+                        result = Primitive.VOID; parameters = List.of(Primitive.STRING);
+                    }
                     default -> { return null; }
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect_async")) return null;
+                if (!name.equals("connect") && !name.equals("connect_blocking")) return null;
                 result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "TcpConnection" -> {
                 switch (name) {
-                    case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
-                    case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    case "read_line", "read_line_blocking" -> {
+                        result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of();
+                    }
+                    case "write_text", "write_text_blocking" -> {
+                        result = Primitive.VOID; parameters = List.of(Primitive.STRING);
+                    }
+                    case "close", "close_blocking" -> { result = Primitive.VOID; parameters = List.of(); }
                     default -> { return null; }
                 }
             }
             case "http" -> {
                 switch (name) {
-                    case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "get_text", "get_text_blocking" -> {
+                        result = Primitive.STRING; parameters = List.of(Primitive.STRING);
+                    }
+                    case "post_text", "post_text_blocking" -> {
+                        result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
+                    case "request" -> {
+                        result = new Named("HttpClientResponse", List.of());
+                        Type header = new Tuple(
+                                List.of(Primitive.STRING, Primitive.STRING),
+                                TupleKind.TUPLE);
+                        parameters = List.of(
+                                Primitive.STRING,
+                                Primitive.STRING,
+                                new ListType(header));
+                    }
                     default -> { return null; }
                 }
             }
@@ -5658,6 +5694,34 @@ public final class TypeChecker {
                 case "accept" -> new Function(List.of(), new Named("Future", List.of(exchange)));
                 case "shutdown" -> new Function(List.of(Primitive.INT), voidFuture);
                 default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
+            };
+            case "HttpClientResponse" -> switch (name) {
+                case "status", "header_count" -> Primitive.INT;
+                case "header_name_at", "header_value_at" ->
+                        new Function(List.of(Primitive.INT), Primitive.STRING);
+                case "header_values" ->
+                        new Function(
+                                List.of(Primitive.STRING),
+                                new ListType(Primitive.STRING));
+                case "take_body" ->
+                        new Function(
+                                List.of(),
+                                new Named("HttpClientBody", List.of()));
+                case "close" -> new Function(List.of(), voidFuture);
+                default -> throw new IllegalArgumentException(
+                        "unknown HttpClientResponse member " + name);
+            };
+            case "HttpClientBody" -> switch (name) {
+                case "closed" -> Primitive.BOOL;
+                case "read_chunk" ->
+                        new Function(
+                                List.of(Primitive.INT),
+                                new Named(
+                                        "Future",
+                                        List.of(new ListType(Primitive.INT))));
+                case "close" -> new Function(List.of(), voidFuture);
+                default -> throw new IllegalArgumentException(
+                        "unknown HttpClientBody member " + name);
             };
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
@@ -5822,6 +5886,7 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+                || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")

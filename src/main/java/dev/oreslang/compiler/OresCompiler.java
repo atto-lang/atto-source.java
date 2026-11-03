@@ -11,6 +11,16 @@ import dev.oreslang.types.OwnershipChecker;
 public final class OresCompiler {
     private OresCompiler() { }
 
+    /**
+     * Opt-in first protected-state MIR slice. This executes the production
+     * parser first, then admits only one verified i64 state-root region.
+     * It does NOT bypass or relax ordinary TypeChecker/OwnershipChecker
+     * admission for general compilation and does not claim native AOT.
+     */
+    public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(String source) {
+        return ProtectedScalarMirV1.lower(Parser.parse(source));
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }

@@ -42,6 +42,29 @@ public final class OresContext implements AutoCloseable {
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    private final OutboundEgressPolicy.Policy outboundHttpPolicy =
+            OutboundEgressPolicy.Policy.loopbackOnly();
+    private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
+            new PinnedHttpTransport.ConnectionBudget(
+                    outboundHttpPolicy.limits());
+    private BoundedDnsResolver outboundDnsResolver;
+
+    OutboundEgressPolicy.Policy outboundHttpPolicy() {
+        return outboundHttpPolicy;
+    }
+
+    PinnedHttpTransport.ConnectionBudget outboundHttpBudget() {
+        return outboundHttpBudget;
+    }
+
+    synchronized BoundedDnsResolver outboundDnsResolver() {
+        if (outboundDnsResolver == null) {
+            outboundDnsResolver = BoundedDnsResolver.system(
+                    nativeIo,
+                    outboundHttpPolicy.limits().connectTimeout());
+        }
+        return outboundDnsResolver;
+    }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 

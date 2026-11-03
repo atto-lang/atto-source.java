@@ -55,7 +55,58 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    /**
+     * Protected declarations deliberately are NOT ordinary class/actor nodes.
+     * A separate typed lowering gate must prove state ownership, guarded
+     * effects, and for virtual actors logical-identity incarnation fencing.
+     */
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+
+    public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
+        public ProtectedStateField {
+            java.util.Objects.requireNonNull(name, "state field name");
+            java.util.Objects.requireNonNull(type, "state field type");
+            java.util.Objects.requireNonNull(initializer, "state field initializer");
+        }
+    }
+
+    /**
+     * Lexically captured method bodies are intentionally opaque to the normal
+     * expression binder until protected-state MIR is implemented. No tokens
+     * may be discarded, lowered as an ordinary class, or executed from here.
+     */
+    public record ProtectedMethod(String name, List<Param> parameters,
+                                  TypeRef returnType, List<String> bodyTokens) {
+        public ProtectedMethod {
+            java.util.Objects.requireNonNull(name, "method name");
+            java.util.Objects.requireNonNull(returnType, "return type");
+            parameters = List.copyOf(parameters);
+            bodyTokens = List.copyOf(bodyTokens);
+        }
+    }
+
+    public record StateContainerDecl(String name, Visibility visibility,
+                                     List<ProtectedStateField> stateFields,
+                                     List<ProtectedMethod> methods) implements Decl {
+        public StateContainerDecl {
+            java.util.Objects.requireNonNull(name, "container name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+    public record VirtualActorDecl(String name, Visibility visibility,
+                                   List<ProtectedStateField> stateFields,
+                                   List<ProtectedMethod> methods) implements Decl {
+        public VirtualActorDecl {
+            java.util.Objects.requireNonNull(name, "virtual actor name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }

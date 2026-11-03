@@ -1,4 +1,8 @@
-# Oreslang
+# AttoLang Java/GraalVM reference backend
+
+AttoLang is the current public language name (formerly Oreslang). This repository remains the Java/Truffle reference compiler and runtime. Existing Java packages, `oreslang` compiler paths, `.ores` fixtures and external interfaces remain compatible during the rename. New `.atto` acceptance must be demonstrated by real parser/compiler and execution tests, not this README update.
+
+Use [AttoLang Brand Compatibility v1](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/contracts/v1/attolang-brand-compat-v1.json) as the migration policy. Do not rename repository paths, package coordinates, command names, ABI or wire-format identifiers as part of a branding-only change.
 
 Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
@@ -6,6 +10,8 @@ This repository contains the Java/Truffle reference implementation. The LLVM ver
 
 Do not use python for anything, use Rust instead of python to support the language.
 
+
+**Experimental declaration substrates:** [State container and virtual actor VM admission](docs/STATE_CONTAINER_VIRTUAL_ACTOR_SUBSTRATES.md). Guest `define state container` and `define virtual actor` are not yet compiled; this implementation currently supplies bounded access and activation capability primitives with distinct fail-closed parser diagnostics. Do not treat this as runtime parity.
 
 Notes on the compiler and runtime:
 

@@ -374,6 +374,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "identity/state"):
                     pub.checked_repo("trusted/ci", 246810)
 
+    def test_empty_reviewed_allowlist_denies_candidate_carriers(self):
+        policy = b"""# Private CI destinations explicitly approved for source transfers.
+# No repositories are approved by default.
+"""
+        for candidate in (
+            "opto-sync-test/go-java-validation",
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+        ):
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(
+                    pub.Denied, "destination approval was revoked or absent"
+                ):
+                    pub._parse_policy_approval(
+                        policy, candidate, "private CI approval policy"
+                    )
+
     def test_preflight_treats_checkout_guard_as_data_only(self):
         digest = b"x" * 32
         with (
@@ -1314,6 +1330,64 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+
+    def test_complete_blocking_incident_registry_includes_all_known_carrier_incidents(self):
+        expected = {
+            22: 5832921751,
+            77: 5904679716,
+            127: 5935338521,
+            171: 6042555082,
+            172: 6042602777,
+            198: 6070465058,
+            200: 6071264936,
+        }
+        self.assertEqual(pub.BLOCKING_INCIDENT_IDS, expected)
+        self.assertEqual(pub.BLOCKING_INCIDENTS, tuple(expected))
+
+    def test_all_quarantined_repository_ids_reject_slug_rename(self):
+        expected_ids = {
+            1323575966,
+            1323598260,
+            1412142815,
+            1370782550,
+            1324139596,
+            1350751074,
+        }
+        self.assertEqual(set(pub.QUARANTINED_DESTINATION_IDS), expected_ids)
+        for repository_id in sorted(expected_ids):
+            metadata = {
+                "id": repository_id,
+                "full_name": "renamed-owner/renamed-carrier",
+                "visibility": "private",
+                "private": True,
+                "archived": False,
+                "disabled": False,
+                "fork": False,
+                "default_branch": "main",
+            }
+            with self.subTest(repository_id=repository_id):
+                with patch.object(pub, "gh_api", return_value=metadata):
+                    with self.assertRaisesRegex(
+                        pub.Denied, "repository ID is quarantined"
+                    ):
+                        pub.checked_repo(
+                            "renamed-owner/renamed-carrier", repository_id
+                        )
+
+    def test_quarantined_destination_slugs_are_case_insensitive(self):
+        expected = {
+            "zed-pkg-test/java-app",
+            "scintilla-run-test/gleam-runner-conformance",
+            "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
+            "agent-pontifex-test/agent-pontifex-e2e-tests",
+            "led-dynamo/leddy-e2e",
+            "claimgraph-test/claimgraph-e2e",
+        }
+        self.assertEqual(
+            {item.casefold() for item in pub.QUARANTINED_DESTINATIONS},
+            expected,
+        )
 
 
 if __name__ == "__main__":
