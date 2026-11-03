@@ -147,6 +147,16 @@ public final class OresCompiler {
     }
 
     /**
+     * Compiler-only typed MIR from the strict single-return descriptor subset.
+     * This does not admit type_of<T>() in ordinary guest compilation and does
+     * not emit JVM bytecode, native objects or runnable AttoLang binaries.
+     */
+    public static AotReflectionTypedMirV1.Plan lowerAotReflectionTypedMirV1(
+            String guestSource, String packageIdentityClaim) {
+        return AotReflectionTypedMirV1.lowerSource(guestSource, packageIdentityClaim);
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
