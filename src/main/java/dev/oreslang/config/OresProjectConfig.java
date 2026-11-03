@@ -1,6 +1,7 @@
 package dev.oreslang.config;
 
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.runtime.BoundedSourceReader;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
@@ -9,6 +10,7 @@ import org.tomlj.TomlTable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -102,7 +104,11 @@ public final class OresProjectConfig {
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
             Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            // NOFOLLOW detection is necessary: a dangling/symlinked
+            // canonical manifest must fail, not downgrade to a legacy file.
+            if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                return load(candidate, environment);
+            }
             // Migration fallback only. A same-directory .atto.pkg.toml wins.
             Path legacy = cursor.resolve(LEGACY_MANIFEST_NAME);
             if (Files.isRegularFile(legacy)) return load(legacy, environment);
@@ -126,11 +132,26 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(absoluteManifest)) {
+        boolean canonicalAttoManifest = absoluteManifest.getFileName() != null
+                && absoluteManifest.getFileName().toString().equals(MANIFEST_NAME);
+        if (canonicalAttoManifest && !Files.isRegularFile(
+                absoluteManifest, LinkOption.NOFOLLOW_LINKS)) {
+            throw new SecurityException(
+                    "canonical AttoLang package manifest must be a regular non-symlink file: "
+                            + absoluteManifest);
+        }
+        if (!canonicalAttoManifest && !Files.isRegularFile(absoluteManifest)) {
             throw new IllegalArgumentException("not an AttoLang project manifest: " + absoluteManifest);
         }
 
-        TomlParseResult toml = Toml.parse(absoluteManifest);
+        // The canonical manifest is security-critical compiler input. Its
+        // entire ancestor chain is held by pinned NOFOLLOW directory handles
+        // through the bounded UTF-8 read. Never fall back to a legacy sibling
+        // after this parser reports an error.
+        TomlParseResult toml = canonicalAttoManifest
+                ? Toml.parse(BoundedSourceReader.readPinnedAttoManifestUtf8(
+                        absoluteManifest, 64 * 1024))
+                : Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
                     "invalid " + absoluteManifest.getFileName() + ": " + toml.errors().getFirst());
