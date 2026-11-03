@@ -37,4 +37,16 @@ final class AotReflectionTableV1Test {
             throw new AssertionError("closed-world descriptor lookup must resolve a retained nominal type");
         }
     }
+
+    @Test
+    void rejectsOversizedResolvedTypeCollectionsBeforeDefensiveCopy() {
+        var publicField = new AotReflectionTableV1.Field(
+                "f", "int", AotReflectionTableV1.Visibility.PUBLIC);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new AotReflectionTableV1.ResolvedType("pkg@revision", "N",
+                        java.util.Collections.nCopies(65, "int"), java.util.List.of()));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new AotReflectionTableV1.ResolvedType("pkg@revision", "N",
+                        java.util.List.of(), java.util.Collections.nCopies(257, publicField)));
+    }
 }
