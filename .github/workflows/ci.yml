@@ -60,28 +60,28 @@ jobs:
       - name: Run native Oreslang test framework
         run: |
           set -euo pipefail
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.ores"
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_regressions.ores" | tee /tmp/ores-harness-regressions-jit.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.atto"
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_regressions.atto" | tee /tmp/ores-harness-regressions-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-regressions-jit.out native-testing-core 30 tests/test_std_harness_regressions.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_scalar_parity_batch4.ores" | tee /tmp/ores-harness-scalar-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_scalar_parity_batch4.atto" | tee /tmp/ores-harness-scalar-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-jit.out compiler-scalar-parity-batch4 24 tests/test_std_harness_scalar_parity_batch4.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_meta_batch4.ores" | tee /tmp/ores-harness-meta-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_meta_batch4.atto" | tee /tmp/ores-harness-meta-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-jit.out harness-meta-batch4 12 tests/test_std_harness_meta_batch4.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_accounting_batch5.ores" | tee /tmp/ores-accounting-batch5-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_accounting_batch5.atto" | tee /tmp/ores-accounting-batch5-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-jit.out harness-accounting-batch5 16 tests/test_std_harness_accounting_batch5.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v2-20261101.ores" | tee /tmp/ores-portable-scalar-v2-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v2-20261101.atto" | tee /tmp/ores-portable-scalar-v2-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v2-jit.out portable-scalar-v2 10 tests/portable-scalar-v2.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.ores" | tee /tmp/ores-portable-scalar-v3-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.atto" | tee /tmp/ores-portable-scalar-v3-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-jit.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.ores" | tee /tmp/ores-regressions-40-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.atto" | tee /tmp/ores-regressions-40-jit.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-jit.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
-          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.ores" | tee /tmp/ores-runner-matrix-jit.out
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.atto" | tee /tmp/ores-runner-matrix-jit.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-jit.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-jit.out)" -eq 1
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/ores-testing-jit.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.atto" | tee /tmp/ores-testing-jit.out
           grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-jit.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-jit.out)" -eq 1
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.atto" | tee /tmp/ores-testing-semantics-jit.out
           grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
           grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-jit.out)" -eq 2
@@ -173,26 +173,26 @@ jobs:
       - name: Run native Oreslang tests under AOT
         run: |
           set -euo pipefail
-          ./target/ores-aot --mode=aot --platform=linux examples/native-testing-harness-guards.ores
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_regressions.ores | tee /tmp/ores-harness-regressions-aot.out
+          ./target/ores-aot --mode=aot --platform=linux examples/native-testing-harness-guards.atto
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_regressions.atto | tee /tmp/ores-harness-regressions-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-regressions-aot.out native-testing-core 30 tests/test_std_harness_regressions.expected-ids.txt
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_scalar_parity_batch4.ores | tee /tmp/ores-harness-scalar-aot.out
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_scalar_parity_batch4.atto | tee /tmp/ores-harness-scalar-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-aot.out compiler-scalar-parity-batch4 24 tests/test_std_harness_scalar_parity_batch4.expected-ids.txt
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_meta_batch4.ores | tee /tmp/ores-harness-meta-aot.out
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_meta_batch4.atto | tee /tmp/ores-harness-meta-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-aot.out harness-meta-batch4 12 tests/test_std_harness_meta_batch4.expected-ids.txt
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_accounting_batch5.ores | tee /tmp/ores-accounting-batch5-aot.out
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/test_std_harness_accounting_batch5.atto | tee /tmp/ores-accounting-batch5-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-aot.out harness-accounting-batch5 16 tests/test_std_harness_accounting_batch5.expected-ids.txt
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/portable-scalar-v3-20261101.ores | tee /tmp/ores-portable-scalar-v3-aot.out
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux tests/portable-scalar-v3-20261101.atto | tee /tmp/ores-portable-scalar-v3-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-aot.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-aot.out
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-regressions-40.atto | tee /tmp/ores-regressions-40-aot.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-aot.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
-          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-aot.out
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-testing-runner-matrix.atto | tee /tmp/ores-runner-matrix-aot.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-aot.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-aot.out)" -eq 1
-          ./target/ores-aot --mode=aot --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-aot.out
+          ./target/ores-aot --mode=aot --platform=linux examples/native-testing.atto | tee /tmp/ores-testing-aot.out
           grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-aot.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-aot.out)" -eq 1
-          ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
+          ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.atto | tee /tmp/ores-testing-semantics-aot.out
           grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
           grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-aot.out)" -eq 2
@@ -295,26 +295,26 @@ jobs:
       - name: Run native Oreslang tests under hybrid host
         run: |
           set -euo pipefail
-          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-harness-guards.ores
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_regressions.ores | tee /tmp/ores-harness-regressions-hybrid.out
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-harness-guards.atto
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_regressions.atto | tee /tmp/ores-harness-regressions-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-regressions-hybrid.out native-testing-core 30 tests/test_std_harness_regressions.expected-ids.txt
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_scalar_parity_batch4.ores | tee /tmp/ores-harness-scalar-hybrid.out
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_scalar_parity_batch4.atto | tee /tmp/ores-harness-scalar-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-hybrid.out compiler-scalar-parity-batch4 24 tests/test_std_harness_scalar_parity_batch4.expected-ids.txt
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_meta_batch4.ores | tee /tmp/ores-harness-meta-hybrid.out
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_meta_batch4.atto | tee /tmp/ores-harness-meta-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-hybrid.out harness-meta-batch4 12 tests/test_std_harness_meta_batch4.expected-ids.txt
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_accounting_batch5.ores | tee /tmp/ores-accounting-batch5-hybrid.out
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/test_std_harness_accounting_batch5.atto | tee /tmp/ores-accounting-batch5-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-hybrid.out harness-accounting-batch5 16 tests/test_std_harness_accounting_batch5.expected-ids.txt
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/portable-scalar-v3-20261101.ores | tee /tmp/ores-portable-scalar-v3-hybrid.out
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux tests/portable-scalar-v3-20261101.atto | tee /tmp/ores-portable-scalar-v3-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-hybrid.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-regressions-40.ores | tee /tmp/ores-regressions-40-hybrid.out
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-regressions-40.atto | tee /tmp/ores-regressions-40-hybrid.out
           bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-hybrid.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
-          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-runner-matrix.ores | tee /tmp/ores-runner-matrix-hybrid.out
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-runner-matrix.atto | tee /tmp/ores-runner-matrix-hybrid.out
           grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-hybrid.out
           test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-hybrid.out)" -eq 1
-          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-hybrid.out
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.atto | tee /tmp/ores-testing-hybrid.out
           grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-hybrid.out)" -eq 1
-          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
+          ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.atto | tee /tmp/ores-testing-semantics-hybrid.out
           grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
           grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
           test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/ores-testing-semantics-hybrid.out)" -eq 2
