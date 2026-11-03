@@ -60,6 +60,24 @@ to capture that readonly parameter in an independent Task or publish
 it via `rt share`. The intended failure is the ownership boundary,
 not parser rejection.
 
+## Scoped Task READ requires two independent proofs
+
+The general `TypeAutoTraits` table models possible Send/Sync/Share
+capabilities, including synchronization supplied by an owning
+`SharedMutex<T>` handle. That **does not** establish an audited borrowed
+reference lifetime or executable cross-thread `Sync` proof. The scoped
+Task READ authority additionally requires `ThreadSafetyTraits.SYNC`
+to pass with no nominal override. This denies general-Sync wrappers
+(`SharedMutex`, `ActorRef`, `Arc`, `Weak`, `Box`, and compositions)
+while their runtime borrowing/identity proof is unresolved. Immutable
+scalar tuples still pass. This does not remove owned synchronized handles
+or prevent legal `SharedMutex` operations; it prevents using a broader
+trait result to forge the narrower unguarded scoped READ exception.
+
+The extra gate is deliberately fail-closed. Lifting it for a wrapper
+requires a verified runtime lowering, allocation/lifetime and lane
+proof, not only changing the static classifier.
+
 ## Exact-head merge verification
 
 Run the **unmodified** branch source with JDK 21 or newer:
