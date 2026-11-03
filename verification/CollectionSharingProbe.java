@@ -116,6 +116,38 @@ public final class CollectionSharingProbe {
           return;
         }
         """, "rt share");
+    // Some handle/wrapper shapes are generally Sync-capable, but a scoped
+    // cross-thread READ loan must not bypass the independent runtime proof.
+    var handle = new Types.Named("SharedMutex", List.of(scalar));
+    for (Types.Type referent : List.of(
+        handle,
+        new Types.Named("Option", List.of(handle)),
+        new Types.Named("Result", List.of(scalar, handle)),
+        new Types.Named("ActorRef", List.of(scalar)),
+        new Types.Named("Arc", List.of(scalar)),
+        new Types.Named("Weak", List.of(scalar)),
+        new Types.Named("Box", List.of(scalar)))) {
+      require(TypeAutoTraits.inferClosed(referent).sync(), "expected general Sync");
+      require(!ThreadSafetyTraits.has(referent,
+          ThreadSafetyTraits.Trait.SYNC, (named, trait)->false),
+          "unverified wrapper acquired runtime Sync proof");
+      try {
+        ScopedTaskReadAuthority.freezeForOwnershipCheck(program, task, 991,
+            new ScopedTaskReadAuthority.AllocationIdentity("PROCESS", "root", 27, 1, true),
+            List.of(), referent);
+        throw new AssertionError("unverified wrapper minted scoped READ proof");
+      } catch (IllegalArgumentException e) {
+        require(e.getMessage().contains("verified Sync"), e.getMessage());
+      }
+    }
+    // Immutable inline scalar tuples retain the verified fast path.
+    var tuple = new Types.Tuple(List.of(scalar));
+    require(ThreadSafetyTraits.has(tuple,
+        ThreadSafetyTraits.Trait.SYNC, (named, trait)->false),
+        "lost verified immutable tuple proof");
+    require(ScopedTaskReadAuthority.freezeForOwnershipCheck(program, task, 991,
+        new ScopedTaskReadAuthority.AllocationIdentity("PROCESS", "root", 27, 1, true),
+        List.of(), tuple) != null, "lost scalar tuple READ admission");
     System.out.println("PASS: " + checks + " collection sharing / scoped READ / frontend checks");
   }
 }
