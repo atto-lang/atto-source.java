@@ -74,6 +74,28 @@ public final class MacroSourceUnitIdentity {
         if (unitId.equals(MEMORY_UNIT)) return MEMORY_UNIT;
 
         String logical = unitId.replace('\\', '/');
+        // Validate the entire original spelling, including segments later
+        // eliminated by dot-normalization. Source IDs are provenance keys and
+        // must never contain control, spoofing or malformed Unicode payloads.
+        for (int i = 0; i < logical.length(); i++) {
+            char c = logical.charAt(i);
+            if (c == ':' || Character.isISOControl(c)
+                    || Character.getType(c) == Character.FORMAT
+                    || Character.getType(c) == Character.LINE_SEPARATOR
+                    || Character.getType(c) == Character.PARAGRAPH_SEPARATOR) {
+                throw new IllegalArgumentException(
+                        "macro source-unit identity contains non-portable or control characters");
+            }
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= logical.length() || !Character.isLowSurrogate(logical.charAt(i))) {
+                    throw new IllegalArgumentException(
+                            "macro source-unit identity contains malformed UTF-16");
+                }
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException(
+                        "macro source-unit identity contains malformed UTF-16");
+            }
+        }
         if (logical.startsWith("/")
                 || logical.matches("^[A-Za-z]:/.*")) {
             throw new IllegalArgumentException(
