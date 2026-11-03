@@ -117,6 +117,31 @@ public final class SharedReactorPoolCheck {
             pool.close(); check(slices.get() >= 64);
             check(io.polls.size() == 1 && io.executions.equals(io.polls));
         }
+        // Fault-injected reactor must seal admission, drain accepted work,
+        // and never poll the failed reactor again while draining.
+        AtomicInteger failPoll = new AtomicInteger();
+        SharedReactorPool.Reactor failingPoll = new SharedReactorPool.Reactor() {
+            @Override public void poll(boolean mayWait) {
+                if (failPoll.get() != 0) throw new IllegalStateException("poll failure");
+                if (mayWait) {
+                    try { Thread.sleep(1); }
+                    catch (InterruptedException failure) { Thread.currentThread().interrupt(); }
+                }
+            }
+            @Override public void wake() { }
+        };
+        try (SharedReactorPool pool = new SharedReactorPool(failingPoll, 1, 1)) {
+            CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+            pool.execute(() -> { entered.countDown(); await(release); });
+            await(entered);
+            AtomicInteger done = new AtomicInteger();
+            for (int i = 0; i < 128; ++i) check(pool.try_submit(done::incrementAndGet));
+            failPoll.set(1); release.countDown();
+            until(() -> pool.failures() == 1);
+            pool.close();
+            check(pool.failures() == 1 && done.get() == 128 && pool.completed() == 129);
+            check(!pool.try_submit(done::incrementAndGet));
+        }
         SharedReactorPool.Reactor brokenWake = new SharedReactorPool.Reactor() {
             @Override public void poll(boolean mayWait) {
                 if (mayWait) try { Thread.sleep(1); } catch (InterruptedException ignored) { }
