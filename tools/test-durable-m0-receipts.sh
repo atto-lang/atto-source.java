@@ -16,6 +16,13 @@ write_suite() {
   for ((n=1;n<=count;n++)); do
     body+="<testcase classname=\"$classname\" name=\"case-$n\"/>"
   done
+  if [[ "$classname" == "dev.oreslang.DurableWorkflowSemanticAnalysisTest" ]]; then
+    local payload='{"format":"atto.durable.manifest.v1","activities":[],"workflows":[]}'
+    local digest hex
+    digest="$(printf '%s' "$payload" | sha256sum | cut -d' ' -f1)"
+    hex="$(printf '%s' "$payload" | od -An -tx1 | tr -d ' \n')"
+    body+="<system-out>DURABLE_M0_MANIFEST_SHA256=$digest&#10;DURABLE_M0_MANIFEST_HEX=$hex</system-out>"
+  fi
   printf '<testsuite name="%s" tests="%d" failures="%d" errors="0" skipped="%d">%s</testsuite>\n' \
     "$classname" "$count" "$fail" "$skipped" "$body" > "$work/reports/TEST-$classname.xml"
 }
@@ -47,3 +54,9 @@ write_suite dev.oreslang.AttoSourceExtensionTest 5
 mv "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml" "$work/replacement.xml"
 ln -s "$work/replacement.xml" "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
 should_reject symlink-report
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+sed -i 's/DURABLE_M0_MANIFEST_SHA256=./DURABLE_M0_MANIFEST_SHA256=f/' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
+should_reject forged-manifest-digest
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+sed -i 's@DURABLE_M0_MANIFEST_HEX=@INVALID_MANIFEST_HEX=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
+should_reject absent-manifest-hex
