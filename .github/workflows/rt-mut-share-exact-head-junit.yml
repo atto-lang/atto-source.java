@@ -44,8 +44,9 @@ jobs:
           test -s src/test/resources/atto/ownership/unguarded-mutable-share.atto
           test ! -e src/test/resources/atto/ownership/guarded-mutable-share.ores
           test ! -e src/test/resources/atto/ownership/unguarded-mutable-share.ores
-      - name: Execute exact-head compiler ownership and mutex JUnit tests
+      - name: Execute exact-head AttoLang source admission and guarded ownership JUnit
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=MutableShareCompilerTest,PointerlessFncOwnershipTest,InvocationMutableBorrowAliasTest,MutexLanguageTest \
+            -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=MutableShareCompilerTest,PointerlessFncOwnershipTest,InvocationMutableBorrowAliasTest,MutexLanguageTest,AttoSourceAdmissionTest,AttoImportedModuleClassGuestTest,AttoMainAdmissionTest,BoundedAttoSourceReaderTest \
             test
