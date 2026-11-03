@@ -154,7 +154,7 @@ final class MacroExportArtifactTest {
                 original.parameters(),
                 original.resultKind(),
                 original.body(),
-                original.site());
+                original.definitionSite());
         assertThrows(IllegalArgumentException.class,
                 () -> MacroExportArtifact.fromDeclaration("Producer", forgedName));
     }
@@ -205,7 +205,7 @@ final class MacroExportArtifactTest {
             Ast.MacroDecl forged = new Ast.MacroDecl(
                     invalidMacroName, original.visibility(),
                     original.parameters(), original.resultKind(),
-                    original.body(), original.site());
+                    original.body(), original.definitionSite());
             assertThrows(IllegalArgumentException.class,
                     () -> MacroExportArtifact.fromDeclaration("Producer", forged),
                     invalidMacroName);
@@ -213,7 +213,7 @@ final class MacroExportArtifactTest {
 
         Ast.MacroDecl unicode = new Ast.MacroDecl(
                 "álgebra", original.visibility(), original.parameters(),
-                original.resultKind(), original.body(), original.site());
+                original.resultKind(), original.body(), original.definitionSite());
         assertDoesNotThrow(() ->
                 MacroExportArtifact.fromDeclaration("Prodúcer", unicode)
                         .verifyAgainst("Prodúcer", unicode));
