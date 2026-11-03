@@ -118,8 +118,16 @@ final class ActorPoolLazyStartTest {
                 assertEquals(new ActorRuntime.ActorCarrierCounts(1, 1, 0),
                         runtime.startedActorCarriers());
 
+                // UNTRUSTED must activate only its own worker domain. This
+                // proves dispatcher separation, not an OS/process sandbox.
+                var untrustedActor = runtime.<Object>spawnUntrusted(
+                        factoryContext -> (message, turnContext) -> {});
+                assertEquals(new ActorRuntime.ActorCarrierCounts(1, 1, 1),
+                        runtime.startedActorCarriers());
+
                 first.stop();
                 privateActor.stop();
+                untrustedActor.stop();
                 idle.forEach(ActorRuntime.ActorRef::stop);
             }
         });
