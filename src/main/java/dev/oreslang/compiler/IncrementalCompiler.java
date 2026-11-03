@@ -345,23 +345,27 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            for (Ast.Decl decl : module.declarations()) appendAbi(abi, module.name(), decl);
         }
         return digest(abi.toString());
     }
 
-    private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+    private static void appendAbi(StringBuilder abi, String ownerModule, Ast.Decl decl) {
         if (decl instanceof Ast.MacroDecl macro) {
             if (macro.visibility() != Ast.Visibility.PUBLIC) return;
+            MacroExportArtifact export = MacroExportArtifact.fromDeclaration(ownerModule, macro);
+            // Re-verify the exact AST binding before publishing build identity.
+            export.verifyAgainst(ownerModule, macro);
             abi.append("pub macro ").append(macro.name()).append('(');
             for (Ast.MacroParam parameter : macro.parameters()) {
                 abi.append(macroParamAbi(parameter.type()))
                         .append(':').append(parameter.name()).append(',');
             }
             abi.append(")=>").append(macroResultAbi(macro.resultKind()))
-                    .append(" content-format=").append(MacroCanonicalIdentity.FORMAT)
+                    .append(" content-format=").append(export.format())
+                    .append(" semantics-abi=").append(export.semanticsAbi())
                     .append(" content=")
-                    .append(digest(MacroCanonicalIdentity.encode(macro)))
+                    .append(export.contentSha256())
                     .append('\n');
             return;
         }
