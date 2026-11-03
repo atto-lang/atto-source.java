@@ -119,15 +119,9 @@ public final class MacroExpander {
             LinkedMacroImports.Binding binding = entry.getValue();
             binding.verify();
             Ast.MacroDecl macro = binding.declaration();
-            // M1 import execution is restricted to the two previously validated,
-            // identifier-free scalar forms. No imported capture_fnc, generated
-            // identifiers, declaration synthesis, templates or authorizing syntax.
-            if (!isSyntaxExprPassthrough(macro) && !isConstLiteralQuote(macro)) {
-                throw new IllegalArgumentException(
-                        "imported macro '" + entry.getKey()
-                                + "' is outside M1's bounded identity/constant quote slice; "
-                                + "compile-time import fails closed");
-            }
+            // A wildcard import may expose more public macros than the caller
+            // uses. Validate every descriptor, but reject unsupported evaluator
+            // forms only when invoked; unused imports mint no guest authority.
             if (macros.putIfAbsent(entry.getKey(), macro) != null) {
                 throw new IllegalArgumentException(
                         "imported macro alias collides with local macro: " + entry.getKey());
@@ -770,6 +764,14 @@ public final class MacroExpander {
                     "private compile-time macro '" + name
                             + "' is not visible from module '" + module
                             + "'; expansion cannot bypass compile-time visibility");
+        }
+        if (importedMacros.containsKey(name)
+                && !isSyntaxExprPassthrough(macro)
+                && !isConstLiteralQuote(macro)) {
+            throw new IllegalArgumentException(
+                    "imported macro '" + name
+                            + "' is outside M1's bounded identity/constant quote slice; "
+                            + "compile-time invocation fails closed");
         }
         return macro;
     }
