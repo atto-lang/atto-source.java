@@ -64,7 +64,7 @@ verify_inputs_unchanged() {
       || [[ "$(git rev-parse --verify HEAD^{tree})" != "$tree_sha" ]] \
       || ! git diff --quiet HEAD -- \
       || [[ -n "$(git ls-files --others --exclude-standard)" ]] \
-      || [[ -n "$(git ls-files --others --ignored --exclude-standard -- src stdlib scripts examples)" ]]; then
+      || [[ -n "$(git ls-files --others --ignored --exclude-standard -- src stdlib scripts examples .mvn .github)" ]]; then
     echo "refusing changed Git/source inputs after $stage" >&2
     exit 6
   fi
