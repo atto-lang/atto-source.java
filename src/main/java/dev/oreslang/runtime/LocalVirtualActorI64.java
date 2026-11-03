@@ -86,6 +86,8 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     private final Map<VirtualActorActivationRegistry.Identity, Slot> slots = new HashMap<>();
     private volatile boolean closed;
     private volatile boolean closing;
+    private volatile boolean shutdownDisposing;
+    private volatile Throwable shutdownFailure;
 
     public LocalVirtualActorI64(String domain, String declaration,
                                int maxIdentities, int mailboxCapacity,
@@ -316,7 +318,12 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     @Override public void close() {
         List<RetiredTurn> retired = new ArrayList<>();
         synchronized (directoryLock) {
-            if (closed) return;
+            if (closed) {
+                if (shutdownDisposing)
+                    throw new IllegalStateException("virtual actor shutdown disposal still in progress");
+                if (shutdownFailure != null) propagateShutdownFailure(shutdownFailure);
+                return;
+            }
             if (closing) throw new IllegalStateException("virtual actor directory already closing");
             closing = true;
             try {
@@ -329,6 +336,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                 }
                 registry.close();
                 closed = true;
+                shutdownDisposing = true;
                 for (Slot slot : slots.values()) {
                     synchronized (slot) {
                         if (slot.handler != null) {
@@ -352,9 +360,14 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        if (firstFailure instanceof Error fatal) throw fatal;
-        if (firstFailure instanceof RuntimeException runtime) throw runtime;
-        if (firstFailure != null)
-            throw new IllegalStateException("virtual actor directory disposal failed", firstFailure);
+        shutdownFailure = firstFailure;
+        shutdownDisposing = false;
+        if (firstFailure != null) propagateShutdownFailure(firstFailure);
+    }
+
+    private static void propagateShutdownFailure(Throwable failure) {
+        if (failure instanceof Error fatal) throw fatal;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        throw new IllegalStateException("virtual actor directory disposal failed", failure);
     }
 }
