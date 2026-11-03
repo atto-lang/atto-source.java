@@ -143,6 +143,31 @@ final class SourceActorPubSubTest {
     }
 
     @Test
+    void portableTopicNamesAreExactBoundedAsciiIdentifiers() {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("scope");
+            SourceActorPubSub.Topic topic = group.topic("events", "latest", 1);
+            assertEquals("events", topic.name());
+            for (String invalid : java.util.List.of(
+                    "", " events", "events ", "#ready", "1events",
+                    "a:b", "a b", "A".repeat(129))) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalid, "latest", 1), invalid);
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalid), invalid);
+            }
+            assertEquals("events", group.topic("events").name(),
+                    "invalid aliases must not affect an existing topic");
+            assertEquals("A", group.topic("A", "latest", 1).name());
+            assertEquals("E".repeat(128),
+                    group.topic("E".repeat(128), "latest", 1).name());
+            assertEquals("orders.created/v1_test-2",
+                    group.topic("orders.created/v1_test-2", "latest", 1).name());
+        }
+    }
+
+    @Test
     void topicPolicyIsBoundedAndDefinitionIsStable() {
         try (ActorRuntime runtime = new ActorRuntime();
              SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
@@ -218,6 +243,33 @@ final class SourceActorPubSubTest {
                     "rejected callable payloads must not invoke their lexical captures");
             assertTrue(topic.publish("data-only").isDone(),
                     "failed callable admission must not poison a subsequent data publication");
+        }
+    }
+
+    @Test
+    void topicAndGroupNamesRejectIsoControlCharacters() {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("valid-group");
+            for (int codePoint : new int[]{0x00, 0x1f, 0x7f, 0x80, 0x85, 0x9f}) {
+                String invalidName = "before" + (char) codePoint + "after";
+                assertThrows(IllegalArgumentException.class,
+                        () -> pubsub.group(invalidName));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalidName, "latest", 1));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalidName));
+            }
+            for (int codePoint : new int[]{0x20, 0x09, 0x00a0, 0x2003, 0x202f, 0x3000}) {
+                String whitespaceOnly = String.valueOf(Character.toChars(codePoint));
+                assertThrows(IllegalArgumentException.class,
+                        () -> pubsub.group(whitespaceOnly));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(whitespaceOnly, "latest", 1));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(whitespaceOnly));
+            }
+            assertEquals("valid", group.topic("valid", "latest", 1).name());
         }
     }
 

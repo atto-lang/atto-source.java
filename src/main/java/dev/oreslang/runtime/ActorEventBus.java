@@ -127,12 +127,26 @@ public final class ActorEventBus implements AutoCloseable {
             int accepted,
             int dropped,
             int coalesced,
-            OresFuture<List<Void>> completion) {
+            OresFuture<List<Void>> completion,
+            long sequence) {
+        // Preserve the existing host constructor for non-publication paths,
+        // including unchanged reduction results and third-party callers.
+        public PublishReceipt(
+                int subscribers, int accepted, int dropped, int coalesced,
+                OresFuture<List<Void>> completion) {
+            this(subscribers, accepted, dropped, coalesced, completion, 0L);
+        }
+
         public PublishReceipt {
             if (subscribers < 0 || accepted < 0 || dropped < 0 || coalesced < 0) {
                 throw new IllegalArgumentException("publication counts cannot be negative");
             }
             Objects.requireNonNull(completion, "completion");
+        }
+
+        /** Full unsigned 64-bit sequence as decimal text for guest/wire receipts. */
+        public String sequenceUnsignedString() {
+            return Long.toUnsignedString(sequence);
         }
     }
 
@@ -520,7 +534,15 @@ public final class ActorEventBus implements AutoCloseable {
                             "ActorGroup event topic is no longer registered: " + topic.name);
                 }
 
-                long sequence = topic.sequence.incrementAndGet();
+                // Stage the unsigned u64 sequence while holding deliveryLock.
+                // Commit it only after all RELIABLE recipient reservations pass:
+                // a Full rejection must not create an observable sequence gap.
+                long previousSequence = topic.sequence.get();
+                if (previousSequence == -1L) {
+                    throw new IllegalStateException(
+                            "ActorGroup topic sequence exhausted: " + topic.name);
+                }
+                long sequence = previousSequence + 1L;
                 @SuppressWarnings("unchecked")
                 Event<Object> created = new Event<>(
                         topic.name,
@@ -537,9 +559,10 @@ public final class ActorEventBus implements AutoCloseable {
                         List.copyOf(topic.subscriptions.values());
                 if (snapshot.isEmpty()) {
                     commitState.run();
+                    topic.sequence.set(sequence);
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                            0, 0, 0, 0, OresFuture.completed(List.of()), sequence);
                 }
 
                 List<Subscription<?>> active =
@@ -556,9 +579,10 @@ public final class ActorEventBus implements AutoCloseable {
                 }
                 if (active.isEmpty()) {
                     commitState.run();
+                    topic.sequence.set(sequence);
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                            0, 0, 0, 0, OresFuture.completed(List.of()), sequence);
                 }
 
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
@@ -581,6 +605,7 @@ public final class ActorEventBus implements AutoCloseable {
                     // a reduction become visible; readers cannot observe a
                     // half-admitted RELIABLE fanout.
                     commitState.run();
+                    topic.sequence.set(sequence);
                     List<OresFuture<Void>> writes =
                             new ArrayList<>(reserved.size());
                     int started = 0;
@@ -608,12 +633,14 @@ public final class ActorEventBus implements AutoCloseable {
                             reserved.size(),
                             0,
                             0,
-                            combineReliableWrites(writes));
+                            combineReliableWrites(writes),
+                            sequence);
                 }
 
                 // LATEST/LOSSY admit without waiting for per-subscriber
                 // credits; preserve their existing single-lock commit order.
                 commitState.run();
+                topic.sequence.set(sequence);
                 int accepted = 0;
                 int dropped = 0;
                 int coalesced = 0;
@@ -649,7 +676,8 @@ public final class ActorEventBus implements AutoCloseable {
                         accepted,
                         dropped,
                         coalesced,
-                        OresFuture.completed(List.of()));
+                        OresFuture.completed(List.of()),
+                        sequence);
             }
         } finally {
             if (event == null) {

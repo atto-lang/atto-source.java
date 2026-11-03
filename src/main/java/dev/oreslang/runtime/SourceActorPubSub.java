@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SourceActorPubSub implements AutoCloseable {
     private static final int MAX_NAME_LENGTH = 256;
+    private static final int MAX_TOPIC_NAME_BYTES = 128;
 
     private final ActorRuntime runtime;
     private final Map<String, Group> groups = new ConcurrentHashMap<>();
@@ -81,7 +82,9 @@ public final class SourceActorPubSub implements AutoCloseable {
     private static String normalizeName(String value, String kind) {
         Objects.requireNonNull(value, kind + " name");
         String normalized = value.trim();
-        if (normalized.isEmpty() || normalized.length() > MAX_NAME_LENGTH) {
+        if (normalized.isEmpty() || normalized.length() > MAX_NAME_LENGTH ||
+                normalized.codePoints().allMatch(cp ->
+                        Character.isWhitespace(cp) || Character.isSpaceChar(cp))) {
             throw new IllegalArgumentException(
                     kind + " name must contain 1.." + MAX_NAME_LENGTH + " characters");
         }
@@ -92,6 +95,32 @@ public final class SourceActorPubSub implements AutoCloseable {
             }
         }
         return normalized;
+    }
+
+    /**
+     * Portable v1 topic names are exact ASCII identifiers, not human labels.
+     * Do not trim, case-fold, or normalize them: doing so can alias two
+     * independently authorized topics. ASCII makes Java char count equal
+     * to the contract's UTF-8 byte limit.
+     */
+    private static String normalizeTopicName(String name) {
+        Objects.requireNonNull(name, "Topic name");
+        if (name.isEmpty() || name.length() > MAX_TOPIC_NAME_BYTES) {
+            throw new IllegalArgumentException("Topic name must be 1..128 ASCII bytes");
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char ch = name.charAt(i);
+            boolean letter = (ch >= 'A' && ch <= 'Z')
+                    || (ch >= 'a' && ch <= 'z');
+            boolean permitted = letter || (i > 0
+                    && ((ch >= '0' && ch <= '9')
+                    || ch == '.' || ch == '_' || ch == '/' || ch == '-'));
+            if (!permitted) {
+                throw new IllegalArgumentException(
+                        "Topic name must match [A-Za-z][A-Za-z0-9._/-]{0,127}");
+            }
+        }
+        return name;
     }
 
     private static ActorEventBus.DeliveryPolicy parsePolicy(String value) {
@@ -168,7 +197,7 @@ public final class SourceActorPubSub implements AutoCloseable {
                 String topicName,
                 String policy,
                 int capacity) {
-            String normalized = normalizeName(topicName, "Topic");
+            String normalized = normalizeTopicName(topicName);
             ActorEventBus.Topic<Object> topic =
                     raw.events().topic(
                             normalized,
@@ -180,7 +209,7 @@ public final class SourceActorPubSub implements AutoCloseable {
         /** Resolve an already-defined topic. Membership is checked by events(). */
         public Topic topic(String topicName) {
             requireActorMembershipIfExecuting("resolve an ActorGroup topic");
-            String normalized = normalizeName(topicName, "Topic");
+            String normalized = normalizeTopicName(topicName);
             ActorEventBus.Topic<Object> topic =
                     raw.events().topic(normalized);
             return new Topic(this, topic);

@@ -43,6 +43,24 @@ final class ActorPubSubAdversarialAdmissionTest {
     }
 
     @Test
+    void zeroRecipientPublicationsAllocateSequenceButDoNotReplay() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            group.events().topic("empty", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            ActorEventBus.PublishReceipt first =
+                    group.events().publishSystem("empty", "first");
+            ActorEventBus.PublishReceipt second =
+                    group.events().publishSystem("empty", "second");
+            assertEquals(0, first.accepted());
+            assertEquals(0, second.accepted());
+            assertEquals(1L, first.sequence());
+            assertEquals(2L, second.sequence());
+            assertEquals("1", first.sequenceUnsignedString());
+            assertEquals("2", second.sequenceUnsignedString());
+        }
+    }
+
+    @Test
     void reliableRejectionRollsBackEverySubscriberReservation() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
@@ -52,6 +70,8 @@ final class ActorPubSubAdversarialAdmissionTest {
             CountDownLatch aReady = new CountDownLatch(1);
             CountDownLatch bReady = new CountDownLatch(1);
             CountDownLatch bChecked = new CountDownLatch(1);
+            CountDownLatch acceptedRead = new CountDownLatch(1);
+            AtomicReference<Long> acceptedSequence = new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
 
             ActorRuntime.ActorRef<String> a = runtime.spawnShared(() -> (message, context) -> {
@@ -76,11 +96,18 @@ final class ActorPubSubAdversarialAdmissionTest {
                         assertTrue(topic.subscribe().tryRead().isEmpty(),
                                 "rejected RELIABLE fanout must deliver to no subscribers");
                         bChecked.countDown();
+                    } else if ("readAccepted".equals(message)) {
+                        ActorEventBus.Event<String> accepted =
+                                topic.subscribe().tryRead().orElseThrow();
+                        assertEquals("accepted", accepted.value());
+                        acceptedSequence.set(accepted.sequence());
+                        acceptedRead.countDown();
                     }
                 } catch (Throwable problem) {
                     failure.compareAndSet(null, problem);
                     bReady.countDown();
                     bChecked.countDown();
+                    acceptedRead.countDown();
                 }
             });
 
@@ -104,8 +131,21 @@ final class ActorPubSubAdversarialAdmissionTest {
 
             assertTrue(waiting.completion().cancel(false));
             a.stop();
-            b.stop();
             assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+            // No subscriber receives the rejected publication, and its
+            // attempt must not burn a topic-local sequence number.
+            ActorEventBus.PublishReceipt acceptedReceipt =
+                    group.events().publishSystem("atomic", "accepted");
+            assertTrue(acceptedReceipt.completion().isDone());
+            assertEquals(3L, acceptedReceipt.sequence(),
+                    "admission receipt must report contiguous sequence after rejection");
+            assertEquals("3", acceptedReceipt.sequenceUnsignedString());
+            b.send("readAccepted");
+            assertTrue(acceptedRead.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(3L, acceptedSequence.get().longValue(),
+                    "rejected RELIABLE fanout must not consume sequence 3");
+            b.stop();
             assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0L, runtime.sharedMemoryBytes(),
                     "failed admission, cancellation, and retirement must release frozen events");
