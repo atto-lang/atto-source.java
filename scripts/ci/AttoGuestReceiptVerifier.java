@@ -155,6 +155,22 @@ public final class AttoGuestReceiptVerifier {
             writeReport(dir, one, 3, 0, 0, 0, false, false, true);
             shouldDeny("external-doctype", head, dir);
             writeReport(dir, one, 3, 0, 0, 0, false, false, false);
+            Path adversarialReport = dir.resolve("TEST-" + one.name() + ".xml");
+            String validXml = Files.readString(adversarialReport);
+            Files.writeString(adversarialReport, validXml.replace(
+                    one.methods().get(0), "forgedMethodWithMatchingCount"));
+            shouldDeny("forged-method-name", head, dir);
+            Files.writeString(adversarialReport, validXml.replace(
+                    "</testsuite>", "<testcase classname=\\\"" + one.name()
+                            + "\\\" name=\\\"extra\\\"/></testsuite>"));
+            shouldDeny("extra-testcase", head, dir);
+            Files.writeString(adversarialReport, validXml.replace(
+                    "<testcase", "<wrapper><testcase").replace(
+                    "/>", "/></wrapper>"));
+            shouldDeny("nested-testcase", head, dir);
+            Files.writeString(adversarialReport, validXml + " ".repeat(1_048_576));
+            shouldDeny("oversized-report", head, dir);
+            Files.writeString(adversarialReport, validXml);
             Path original = dir.resolve("TEST-" + one.name() + ".xml");
             Path symlink = dir.resolve("other.xml");
             try {
