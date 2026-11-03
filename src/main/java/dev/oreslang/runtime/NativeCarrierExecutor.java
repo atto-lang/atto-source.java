@@ -56,6 +56,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicReferenceArray<Thread> carrierThreads;
     /** A JNI attach is not yet a Java carrier-loop entry. */
     private final CountDownLatch carrierLoopsEntered;
+    /** Signaled by the JNI reaper only after all associated pthread_join calls. */
+    private final CountDownLatch physicalRetirement = new CountDownLatch(1);
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
@@ -277,6 +279,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    /** Invoked by liboresthread's reaper after joining all native carriers. */
+    @SuppressWarnings("unused") // invoked through registered JNI reachability metadata
+    private void nativeCarriersJoined() {
+        physicalRetirement.countDown();
+    }
+
     private static void dispatchUncaught(Throwable failure) {
         Thread current = Thread.currentThread();
         Thread.UncaughtExceptionHandler handler = current.getUncaughtExceptionHandler();
@@ -378,37 +386,20 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     /**
-     * Wait until every attached pthread carrier has exited its Java loop.
-     * Native shutdown itself is deliberately non-blocking; callers that own a
-     * scheduler can use this bounded observation without joining arbitrary
-     * guest stacks in native code.
+     * Await physical pthread joins, not merely the end of Java carrier loops.
+     * The native reaper signals physicalRetirement only after all pthread_join
+     * calls return. A failed reaper startup/VM reattachment must time out
+     * conservatively rather than falsely certify physical retirement.
      */
     @Override
     public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
         Objects.requireNonNull(unit, "unit");
         if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-        // ExecutorService.awaitTermination cannot succeed before shutdown.
         if (!shutdown.get()) return false;
-        long nanos = unit.toNanos(timeout);
-        long deadline = System.nanoTime() + nanos;
-        for (;;) {
-            boolean anyAttached = false;
-            for (int slot = 0; slot < carrierThreads.length(); slot++) {
-                if (carrierThreads.get(slot) != null) {
-                    anyAttached = true;
-                    break;
-                }
-            }
-            // Never claim retirement while JNI attachment has not yet
-            // completed Java-loop registration. On a partial startup failure
-            // some callbacks may never enter: fail closed instead of guessing.
-            if (failedNativeStartup && carrierLoopsEntered.getCount() != 0L) return false;
-            if (!startupInProgress && !anyAttached) return true;
-            if (nanos == 0L || System.nanoTime() >= deadline) return false;
-            long remaining = deadline - System.nanoTime();
-            long millis = Math.max(1L, Math.min(10L, TimeUnit.NANOSECONDS.toMillis(remaining)));
-            Thread.sleep(millis);
-        }
+        // Pool construction and a nativeCreate() failure allocate no live JNI
+        // pool: no reaper will ever be required in these two cases.
+        if (!startupInProgress && nativeHandle == 0L && !failedNativeStartup) return true;
+        return physicalRetirement.await(timeout, unit);
     }
 
     public boolean isQueueEmpty() { return queue.isEmpty(); }
@@ -445,11 +436,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     @Override
     public boolean isTerminated() {
         if (!shutdown.get() || startupInProgress) return false;
-        if (failedNativeStartup && carrierLoopsEntered.getCount() != 0L) return false;
-        for (int slot = 0; slot < carrierThreads.length(); slot++) {
-            if (carrierThreads.get(slot) != null) return false;
-        }
-        return true;
+        return (nativeHandle == 0L && !failedNativeStartup)
+                || physicalRetirement.getCount() == 0L;
     }
 
     public void setCorePoolSize(int value) {
