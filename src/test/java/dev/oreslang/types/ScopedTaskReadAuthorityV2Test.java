@@ -239,6 +239,37 @@ final class ScopedTaskReadAuthorityV2Test {
                 new Types.Tuple(List.of(Types.Primitive.INT))));
     }
 
+    @Test
+    void adversariallyDeepReferentsFailBeforeUnboundedAutoTraitRecursion() {
+        // ThreadSafetyTraits has a 256-level depth budget, while generic
+        // TypeAutoTraits composition is recursive. Check the trusted boundary
+        // first: a 4096-level caller-provided type must fail with a normal
+        // diagnostic, never StackOverflowError or forged READ authority.
+        Ast.Program program = dev.oreslang.parser.Parser.parse("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 43, 1, true);
+        Types.Type deep = Types.Primitive.INT;
+        for (int i = 0; i < 4096; i++) {
+            deep = new Types.Named("Option", List.of(deep));
+        }
+        final Types.Type nested = deep;
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ScopedTaskReadAuthority.freezeForOwnershipCheck(
+                        program, task, 991, allocation, List.of(), nested));
+        assertTrue(failure.getMessage().contains("verified Sync"),
+                failure::getMessage);
+
+        assertDoesNotThrow(() -> ScopedTaskReadAuthority.freezeForOwnershipCheck(
+                program, task, 991, allocation, List.of(),
+                new Types.Tuple(List.of(Types.Primitive.INT))));
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
