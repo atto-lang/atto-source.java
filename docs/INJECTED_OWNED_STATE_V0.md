@@ -8,6 +8,9 @@ to ordinary class storage before type/ownership checking and guest execution.
 
 ## Memory semantics
 
+- Static class functions are rejected for injected-state v0. Static
+  initialization and any implicit cross-instance mutable storage require
+  separate source, AOT and ownership proofs.
 - One class instance owns its private state. The annotation does not allocate
   or inject an additional shared heap object, runtime lock, or capability.
 - State field names are private; outside functions cannot read or write them
@@ -28,6 +31,21 @@ to ordinary class storage before type/ownership checking and guest execution.
   `Sync`, `Sendable`, runtime scheduler permits, state injection into
   singleton/actor instances, or any hard/soft real-time performance guarantee.
   Those require separate typed callback and runtime-region lowering.
+
+## CI source-integrity preflight
+
+The exact-head Graal workflow now checks the expected commit and requires the
+repository's filter-free raw Git blob/tree verifier **before** JDK setup,
+Maven, or guest execution. It runs the verifier's synthetic adversarial tests.
+The verifier no longer invokes `git diff` on untrusted checkout content:
+repository `.gitattributes` can configure a clean filter that Git executes.
+The committed test suite adds a configured-clean-filter canary and validates
+that stage/index mutations reject through the raw manifest check.
+
+This hardens admission only. The original source organization currently has
+zero-step runner failures. A same-repository failed-job retry is not a
+successful execution receipt. Private source must not be mirrored to an
+alternate organization while conformance incident #263 is open.
 
 ## Test receipt
 
