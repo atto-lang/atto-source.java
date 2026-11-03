@@ -265,9 +265,15 @@ public final class OresProjectConfig {
 
     private static Optional<Path> existingSource(Path candidate, boolean canonicalAttoImporter) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
-
-        String text = normalized.toString().toLowerCase();
+        String text = normalized.toString().toLowerCase(java.util.Locale.ROOT);
+        boolean explicitSource = text.endsWith(".atto")
+                || text.endsWith(".ores") || text.endsWith(".java");
+        // A bare file with no .atto suffix is not a canonical Atto source,
+        // even if the filesystem happens to contain a file at that name.
+        if (Files.isRegularFile(normalized)
+                && (!canonicalAttoImporter || explicitSource)) {
+            return Optional.of(normalized);
+        }
         if (text.endsWith(".atto") || text.endsWith(".ores") || text.endsWith(".java")) {
             return Optional.empty();
         }
