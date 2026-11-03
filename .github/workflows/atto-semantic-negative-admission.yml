@@ -61,6 +61,7 @@ jobs:
                   "explicitAttoEntryUsesSameDiagnosticNotLegacySourceEscape",
                   "ownedMutableArrayAndInlineConstructionCannotBeShared",
                   "immutableCopyableScalarRemainsShareable",
+                  "copyableScalarShareCompilesAndExecutesAsAttoGuest",
                   "unloweredCriticalCallableDoesNotBecomeSynchronousCallable",
               },
               "AttoSourceAdmissionTest": {
