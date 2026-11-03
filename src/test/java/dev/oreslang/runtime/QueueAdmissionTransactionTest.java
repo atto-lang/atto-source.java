@@ -149,6 +149,12 @@ final class QueueAdmissionTransactionTest {
         assertEquals(0, transaction.outstandingIngress());
         assertEquals(0, transaction.reservedCompletions());
         assertEquals(0, transaction.pendingCount());
+        // A failed stale-generation attempt must not claim the ledger for
+        // an actor incarnation that never successfully admitted work.
+        ActorRuntime.ActorId replacementQueue = ActorRuntime.ActorId.create();
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED,
+                transaction.admitAuthorized(
+                        replacementQueue, sender, 10, transaction.generation(), "fresh").status());
     }
 
 
