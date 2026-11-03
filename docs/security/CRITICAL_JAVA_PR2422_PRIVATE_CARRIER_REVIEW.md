@@ -27,7 +27,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `84c2829aa3662e9bf5766c40102f7880bc244c68` and tree
   `4cc2363496f486349be87216cf02d7f7452642fb` are historical.
   On 2026-11-03, the **current proposed source PR head** is
-  `f4c5665ba395edb85909454c3a6772882b919ffa`, with full Git root tree `f15d73dbe39baa7996532a37ee89d808bd5dd5e0`.
+  `ec4c5259df171ab5cb5cd19dd50b7c448294a5d8`, with full Git root tree `6f49261492ba2396400b7e347b9959c724abcd4e`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
@@ -44,8 +44,17 @@ for this candidate. This packet cannot be used as an authorization token.
   [run 41587524290](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41587524290)
   completed with zero executed job steps, so **no Java compiler, JUnit or
   guest test pass is claimed**.
-  Source-free alternate runner run 41391572866 attempt 2 independently
-  succeeded with five executed steps; this does not authorize private export.
+  A subsequent exact-head CI admission hardening commit requires Maven
+  `clean test`, `-DfailIfNoTests=true`, five nonempty JUnit XML reports,
+  both critical actor guest testcases, and both concurrency race testcases.
+  Source workflow blob `67b5dbf3f8e67c6d4e0543a5fca370338cf2555c`
+  is part of current source tree `6f49261492ba2396400b7e347b9959c724abcd4e`, not a
+  carrier-workflow authorization. New source workflow
+  [run 41588063452](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41588063452)
+  was still queued when this packet was updated; its verdict is not
+  assumed. Source-free alternate runner run 41391572866 attempt 2
+  independently succeeded with five executed steps; this does not
+  authorize private export.
 - Private candidate carrier: `gha-indie-worker/gha-indie-worker-docs`,
   numeric repository ID **1351003564**. Source-free capacity branch
   `ci/critical-source-free-runner-canary-20261101`, commit
