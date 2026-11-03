@@ -51,16 +51,16 @@ public final class OresMain {
             // PrintStream records failed writes instead of throwing IOException.
             // Flush and inspect both CLI streams before publishing success.
             if (status == 0 && (System.out.checkError() || System.err.checkError())) {
-                System.err.println("oreslang: failed to publish CLI output");
+                System.err.println("attolang: failed to publish CLI output");
                 return 1;
             }
             return status;
         } catch (UsageException failure) {
-            System.err.println("oreslang: " + failure.getMessage());
+            System.err.println("attolang: " + failure.getMessage());
             return 2;
         } catch (Exception failure) {
             String message = failure.getMessage();
-            System.err.println("oreslang: " +
+            System.err.println("attolang: " +
                     ((message == null || message.isBlank())
                             ? failure.getClass().getSimpleName() : message));
             return 1;
@@ -380,7 +380,7 @@ public final class OresMain {
 
     private static void printUsage() {
         System.err.println(
-                "usage: oreslang-compiler [--check|--build-analysis] "
+                "usage: attolang [--check|--build-analysis] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "
