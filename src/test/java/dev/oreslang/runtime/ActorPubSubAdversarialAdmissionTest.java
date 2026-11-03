@@ -121,7 +121,7 @@ final class ActorPubSubAdversarialAdmissionTest {
             b.send("readAccepted");
             assertTrue(acceptedRead.await(5, TimeUnit.SECONDS));
             assertNull(failure.get());
-            assertEquals(3L, acceptedSequence.get(),
+            assertEquals(3L, acceptedSequence.get().longValue(),
                     "rejected RELIABLE fanout must not consume sequence 3");
             b.stop();
             assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
