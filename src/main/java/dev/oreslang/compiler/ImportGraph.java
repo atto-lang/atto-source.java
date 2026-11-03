@@ -58,8 +58,11 @@ final class ImportGraph {
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                 : Path.of(raw).normalize();
         String candidate = normalizeUnitId(candidatePath.toString());
-        if (!available.contains(candidate) && !candidate.endsWith(".ores") && !candidate.endsWith(".java")) {
-            if (available.contains(candidate + ".ores")) candidate += ".ores";
+        if (!available.contains(candidate) && !candidate.endsWith(".atto")
+                && !candidate.endsWith(".ores") && !candidate.endsWith(".java")) {
+            // Canonical AttoLang .atto source takes precedence for extensionless imports.
+            if (available.contains(candidate + ".atto")) candidate += ".atto";
+            else if (available.contains(candidate + ".ores")) candidate += ".ores";
             else if (available.contains(candidate + ".java")) candidate += ".java";
         }
         rejectSelfImport(normalizedUnitId, imported.path(), candidate);
