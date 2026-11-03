@@ -47,10 +47,22 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=java \
+            -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
             -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest \
             test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
+          # A compiled class alone is not guest-execution evidence. Require
+          # Surefire's concrete JUnit XML and both real guest test cases.
+          guest_report=target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml
+          syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
+          test -s "$guest_report"
+          test -s "$syntax_report"
+          grep -Fq 'name="actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop' "$guest_report"
+          grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
+          grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
+          grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
+          ! grep -Eq 'skipped="[1-9]|failures="[1-9]|errors="[1-9]' "$guest_report" "$syntax_report"
       - name: Mark evidence scope
         run: |
           echo "Scoped Java host-ticket tests plus native Graal actor critical guest fixture."
