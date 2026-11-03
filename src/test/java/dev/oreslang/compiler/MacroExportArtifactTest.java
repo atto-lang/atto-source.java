@@ -122,7 +122,7 @@ final class MacroExportArtifactTest {
         MacroExportArtifact artifact = MacroExportArtifact.fromDeclaration("Producer", original);
         MacroExportArtifact malformed = replace(
                 artifact, artifact.format(), artifact.semanticsAbi(),
-                artifact.ownerModule(), artifact.canonicalContent() + "\uD800",
+                artifact.ownerModule(), artifact.canonicalContent() + (char) 0xD800,
                 artifact.contentSha256());
 
         IllegalArgumentException invalid = assertThrows(
@@ -146,10 +146,10 @@ final class MacroExportArtifactTest {
                 () -> MacroExportArtifact.fromDeclaration("Producer\nForged", original));
 
         assertThrows(IllegalArgumentException.class,
-                () -> MacroExportArtifact.fromDeclaration("Producer\\uD800", original));
+                () -> MacroExportArtifact.fromDeclaration("Producer" + (char) 0xD800, original));
 
         Ast.MacroDecl forgedName = new Ast.MacroDecl(
-                "identity\\nInjected",
+                "identity" + (char) 0x0A + "Injected",
                 original.visibility(),
                 original.parameters(),
                 original.resultKind(),
@@ -157,5 +157,37 @@ final class MacroExportArtifactTest {
                 original.site());
         assertThrows(IllegalArgumentException.class,
                 () -> MacroExportArtifact.fromDeclaration("Producer", forgedName));
+    }
+
+    @Test
+    void utf8ByteBudgetIsEnforcedEvenWhenCharacterCountFits() {
+        Ast.MacroDecl original = macro("return value;", true);
+        MacroExportArtifact valid = MacroExportArtifact.fromDeclaration("Producer", original);
+        // The envelope's cheap UTF-16 bound is not the UTF-8 wire budget.
+        String wide = "é".repeat(MacroCanonicalIdentity.MAX_BYTES / 2 + 1);
+        assertTrue(wide.length() <= MacroCanonicalIdentity.MAX_BYTES);
+        MacroExportArtifact oversizedUtf8 = replace(
+                valid, valid.format(), valid.semanticsAbi(),
+                valid.ownerModule(), wide, valid.contentSha256());
+
+        IllegalArgumentException oversized = assertThrows(
+                IllegalArgumentException.class,
+                () -> oversizedUtf8.verifyAgainst("Producer", original));
+        assertTrue(oversized.getMessage().contains("byte budget"),
+                oversized::toString);
+    }
+
+    @Test
+    void digestMustBeExactlyLowercaseSha256Hex() {
+        Ast.MacroDecl original = macro("return value;", true);
+        MacroExportArtifact valid = MacroExportArtifact.fromDeclaration("Producer", original);
+        MacroExportArtifact wrongDigestCase = replace(
+                valid, valid.format(), valid.semanticsAbi(),
+                valid.ownerModule(), valid.canonicalContent(),
+                valid.contentSha256().toUpperCase(java.util.Locale.ROOT));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> wrongDigestCase.verifyAgainst("Producer", original));
+        assertTrue(failure.getMessage().contains("invalid SHA-256"));
     }
 }
