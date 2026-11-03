@@ -69,7 +69,9 @@ public final class MacroExpansionPlanner {
             String sourceUnitId,
             Map<String, LinkedMacroImports.Binding> importedMacros) {
         this.sourceUnitId = sourceUnitId;
-        this.importedMacros = Map.copyOf(importedMacros);
+        // Preserve explicit importer order for deterministic error admission.
+        this.importedMacros = java.util.Collections.unmodifiableMap(
+                new java.util.LinkedHashMap<>(importedMacros));
     }
 
     public static Plan plan(Ast.Program program) {
