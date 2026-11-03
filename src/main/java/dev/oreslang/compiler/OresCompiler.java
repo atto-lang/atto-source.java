@@ -90,6 +90,59 @@ public final class OresCompiler {
     }
 
     /**
+     * Immutable compiler-side result of an independently parsed, closed
+     * type_of<Nominal>() query. No guest runtime lookup or invocation is exposed.
+     */
+    public record StaticTypeOfQueryV1(
+            String qualifiedType, String typeIdHex, byte[] descriptorTable) {
+        public StaticTypeOfQueryV1 {
+            java.util.Objects.requireNonNull(qualifiedType, "qualified type");
+            java.util.Objects.requireNonNull(typeIdHex, "type ID");
+            descriptorTable = java.util.Objects.requireNonNull(
+                    descriptorTable, "descriptor table").clone();
+        }
+        @Override public byte[] descriptorTable() { return descriptorTable.clone(); }
+    }
+
+    /**
+     * Opt-in static type_of<Nominal>() compiler metadata bootstrap.
+     *
+     * This method checks real source declarations with the production Parser,
+     * TypeChecker and OwnershipChecker. The standalone query is parsed as a
+     * real generic CallExpr, then bound to a single public class from that
+     * checked program through AotReflectionSourceRootsV1. Its name cannot be
+     * shadowed by a user-declared same-name callable.
+     *
+     * THIS DOES NOT make type_of<T>() valid inside an AttoLang guest function,
+     * lower guest bytecode, or prove native execution. Those are separate gates.
+     */
+    public static StaticTypeOfQueryV1 compileStaticTypeOfQueryV1(
+            String sourceDeclarations, String verifiedPackageIdentity,
+            String staticQuery) {
+        Ast.Program checked = parseAndTypeCheck(sourceDeclarations);
+        for (Ast.ModuleDecl module : checked.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && function.name().equals("type_of")) {
+                    throw new IllegalArgumentException(
+                            "static type_of intrinsic conflicts with a user-declared function");
+                }
+            }
+        }
+        Ast.TypeRef nominal = Parser.parseStaticTypeOfQueryV1(staticQuery);
+        String qualified = "__root__." + nominal.name();
+        byte[] encoded = AotReflectionSourceRootsV1.lowerChecked(
+                checked, verifiedPackageIdentity, java.util.List.of(qualified)).bytes();
+        AotReflectionTableV1Reader.Table table = AotReflectionTableV1Reader.decode(encoded);
+        if (table.types().size() != 1 ||
+                !table.types().getFirst().resolvedSymbol().equals(qualified)) {
+            throw new IllegalStateException("static type_of descriptor identity mismatch");
+        }
+        return new StaticTypeOfQueryV1(
+                qualified, table.types().getFirst().typeIdHex(), encoded);
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
