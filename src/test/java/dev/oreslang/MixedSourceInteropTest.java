@@ -20,6 +20,17 @@ final class MixedSourceInteropTest {
     @TempDir Path temp;
 
     @Test
+    void canonicalAttoIsAdmittedAsAnOresPrimarySourceUnit() {
+        for (String extension : new String[] {".atto", ".ores"}) {
+            String name = "main" + extension;
+            MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/" + name, name,
+                    "pub routine main(): void { return; }");
+            assertEquals(MixedSourceUnit.PrimaryLanguage.ORES, unit.primaryLanguage());
+            assertDoesNotThrow(() -> Parser.parse(unit.oresSource()));
+        }
+    }
+
+    @Test
     void splitsOresJavaIslandsWithoutInventingAnOresModule() {
         MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/demo.ores", "demo.ores", """
                 pub fnc main(): void {

@@ -31,6 +31,8 @@ jobs:
             binary: ores-aot.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 100
+    env:
+      ATTO_CLI_SHA: fd0dd0d1118854ae4058a850e1c63afaaf08f398
     steps:
       - name: Checkout exact source commit, without persistent credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -61,7 +63,7 @@ jobs:
           cache: maven
       - name: Run compiler CLI regression test
         shell: bash
-        run: mvn -B -ntp -Dtest=NativeCliIoTest test
+        run: mvn -B -ntp -Dtest=MainExitStatusTest,CompilerCheckModeTest,MixedSourceInteropTest,OresProjectConfigTest test
       - name: Build standalone native compiler
         shell: bash
         run: mvn -B -ntp -DskipTests -Pnative-aot package
@@ -78,9 +80,18 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ores-truffle-oreslang/oreslang-cli
-          ref: 2c601d72752312fbad12c7c5e3d7fbda45bb57e3
+          ref: ${{ env.ATTO_CLI_SHA }}
           path: cli
           persist-credentials: false
+      - name: Verify exact pinned public CLI commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C cli rev-parse HEAD)"
+          if [ "$actual" != "${{ env.ATTO_CLI_SHA }}" ]; then
+            echo "Pinned AttoLang CLI source SHA mismatch" >&2
+            exit 65
+          fi
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
@@ -90,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --workspace --locked --manifest-path cli/Cargo.toml
-          cargo build --release --locked --manifest-path cli/Cargo.toml --bin oreslang
+          cargo build --release --locked --manifest-path cli/Cargo.toml --bins
       - name: Package private compiler candidate with source identity
         shell: pwsh
         run: |
@@ -100,12 +111,22 @@ jobs:
           $compiler = "oreslang-compiler$suffix"
           Copy-Item "target/${{ matrix.binary }}" "stage/$compiler"
           $cliBinary = if ("${{ runner.os }}" -eq "Windows") { "oreslang.exe" } else { "oreslang" }
+          $attoBinary = if ("${{ runner.os }}" -eq "Windows") { "atto.exe" } else { "atto" }
           Copy-Item "cli/target/release/$cliBinary" "stage/$cliBinary"
+          Copy-Item "cli/target/release/$attoBinary" "stage/$attoBinary"
           if ("${{ runner.os }}" -ne "Windows") {
-            chmod +x "stage/$compiler" "stage/$cliBinary"
+            chmod +x "stage/$compiler" "stage/$cliBinary" "stage/$attoBinary"
           }
-          & "stage/$cliBinary" check examples/callables.ores
-          if ($LASTEXITCODE -ne 0) { throw "Bundled CLI + compiler smoke test failed" }
+          $canonical = Join-Path $env:RUNNER_TEMP 'callables.atto'
+          Copy-Item "examples/callables.ores" $canonical
+          foreach ($launcher in @($attoBinary, $cliBinary)) {
+            & "stage/$launcher" doctor
+            if ($LASTEXITCODE -ne 0) { throw "Bundled $launcher doctor failed" }
+            & "stage/$launcher" check $canonical
+            if ($LASTEXITCODE -ne 0) { throw "Bundled $launcher canonical .atto guest check failed" }
+            & "stage/$launcher" check "examples/callables.ores"
+            if ($LASTEXITCODE -ne 0) { throw "Bundled $launcher legacy .ores guest check failed" }
+          }
           $hash = (Get-FileHash "stage/$compiler" -Algorithm SHA256).Hash.ToLowerInvariant()
           $record = @{
             status = "PRIVATE_CANDIDATE_NOT_APPROVED_FOR_PUBLICATION"
@@ -114,7 +135,9 @@ jobs:
             platform = "${{ matrix.platform }}"
             binary = $compiler
             frontend_binary = $cliBinary
-            frontend_commit = "2c601d72752312fbad12c7c5e3d7fbda45bb57e3"
+            atto_binary = $attoBinary
+            atto_sha256 = (Get-FileHash "stage/$attoBinary" -Algorithm SHA256).Hash.ToLowerInvariant()
+            frontend_commit = "${{ env.ATTO_CLI_SHA }}"
             frontend_sha256 = (Get-FileHash "stage/$cliBinary" -Algorithm SHA256).Hash.ToLowerInvariant()
             binary_sha256 = $hash
           } | ConvertTo-Json
@@ -141,12 +164,22 @@ jobs:
           $p = Start-Process -FilePath (Resolve-Path $setup) -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Windows installer failed with code $($p.ExitCode)" }
           $installed = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/oreslang.exe'
+          $installedAtto = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/atto.exe'
+          $installedCompiler = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/oreslang-compiler.exe'
           $uninstall = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/unins000.exe'
-          if (-not (Test-Path -LiteralPath $installed)) { throw 'Windows installer omitted CLI' }
-          & $installed doctor
-          if ($LASTEXITCODE -ne 0) { throw 'Installed CLI doctor failed' }
-          & $installed check examples/callables.ores
-          if ($LASTEXITCODE -ne 0) { throw 'Installed CLI compiler check failed' }
+          foreach ($binary in @($installed, $installedAtto, $installedCompiler)) {
+            if (-not (Test-Path -LiteralPath $binary)) { throw "Windows installer omitted $binary" }
+          }
+          $canonical = Join-Path $env:RUNNER_TEMP 'callables-installed.atto'
+          Copy-Item "examples/callables.ores" $canonical
+          foreach ($launcher in @($installedAtto, $installed)) {
+            & $launcher doctor
+            if ($LASTEXITCODE -ne 0) { throw "Installed $launcher doctor failed" }
+            & $launcher check $canonical
+            if ($LASTEXITCODE -ne 0) { throw "Installed $launcher canonical compiler check failed" }
+            & $launcher check "examples/callables.ores"
+            if ($LASTEXITCODE -ne 0) { throw "Installed $launcher legacy compiler check failed" }
+          }
           $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Windows uninstaller failed with code $($p.ExitCode)" }
           # Regression: a user-owned PATH entry must survive a later setup/uninstall.
