@@ -133,6 +133,10 @@ final class OresProjectConfigTest {
                 config.resolveImport(importer, "./cache").orElseThrow());
         assertEquals(javaTwin.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./cache.java").orElseThrow());
+        Path noExtension = temp.resolve("cache");
+        Files.writeString(noExtension, "wrong non-Atto shadow file");
+        assertEquals(attoOnly.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache").orElseThrow());
         Files.delete(attoOnly);
         // No silent migration to an .ores/.java sibling when an Atto import
         // disappears. An explicitly qualified legacy import still works.
