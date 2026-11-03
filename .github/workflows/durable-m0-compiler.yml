@@ -120,3 +120,79 @@ jobs:
             target/durable-m0-proof.txt
           if-no-files-found: warn
           retention-days: 30
+
+  full-maven-verification:
+    name: durable-m0-full-maven-source-org-only
+    needs: [compiler-semantics]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout same exact source commit as focused gate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Validate source identity before executing any code
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "ATTO_FULL_MAVEN_HEAD=$(git rev-parse HEAD)"
+          echo "ATTO_FULL_MAVEN_TREE=$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Set up GraalVM 25 for full Maven verification
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+
+      - name: Execute full Java Maven verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          mvn --version
+          mvn -B -ntp -DfailIfNoTests=true verify
+
+      - name: Preserve exact-tree and nonempty full-suite receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          reports=(target/surefire-reports/TEST-*.xml)
+          (( ${#reports[@]} > 4 )) || {
+            echo "Full Maven verification must include more than four suites" >&2
+            exit 1
+          }
+          {
+            echo 'ATTO_FULL_MAVEN_PROOF_FORMAT=1'
+            echo "SOURCE_HEAD=$(git rev-parse HEAD)"
+            echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+            echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
+            echo "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+            echo "SUREFIRE_REPORT_FILES=${#reports[@]}"
+            echo 'VALIDATION_GATE=JAVA_HOST_FULL_MAVEN_NOT_GUEST_DURABLE_REPLAY'
+            sha256sum "${reports[@]}"
+          } > target/atto-m0-full-maven-proof.txt
+          cat target/atto-m0-full-maven-proof.txt
+
+      - name: Upload full-suite receipts even if Maven fails
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atto-m0-full-maven-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/surefire-reports/TEST-*.xml
+            target/atto-m0-full-maven-proof.txt
+          if-no-files-found: warn
+          retention-days: 14
