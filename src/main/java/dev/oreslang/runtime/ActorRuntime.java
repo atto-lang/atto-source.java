@@ -1825,7 +1825,8 @@ public final class ActorRuntime implements AutoCloseable {
                 @SuppressWarnings("unchecked")
                 T frozenPayload = (T) actor.activeMail.value();
                 return transaction.admitAuthorized(
-                        sender, mailboxSequence, expectedGeneration, frozenPayload);
+                        actor.ref.id(), sender, mailboxSequence,
+                        expectedGeneration, frozenPayload);
             }
         }
     }
