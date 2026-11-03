@@ -22,8 +22,9 @@ public final class ProtectedScalarMirV1 {
 
     public enum Kind { STATE_CONTAINER, VIRTUAL_ACTOR }
     public enum Instruction {
-        ACQUIRE_WRITE, LOAD_STATE_I64, CHECKED_ADD_I64, STORE_STATE_I64,
-        LOAD_RESULT_I64, RELEASE_WRITE, RETURN_I64, RETURN_VOID
+        ACQUIRE_READ, RELEASE_READ, ACQUIRE_WRITE, LOAD_STATE_I64,
+        CHECKED_ADD_I64, STORE_STATE_I64, LOAD_RESULT_I64,
+        RELEASE_WRITE, RETURN_I64, RETURN_VOID
     }
 
     public record Plan(Kind kind, String declarationName, String stateField,
@@ -36,9 +37,13 @@ public final class ProtectedScalarMirV1 {
             Objects.requireNonNull(methodName);
             Objects.requireNonNull(parameterName);
             instructions = List.copyOf(instructions);
-            List<Instruction> expected = kind == Kind.STATE_CONTAINER
-                    ? STATE_WRITE : VIRTUAL_WRITE;
-            if (!instructions.equals(expected))
+            // The only permitted read plan owns a READ lease and returns
+            // a copied scalar. Writer and actor plans retain exact ordering;
+            // callers cannot construct a fake plan with write under READ.
+            boolean approved = kind == Kind.STATE_CONTAINER
+                    ? instructions.equals(STATE_READ) || instructions.equals(STATE_WRITE)
+                    : instructions.equals(VIRTUAL_WRITE);
+            if (!approved)
                 throw new IllegalArgumentException(
                         "PROTECTED_MIR_UNSUPPORTED: invalid acquire/release or return sequence");
         }
@@ -48,13 +53,21 @@ public final class ProtectedScalarMirV1 {
             return new ScalarStateContainer(initialValue, 4);
         }
 
+        public boolean readOnly() {
+            return kind == Kind.STATE_CONTAINER && instructions.equals(STATE_READ);
+        }
+
         public long invoke(ScalarStateContainer state, long argument) {
             requireKind(Kind.STATE_CONTAINER);
             Objects.requireNonNull(state, "state");
-            // A single VM primitive is the verified implementation of this
-            // exact MIR sequence: it owns the permit for load/check/store,
-            // releases it on exceptional exits, and checks overflow before
-            // mutation. The returned i64 is read before permit release.
+            // A read plan can only invoke the VM's non-mutating tryRead()
+            // primitive. No returned lease, state reference or closure crosses
+            // this boundary. Both primitives release their leases on exit.
+            if (readOnly()) {
+                return state.tryRead().orElseThrow(
+                        () -> new IllegalStateException("protected state reader unavailable"));
+            }
+            // The write plan retains atomic checked-add and release on trap.
             return state.tryAddChecked(argument).orElseThrow(
                     () -> new IllegalStateException("protected state writer unavailable"));
         }
@@ -78,6 +91,9 @@ public final class ProtectedScalarMirV1 {
         }
     }
 
+    private static final List<Instruction> STATE_READ = List.of(
+            Instruction.ACQUIRE_READ, Instruction.LOAD_STATE_I64,
+            Instruction.RELEASE_READ, Instruction.RETURN_I64);
     private static final List<Instruction> STATE_WRITE = List.of(
             Instruction.ACQUIRE_WRITE, Instruction.LOAD_STATE_I64,
             Instruction.CHECKED_ADD_I64, Instruction.STORE_STATE_I64,
@@ -144,9 +160,10 @@ public final class ProtectedScalarMirV1 {
         if (!(kind == Kind.STATE_CONTAINER ? isInt(method.returnType())
                                           : isVoid(method.returnType())))
             throw invalid("method return type is incompatible with protected declaration");
-        matchBody(method.bodyTokens(), kind, field.name(), arg.name());
+        boolean readOnly = matchBody(method.bodyTokens(), kind, field.name(), arg.name());
         return new Plan(kind, name, field.name(), method.name(), arg.name(), initial,
-                kind == Kind.STATE_CONTAINER ? STATE_WRITE : VIRTUAL_WRITE);
+                kind == Kind.VIRTUAL_ACTOR ? VIRTUAL_WRITE
+                        : readOnly ? STATE_READ : STATE_WRITE);
     }
 
     private static boolean isInt(Ast.TypeRef type) {
@@ -174,8 +191,11 @@ public final class ProtectedScalarMirV1 {
         final List<String> tokens;
         int index;
         Cursor(List<String> tokens) { this.tokens = List.copyOf(tokens); }
+        boolean at(String expected) {
+            return index < tokens.size() && tokens.get(index).equals(expected);
+        }
         void need(String expected) {
-            if (index >= tokens.size() || !tokens.get(index).equals(expected))
+            if (!at(expected))
                 throw invalid("expected '" + expected + "' at protected method token " + index);
             index++;
         }
@@ -192,7 +212,18 @@ public final class ProtectedScalarMirV1 {
         }
     }
 
-    private static void matchBody(List<String> tokens, Kind kind, String field, String parameter) {
+    /**
+     * Turn the parser-owned protected-method token sequence into one of two
+     * closed, typed scalar effects. The region alias never becomes a guest
+     * expression value: READ can project only the declared Copy i64 field,
+     * while WRITE can perform only a checked scalar addition. All other
+     * expressions fail closed without executing arbitrary guest callbacks.
+     *
+     * This is a deliberately limited AST->MIR admission, NOT a general
+     * protected-state borrow checker or method-effect inference engine.
+     */
+    private static boolean matchBody(
+            List<String> tokens, Kind kind, String field, String parameter) {
         if (tokens.size() > 96)
             throw invalid("protected-method token budget exceeded");
         Cursor c = new Cursor(tokens);
@@ -201,20 +232,48 @@ public final class ProtectedScalarMirV1 {
         c.need("(");
         c.need("critical");
         c.need("-");
-        c.need("write");
+        String effect = c.ident();
+        if (!effect.equals("read") && !effect.equals("write"))
+            throw invalid("only checked scalar critical-read/write are admitted");
+        boolean readOnly = effect.equals("read");
+        if (kind != Kind.STATE_CONTAINER && readOnly)
+            throw invalid("virtual actor read effects require separate actor response lowering");
         c.need("|");
         String alias = c.ident();
+        if (alias.equals(parameter))
+            throw invalid("guard region alias must not shadow the parameter");
         c.need("|");
         c.need("->");
         c.need("{");
-        c.need(alias); c.need("."); c.need(field);
-        c.need("=");
-        c.need(alias); c.need("."); c.need(field);
-        c.need("+"); c.need(parameter); c.need(";");
-        if (kind == Kind.STATE_CONTAINER) {
-            c.need(alias); c.need("."); c.need(field); c.need(";");
+        if (readOnly) {
+            // The alias is an affine, lexical state capability, not a
+            // returnable value. Only a scalar field projection can leave
+            // the protected region; returning the alias is an escape.
+            c.need(alias);
+            if (c.at(";") || c.at("}") || c.at(")"))
+                throw new IllegalArgumentException(
+                        "E_STATE_BORROW_ESCAPE: protected region alias cannot be returned");
+            c.need(".");
+            c.need(field);
+            if (c.at("="))
+                throw new IllegalArgumentException(
+                        "E_CRITICAL_READ_MUTATION: read lease cannot assign protected state");
+            c.need(";");
+        } else {
+            c.need(alias); c.need("."); c.need(field);
+            c.need("=");
+            c.need(alias); c.need("."); c.need(field);
+            c.need("+"); c.need(parameter); c.need(";");
+            if (kind == Kind.STATE_CONTAINER) {
+                c.need(alias);
+                if (c.at(";") || c.at("}") || c.at(")"))
+                    throw new IllegalArgumentException(
+                            "E_STATE_BORROW_ESCAPE: protected region alias cannot be returned");
+                c.need("."); c.need(field); c.need(";");
+            }
         }
         c.need("}"); c.need(")"); c.need(";");
         c.done();
+        return readOnly;
     }
 }
