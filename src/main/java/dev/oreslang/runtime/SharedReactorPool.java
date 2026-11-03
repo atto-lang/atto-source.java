@@ -88,6 +88,8 @@ public final class SharedReactorPool implements AutoCloseable {
                     if (++slices < 64) continue;
                 }
                 slices = 0;
+                // Once admission is sealed, drain the queue without polling again.
+                synchronized (gate) { if (closing) continue; }
                 if (pollOwner.compareAndSet(-1, slot)) {
                     try {
                         boolean mayWait;
