@@ -67,7 +67,13 @@ const cases = [
   ['symlink report directory', s => s, false],
   ['external entity payload', s =>
     '<!DOCTYPE testsuite [<!ENTITY x SYSTEM "file:///etc/hostname">]>' +
-    s.replace('</testsuite>', '<system-out>&x;</system-out></testsuite>'), false]
+    s.replace('</testsuite>', '<system-out>&x;</system-out></testsuite>'), false],
+  ['testcase status spoof', s => s.replace('<testcase ', '<testcase status="skipped" '), false],
+  ['unexpected extra report', s => s, false],
+  ['missing demo report', s => s, false],
+  ['oversized report', s => s + ' '.repeat(8 * 1024 * 1024), false],
+  ['demo suite partial', s => s, false],
+  ['nested suite', s => s.replace('</testsuite>', '<testsuite name="injected"/></testsuite>'), false]
 ];
 
 for (const [label, mutate, expected] of cases) {
@@ -78,8 +84,9 @@ for (const [label, mutate, expected] of cases) {
   try {
     const paths = suites.map(suite => join(reportDir, `TEST-${suite.name}.xml`));
     suites.forEach((suite, i) => writeFileSync(
-      paths[i], i ? xml(suite) : mutate(xml(suite))));
+      paths[i], i ? (label === 'demo suite partial' ? xml(suite).replace(/<testcase[^>]+\/>/, '') : xml(suite)) : mutate(xml(suite))));
     if (label === 'missing report') rmSync(paths[0]);
+    if (label === 'missing demo report') rmSync(paths[1]);
     if (label === 'symlink report') {
       rmSync(paths[0]);
       symlinkSync(paths[1], paths[0]);
@@ -87,6 +94,9 @@ for (const [label, mutate, expected] of cases) {
     if (label === 'symlink report directory') {
       verifierDir = join(base, 'reports-link');
       symlinkSync(reportDir, verifierDir, 'dir');
+    }
+    if (label === 'unexpected extra report') {
+      writeFileSync(join(reportDir, 'TEST-other.xml'), xml(suites[0]));
     }
     const result = spawnSync('java', [verifier, verifierDir],
       {encoding: 'utf8', timeout: 15000});

@@ -29,6 +29,10 @@ jobs:
           # Four actor-step fixtures + fourteen canonical demo fixtures.
           test "$(git ls-files 'src/test/resources/parity/actor-*.ores' | wc -l)" -eq 4
           test "$(git hash-object src/test/resources/parity/actor-coordinator-fork-join.ores)" = "80b8da1ba193b30137efa122d94f30b52dae7d46"
+          # Pin actual Java/Graal Context.eval test classes, not only report labels.
+          test "$(git rev-parse HEAD:src/test/java/dev/oreslang/SourceActorStepWorkflowExecutionTest.java)" = "9a0b96fd7ac05cfa85a1bf74cf80232ae1eebaaa"
+          test "$(git rev-parse HEAD:src/test/java/dev/oreslang/SourceActorDemoWorkflowExecutionTest.java)" = "15e1c164e090417883a841f85a8083d98fc78370"
+          test -z "$(git status --porcelain --untracked-files=normal)"
           echo "NATIVE_GUEST_SOURCE_HEAD=$EXPECTED_SHA"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
@@ -52,7 +56,11 @@ jobs:
             mvn -version
           } > target/native-guest-provenance.txt 2>&1
           node scripts/test-native-guest-reports.mjs 2>&1 | tee target/native-guest-validator.log
-          mvn -B -ntp -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test 2>&1 | tee target/native-guest-maven.log
+          # Discard any prior ignored/cached reports before executing Maven.
+          test ! -L target
+          rm -rf -- target/surefire-reports
+          test ! -e target/surefire-reports
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=SourceActorStepWorkflowExecutionTest,SourceActorDemoWorkflowExecutionTest test 2>&1 | tee target/native-guest-maven.log
           java scripts/VerifyNativeGuestReports.java target/surefire-reports 2>&1 | tee -a target/native-guest-validator.log
       - name: Preserve compiler and guest evidence even on failure
         if: always()

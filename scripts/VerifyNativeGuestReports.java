@@ -36,6 +36,24 @@ public final class VerifyNativeGuestReports {
     public static void main(String[] args) throws Exception {
         if (args.length != 1) throw new IllegalArgumentException("report directory required");
         Path directory = Path.of(args[0]);
+        // An extra Surefire suite is not evidence for either pinned guest suite.
+        // Do not silently ignore an unexpected report in the selected test run.
+        Set<String> expectedFiles = Set.of(
+                "TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml",
+                "TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml");
+        BasicFileAttributes directoryAttrs = Files.readAttributes(
+                directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        require(directoryAttrs.isDirectory() && !Files.isSymbolicLink(directory),
+                "unsafe report directory");
+        Set<String> seen = new HashSet<>();
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, "TEST-*.xml")) {
+            for (Path path : stream) {
+                String name = path.getFileName().toString();
+                require(expectedFiles.contains(name) && seen.add(name),
+                        "unexpected/duplicate Surefire report: " + name);
+            }
+        }
+        require(seen.equals(expectedFiles), "missing expected Surefire report");
         verify(directory, "dev.oreslang.SourceActorStepWorkflowExecutionTest", STEP_CASES);
         verify(directory, "dev.oreslang.SourceActorDemoWorkflowExecutionTest", DEMO_CASES);
         System.out.println("NATIVE_GUEST_REPORTS_VERIFIED cases=18");
@@ -95,6 +113,7 @@ public final class VerifyNativeGuestReports {
             Element c = (Element) cases.item(i);
             require(c.getParentNode() == root, "nested testcase");
             require(c.getAttribute("classname").equals(suite), "wrong testcase class");
+            require(c.getAttribute("status").isBlank(), "unexpected testcase status");
             String name = c.getAttribute("name");
             require(!name.isBlank() && names.add(name), "empty/duplicate testcase");
         }
