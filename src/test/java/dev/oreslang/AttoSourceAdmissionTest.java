@@ -109,6 +109,28 @@ final class AttoSourceAdmissionTest {
         assertEquals("42", out.toString(StandardCharsets.UTF_8));
     }
     @Test
+    void extensionlessAttoImportSelectsCanonicalFileOverLegacyTwin() throws Exception {
+        Path canonical = temp.resolve("answer.atto");
+        Path legacy = temp.resolve("answer.ores");
+        Path entry = temp.resolve("preferred.atto");
+        Files.writeString(canonical, "pub fnc answer(): int { return 42; }");
+        Files.writeString(legacy, "pub fnc answer(): int { return 17; }");
+        Files.writeString(entry, """
+                import fnc answer from "./answer";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals(2, result.units().size());
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void attoPublicClassConstructorAndMutableReceiverLinkAcrossFiles() throws Exception {
         Path library = temp.resolve("column.atto");
         Path entry = temp.resolve("main-column.atto");
