@@ -41,7 +41,8 @@ for stem in "${case_sources[@]}"; do
     die "missing canonical guest or symlink: $stem.atto"
   grep -Fq 'ores.std/testing' "$source" ||
     die "canonical stdlib import missing: $stem.atto"
-  if grep -Eq 'from ["\x27]\.\./stdlib/testing["\x27]' "$source"; then
+  if grep -Fq "from '../stdlib/testing'" "$source" ||
+     grep -Fq 'from "../stdlib/testing"' "$source"; then
     die "guest still directly imports legacy relative stdlib: $stem.atto"
   fi
 done
@@ -56,7 +57,7 @@ grep -Fq 'body.equals("testing.ores")' "$core" ||
   die "legacy explicit suffix fallback was lost"
 
 for workflow in "$ci" "$fast"; do
-  if grep -Eq '(examples/native-testing|tests/test_std_harness_|tests/portable-scalar-v[123]-20261101)\S*\.ores' "$workflow"; then
+  if grep -Eq '(examples/native-testing|tests/test_std_harness_|tests/portable-scalar-v[123]-20261101)[^[:space:]]*\.ores' "$workflow"; then
     die "CI still executes a legacy .ores harness guest"
   fi
   grep -Fq 'examples/native-testing-regressions-40.atto' "$workflow" ||
