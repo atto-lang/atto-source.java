@@ -24,6 +24,11 @@ retroactively.
 The transaction ledger binds on first successful admission to one exact queue
 actor ID. A second queue actor cannot reuse the same ledger.
 
+Ingress and completion storage use private bounded `ChannelRuntime.Channel`
+instances as their sole FIFO buffers; this adds no second pending-writer list or
+parallel scheduler. The transaction ledger owns reservation accounting, while
+the channel primitive owns bounded FIFO storage.
+
 ## Reservation and completion
 
 Each successful admission reserves, before publishing its delivery:
@@ -51,7 +56,8 @@ ActorRuntime transport-freezing boundary.
 - exactly-once completion and rejection of foreign delivery handles;
 - stale expected generation rejection without resource reservation;
 - rejection of ledger reuse across queue actor incarnations; and
-- close, committed FIFO drain and terminal drained state.
+- close, committed FIFO drain and terminal drained state; and
+- FIFO behavior of the ChannelRuntime-backed ingress and completion channels.
 
 The existing `QueueGrantAdmissionFenceTest` and
 `QueueGrantRevocationFenceTest` cover pre-grant admission and revocation of
