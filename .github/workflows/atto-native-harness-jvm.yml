@@ -84,7 +84,7 @@ jobs:
             "$EXPECTED_HEAD" target/surefire-reports
           java -cp "$RUNNER_TEMP/atto-harness-gates" AttoHarnessGuestReceiptVerifier \
             "$EXPECTED_HEAD" target/surefire-reports
-          echo "ATTO_HARNESS_COMPILER_GUEST_JUNIT_ACCEPTED head=$EXPECTED_HEAD methods=22"
+          echo "ATTO_HARNESS_COMPILER_GUEST_JUNIT_ACCEPTED head=$EXPECTED_HEAD methods=23"
       - name: Execute canonical 40-case AttoLang guest and verify exact identities
         shell: bash
         run: |
