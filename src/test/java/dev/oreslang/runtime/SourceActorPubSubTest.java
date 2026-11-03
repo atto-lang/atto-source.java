@@ -222,6 +222,24 @@ final class SourceActorPubSubTest {
     }
 
     @Test
+    void topicAndGroupNamesRejectIsoControlCharacters() {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("valid-group");
+            for (int codePoint : new int[]{0x00, 0x1f, 0x7f, 0x80, 0x85, 0x9f}) {
+                String invalidName = "before" + (char) codePoint + "after";
+                assertThrows(IllegalArgumentException.class,
+                        () -> pubsub.group(invalidName));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalidName, "latest", 1));
+                assertThrows(IllegalArgumentException.class,
+                        () -> group.topic(invalidName));
+            }
+            assertEquals("valid", group.topic("valid", "latest", 1).name());
+        }
+    }
+
+    @Test
     void memberActorCannotCloseTheRuntimePubSubDirectory() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
