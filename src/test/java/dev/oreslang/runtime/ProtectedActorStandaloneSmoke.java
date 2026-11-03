@@ -191,6 +191,90 @@ public final class ProtectedActorStandaloneSmoke {
         cases++;
     }
 
+    private static void foreignRuntimeRefNeverCrossesDirectory() {
+        try (var first = new LocalVirtualActorI64("tenant-a", "Worker", 1, 1,
+                     ignored -> message -> { }, notice -> { throw new AssertionError("CONTROL"); });
+             var second = new LocalVirtualActorI64("tenant-b", "Worker", 1, 1,
+                     ignored -> message -> { }, notice -> { throw new AssertionError("CONTROL"); })) {
+            var ref = first.resolve("one");
+            try {
+                second.try_send(ref, 1);
+                throw new AssertionError("foreign directory accepted a reference");
+            } catch (IllegalArgumentException expected) {
+                // A handle belongs to exactly one local registry and directory.
+            }
+            var accepted = first.try_send(ref, 2);
+            check(accepted.admitted() && first.run_one(ref), "owning directory still works");
+            check(accepted.completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "owning directory receipt");
+        }
+        cases++;
+    }
+
+    private static void concurrentBackpressureAndSettlement() throws Exception {
+        final int producerCount = 6;
+        final int perProducer = 400;
+        final int total = producerCount * perProducer;
+        var executed = new AtomicInteger();
+        var disposed = new AtomicInteger();
+        var failure = new AtomicReference<Throwable>();
+        var start = new CountDownLatch(1);
+        var done = new CountDownLatch(producerCount);
+        var completions = java.util.Collections.synchronizedList(
+                new ArrayList<java.util.concurrent.CompletableFuture<LocalVirtualActorI64.Outcome>>());
+
+        try (var runtime = new LocalVirtualActorI64("app", "Stress", 1, 8,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) { executed.incrementAndGet(); }
+                    @Override public void close() { disposed.incrementAndGet(); }
+                }, notice -> { throw new AssertionError("unexpected CONTROL during stress"); })) {
+            var ref = runtime.resolve("one");
+            var producers = new Thread[producerCount];
+            for (int i = 0; i < producers.length; i++) {
+                producers[i] = new Thread(() -> {
+                    try {
+                        start.await();
+                        for (int message = 0; message < perProducer;) {
+                            var result = runtime.try_send(ref, message);
+                            if (result.admitted()) {
+                                completions.add(result.completion());
+                                message++;
+                            } else if (result.kind() == LocalVirtualActorI64.AdmissionKind.BACKPRESSURE
+                                    || result.kind() == LocalVirtualActorI64.AdmissionKind.ACTIVATING) {
+                                Thread.onSpinWait();
+                            } else {
+                                throw new AssertionError("unexpected concurrent admission: " + result.kind());
+                            }
+                        }
+                    } catch (Throwable problem) {
+                        failure.compareAndSet(null, problem);
+                    } finally {
+                        done.countDown();
+                    }
+                }, "protected-stress-producer-" + i);
+                producers[i].start();
+            }
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+            start.countDown();
+            while (done.getCount() != 0 || executed.get() < total) {
+                if (failure.get() != null) throw new AssertionError("producer failed", failure.get());
+                if (System.nanoTime() >= deadline) throw new AssertionError("concurrent admission timed out");
+                if (!runtime.run_one(ref)) Thread.onSpinWait();
+            }
+            for (Thread producer : producers) producer.join(5_000);
+            for (Thread producer : producers)
+                check(!producer.isAlive(), "producer physically retired");
+            check(completions.size() == total, "every producer received a receipt");
+            for (var completion : completions)
+                check(completion.join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                        "every accepted message was settled");
+            check(executed.get() == total, "exactly once per admitted message");
+        }
+        check(disposed.get() == 1, "one physical disposal after stress");
+        cases++;
+    }
+
     public static void main(String[] args) throws Exception {
         scalarLeaseAndOverflow();
         closeRevokesOutstandingGateLoans();
@@ -199,6 +283,8 @@ public final class ProtectedActorStandaloneSmoke {
         completionAllowsReentrantAdmit();
         missingControlPreservesAcceptedTurn();
         physicalHandlerBlocksTeardown();
+        foreignRuntimeRefNeverCrossesDirectory();
+        concurrentBackpressureAndSettlement();
         System.out.println("PROTECTED_ACTOR_JDK21_SMOKE|passed=" + cases);
     }
 }
