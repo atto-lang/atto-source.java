@@ -31,6 +31,8 @@ jobs:
           test -f examples/atto-canonical/.atto.pkg.toml
           test -f examples/atto-canonical/src/main.atto
           test -f examples/atto-canonical/src/value.atto
+          test -f scripts/verify-atto-exact-head-source.sh
+          bash scripts/verify-atto-exact-head-source.sh
       - name: Set up GraalVM JDK 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -43,7 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=OresProjectConfigTest,AttoMainAdmissionTest,AttoSourceAdmissionTest test
+          mvn -B -ntp -Dtest=OresProjectConfigTest,AttoMainAdmissionTest,AttoSourceAdmissionTest,CanonicalAttoResourcePackagingTest test
           echo 'ATTO_CANONICAL_JAVA_GUEST_JUNIT=PASS'
       - name: Check canonical .atto package with compiler CLI
         shell: bash
@@ -60,6 +62,5 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$ATTO_EXPECTED_HEAD"
           test "$(git rev-parse 'HEAD^{tree}')" = "$(git write-tree)"
-          git diff --exit-code -- .
-          git diff --cached --exit-code -- .
+          bash scripts/verify-atto-exact-head-source.sh
           echo 'ATTO_CANONICAL_SOURCE_IDENTITY_AFTER=PASS'
