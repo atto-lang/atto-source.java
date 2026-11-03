@@ -1,0 +1,16 @@
+// AttoLang guarded mutable-sharing fixture: actual compiler and runtime, not a mock.
+define class Counter as
+  pub let int value = 1;
+end
+
+pub routine main(): void {
+  val mutex = SharedMutex.new(new Counter());
+  val alias = rt mut share mutex;
+  val guard = alias.lock();
+  guard.value = 9;
+  guard.release();
+  val observed = mutex.lock();
+  stdio.stdout.write(observed.value);
+  observed.release();
+  return;
+}
