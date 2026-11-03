@@ -1633,6 +1633,17 @@ public final class Parser {
                 result.add(new Ast.Annotation("$compiler.inject.mutable-state-v0", List.of()));
                 continue;
             }
+            // These names carry storage, provider-resolution and borrowing
+            // semantics. Only the exact, explicitly lowered owned-class
+            // Inject form above is supported in v0. Do not let alternate
+            // spellings survive as inert user annotation metadata on methods,
+            // fields, actors, classes or callables.
+            if (List.of("Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer").contains(name)) {
+                throw error(previous(), "STATE_INJECTION_UNSUPPORTED: @" + name
+                        + " requires typed state ownership, provider resolution"
+                        + " and compiler-checked AOT lowering");
+            }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
             if (match(LT)) close = GT;
