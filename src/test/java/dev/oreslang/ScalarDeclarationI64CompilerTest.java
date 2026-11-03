@@ -60,7 +60,7 @@ final class ScalarDeclarationI64CompilerTest {
 
     @Test void contextualWordsMustBeIdentifierTokensNotQuotedStringLookalikes() {
         for (String word : java.util.List.of("state", "container", "int", "handle_state", "critical", "write")) {
-            String spoofed = COUNTER.replaceFirst("\\\\b" + word + "\\\\b", "\\\"" + word + "\\\"");
+            String spoofed = COUNTER.replace(word, Character.toString(34) + word + Character.toString(34));
             var error = assertThrows(IllegalArgumentException.class,
                     () -> ScalarDeclarationI64Compiler.compile(spoofed), word);
             assertTrue(error.getMessage().contains("SCALAR_DECLARATION_UNSUPPORTED"), word);
