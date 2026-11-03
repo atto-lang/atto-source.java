@@ -111,9 +111,15 @@ final class AotV2ManifestPolicy {
     }
     private static long safeSize(Object value){
         if(!(value instanceof BigDecimal n))throw new IllegalArgumentException("size_bytes must be exact JSON number");
+        if(n.signum()<=0)fail("unsafe size_bytes");
+        // Reject huge exponents before creating a potentially enormous BigInteger.
+        // Strip trailing zeros so exact 128.000... remains a valid integer.
+        BigDecimal reduced=n.stripTrailingZeros();
+        if(reduced.scale()>0 || (long)reduced.precision()-reduced.scale()>16L)
+            fail("noninteger or oversized size_bytes");
         final BigInteger i;
-        try{i=n.toBigIntegerExact();}catch(ArithmeticException e){throw new IllegalArgumentException("V2 fractional size_bytes",e);}
-        if(i.signum()<=0||i.compareTo(BigInteger.valueOf(MAX_SIZE))>0)fail("unsafe size_bytes");
+        try{i=reduced.toBigIntegerExact();}catch(ArithmeticException e){throw new IllegalArgumentException("V2 fractional size_bytes",e);}
+        if(i.compareTo(BigInteger.valueOf(MAX_SIZE))>0)fail("unsafe size_bytes");
         return i.longValueExact();
     }
     private static void fail(String issue){throw new IllegalArgumentException("V2 reject: "+issue);}
