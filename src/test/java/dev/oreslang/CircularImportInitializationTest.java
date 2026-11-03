@@ -77,8 +77,8 @@ final class CircularImportInitializationTest {
         List<List<String>> groups = build.initializationGroups();
         assertEquals(1, groups.size(), "the A<->B cycle should form one initialization barrier");
         assertEquals(2, groups.getFirst().size());
-        assertTrue(groups.getFirst().contains(a.toAbsolutePath().normalize().toString().replace('\\', '/')));
-        assertTrue(groups.getFirst().contains(b.toAbsolutePath().normalize().toString().replace('\\', '/')));
+        assertTrue(groups.getFirst().contains("project/a.ores"));
+        assertTrue(groups.getFirst().contains("project/b.ores"));
     }
 
     @Test
