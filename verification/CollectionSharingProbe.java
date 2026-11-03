@@ -148,6 +148,20 @@ public final class CollectionSharingProbe {
     require(ScopedTaskReadAuthority.freezeForOwnershipCheck(program, task, 991,
         new ScopedTaskReadAuthority.AllocationIdentity("PROCESS", "root", 27, 1, true),
         List.of(), tuple) != null, "lost scalar tuple READ admission");
+    // Do not feed attacker-sized metadata into recursive auto-trait
+    // inference before the bounded independent thread-safety proof.
+    Types.Type deep = scalar;
+    for (int i = 0; i < 4096; i++) {
+      deep = new Types.Named("Option", List.of(deep));
+    }
+    try {
+      ScopedTaskReadAuthority.freezeForOwnershipCheck(program, task, 991,
+          new ScopedTaskReadAuthority.AllocationIdentity("PROCESS", "root", 27, 1, true),
+          List.of(), deep);
+      throw new AssertionError("deep type forged READ authority");
+    } catch (IllegalArgumentException e) {
+      require(e.getMessage().contains("verified Sync"), e.getMessage());
+    }
     System.out.println("PASS: " + checks + " collection sharing / scoped READ / frontend checks");
   }
 }
