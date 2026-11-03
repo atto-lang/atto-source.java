@@ -213,7 +213,7 @@ public final class OresProjectConfig {
     }
 
     /**
-     * Resolve one Oreslang filesystem import.
+     * Resolve one AttoLang filesystem import.
      *
      * <ul>
      *   <li>java: imports are not filesystem imports.</li>
@@ -257,7 +257,11 @@ public final class OresProjectConfig {
         if (Files.isRegularFile(normalized)) return Optional.of(normalized);
 
         String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+        if (text.endsWith(".atto") || text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+
+        // Canonical AttoLang files win when both the new and legacy extensions exist.
+        Path atto = Path.of(normalized.toString() + ".atto");
+        if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
 
         Path ores = Path.of(normalized.toString() + ".ores");
         if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
