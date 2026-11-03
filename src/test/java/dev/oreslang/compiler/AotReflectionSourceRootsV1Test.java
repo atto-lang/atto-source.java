@@ -173,4 +173,22 @@ final class AotReflectionSourceRootsV1Test {
         assertThrows(IllegalArgumentException.class, () -> AotReflectionSourceRootsV1.lowerChecked(
                 checked, "example@revision1", roots));
     }
+    @Test
+    void attoFixtureIsParsedAndLoweredWithoutRuntimeReflection() throws java.io.IOException {
+        byte[] sourceBytes;
+        try (var fixture = getClass().getResourceAsStream("/aot-reflection/closed_nominal.atto")) {
+            assertNotNull(fixture, "the real .atto source fixture must be packaged as a test resource");
+            sourceBytes = fixture.readAllBytes();
+        }
+        byte[] encoded = OresCompiler.compileAotReflectionTableV1(
+                new String(sourceBytes, StandardCharsets.UTF_8),
+                "example@revision1", List.of("__root__.Person"));
+        var table = AotReflectionTableV1Reader.decode(encoded);
+        assertEquals(1, table.types().size());
+        assertEquals("__root__.Person", table.types().getFirst().resolvedSymbol());
+        assertEquals(List.of("visible"), table.types().getFirst().publicFields()
+                .stream().map(AotReflectionTableV1Reader.FieldDescriptor::name).toList());
+        assertFalse(new String(encoded, StandardCharsets.UTF_8).contains("hidden_secret_marker"));
+    }
+
 }
