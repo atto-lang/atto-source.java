@@ -37,6 +37,8 @@ record MacroExportArtifact(
         Objects.requireNonNull(macroName, "macro name");
         Objects.requireNonNull(canonicalContent, "canonical macro content");
         Objects.requireNonNull(contentSha256, "macro content digest");
+        validateName(ownerModule, "macro owner module");
+        validateName(macroName, "macro declaration name");
         if (canonicalContent.length() > MacroCanonicalIdentity.MAX_BYTES) {
             throw new IllegalArgumentException("public macro artifact exceeds bounded content bytes");
         }
@@ -108,6 +110,9 @@ record MacroExportArtifact(
                 throw invalid("invalid " + label);
             }
         }
+        // A programmatic AST or untrusted envelope cannot smuggle malformed
+        // Unicode through identifiers the source lexer would have rejected.
+        strictUtf8(value);
     }
 
     private static byte[] strictUtf8(String content) {
