@@ -42,8 +42,12 @@ final class AotReflectionTableV1 {
     record ResolvedType(String packageIdentity, String resolvedSymbol,
                         List<String> genericArguments, List<Field> fields) {
         ResolvedType {
+            // Reject attacker-sized collections BEFORE copying them.
             if (genericArguments == null || fields == null) {
                 throw new IllegalArgumentException("null resolved type collection");
+            }
+            if (genericArguments.size() > MAX_GENERICS || fields.size() > MAX_FIELDS) {
+                throw new IllegalArgumentException("type exceeds metadata bounds");
             }
             try {
                 genericArguments = List.copyOf(genericArguments);
