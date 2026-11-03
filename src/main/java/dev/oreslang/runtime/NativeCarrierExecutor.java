@@ -387,6 +387,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
         Objects.requireNonNull(unit, "unit");
         if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
+        // ExecutorService.awaitTermination cannot succeed before shutdown.
+        if (!shutdown.get()) return false;
         long nanos = unit.toNanos(timeout);
         long deadline = System.nanoTime() + nanos;
         for (;;) {
@@ -414,6 +416,15 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     @Override
     public void close() {
         shutdownNow();
+    }
+
+    /** Host-only diagnostic: native Java-loop registrations, not pthread joins. */
+    int registeredCarrierCount() {
+        int count = 0;
+        for (int slot = 0; slot < carrierThreads.length(); slot++) {
+            if (carrierThreads.get(slot) != null) count++;
+        }
+        return count;
     }
 
     public int getActiveCount() { return activeCount.get(); }
