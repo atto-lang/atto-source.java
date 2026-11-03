@@ -48,6 +48,13 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         public boolean admitted() { return kind == AdmissionKind.ADMITTED; }
     }
 
+    // Immutable, payload-free denial responses are reused across callers.
+    // Backpressure must not allocate completion futures or guest envelopes.
+    private static final SendResult BACKPRESSURE = new SendResult(AdmissionKind.BACKPRESSURE, null);
+    private static final SendResult ACTIVATING = new SendResult(AdmissionKind.ACTIVATING, null);
+    private static final SendResult CLOSED = new SendResult(AdmissionKind.CLOSED, null);
+    private static final SendResult UNAVAILABLE = new SendResult(AdmissionKind.UNAVAILABLE, null);
+
     private static final class Envelope {
         final long value;
         VirtualActorActivationRegistry.Admission receipt;
@@ -80,6 +87,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     private final Object directoryLock = new Object();
     private final VirtualActorActivationRegistry registry;
     private final String declaration;
+    private final int mailboxCapacity;
     private final Function<VirtualActorActivationRegistry.Identity, Turn> factory;
     private final Consumer<Notice> control;
     private final Map<VirtualActorActivationRegistry.Identity, Slot> slots = new HashMap<>();
@@ -93,6 +101,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                                Function<VirtualActorActivationRegistry.Identity, Turn> factory,
                                Consumer<Notice> control) {
         this.registry = new VirtualActorActivationRegistry(domain, maxIdentities, mailboxCapacity);
+        this.mailboxCapacity = mailboxCapacity;
         this.declaration = Objects.requireNonNull(declaration);
         this.factory = Objects.requireNonNull(factory);
         this.control = Objects.requireNonNull(control);
@@ -168,25 +177,30 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
 
     public SendResult try_send(Ref reference, long value) {
         Slot slot = requireLocal(reference);
-        if (closed || closing) return new SendResult(AdmissionKind.CLOSED, null);
+        if (closed || closing) return CLOSED;
         if (!activate(reference)) {
             synchronized (slot) {
-                if (closed || closing) return new SendResult(AdmissionKind.CLOSED, null);
+                if (closed || closing) return CLOSED;
                 if (slot.initializing)
-                    return new SendResult(AdmissionKind.ACTIVATING, null);
+                    return ACTIVATING;
                 // Publication may have finished between the failed activate
                 // attempt and acquiring this slot monitor. Do not falsely
                 // classify an already-published incarnation as unavailable:
                 // let the ordinary bounded admission path handle it below.
                 if (slot.failed || slot.retiring || slot.activation == null
                         || !slot.activation.active())
-                    return new SendResult(AdmissionKind.UNAVAILABLE, null);
+                    return UNAVAILABLE;
             }
         }
         synchronized (slot) {
             if (closed || closing || slot.failed || slot.retiring
                     || slot.activation == null || !slot.activation.active())
-                return new SendResult(AdmissionKind.UNAVAILABLE, null);
+                return UNAVAILABLE;
+            // The slot monitor protects all accepted and in-flight envelopes.
+            // Reject a full mailbox before allocating a CompletableFuture or
+            // temporary envelope. The registry remains authoritative for
+            // generation-fenced admission and quota accounting.
+            if (slot.pending.size() >= mailboxCapacity) return BACKPRESSURE;
             // Allocate the envelope, future and returned handle BEFORE the
             // registry accepts the turn. Queue the provisional envelope under
             // the slot monitor, then atomically acquire its admission ticket.
@@ -207,7 +221,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
             if (ticket == null) {
                 if (slot.pending.removeLast() != envelope)
                     throw new IllegalStateException("virtual actor backpressure rollback corrupted");
-                return new SendResult(AdmissionKind.BACKPRESSURE, null);
+                return BACKPRESSURE;
             }
             envelope.receipt = ticket;
             return accepted;
