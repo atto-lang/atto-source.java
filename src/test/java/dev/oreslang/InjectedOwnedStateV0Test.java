@@ -214,6 +214,17 @@ final class InjectedOwnedStateV0Test {
     }
 
     @Test
+    void v0_owned_state_cannot_hide_static_class_storage_paths() {
+        parseReject("""
+                @Inject(MutableStateContainer())
+                define class Counter as
+                  state { count: int = 0; }
+                  static fnc global_count(): int { return 0; }
+                end
+                """, "forbids static class functions");
+    }
+
+    @Test
     void no_uninitialized_or_unproved_nested_heap_fields() {
         parseReject("""
                 @Inject(MutableStateContainer())
