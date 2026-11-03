@@ -71,23 +71,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import glob
-          import xml.etree.ElementTree as ET
-          paths = sorted(glob.glob("target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml"))
-          if len(paths) != 2:
-              raise SystemExit(f"Expected 2 exact durable JUnit XML reports, found {len(paths)}: {paths}")
-          total = failed = errors = skipped = 0
-          for path in paths:
-              root = ET.parse(path).getroot()
-              total += int(root.attrib.get("tests", 0))
-              failed += int(root.attrib.get("failures", 0))
-              errors += int(root.attrib.get("errors", 0))
-              skipped += int(root.attrib.get("skipped", 0))
-          print(f"DURABLE_M0_JUNIT|tests={total}|failures={failed}|errors={errors}|skipped={skipped}")
-          if total < 28 or failed or errors or skipped:
-              raise SystemExit("Durable M0 JUnit not fully executed/passing")
-          PY
+          shopt -s nullglob
+          reports=(target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml)
+          if (( ${#reports[@]} != 2 )); then
+            printf 'Expected 2 durable JUnit XML reports, found %s\n' "${#reports[@]}" >&2
+            exit 1
+          fi
+          total=0
+          failed=0
+          errors=0
+          skipped=0
+          for report in "${reports[@]}"; do
+            test -s "$report"
+            # Surefire testsuite attributes occur on the opening element.
+            for attribute in tests failures errors skipped; do
+              value="$(grep -o -m1 "${attribute}=\"[0-9]*\"" "$report" | head -n1 | cut -d '"' -f2)"
+              [[ "$value" =~ ^[0-9]+$ ]] || exit 1
+              case "$attribute" in
+                tests) total=$((total + value)) ;;
+                failures) failed=$((failed + value)) ;;
+                errors) errors=$((errors + value)) ;;
+                skipped) skipped=$((skipped + value)) ;;
+              esac
+            done
+          done
+          echo "DURABLE_M0_JUNIT|tests=$total|failures=$failed|errors=$errors|skipped=$skipped"
+          if (( total < 28 || failed != 0 || errors != 0 || skipped != 0 )); then
+            echo "Durable M0 JUnit not fully executed/passing" >&2
+            exit 1
+          fi
 
       - name: Preserve exact-head JUnit receipts
         if: always()
