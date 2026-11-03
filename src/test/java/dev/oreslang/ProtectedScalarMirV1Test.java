@@ -16,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * keeping the general TypeChecker fail-closed for unlowered ownership effects.
  */
 final class ProtectedScalarMirV1Test {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temp;
+
     private static final String COUNTER = """
             define state container Counter as
               state { let int count: 0; }
@@ -135,25 +137,56 @@ final class ProtectedScalarMirV1Test {
         // The .atto files are read through the bounded, strict UTF-8 gate.
         // Only the dedicated opt-in scalar MIR is eligible to execute.
         String source = dev.oreslang.runtime.BoundedSourceReader.readUtf8(sourcePath);
-        var plan = OresCompiler.compileProtectedScalarI64(source);
+        var plan = OresCompiler.compileProtectedScalarI64(sourcePath);
         assertTrue(plan.readOnly());
         try (var state = plan.new_state_container()) {
             assertEquals(41L, plan.invoke(state, -1));
             assertEquals(41L, state.tryRead().orElseThrow());
         }
         var mutation = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.compileProtectedScalarI64(
-                        dev.oreslang.runtime.BoundedSourceReader.readUtf8(mutationPath)));
+                () -> OresCompiler.compileProtectedScalarI64(mutationPath));
         assertTrue(mutation.getMessage().contains("E_CRITICAL_READ_MUTATION"),
                 mutation::toString);
         var escape = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.compileProtectedScalarI64(
-                        dev.oreslang.runtime.BoundedSourceReader.readUtf8(escapePath)));
+                () -> OresCompiler.compileProtectedScalarI64(escapePath));
         assertTrue(escape.getMessage().contains("E_STATE_BORROW_ESCAPE"),
                 escape::toString);
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source),
                 "general protected-state MIR remains deliberately closed");
+    }
+
+    @Test void scalarAttoFileAdmissionRejectsBudgetSymlinkAndMalformedUtf8() throws Exception {
+        var legacy = temp.resolve("not-canonical.ores");
+        java.nio.file.Files.writeString(legacy, READ_COUNTER);
+        var wrongExtension = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileProtectedScalarI64(legacy));
+        assertTrue(wrongExtension.getMessage().contains("requires .atto"));
+
+        // This must fail the scalar source-budget check before Parser.parse.
+        String oversized = " ".repeat(8193) + READ_COUNTER;
+        var sourceFailure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileProtectedScalarI64(oversized));
+        assertTrue(sourceFailure.getMessage().contains("source budget exceeded"),
+                sourceFailure::toString);
+        var largeFile = temp.resolve("oversized.atto");
+        java.nio.file.Files.writeString(largeFile, oversized);
+        var fileFailure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileProtectedScalarI64(largeFile));
+        assertTrue(fileFailure.getMessage().contains("source budget exceeded"),
+                fileFailure::toString);
+
+        var malformed = temp.resolve("malformed.atto");
+        java.nio.file.Files.write(malformed, new byte[] {(byte) 0xC0, (byte) 0xAF});
+        assertThrows(java.nio.charset.MalformedInputException.class,
+                () -> OresCompiler.compileProtectedScalarI64(malformed));
+
+        var original = temp.resolve("original.atto");
+        var linked = temp.resolve("symlink.atto");
+        java.nio.file.Files.writeString(original, READ_COUNTER);
+        java.nio.file.Files.createSymbolicLink(linked, original.getFileName());
+        assertThrows(SecurityException.class,
+                () -> OresCompiler.compileProtectedScalarI64(linked));
     }
 
     @Test void actualParserAndCompilerEntryPointProduceCheckedMIR() {
