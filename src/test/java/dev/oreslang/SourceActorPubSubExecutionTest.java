@@ -74,6 +74,18 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors() throws Exception {
+        // This executes compiled guest actor receive handlers, unlike a
+        // host-only EventBus unit test. It does not certify portable v1
+        // synchronous try_publish or sequence-bearing delivery envelopes.
+        assertEquals(
+                "ready|ready|event-42|event-42",
+                run(
+                        fixture("actor-pubsub-legacy-fanout-two.atto"),
+                        "actor-pubsub-legacy-fanout-two.atto"));
+    }
+
+    @Test
     void actorMayJoinMultipleGroupsAndLeavingOnePreservesTheOther() throws Exception {
         assertEquals(
                 "ready-b|b-still-live",
