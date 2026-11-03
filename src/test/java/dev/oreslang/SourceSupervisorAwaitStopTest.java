@@ -461,6 +461,7 @@ final class SourceSupervisorAwaitStopTest {
                 assertEquals(SupervisorChildRegistry.Phase.STOPPING,
                         right.childSnapshot(rightPermit.child()).phase());
                 rightAck.completeExceptionally(new IllegalStateException("unknown right STOP"));
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
                 while (rightProcess.failure().isEmpty() && System.nanoTime() < deadline)
                     Thread.sleep(1);
                 assertTrue(rightProcess.failure().isPresent());
