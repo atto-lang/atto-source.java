@@ -65,12 +65,24 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         }
     }
 
-    public record SendResult(AdmissionKind kind, Completion completion) {
-        public SendResult {
-            Objects.requireNonNull(kind);
+    /**
+     * An admission result is issued only by this runtime. Keep the constructor
+     * private: a public record canonical constructor lets callers fabricate an
+     * ADMITTED response using a different message's completion handle.
+     */
+    public static final class SendResult {
+        private final AdmissionKind kind;
+        private final Completion completion;
+
+        private SendResult(AdmissionKind kind, Completion completion) {
+            this.kind = Objects.requireNonNull(kind);
             if ((kind == AdmissionKind.ADMITTED) != (completion != null))
                 throw new IllegalArgumentException("only admitted turns have completion handles");
+            this.completion = completion;
         }
+
+        public AdmissionKind kind() { return kind; }
+        public Completion completion() { return completion; }
         public boolean admitted() { return kind == AdmissionKind.ADMITTED; }
     }
 
