@@ -6,6 +6,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -262,5 +267,119 @@ final class ActorPoolLazyStartTest {
         } finally {
             dispatcher.shutdownNow();
         }
+    }
+
+    /** A JVM lane that refuses prestart must not be mistaken for a live actor carrier. */
+    @Test
+    void falsePrestartFailsClosedWithoutPublishingLane() {
+        var lane = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(16)) {
+            @Override public boolean prestartCoreThread() { return false; }
+        };
+        var dispatcher = new ActorAffinityDispatcher(1, 16, new int[0], ignored -> lane, true);
+        try {
+            assertThrows(RejectedExecutionException.class, () -> dispatcher.ensureLaneStarted(0));
+            assertEquals(0, dispatcher.startedLanes());
+            assertEquals(0, lane.getPoolSize());
+        } finally {
+            dispatcher.shutdownNow();
+        }
+    }
+
+    /** Close cannot pass an in-flight first-worker bootstrap and then admit a new worker. */
+    @Test
+    void firstLaneStartAndShutdownShareOneLifecycleGate() throws Exception {
+        CountDownLatch prestartEntered = new CountDownLatch(1);
+        CountDownLatch releasePrestart = new CountDownLatch(1);
+        var lane = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(16)) {
+            @Override public boolean prestartCoreThread() {
+                prestartEntered.countDown();
+                try {
+                    if (!releasePrestart.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("prestart admission hung");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("prestart interrupted", interrupted);
+                }
+                return super.prestartCoreThread();
+            }
+        };
+        var dispatcher = new ActorAffinityDispatcher(1, 16, new int[0], ignored -> lane, true);
+        ExecutorService actors = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> start = actors.submit(() -> dispatcher.ensureLaneStarted(0));
+            assertTrue(prestartEntered.await(5, TimeUnit.SECONDS));
+            Future<List<Runnable>> shutdown = actors.submit(dispatcher::shutdownNow);
+            releasePrestart.countDown();
+            start.get(5, TimeUnit.SECONDS);
+            assertTrue(shutdown.get(5, TimeUnit.SECONDS).isEmpty());
+            assertTrue(lane.isShutdown());
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
+            assertThrows(RejectedExecutionException.class, () -> dispatcher.ensureLaneStarted(0));
+        } finally {
+            releasePrestart.countDown();
+            actors.shutdownNow();
+            dispatcher.shutdownNow();
+        }
+    }
+
+    /** Every successful enqueue must either execute or be returned by shutdownNow(). */
+    @Test
+    void nativeCloseVersusSubmitAccountsForEveryAcceptedRunnable() throws Exception {
+        withNativeCarriers(() -> {
+            for (int round = 0; round < 8; ++round) {
+                var executor = new NativeCarrierExecutor(1, 1, 512,
+                        "ores-lazy-shutdown-race-" + round + "-");
+                ExecutorService producers = Executors.newFixedThreadPool(8);
+                CountDownLatch entered = new CountDownLatch(1);
+                CountDownLatch release = new CountDownLatch(1);
+                try {
+                    executor.execute(() -> {
+                        entered.countDown();
+                        try { release.await(5, TimeUnit.SECONDS); }
+                        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                    });
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+                    class Tagged implements Runnable {
+                        private final AtomicInteger executions = new AtomicInteger();
+                        @Override public void run() { executions.incrementAndGet(); }
+                    }
+                    var admitted = Collections.synchronizedList(new ArrayList<Tagged>());
+                    CountDownLatch go = new CountDownLatch(1);
+                    List<Future<?>> submissions = new ArrayList<>();
+                    for (int i = 0; i < 256; ++i) {
+                        submissions.add(producers.submit(() -> {
+                            go.await();
+                            Tagged task = new Tagged();
+                            try {
+                                executor.execute(task);
+                                admitted.add(task);
+                            } catch (RejectedExecutionException closed) {
+                                // Close or capacity may win admission. Rejection owns no task.
+                            }
+                            return null;
+                        }));
+                    }
+                    go.countDown();
+                    List<Runnable> abandoned = executor.shutdownNow();
+                    for (Future<?> submission : submissions) submission.get(10, TimeUnit.SECONDS);
+                    release.countDown();
+                    assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+                    Set<Runnable> discarded = Collections.newSetFromMap(new IdentityHashMap<>());
+                    discarded.addAll(abandoned);
+                    for (Tagged task : admitted) {
+                        assertEquals(1, task.executions.get() + (discarded.contains(task) ? 1 : 0),
+                                "accepted native task was lost or executed more than once");
+                    }
+                } finally {
+                    release.countDown();
+                    producers.shutdownNow();
+                    executor.shutdownNow();
+                }
+            }
+        });
     }
 }
