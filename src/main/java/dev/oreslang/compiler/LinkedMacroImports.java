@@ -97,6 +97,20 @@ public final class LinkedMacroImports {
                 throw new IllegalArgumentException(
                         "macro import source missing after graph resolution: " + sourceId);
             }
+            // Ambient import roots (including ORESLANG_PATH) have no
+            // independent owner trust attestation in this M1 slice. A resolved
+            // external/<n>/ unit is not authority to execute compile-time
+            // macro declarations; ordinary runtime imports remain separate.
+            boolean exportsMacros = source.modules().stream()
+                    .flatMap(module -> module.declarations().stream())
+                    .anyMatch(declaration -> declaration instanceof Ast.MacroDecl macro
+                            && macro.visibility() == Ast.Visibility.PUBLIC);
+            if (sourceId.startsWith("external/") && exportsMacros) {
+                throw new IllegalArgumentException(
+                        "public compile-time macros from external import roots require "
+                                + "verified source ownership; ambient import path authority denied");
+            }
+
             // The import resolution map is an already-linked fact, but not
             // authority to bind compiler-only macros to ambient host paths.
             // Runtime imports may retain legacy absolute spelling; importing
@@ -104,10 +118,7 @@ public final class LinkedMacroImports {
             String importPath = imported.path().replace('\\', '/');
             if ((importPath.startsWith("/")
                     || importPath.matches("^[A-Za-z]:/.*"))
-                    && source.modules().stream()
-                            .flatMap(module -> module.declarations().stream())
-                            .anyMatch(declaration -> declaration instanceof Ast.MacroDecl macro
-                                    && macro.visibility() == Ast.Visibility.PUBLIC)) {
+                    && exportsMacros) {
                 throw new IllegalArgumentException(
                         "public compile-time macros cannot be imported from an "
                                 + "absolute host path; use a portable .atto module import");
