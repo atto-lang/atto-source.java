@@ -224,8 +224,12 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                     slot.incarnation != activation.incarnation)
                 throw new IllegalStateException("inactive virtual actor activation");
             if (slot.outstanding == mailboxCapacity) return null;
+            // Construct the admission receipt BEFORE incrementing the accepted
+            // count. An allocation failure must not strand an unobservable
+            // outstanding credit that blocks shutdown and reincarnation.
+            Admission receipt = new Admission(slot, slot.incarnation);
             slot.outstanding++;
-            return new Admission(slot, slot.incarnation);
+            return receipt;
         }
     }
 
