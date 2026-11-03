@@ -9,6 +9,7 @@ on:
       - 'src/main/java/dev/oreslang/config/OresProjectConfig.java'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/java/dev/oreslang/config/OresProjectConfigTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeCoreLibraryTest.java'
       - 'src/test/java/dev/oreslang/ActorSyncStdlibTest.java'
       - 'src/test/resources/actor-sync-v1/**'
       - '.github/workflows/actor-sync-source-guest.yml'
@@ -54,5 +55,5 @@ jobs:
       - name: Execute Oreslang guest progress fixture with JUnit
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorSyncStdlibTest,OresProjectConfigTest test
+          mvn -B -ntp -Dtest=ActorSyncStdlibTest,OresProjectConfigTest,NativeCoreLibraryTest test
           echo "ACTOR_SYNC_SOURCE_GUEST_PROGRESS_ONLY=${{ github.event.pull_request.head.sha || github.sha }}"
