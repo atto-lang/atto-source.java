@@ -271,6 +271,32 @@ final class InjectedOwnedStateV0Test {
     }
 
     @Test
+    void unsupported_injection_annotations_never_become_inert_metadata() {
+        for (String annotation : new String[] {
+                "@Inject(SessionState)",
+                "@Inject",
+                "@Inject<MutableStateContainer()>",
+                "@StateBacked(MutableStateContainer())",
+                "@MutableStateContainer()",
+                "@StateContainer()"
+        }) {
+            parseReject(annotation + "\n" + "define class Counter as end",
+                    "STATE_INJECTION_UNSUPPORTED:");
+            parseReject(annotation + "\n" + "pub fnc main(): int { return 42; }",
+                    "STATE_INJECTION_UNSUPPORTED:");
+        }
+    }
+
+    @Test
+    void injection_names_in_comments_do_not_trigger_capability_errors() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                // @Inject(SessionState) is a comment, not a provider.
+                // @StateBacked(MutableStateContainer()) is not an annotation.
+                pub fnc main(): int { return 42; }
+                """));
+    }
+
+    @Test
     void malformed_annotation_parameters_are_rejected() {
         parseReject("""
                 @Inject(MutableStateContainer(scope = #singleton))
