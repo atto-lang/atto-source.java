@@ -171,6 +171,37 @@ final class QueueAdmissionTransactionTest {
     }
 
 
+
+    @Test
+    void channelBackedIngressAndCompletionRemainFifo() {
+        QueueAdmissionTransaction<String> transaction =
+                new QueueAdmissionTransaction<>(3, 3);
+        ActorRuntime.ActorId owner = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+
+        for (int index = 1; index <= 3; index++) {
+            assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED,
+                    transaction.admitAuthorized(
+                            owner, sender, index, transaction.generation(),
+                            "payload-" + index).status());
+        }
+        assertEquals("payload-1", transaction.pollDelivery().orElseThrow().payload());
+        var second = transaction.pollDelivery().orElseThrow();
+        var third = transaction.pollDelivery().orElseThrow();
+        assertEquals("payload-2", second.payload());
+        assertEquals("payload-3", third.payload());
+
+        // Complete out of order to ensure completion FIFO reflects the order
+        // in which the runtime publishes terminal results.
+        transaction.complete(third, QueueAdmissionTransaction.CompletionStatus.CONSUMED);
+        transaction.complete(second, QueueAdmissionTransaction.CompletionStatus.FAILED);
+        var firstCompletion = transaction.pollCompletion().orElseThrow();
+        var secondCompletion = transaction.pollCompletion().orElseThrow();
+        assertEquals(third.admissionId(), firstCompletion.admissionId());
+        assertEquals(second.admissionId(), secondCompletion.admissionId());
+    }
+
+
     @Test
     void closeRejectsNewAdmissionButAllowsCommittedWorkToDrain() {
         QueueAdmissionTransaction<String> transaction =
