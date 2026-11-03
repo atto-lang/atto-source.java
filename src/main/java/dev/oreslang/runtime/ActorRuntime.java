@@ -4990,6 +4990,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                // Lazy pools: the first actor of a kind creates its carrier here.
+                startCarrierForAdmission(kind, cell.dispatchLane);
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -7452,8 +7454,54 @@ public final class ActorRuntime implements AutoCloseable {
             cpus = java.util.Arrays.stream(configured.split(",", -1))
                     .map(String::trim).mapToInt(Integer::parseInt).toArray();
         }
+        // Lane carriers start lazily: the first admitted actor starts one,
+        // and further lanes start only for runnable work (see dispatcher doc).
         return new ActorAffinityDispatcher(parallelism, capacity, cpus,
-                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
+                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"),
+                true);
+    }
+
+    /**
+     * Make sure the pool that will run an actor of {@code kind} on
+     * {@code lane} has a live carrier. Called during spawn, before the actor
+     * is published, so a failed pthread_create rejects the spawn instead of
+     * leaving an actor that can never run.
+     */
+    private void startCarrierForAdmission(ActorKind kind, int lane) {
+        ExecutorService dispatcher = dispatcherFor(kind);
+        if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+            lanes.ensureLaneStarted(lane);
+        } else if (dispatcher instanceof NativeCarrierExecutor carriers) {
+            carriers.ensureStarted();
+        } else if (dispatcher instanceof ThreadPoolExecutor pool && pool.getPoolSize() == 0) {
+            pool.prestartCoreThread();
+        }
+    }
+
+    /**
+     * Started actor carriers per pool, for diagnostics and startup tests.
+     * A pool that has admitted no actor reports 0.
+     */
+    public record ActorCarrierCounts(int privateCarriers, int sharedCarriers, int untrustedCarriers) {
+        public int total() { return privateCarriers + sharedCarriers + untrustedCarriers; }
+    }
+
+    public ActorCarrierCounts startedActorCarriers() {
+        return new ActorCarrierCounts(
+                startedCarriers(privateDispatcher),
+                startedCarriers(sharedDispatcher),
+                startedCarriers(untrustedDispatcher));
+    }
+
+    private static int startedCarriers(ExecutorService dispatcher) {
+        if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+            return lanes.startedCarriers();
+        }
+        if (dispatcher instanceof NativeCarrierExecutor carriers) {
+            return carriers.isStarted() ? carriers.getMaximumPoolSize() : 0;
+        }
+        if (dispatcher instanceof ThreadPoolExecutor pool) return pool.getPoolSize();
+        return 0;
     }
 
     private static ExecutorService newDispatcher(
@@ -7524,7 +7572,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
         private final ActorKind kind;
-        private final int dispatchLane;
+        /** Home lane; under demand growth it follows the lane a busy turn moved to. */
+        private volatile int dispatchLane;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
@@ -8265,7 +8314,8 @@ public final class ActorRuntime implements AutoCloseable {
                 Runnable dispatch = () -> runBatch(dispatchTicket);
                 java.util.function.Consumer<Runnable> submit = runnable -> {
                     if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                        lanes.executeOnLane(dispatchLane, runnable);
+                        int placed = lanes.executeOnLane(dispatchLane, runnable);
+                        if (lanes.rehomesOnSpill()) dispatchLane = placed;
                     } else {
                         dispatcher.execute(runnable);
                     }
