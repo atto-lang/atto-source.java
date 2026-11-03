@@ -164,7 +164,10 @@ public final class AotReflectionTableV1ReaderSmoke {
         byte[] second = order < 0 ? row2 : row1;
         System.arraycopy(first, 0, canonical, 0, first.length);
         System.arraycopy(second, 0, canonical, first.length, second.length);
-        good(AotReflectionTableV1Reader.decode(envelope(canonical, 2)).types().size() == 2);
+        var twoTypes = AotReflectionTableV1Reader.decode(envelope(canonical, 2));
+        good(twoTypes.types().size() == 2);
+        good(twoTypes.findByTypeId(twoTypes.types().get(0).typeIdHex()).isPresent());
+        good(twoTypes.findByTypeId(twoTypes.types().get(1).typeIdHex()).isPresent());
         byte[] noncanonical = new byte[canonical.length];
         System.arraycopy(second, 0, noncanonical, 0, second.length);
         System.arraycopy(first, 0, noncanonical, second.length, first.length);
