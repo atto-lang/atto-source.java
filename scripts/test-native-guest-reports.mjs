@@ -37,8 +37,8 @@ const suites = [
 ];
 
 function xml(suite) {
-  return `<testsuite name="${suite.name}" tests="${suite.cases.length}" errors="0" failures="0" skipped="0">` +
-    suite.cases.map(name => `<testcase classname="${suite.name}" name="${name}"/>`).join('') +
+  return `<testsuite name="${suite.name}" tests="${suite.cases.length}" errors="0" failures="0" skipped="0" time="0.1">` +
+    suite.cases.map(name => `<testcase classname="${suite.name}" name="${name}" time="0.01"/>`).join('') +
     '</testsuite>';
 }
 
@@ -73,7 +73,13 @@ const cases = [
   ['missing demo report', s => s, false],
   ['oversized report', s => s + ' '.repeat(8 * 1024 * 1024), false],
   ['demo suite partial', s => s, false],
-  ['nested suite', s => s.replace('</testsuite>', '<testsuite name="injected"/></testsuite>'), false]
+  ['nested suite', s => s.replace('</testsuite>', '<testsuite name="injected"/></testsuite>'), false],
+  ['missing suite time', s => s.replace(' time="0.1"', ''), false],
+  ['negative suite time', s => s.replace('time="0.1"', 'time="-0.1"'), false],
+  ['invalid suite time', s => s.replace('time="0.1"', 'time="NaN"'), false],
+  ['missing testcase time', s => s.replace(' time="0.01"', ''), false],
+  ['infinite testcase time', s => s.replace('time="0.01"', 'time="Infinity"'), false],
+  ['oversized testcase time', s => s.replace('time="0.01"', 'time="1e999"'), false]
 ];
 
 for (const [label, mutate, expected] of cases) {

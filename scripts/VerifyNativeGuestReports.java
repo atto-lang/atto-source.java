@@ -63,6 +63,12 @@ public final class VerifyNativeGuestReports {
         if (!ok) throw new IllegalStateException(reason);
     }
 
+    static void requireFiniteSeconds(String seconds, String label) {
+        require(seconds.matches("[0-9]{1,12}(?:\\.[0-9]{1,9})?(?:[eE][+-]?[0-9]{1,3})?"),
+                "invalid/missing " + label);
+        require(Double.isFinite(Double.parseDouble(seconds)), "non-finite " + label);
+    }
+
     static void verify(Path directory, String suite, Set<String> expectedNames) throws Exception {
         BasicFileAttributes directoryAttrs = Files.readAttributes(
                 directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
@@ -105,6 +111,7 @@ public final class VerifyNativeGuestReports {
         for (String counter : List.of("failures", "errors", "skipped")) {
             require(root.getAttribute(counter).equals("0"), "nonzero/missing " + counter);
         }
+        requireFiniteSeconds(root.getAttribute("time"), "suite time");
 
         var cases = root.getElementsByTagName("testcase");
         require(cases.getLength() == expectedNames.size(), "testcase count mismatch");
@@ -114,6 +121,7 @@ public final class VerifyNativeGuestReports {
             require(c.getParentNode() == root, "nested testcase");
             require(c.getAttribute("classname").equals(suite), "wrong testcase class");
             require(c.getAttribute("status").isBlank(), "unexpected testcase status");
+            requireFiniteSeconds(c.getAttribute("time"), "testcase time");
             String name = c.getAttribute("name");
             require(!name.isBlank() && names.add(name), "empty/duplicate testcase");
         }
