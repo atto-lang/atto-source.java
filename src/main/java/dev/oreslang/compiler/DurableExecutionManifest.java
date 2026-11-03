@@ -154,7 +154,20 @@ public final class DurableExecutionManifest {
      */
     private static String qualifiedTarget(
             Ast.Program program, String currentModule, String requested, boolean activity) {
-        String local = currentModule + "." + requested;
+        // Local resolution wins even if two other modules export the same
+        // short name. This must mirror the semantic analyzer's precedence.
+        if (!requested.contains(".")) {
+            for (Ast.ModuleDecl module : program.modules()) {
+                if (!module.name().equals(currentModule)) continue;
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (activity && declaration instanceof Ast.ActivityDecl value
+                            && requested.equals(value.name())) return module.name() + "." + value.name();
+                    if (!activity && declaration instanceof Ast.WorkflowDecl value
+                            && requested.equals(value.name())) return module.name() + "." + value.name();
+                }
+            }
+        }
+
         String unique = null;
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -164,7 +177,6 @@ public final class DurableExecutionManifest {
                 if (name == null) continue;
                 String candidate = module.name() + "." + name;
                 if (requested.equals(candidate)) return candidate;
-                if (!requested.contains(".") && candidate.equals(local)) return candidate;
                 if (!requested.contains(".") && requested.equals(name)) {
                     if (unique != null) {
                         throw new IllegalArgumentException(
