@@ -38,7 +38,7 @@ public final class DurableExecutionManifest {
                 if (declaration instanceof Ast.ActivityDecl activity) {
                     activities.add(activityJson(module.name(), activity));
                 } else if (declaration instanceof Ast.WorkflowDecl workflow) {
-                    workflows.add(workflowJson(module.name(), workflow));
+                    workflows.add(workflowJson(program, module.name(), workflow));
                 }
             }
         }
@@ -64,7 +64,7 @@ public final class DurableExecutionManifest {
                 + ",\"version\":1,\"operations\":[" + String.join(",", methods) + "]}";
     }
 
-    private static String workflowJson(String module, Ast.WorkflowDecl workflow) {
+    private static String workflowJson(Ast.Program program, String module, Ast.WorkflowDecl workflow) {
         List<String> methods = new ArrayList<>();
         for (Ast.MethodDecl method : workflow.body().methods()) methods.add(methodJson(method));
         methods.sort(Comparator.naturalOrder());
@@ -75,7 +75,7 @@ public final class DurableExecutionManifest {
             if (command instanceof Ast.QueryCommand query) {
                 queries.add(queryJson(query));
             } else {
-                commands.add(commandJson(historyOrder++, command));
+                commands.add(commandJson(program, module, workflow.name(), historyOrder++, command));
             }
         }
         queries.sort(Comparator.naturalOrder());
@@ -120,26 +120,63 @@ public final class DurableExecutionManifest {
                 + ",\"returns\":" + quote(typeName(query.returnType())) + "}";
     }
 
-    private static String commandJson(int order, Ast.WorkflowCommand command) {
+    private static String commandJson(Ast.Program program, String module, String workflowName,
+                                      int order, Ast.WorkflowCommand command) {
         String id = null;
         String kind;
         String target = "";
         List<Ast.Expr> arguments = List.of();
-        if (command instanceof Ast.ActivityStepCommand c) { id = c.commandId(); kind = "activity_step"; target = c.activityName() + "." + c.operation(); arguments = c.arguments(); }
+        if (command instanceof Ast.ActivityStepCommand c) { id = c.commandId(); kind = "activity_step"; target = qualifiedTarget(program, module, c.activityName(), true) + "." + c.operation(); arguments = c.arguments(); }
         else if (command instanceof Ast.TimerCommand c) { id = c.commandId(); kind = "timer"; arguments = List.of(c.delay()); }
         else if (command instanceof Ast.WaitForEventCommand c) { id = c.commandId(); kind = "wait_event"; target = c.eventType(); }
-        else if (command instanceof Ast.SignalCommand c) { id = c.commandId(); kind = "signal"; target = c.endpoint(); arguments = c.arguments(); }
-        else if (command instanceof Ast.QueryCommand c) { kind = "query"; target = c.endpoint(); }
-        else if (command instanceof Ast.UpdateCommand c) { id = c.commandId(); kind = "update"; target = c.endpoint(); arguments = c.arguments(); }
-        else if (command instanceof Ast.ChildWorkflowCommand c) { id = c.commandId(); kind = "child_workflow"; target = c.workflowName(); arguments = List.of(c.input()); }
+        else if (command instanceof Ast.SignalCommand c) { id = c.commandId(); kind = "signal"; target = module + "." + workflowName + "." + c.endpoint(); arguments = c.arguments(); }
+        else if (command instanceof Ast.QueryCommand) { throw new IllegalArgumentException("WORKFLOW_QUERY_HISTORY_FORBIDDEN: read-only query has no history order"); }
+        else if (command instanceof Ast.UpdateCommand c) { id = c.commandId(); kind = "update"; target = module + "." + workflowName + "." + c.endpoint(); arguments = c.arguments(); }
+        else if (command instanceof Ast.ChildWorkflowCommand c) { id = c.commandId(); kind = "child_workflow"; target = qualifiedTarget(program, module, c.workflowName(), false); arguments = List.of(c.input()); }
         else if (command instanceof Ast.ContinueAsNewCommand c) { id = c.commandId(); kind = "continue_as_new"; arguments = List.of(c.input()); }
-        else if (command instanceof Ast.CompensationCommand c) { id = c.commandId(); kind = "compensation"; target = c.activityName() + "." + c.operation(); arguments = c.arguments(); }
+        else if (command instanceof Ast.CompensationCommand c) { id = c.commandId(); kind = "compensation"; target = qualifiedTarget(program, module, c.activityName(), true) + "." + c.operation(); arguments = c.arguments(); }
         else throw new IllegalArgumentException("unknown workflow command node " + command.getClass().getName());
         String stableId = id == null ? "" : ",\"id\":" + quote(id);
         return "{\"order\":" + order + ",\"kind\":" + quote(kind)
                 + stableId + ",\"target\":" + quote(target)
                 + ",\"arguments\":[" + String.join(",", arguments.stream()
                         .map(DurableExecutionManifest::expressionJson).toList()) + "]}";
+    }
+
+    /**
+     * Canonicalize a resolved durable type identity before binding it into
+     * replay-visible manifest bytes. An unqualified local spelling and its
+     * fully qualified spelling must describe the same command target.
+     *
+     * The durable analyzer resolves and validates these targets first. Repeat
+     * the check here as defense-in-depth: callers cannot mint an unbound
+     * history target by invoking manifest serialization out of order.
+     */
+    private static String qualifiedTarget(
+            Ast.Program program, String currentModule, String requested, boolean activity) {
+        String local = currentModule + "." + requested;
+        String unique = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                String name = null;
+                if (activity && declaration instanceof Ast.ActivityDecl value) name = value.name();
+                if (!activity && declaration instanceof Ast.WorkflowDecl value) name = value.name();
+                if (name == null) continue;
+                String candidate = module.name() + "." + name;
+                if (requested.equals(candidate)) return candidate;
+                if (!requested.contains(".") && candidate.equals(local)) return candidate;
+                if (!requested.contains(".") && requested.equals(name)) {
+                    if (unique != null) {
+                        throw new IllegalArgumentException(
+                                "WORKFLOW_MANIFEST_TARGET_AMBIGUOUS: " + requested);
+                    }
+                    unique = candidate;
+                }
+            }
+        }
+        if (unique != null) return unique;
+        throw new IllegalArgumentException(
+                "WORKFLOW_MANIFEST_TARGET_UNKNOWN: " + requested);
     }
 
     private static String expressionJson(Ast.Expr expression) {
