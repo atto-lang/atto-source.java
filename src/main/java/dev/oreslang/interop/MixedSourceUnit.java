@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
  * inventing a source-level module/package identity for Oreslang. The canonical
  * filesystem path remains the code-unit identity.
  *
- * In .ores files the two Java forms have deliberately different semantics:
+ * In .atto files (and legacy .ores sources) the two Java forms have deliberately different semantics:
  *
  *   java { ... }     declaration island; compiled but never executed merely
  *                    because the declaration exists.
@@ -99,9 +99,9 @@ public final class MixedSourceUnit {
         String raw = source == null ? "" : source;
         String lower = fileName.toLowerCase(Locale.ROOT);
         PrimaryLanguage primary;
-        if (lower.endsWith(".ores")) primary = PrimaryLanguage.ORES;
+        if (lower.endsWith(".atto") || lower.endsWith(".ores")) primary = PrimaryLanguage.ORES;
         else if (lower.endsWith(".java")) primary = PrimaryLanguage.JAVA;
-        else throw new IllegalArgumentException("mixed source must use .ores or .java: " + fileName);
+        else throw new IllegalArgumentException("mixed source must use .atto, .java or legacy .ores: " + fileName);
 
         if (primary == PrimaryLanguage.ORES) {
             return parseOresPrimary(unitId, raw);
@@ -149,7 +149,7 @@ public final class MixedSourceUnit {
                 continue;
             }
 
-            throw new IllegalStateException("unexpected island kind in .ores source: " + island.kind());
+            throw new IllegalStateException("unexpected island kind in AttoLang source: " + island.kind());
         }
 
         String ores = replaceOresJavaIslands(raw, islands, replacements);
