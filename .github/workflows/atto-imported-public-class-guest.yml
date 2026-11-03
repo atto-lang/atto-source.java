@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - 'src/test/java/dev/oreslang/AttoImportedModuleClassGuestTest.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalFixtureGuestTest.java'
+      - 'src/test/resources/atto/canonical-v1/**'
       - 'src/main/java/**'
       - '.github/workflows/atto-imported-public-class-guest.yml'
   push:
@@ -28,7 +30,7 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - name: Execute five real .atto linked class guest cases
+      - name: Execute eight real .atto fixture and imported-class guest cases
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -36,12 +38,14 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "JAVA_ATTO_IMPORTED_CLASS_HEAD=$EXPECTED_HEAD"
-          mvn -B -ntp -Dtest=AttoImportedModuleClassGuestTest -DfailIfNoTests=true test
-          echo "JAVA_ATTO_IMPORTED_CLASS_GUEST_PASS head=$EXPECTED_HEAD cases=5"
+          mvn -B -ntp -Dtest=AttoCanonicalFixtureGuestTest,AttoImportedModuleClassGuestTest -DfailIfNoTests=true test
+          echo "JAVA_ATTO_CANONICAL_LINKED_GUEST_PASS head=$EXPECTED_HEAD cases=8"
       - name: Preserve JUnit evidence on failure or success
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: atto-imported-class-guest-junit
-          path: target/surefire-reports/*AttoImportedModuleClassGuestTest*
+          path: |
+            target/surefire-reports/*AttoCanonicalFixtureGuestTest*
+            target/surefire-reports/*AttoImportedModuleClassGuestTest*
           if-no-files-found: warn
