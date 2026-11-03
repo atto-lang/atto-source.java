@@ -65,3 +65,9 @@ ownership, bounded reply reservation/journal, direct producer
 notifications, shutdown/ACK sequencing, cancellation, and restart
 fencing have been proven on the exact target compiler and backend.
 Five-backend parity cannot be inferred from Java host tests.
+
+## Revocation of already-admitted producer mail (November 3, 2026)
+
+QueueGrantRevocationFenceTest adds a deterministic mailbox-hold schedule: the parent grants slot 0, the queue actor is held inside one turn, the producer submits a command behind that turn, the parent revokes the grant, and the queue actor is released. The queued command must be rejected when it is dispatched, and a second command submitted after revocation must also be rejected.
+
+This verifies dispatch-time authority revalidation for queued mail. It does not make authorization and a later queue-state mutation atomic, nor does it prove reserved reply publication, exactly-once delivery, durable receipt, or source-guest message delivery. The test is host-runtime only and must execute on the exact PR head before it is counted as evidence.
