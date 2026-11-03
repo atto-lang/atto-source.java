@@ -415,4 +415,40 @@ final class LocalVirtualActorQuiescentDisposalTest {
         assertSame(closed, runtime.try_send(ref, 13), "closed responses must not allocate");
     }
 
+
+    @Test void senderCannotForgeCompletedOrCancelledActorReceipt() {
+        var handled = new AtomicInteger();
+        var callback = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Protected", 1, 1,
+                ignored -> value -> handled.incrementAndGet(),
+                notice -> fail("unexpected supervisor notice"))) {
+            var ref = runtime.resolve("one");
+            var accepted = runtime.try_send(ref, 9);
+            assertTrue(accepted.admitted());
+            var completion = accepted.completion();
+            assertNotNull(completion);
+            assertFalse(java.util.concurrent.CompletableFuture.class.isAssignableFrom(
+                    completion.getClass()),
+                    "returning mutable CompletableFuture permits sender-forged completion");
+            for (String mutator : java.util.List.of("complete", "completeExceptionally",
+                    "cancel", "obtrudeValue", "obtrudeException", "completeAsync")) {
+                assertFalse(java.util.Arrays.stream(completion.getClass().getMethods())
+                        .anyMatch(method -> method.getName().equals(mutator)),
+                        "sender must not have completion mutator: " + mutator);
+            }
+            // A caller may mutate its dependent future, never the original
+            // completion owned by the mailbox receipt.
+            var dependent = completion.thenRun(callback::incrementAndGet);
+            dependent.toCompletableFuture().complete(null);
+            assertFalse(completion.isDone(), "derived-stage forgery cannot complete parent");
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "accepted, unprocessed turn still holds a lifetime credit");
+            assertEquals(0, handled.get());
+            assertTrue(runtime.run_one(ref));
+            assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, completion.join());
+            assertEquals(1, handled.get());
+            assertTrue(callback.get() <= 1, "dependent callback executes at most once");
+        }
+    }
+
 }
