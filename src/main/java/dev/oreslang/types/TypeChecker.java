@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.MacroExpander;
+import dev.oreslang.compiler.LinkedMacroImports;
 import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.imports.ImportRules;
@@ -273,13 +274,26 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts, Map.of());
+    }
+
+    /** M1: imported compile-time macros must expand before any semantic pass. */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            Map<String, LinkedMacroImports.Binding> linkedMacros) {
+        if (linkedMacros == null) {
+            throw new IllegalArgumentException("linked macros cannot be null");
+        }
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
-        program = MacroExpander.expand(program);
+        program = MacroExpander.expand(program, linkedMacros);
         rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
