@@ -43,6 +43,9 @@ case "$CASE" in
   embedded) echo 'a tool printed VIDEO-REPLAY-PASS|capacity' ;;
   stderr) echo 'VIDEO-REPLAY-FAIL|decoder' >&2 ;;
   stderr_embedded) echo 'diagnostic: VIDEO-REPLAY-FAIL|decoder' >&2 ;;
+  stdout_noise) echo 'unexpected runtime progress line' ;;
+  stderr_noise) echo 'unexpected runtime warning' >&2 ;;
+  stdout_hidden_error) echo 'fatal: unexpected error, no marker' ;;
   *) exit 25 ;;
 esac
 STUB
@@ -74,9 +77,12 @@ run stdout_fail failure
 run embedded failure
 run stderr failure
 run stderr_embedded failure
+run stdout_noise failure
+run stderr_noise failure
+run stdout_hidden_error failure
 mv "$tmpdir/work/examples/replay-video-disconnect-smoke.atto" "$tmpdir/source.bak"
 run missing_source failure
 printf '// source-free fixture\n' > "$tmpdir/work/examples/replay-video-disconnect-smoke.atto"
 mv "$tmpdir/work/target/ores-aot" "$tmpdir/aot.bak"
 run missing_image failure
-printf '%s\n' 'AOT-RECEIPT-SELFTEST-DONE|15'
+printf '%s\n' 'AOT-RECEIPT-SELFTEST-DONE|18'
