@@ -293,6 +293,8 @@ public final class ProtectedActorStandaloneSmoke {
             var downstream = receipt.thenRun(() -> { });
             downstream.toCompletableFuture().complete(null);
             check(!receipt.isDone(), "child completion cannot forge parent receipt");
+            receipt.stage().toCompletableFuture().complete(LocalVirtualActorI64.Outcome.PROCESSED);
+            check(!receipt.isDone(), "read-only stage copy cannot forge parent completion");
             rejects(runtime::close, "unexecuted work still blocks shutdown");
             check(executed.get() == 0, "guest turn not executed yet");
             check(runtime.run_one(ref), "execute after attempted forgery");
