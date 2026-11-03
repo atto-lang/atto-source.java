@@ -2531,12 +2531,12 @@ public final class OresEvalRootNode extends RootNode {
                 cleanup = task.registerSourceCleanup((owner, finished) -> {
                     // This is an authenticated cancellation-unwind turn; it
                     // reclaims an already-granted but not-yet-resumed ticket.
-                    releaseCriticalAdmission(gate, admission);
+                    CriticalTicketCleanup.revoke(gate, admission);
                     finished.accept(owner, SourceFlow.normal());
                 });
             } catch (RuntimeException | Error registrationFailure) {
                 try {
-                    releaseCriticalAdmission(gate, admission);
+                    CriticalTicketCleanup.revoke(gate, admission);
                 } catch (RuntimeException | Error releaseFailure) {
                     suppressCleanupFailure(registrationFailure, releaseFailure);
                 }
@@ -2625,7 +2625,7 @@ public final class OresEvalRootNode extends RootNode {
                     // must not leave a queued or already-promoted ticket alive
                     // until a cancellation unwind that may never execute.
                     try {
-                        releaseCriticalAdmission(gate, admission);
+                        CriticalTicketCleanup.revoke(gate, admission);
                     } catch (RuntimeException | Error releaseFailure) {
                         suppressCleanupFailure(suspensionFailure, releaseFailure);
                     } finally {
@@ -2633,22 +2633,6 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     throw suspensionFailure;
                 }
-            }
-        }
-
-        private void releaseCriticalAdmission(
-                CriticalGate gate, OresFuture<CriticalGate.Ticket> admission) {
-            admission.cancel(false);
-            if (admission.isDone() && !admission.isCancelled()) {
-                CriticalGate.Ticket ticket;
-                try {
-                    ticket = admission.join();
-                } catch (RuntimeException failedAdmission) {
-                    // A failed/retired request owns no ticket. Its error is
-                    // delivered by the SourceTask await continuation.
-                    return;
-                }
-                gate.release(ticket);
             }
         }
 

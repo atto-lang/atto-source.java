@@ -7,6 +7,8 @@ on:
       - 'src/main/java/dev/oreslang/parser/**'
       - 'src/main/java/dev/oreslang/types/**'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/nodes/CriticalTicketCleanup.java'
+      - 'src/test/java/dev/oreslang/nodes/CriticalTicketCleanupTest.java'
       - 'src/main/java/dev/oreslang/runtime/CriticalGate.java'
       - 'src/test/java/dev/oreslang/Critical*Test.java'
       - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
@@ -48,7 +50,7 @@ jobs:
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=java \
             -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
-            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest \
             clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
@@ -56,7 +58,8 @@ jobs:
           # Surefire's concrete JUnit XML and both real guest test cases.
           guest_report=target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml
           syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
-          for report in "$guest_report" "$syntax_report" \
+          cleanup_report=target/surefire-reports/TEST-dev.oreslang.nodes.CriticalTicketCleanupTest.xml
+          for report in "$guest_report" "$syntax_report" "$cleanup_report" \
             target/surefire-reports/TEST-dev.oreslang.CriticalBodyEffectsTest.xml \
             target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
@@ -66,7 +69,11 @@ jobs:
           grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
           grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
           grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
-          ! grep -Eq 'skipped="[1-9]|failures="[1-9]|errors="[1-9]' "$guest_report" "$syntax_report"
+          grep -Fq 'name="immediateTicketIsReleasedAfterFailedSchedulerTransition' "$cleanup_report"
+          grep -Fq 'name="queuedTicketIsRetractedWithoutReleasingAnotherOwner' "$cleanup_report"
+          grep -Fq 'name="retiredAdmissionIsSafeToUnwind' "$cleanup_report"
+          grep -Fq 'name="cancellationRacingWithPromotionCannotLeakActorOwnedTicket' "$cleanup_report"
+          ! grep -Eq 'skipped="[1-9]|failures="[1-9]|errors="[1-9]' "$guest_report" "$syntax_report" "$cleanup_report"
       - name: Mark evidence scope
         run: |
           echo "Scoped Java host-ticket tests plus native Graal actor critical guest fixture."
