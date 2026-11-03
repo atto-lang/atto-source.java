@@ -185,21 +185,24 @@ final class HostSourceUnitIds {
         if (id.length() > MAX_ID_CHARS) {
             throw new IllegalArgumentException("source unit ID exceeds canonical length budget");
         }
-        for (int i = 0; i < id.length(); i++) {
+        for (int i = 0; i < id.length();) {
             char c = id.charAt(i);
-            if (Character.isISOControl(c)
-                    || Character.getType(c) == Character.FORMAT
-                    || Character.getType(c) == Character.LINE_SEPARATOR
-                    || Character.getType(c) == Character.PARAGRAPH_SEPARATOR) {
-                throw new IllegalArgumentException("source unit ID contains invalid Unicode/control data");
-            }
             if (Character.isHighSurrogate(c)) {
-                if (++i >= id.length() || !Character.isLowSurrogate(id.charAt(i))) {
+                if (i + 1 >= id.length() || !Character.isLowSurrogate(id.charAt(i + 1))) {
                     throw new IllegalArgumentException("source unit ID contains malformed UTF-16");
                 }
             } else if (Character.isLowSurrogate(c)) {
                 throw new IllegalArgumentException("source unit ID contains malformed UTF-16");
             }
+            int cp = Character.codePointAt(id, i);
+            int type = Character.getType(cp);
+            if (Character.isISOControl(cp)
+                    || type == Character.FORMAT
+                    || type == Character.LINE_SEPARATOR
+                    || type == Character.PARAGRAPH_SEPARATOR) {
+                throw new IllegalArgumentException("source unit ID contains invalid Unicode/control data");
+            }
+            i += Character.charCount(cp);
         }
         return id;
     }
