@@ -160,6 +160,18 @@ public final class TypeChecker {
                             "checked exceptional effect on function '" + fn.name()
                                     + "' is parsed but not yet enabled for type checking");
                 }
+                if (declaration instanceof Ast.StateContainerDecl state) {
+                    throw new IllegalArgumentException(
+                            "STATE_CONTAINER_MIR_UNSUPPORTED: '" + state.name()
+                                    + "' is parsed with sealed state metadata but requires "
+                                    + "checked ownership and critical read/write MIR lowering");
+                }
+                if (declaration instanceof Ast.VirtualActorDecl actor) {
+                    throw new IllegalArgumentException(
+                            "VIRTUAL_ACTOR_MIR_UNSUPPORTED: '" + actor.name()
+                                    + "' is parsed with logical identity metadata but requires "
+                                    + "fenced activation, scheduler and CONTROL MIR lowering");
+                }
                 if (declaration instanceof Ast.ClassDecl klass) {
                     rejectUnloweredCheckedClassEffects(klass);
                 }

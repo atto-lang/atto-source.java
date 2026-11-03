@@ -1,0 +1,64 @@
+{
+  "schema_version": "2.0.0",
+  "complete": true,
+  "capacity": 2,
+  "events": [
+    {
+      "seq": 0,
+      "kind": "spawn",
+      "actor": "alpha"
+    },
+    {
+      "seq": 1,
+      "kind": "admit",
+      "actor": "alpha",
+      "message_id": "m1"
+    },
+    {
+      "seq": 2,
+      "kind": "acquire",
+      "actor": "alpha",
+      "worker": "carrier1"
+    },
+    {
+      "seq": 3,
+      "kind": "receive",
+      "actor": "alpha",
+      "message_id": "m1"
+    },
+    {
+      "seq": 4,
+      "kind": "suspend",
+      "actor": "alpha",
+      "worker": "carrier1"
+    },
+    {
+      "seq": 5,
+      "kind": "io_complete",
+      "actor": "alpha"
+    },
+    {
+      "seq": 6,
+      "kind": "acquire",
+      "actor": "alpha",
+      "worker": "carrier2"
+    },
+    {
+      "seq": 7,
+      "kind": "resume",
+      "actor": "alpha",
+      "worker": "carrier2"
+    },
+    {
+      "seq": 8,
+      "kind": "release",
+      "actor": "alpha",
+      "worker": "carrier2"
+    },
+    {
+      "seq": 9,
+      "kind": "terminate",
+      "actor": "alpha"
+    }
+  ]
+}
