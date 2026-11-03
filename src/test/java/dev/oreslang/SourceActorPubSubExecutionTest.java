@@ -63,6 +63,17 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void portableTryPublishRejectedUntilNativeLowering() throws Exception {
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(
+                        fixture("actor-pubsub-reject-unlowered-try-publish.atto"),
+                        "source-pubsub-try-publish-not-lowered.atto"));
+        assertTrue(error.getMessage().contains("unknown Topic callable member"),
+                error.getMessage());
+    }
+
+    @Test
     void actorMayJoinMultipleGroupsAndLeavingOnePreservesTheOther() throws Exception {
         assertEquals(
                 "ready-b|b-still-live",
