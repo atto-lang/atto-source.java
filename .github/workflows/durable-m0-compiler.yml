@@ -6,6 +6,8 @@ on:
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/compiler/Durable*.java"
+      - "tools/DurableM0ReceiptVerifier.java"
+      - "tools/test-durable-m0-receipts.sh"
       - "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java"
       - "src/main/java/dev/oreslang/compiler/ImportGraph.java"
       - "src/test/java/dev/oreslang/Durable*.java"
@@ -70,47 +72,38 @@ jobs:
           native-image --version
           mvn --version
 
+      - name: Prove receipt verifier rejects synthetic forgeries (no private guest execution)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/test-durable-m0-receipts.sh
+
       - name: Compile and execute durable M0 JUnit tests
         shell: bash
         run: |
           set -euo pipefail
           mvn -B -ntp '-Dtest=DurableActivityWorkflowDeclarationTest,DurableWorkflowSemanticAnalysisTest,AttoSourceExtensionTest,AttoCliSourceExtensionTest' test
 
-      - name: Verify nonzero executed JUnit cases and report counts
+      - name: Verify exact Surefire XML and emit commit-bound proof
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          reports=(target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml
-                   target/surefire-reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml
-                   target/surefire-reports/TEST-dev.oreslang.launcher.AttoCliSourceExtensionTest.xml)
-          if (( ${#reports[@]} != 4 )); then
-            printf 'Expected 4 AttoLang JUnit XML reports, found %s\n' "${#reports[@]}" >&2
-            exit 1
-          fi
-          total=0
-          failed=0
-          errors=0
-          skipped=0
-          for report in "${reports[@]}"; do
-            test -s "$report"
-            # Surefire testsuite attributes occur on the opening element.
-            for attribute in tests failures errors skipped; do
-              value="$(grep -o -m1 "${attribute}=\"[0-9]*\"" "$report" | head -n1 | cut -d '"' -f2)"
-              [[ "$value" =~ ^[0-9]+$ ]] || exit 1
-              case "$attribute" in
-                tests) total=$((total + value)) ;;
-                failures) failed=$((failed + value)) ;;
-                errors) errors=$((errors + value)) ;;
-                skipped) skipped=$((skipped + value)) ;;
-              esac
-            done
-          done
-          echo "DURABLE_M0_JUNIT|tests=$total|failures=$failed|errors=$errors|skipped=$skipped"
-          if (( total < 35 || failed != 0 || errors != 0 || skipped != 0 )); then
-            echo "Durable M0 JUnit not fully executed/passing" >&2
-            exit 1
-          fi
+          java tools/DurableM0ReceiptVerifier.java target/surefire-reports
+          {
+            echo 'ATTO_M0_PROOF_FORMAT=1'
+            echo "SOURCE_HEAD=$(git rev-parse HEAD)"
+            echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+            echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
+            echo "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+            echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+            echo 'VALIDATION_GATE=G1_COMPILER_HOST_TEST_NOT_GUEST_EXECUTION'
+            sha256sum tools/DurableM0ReceiptVerifier.java
+            sha256sum tools/test-durable-m0-receipts.sh
+            sha256sum target/surefire-reports/TEST-dev.oreslang.Durable*Test.xml
+            sha256sum target/surefire-reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml
+            sha256sum target/surefire-reports/TEST-dev.oreslang.launcher.AttoCliSourceExtensionTest.xml
+          } > target/durable-m0-proof.txt
+          cat target/durable-m0-proof.txt
 
       - name: Preserve exact-head JUnit receipts
         if: always()
@@ -124,5 +117,6 @@ jobs:
             target/surefire-reports/dev.oreslang.AttoSourceExtensionTest.txt
             target/surefire-reports/TEST-dev.oreslang.launcher.AttoCliSourceExtensionTest.xml
             target/surefire-reports/dev.oreslang.launcher.AttoCliSourceExtensionTest.txt
+            target/durable-m0-proof.txt
           if-no-files-found: warn
           retention-days: 30
