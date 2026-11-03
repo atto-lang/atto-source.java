@@ -37,6 +37,16 @@ mvn -B -ntp -DskipTests package >"$tmpdir/build.log" 2>&1 || {
   echo "COMPILER_BUILD_FAILED" >&2
   exit 1
 }
+# Compile/typecheck the linked AttoLang guest and its imported replay library
+# without running main. A failed check must stop before any guest receipt.
+mvn -B -ntp -q -DskipTests exec:java \
+  -Dexec.args="--check examples/replay-video-disconnect-smoke.atto" \
+  >"$tmpdir/check.log" 2>"$tmpdir/check.err" || {
+  cat "$tmpdir/check.log" >&2
+  cat "$tmpdir/check.err" >&2
+  echo "GUEST_COMPILATION_CHECK_FAILED" >&2
+  exit 1
+}
 mvn -B -ntp -q -DskipTests exec:java \
   -Dexec.args="examples/replay-video-disconnect-smoke.atto" \
   >"$tmpdir/guest.log" 2>"$tmpdir/guest.err" || {
@@ -48,6 +58,11 @@ mvn -B -ntp -q -DskipTests exec:java \
 # The exact seven receipts must be emitted in order by the real guest.
 # Reject malformed, embedded, extra, duplicated or explicit FAIL markers.
 # Maven's unrelated informational output is allowed, but never a spoofed marker.
+if LC_ALL=C grep -Fq 'VIDEO-REPLAY-' "$tmpdir/guest.err"; then
+  cat "$tmpdir/guest.err" >&2
+  echo "GUEST_STDERR_RECEIPT_MARKER" >&2
+  exit 1
+fi
 if ! LC_ALL=C awk '
   /VIDEO-REPLAY-/ {
     if ($0 ~ /^VIDEO-REPLAY-PASS\|[A-Za-z0-9-]+$/ || $0 == "VIDEO-REPLAY-SMOKE-DONE") {
