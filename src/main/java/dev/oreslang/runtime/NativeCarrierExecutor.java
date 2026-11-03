@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -53,6 +54,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicInteger activeCount = new AtomicInteger();
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicReferenceArray<Thread> carrierThreads;
+    /** A JNI attach is not yet a Java carrier-loop entry. */
+    private final CountDownLatch carrierLoopsEntered;
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
@@ -61,6 +64,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private volatile long nativeHandle;
     /** Published only after every JNI carrier attachment has completed successfully. */
     private volatile boolean startedSuccessfully;
+    /** Stops concurrent termination observation from preceding first JNI entry. */
+    private volatile boolean startupInProgress;
+    /** Failed JNI attachment/start cannot certify complete carrier retirement. */
+    private volatile boolean failedNativeStartup;
 
     public NativeCarrierExecutor(
             int corePoolSize,
@@ -80,6 +87,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.maximumPoolSize = maximumPoolSize;
         this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
+        this.carrierLoopsEntered = new CountDownLatch(maximumPoolSize);
         this.corePoolSize = new AtomicInteger(corePoolSize);
         this.largestPoolSize = new AtomicInteger(0);
         this.threadPrefix = threadPrefix;
@@ -109,31 +117,53 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 throw new RejectedExecutionException("native carrier executor is shut down");
             }
             if (nativeHandle != 0L) return false;
-            int desired = corePoolSize.get();
-            long handle = nativeCreate(
-                    this, maximumPoolSize, desired, threadPrefix, nativeStackBytes);
-            if (handle == 0L) {
-                throw new IllegalStateException("native carrier pool returned a null handle");
-            }
-            // Publish before nativeStart: carriers read nativeHandle in their loop.
-            nativeHandle = handle;
-            boolean started = false;
+            startupInProgress = true;
             try {
-                nativeStart(handle);
-                started = true;
-            } finally {
-                if (!started) {
-                    // A subset of carriers may already have attached. Make
-                    // their Java loops observe shutdown before native reaping;
-                    // retrying this same executor could overlap dead handles.
-                    shutdown.set(true);
-                    nativeShutdown(handle);
-                    nativeHandle = 0L;
+                int desired = corePoolSize.get();
+                long handle = nativeCreate(
+                        this, maximumPoolSize, desired, threadPrefix, nativeStackBytes);
+                if (handle == 0L) {
+                    throw new IllegalStateException("native carrier pool returned a null handle");
                 }
+                // Publish before nativeStart: carriers read nativeHandle in their loop.
+                nativeHandle = handle;
+                boolean started = false;
+                try {
+                    nativeStart(handle);
+                    // C reports successful JNI attachments before invoking Java.
+                    // A close/awaitTermination between those two operations
+                    // must not mistake all-null carrierThreads for retirement.
+                    try {
+                        if (!carrierLoopsEntered.await(30, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException(
+                                    "native carrier JNI loops did not all enter after attachment");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(
+                                "native carrier JNI startup interrupted", interrupted);
+                    }
+                    if (shutdown.get()) {
+                        throw new RejectedExecutionException(
+                                "native carrier executor closed during startup");
+                    }
+                    started = true;
+                } finally {
+                    if (!started) {
+                        // A subset of carriers may already have attached.
+                        // Reuse of this executor could overlap retired handles.
+                        shutdown.set(true);
+                        failedNativeStartup = true;
+                        nativeShutdown(handle);
+                        nativeHandle = 0L;
+                    }
+                }
+                largestPoolSize.accumulateAndGet(desired, Math::max);
+                startedSuccessfully = true;
+                return true;
+            } finally {
+                startupInProgress = false;
             }
-            largestPoolSize.accumulateAndGet(desired, Math::max);
-            startedSuccessfully = true;
-            return true;
         }
     }
 
@@ -203,6 +233,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         CURRENT_SLOT.set(slot);
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
         carrierThreads.set(slot, Thread.currentThread());
+        // Publish the Java callback registration before bootstrap can return.
+        carrierLoopsEntered.countDown();
         try {
             while (!shutdown.get()) {
                 nativeAwaitEnabled(nativeHandle, slot);
@@ -365,7 +397,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                     break;
                 }
             }
-            if (!anyAttached) return true;
+            // Never claim retirement while JNI attachment has not yet
+            // completed Java-loop registration. On a partial startup failure
+            // some callbacks may never enter: fail closed instead of guessing.
+            if (failedNativeStartup && carrierLoopsEntered.getCount() != 0L) return false;
+            if (!startupInProgress && !anyAttached) return true;
             if (nanos == 0L || System.nanoTime() >= deadline) return false;
             long remaining = deadline - System.nanoTime();
             long millis = Math.max(1L, Math.min(10L, TimeUnit.NANOSECONDS.toMillis(remaining)));
@@ -397,7 +433,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     @Override
     public boolean isTerminated() {
-        if (!shutdown.get()) return false;
+        if (!shutdown.get() || startupInProgress) return false;
+        if (failedNativeStartup && carrierLoopsEntered.getCount() != 0L) return false;
         for (int slot = 0; slot < carrierThreads.length(); slot++) {
             if (carrierThreads.get(slot) != null) return false;
         }
