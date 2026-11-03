@@ -117,6 +117,12 @@ final class MacroSourceUnitIdentityTest {
                     "should reject " + Integer.toHexString(malformed.hashCode()));
         }
 
+        String supplementaryFormat = new String(Character.toChars(917505));
+        Ast.Program special = Parser.parse("fnc answer() -> int { return 42; }");
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroSourceUnitIdentity.attach(special,
+                        "pkg/" + supplementaryFormat + ".atto"));
+
         Ast.Program valid = Parser.parse("fnc answer() -> int { return 42; }");
         assertDoesNotThrow(() -> MacroSourceUnitIdentity.attach(valid, "pkg/álgebra🙂.atto"));
         assertEquals("pkg/álgebra🙂.atto", MacroSourceUnitIdentity.unitId(valid));
