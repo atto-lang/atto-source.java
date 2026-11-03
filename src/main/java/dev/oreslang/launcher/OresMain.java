@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
 
 public final class OresMain {
     private static final Pattern POSITIONED_DIAGNOSTIC = Pattern.compile(
-            "^Oreslang\\s+(?:lexer|parse)\\s+error\\s+at\\s+(\\d+):(\\d+):\\s*(.*)$",
+            "^(?:AttoLang|Oreslang)\\s+(?:lexer|parse)\\s+error\\s+at\\s+(\\d+):(\\d+):\\s*(.*)$",
             Pattern.CASE_INSENSITIVE);
 
     private OresMain() { }
