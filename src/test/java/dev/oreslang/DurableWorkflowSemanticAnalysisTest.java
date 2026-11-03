@@ -140,6 +140,11 @@ final class DurableWorkflowSemanticAnalysisTest {
 
         assertArrayEquals(first.canonicalBytes(), second.canonicalBytes());
         assertEquals(first.sha256(), second.sha256());
+        // Emit source-backed canonical metadata as a receipt in Surefire XML.
+        // This is not a guest history or runtime replay receipt.
+        System.out.println("DURABLE_M0_MANIFEST_SHA256=" + first.sha256());
+        System.out.println("DURABLE_M0_MANIFEST_HEX="
+                + java.util.HexFormat.of().formatHex(first.canonicalBytes()));
         String json = new String(first.canonicalBytes(), StandardCharsets.UTF_8);
         assertTrue(json.contains("\"format\":\"atto.durable.manifest.v1\""));
         assertTrue(json.indexOf("\"id\":\"charge-1\"")
