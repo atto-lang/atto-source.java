@@ -23,6 +23,17 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void attolangFilenameExecutesExistingPubSubGuest() throws Exception {
+        // Explicit OresLanguage ID and MIME select the guest engine. This is
+        // a .atto fixture regression, NOT proof of CLI extension discovery,
+        // portable atomic try_publish semantics or Native Image execution.
+        assertEquals(fixture("actor-pubsub-v1.ores"), fixture("actor-pubsub-v1.atto"));
+        assertEquals(
+                "subscribed|p-1",
+                run(fixture("actor-pubsub-v1.atto"), "source-actor-pubsub-v1.atto"));
+    }
+
+    @Test
     void actorMayJoinMultipleGroupsAndLeavingOnePreservesTheOther() throws Exception {
         assertEquals(
                 "ready-b|b-still-live",
