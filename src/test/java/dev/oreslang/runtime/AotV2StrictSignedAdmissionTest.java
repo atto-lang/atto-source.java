@@ -115,6 +115,6 @@ final class AotV2StrictSignedAdmissionTest {
         self.strictRawJsonDeniesDuplicateKeysWrongSchemaInvalidSizesAndJit();
         self.parsesMathematicallyExactExponentNumbersWithoutChangingSignature();
         self.enforcesJcsUnicodeOrderingAndControlEscapes();
-        System.out.println("JAVA_V2_STRICT_SIGNED_INGRESS_5_TESTS_OK");
+        System.out.println("JAVA_V2_STRICT_SIGNED_INGRESS_6_TESTS_OK");
     }
 }
