@@ -1,0 +1,10 @@
+max-plus-negative-one
+min-minus-negative-one
+large-roundtrip
+large-negative-roundtrip
+right-nested-subtraction
+left-nested-subtraction
+mul-near-max
+mul-near-min
+triple-negative
+signed-underscore

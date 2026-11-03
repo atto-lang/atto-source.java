@@ -1,0 +1,16 @@
+zero
+positive-forty-two
+negative-forty-two
+max-i64
+min-i64
+max-minus-one
+min-plus-one
+over-binary64-mantissa
+negative-over-binary64
+precedence
+parentheses
+subtraction-left-assoc
+grouped-subtraction
+double-negative
+two-negative-factors
+underscore-literal

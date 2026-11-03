@@ -1,0 +1,206 @@
+// Direct compiler-backed guest acceptance fixture for stdlib/testing.ores.
+// A zero process exit is meaningful only after a real Oreslang compiler executes
+// this source. This is not an ORES_TEST receipt suite or a Rust host-only oracle.
+import class TestOutcome from '../stdlib/testing';
+import fnc pass, fail, expect_true, expect_false, expect_equal_bool, expect_equal_int, expect_equal_float, expect_equal_string, expect_not_equal_int, expect_not_equal_string, expect_near_float, escape_machine_field, check_int_cases from '../stdlib/testing';
+
+fnc property_ok(int value): TestOutcome {
+  return expect_not_equal_int(value, -1, "unexpected sentinel");
+}
+
+fnc property_fail_on_two(int value): TestOutcome {
+  return expect_not_equal_int(value, 2, "two is forbidden");
+}
+
+fnc property_silent_failure(int value): TestOutcome {
+  return fail("");
+}
+
+pub routine main(): void {
+  // A vacuous property cannot be credited as a passing test.
+  val List<int> empty_cases = arr[];
+  val TestOutcome vacuous = check_int_cases("empty-corpus", empty_cases, property_ok);
+  if vacuous.passed; do
+    rt fail("empty property incorrectly passed");
+  fi
+
+  val TestOutcome property_pass = check_int_cases("nonempty", arr[0, 1, 3], property_ok);
+  if !property_pass.passed; do
+    rt fail("nonempty good property incorrectly failed");
+  fi
+
+  val TestOutcome property_failure = check_int_cases("fails-at-two", arr[0, 2, 3], property_fail_on_two);
+  if property_failure.passed; do
+    rt fail("violated property incorrectly passed");
+  fi
+  if property_failure.message != "two is forbidden"; do
+    rt fail("property failure message was not preserved");
+  fi
+
+  val TestOutcome bool_pass = expect_equal_bool(true, true, "boolean equality");
+  if !bool_pass.passed; do
+    rt fail("boolean equality incorrectly failed");
+  fi
+  val TestOutcome bool_fail = expect_equal_bool(false, true, "boolean inequality");
+  if bool_fail.passed; do
+    rt fail("boolean inequality incorrectly passed");
+  fi
+
+  val TestOutcome unequal_int = expect_not_equal_int(1, 2, "distinct ints");
+  if !unequal_int.passed; do
+    rt fail("distinct integer values incorrectly failed");
+  fi
+  val TestOutcome same_int = expect_not_equal_int(2, 2, "same ints");
+  if same_int.passed; do
+    rt fail("identical integers incorrectly passed inequality");
+  fi
+
+  val TestOutcome different_string = expect_not_equal_string("alpha", "beta", "distinct strings");
+  if !different_string.passed; do
+    rt fail("distinct strings incorrectly failed");
+  fi
+  val TestOutcome same_string = expect_not_equal_string("alpha", "alpha", "same string");
+  if same_string.passed; do
+    rt fail("equal strings incorrectly passed inequality");
+  fi
+
+  val TestOutcome negative_tolerance = expect_near_float(1.0, 1.0, -0.01, "bad tolerance");
+  if negative_tolerance.passed; do
+    rt fail("negative tolerance incorrectly passed");
+  fi
+  // Positive and negative boundary checks for typed native assertions.
+  if !expect_false(false, "false accepted").passed; do
+    rt fail("expect_false rejected false");
+  fi
+  if expect_false(true, "true rejected").passed; do
+    rt fail("expect_false accepted true");
+  fi
+  if !expect_equal_bool(false, false, "false equality").passed; do
+    rt fail("false equality rejected");
+  fi
+  if !expect_not_equal_int(-1, 0, "signed inequality").passed; do
+    rt fail("signed inequality rejected");
+  fi
+  if expect_not_equal_int(-1, -1, "signed identity").passed; do
+    rt fail("signed identity accepted as unequal");
+  fi
+  if !expect_not_equal_string("", "x", "empty vs nonempty").passed; do
+    rt fail("empty/nonempty strings treated as equal");
+  fi
+  if expect_not_equal_string("", "", "empty identity").passed; do
+    rt fail("two empty strings treated as unequal");
+  fi
+  if !expect_near_float(1.0, 1.0, 0.0, "exact zero tolerance").passed; do
+    rt fail("exact equality at zero tolerance rejected");
+  fi
+
+  // Further direct guest checks; none are credited without compiler execution.
+  if !expect_true(true, "true assertion").passed; do
+    rt fail("expect_true rejected true");
+  fi
+  val TestOutcome false_true = expect_true(false, "false must fail");
+  if false_true.passed || false_true.message != "false must fail"; do
+    rt fail("expect_true false failure or diagnostic lost");
+  fi
+
+  if !expect_equal_int(-7, -7, "signed equality").passed; do
+    rt fail("signed equality rejected");
+  fi
+  if expect_equal_int(-7, 7, "signed mismatch").passed; do
+    rt fail("signed mismatch accepted");
+  fi
+
+  if !expect_equal_string("", "", "empty equality").passed; do
+    rt fail("empty strings not equal");
+  fi
+  if expect_equal_string("alpha", "ALPHA", "case-sensitive mismatch").passed; do
+    rt fail("case-sensitive string mismatch accepted");
+  fi
+
+  if !expect_equal_float(2.5, 2.5, "exact float").passed; do
+    rt fail("exact float equality rejected");
+  fi
+  if expect_equal_float(2.5, 2.0, "float mismatch").passed; do
+    rt fail("float mismatch accepted");
+  fi
+
+  if !expect_near_float(1.0, 1.125, 0.125, "inclusive tolerance").passed; do
+    rt fail("inclusive tolerance boundary rejected");
+  fi
+  if expect_near_float(1.0, 1.126, 0.125, "outside tolerance").passed; do
+    rt fail("out-of-tolerance difference accepted");
+  fi
+
+  if !check_int_cases("singleton", arr[7], property_ok).passed; do
+    rt fail("single-case property rejected");
+  fi
+  val TestOutcome empty_named = check_int_cases("empty-named", empty_cases, property_ok);
+  if empty_named.passed || empty_named.message != "property has no cases: empty-named"; do
+    rt fail("empty property name diagnostic missing");
+  fi
+
+  val TestOutcome silent = check_int_cases("silent", arr[1], property_silent_failure);
+  if silent.passed || silent.message != "property failed: silent"; do
+    rt fail("silent property failure fallback missing");
+  fi
+  val TestOutcome true_false = expect_false(true, "true is not false");
+  if true_false.passed || true_false.message != "true is not false"; do
+    rt fail("expect_false failure diagnostic lost");
+  fi
+  val TestOutcome equal_inequality = expect_not_equal_string("same", "same", "same strings");
+  if equal_inequality.passed || equal_inequality.message != "same strings"; do
+    rt fail("string inequality diagnostic lost");
+  fi
+
+  // Adversarial machine-field checks: guest values must not create or
+  // collide with ORES_TEST record delimiters or literal escape sequences.
+  val String nul_field = escape_machine_field("\u0000");
+  if nul_field != "\\u0000"; do
+    rt fail("NUL machine-field encoding changed");
+  fi
+  if nul_field == escape_machine_field("\\u0000"); do
+    rt fail("NUL collided with literal backslash-u escape");
+  fi
+  val String crlf_field = escape_machine_field("\r\n");
+  if crlf_field != "\\r\\n"; do
+    rt fail("CRLF machine-field encoding changed");
+  fi
+  if crlf_field == escape_machine_field("\\r\\n"); do
+    rt fail("CRLF collided with literal backslash-r-n");
+  fi
+  if escape_machine_field("\\") != "\\\\"; do
+    rt fail("single backslash was not doubled");
+  fi
+  if escape_machine_field("\\") == escape_machine_field("\\\\"); do
+    rt fail("single and double backslashes collided");
+  fi
+  if escape_machine_field("|\n") != "\\u007c\\n"; do
+    rt fail("pipe plus newline escaped in wrong order");
+  fi
+  if escape_machine_field("\t\t") != "\\t\\t"; do
+    rt fail("repeated tab encoding changed");
+  fi
+  if escape_machine_field("\r") == escape_machine_field("\\r"); do
+    rt fail("raw CR collided with literal backslash-r");
+  fi
+  if escape_machine_field("\t") == escape_machine_field("\\t"); do
+    rt fail("raw tab collided with literal backslash-t");
+  fi
+  // Ensure safe and repeated machine fields are encoded deterministically.
+  if escape_machine_field("") != ""; do
+    rt fail("empty machine field changed");
+  fi
+  if escape_machine_field("safe-ASCII_09") != "safe-ASCII_09"; do
+    rt fail("safe machine field changed");
+  fi
+  if escape_machine_field("|") != "\\u007c"; do
+    rt fail("single pipe machine-field encoding changed");
+  fi
+  if escape_machine_field("||") != "\\u007c\\u007c"; do
+    rt fail("repeated pipe machine-field encoding changed");
+  fi
+  if escape_machine_field("\n") != "\\n"; do
+    rt fail("single newline machine-field encoding changed");
+  fi
+  return;
+}

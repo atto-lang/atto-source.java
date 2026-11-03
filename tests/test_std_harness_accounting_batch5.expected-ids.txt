@@ -1,0 +1,16 @@
+mixed_counts
+nested_exact_filter
+nested_prefix_rejected
+case_sensitive_filter
+filtered_skip_not_counted
+selected_skip_not_executed
+fail_fast_excludes_trailing_skip
+fail_fast_after_pass
+nonfast_continues
+skip_then_failure_stops
+empty_property_diagnostic
+property_first_failure
+singleton_property
+pipe_vs_literal_escape
+nul_vs_literal_escape
+mixed_escape_order

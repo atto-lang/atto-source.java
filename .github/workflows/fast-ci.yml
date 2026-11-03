@@ -19,7 +19,33 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify fast-CI exact-head contract (source-free)
+        run: bash tests/test_fast_ci_exact_head_contract.sh
+      - name: Reject malformed ORES_TEST receipts (source-free negative controls)
+        run: bash tests/test_ores_test_receipt_admission.sh
+      - name: Validate canonical receipt escapes (source-free)
+        run: bash tests/test_ores_test_escape_canonicality.sh
+      - name: Reject v3 forged and wrong-ID receipts (source-free)
+        run: bash tests/test_portable_scalar_v3_receipt_admission.sh
+      - name: Reject forged expected ORES_TEST case IDs (source-free)
+        run: bash tests/test_ores_test_expected_ids.sh
+      - name: Verify six native ordered case manifests (source-free)
+        run: bash tests/test_native_test_manifests.sh
+      - name: Reject AttoLang harness .ores downgrades (source-free)
+        run: bash tests/test_atto_harness_migration.sh
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Set up GraalVM
@@ -34,6 +60,7 @@ jobs:
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
         run: |
+          set -euo pipefail
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/modules-namespaces-callables.ores"
@@ -41,8 +68,32 @@ jobs:
           grep -F "144" /tmp/oreslang-async-await.out
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" | tee /tmp/oreslang-callables.out
           grep -F "120:9:13" /tmp/oreslang-callables.out
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/oreslang-native-testing.out
-          grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/oreslang-native-testing.out
-          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/oreslang-native-testing-semantics.out
-          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/oreslang-native-testing-semantics.out
-          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/oreslang-native-testing-semantics.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-harness-guards.atto"
+          bash scripts/native_scalar_zero_java_smoke.sh
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_regressions.atto" | tee /tmp/ores-harness-regressions-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-regressions-jit.out native-testing-core 30 tests/test_std_harness_regressions.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_scalar_parity_batch4.atto" | tee /tmp/ores-harness-scalar-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-scalar-jit.out compiler-scalar-parity-batch4 24 tests/test_std_harness_scalar_parity_batch4.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_meta_batch4.atto" | tee /tmp/ores-harness-meta-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-harness-meta-jit.out harness-meta-batch4 12 tests/test_std_harness_meta_batch4.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v1-20261101.atto" | tee /tmp/ores-portable-scalar-v1-fast.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v1-fast.out portable-scalar-v1 16 tests/portable-scalar-v1.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/test_std_harness_accounting_batch5.atto" | tee /tmp/ores-accounting-batch5-fast.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-accounting-batch5-fast.out harness-accounting-batch5 16 tests/test_std_harness_accounting_batch5.expected-ids.txt
+          # Shared scalar v2 authored in Java, LLVM and .NET; this is a JIT guest gate only.
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v2-20261101.atto" | tee /tmp/ores-portable-scalar-v2-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v2-jit.out portable-scalar-v2 10 tests/portable-scalar-v2.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="tests/portable-scalar-v3-20261101.atto" | tee /tmp/ores-portable-scalar-v3-fast.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-portable-scalar-v3-fast.out portable-scalar-v3 12 tests/portable-scalar-v3.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-regressions-40.atto" | tee /tmp/ores-regressions-40-fast-jit.out
+          bash scripts/verify_ores_test_receipts.sh /tmp/ores-regressions-40-fast-jit.out stdlib 40 tests/native-testing-regressions-40.expected-ids.txt
+          timeout 180s mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-runner-matrix.atto" | tee /tmp/ores-runner-matrix-fast-jit.out
+          grep -Fqx "ORES_TEST_RUNNER_MATRIX_OK|cases=12" /tmp/ores-runner-matrix-fast-jit.out
+          test "$(grep -c '^ORES_TEST_RUNNER_MATRIX_OK|' /tmp/ores-runner-matrix-fast-jit.out)" -eq 1
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.atto" | tee /tmp/oreslang-native-testing.out
+          grep -Fx "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/oreslang-native-testing.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/oreslang-native-testing.out)" -eq 1
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.atto" | tee /tmp/oreslang-native-testing-semantics.out
+          grep -Fx "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/oreslang-native-testing-semantics.out
+          grep -Fx "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/oreslang-native-testing-semantics.out
+          test "$(grep -c '^ORES_TEST|SUMMARY|' /tmp/oreslang-native-testing-semantics.out)" -eq 2
