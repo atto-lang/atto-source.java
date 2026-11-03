@@ -91,6 +91,10 @@ final class ProtectedScalarMirV1Test {
     @Test void protectedRegionAliasCannotEscapeReadOrWriteScope() {
         for (String escape : java.util.List.of(
                 READ_COUNTER.replace("region.count;", "region;"),
+                READ_COUNTER.replace("region.count;", "rt borrow region;"),
+                READ_COUNTER.replace("region.count;", "rt share region;"),
+                READ_COUNTER.replace("region.count;", "rt take region;"),
+                READ_COUNTER.replace("region.count;", "rt copy region;"),
                 COUNTER.replace("s.count;\n", "s;\n"))) {
             IllegalArgumentException denied = assertThrows(
                     IllegalArgumentException.class,
@@ -107,6 +111,7 @@ final class ProtectedScalarMirV1Test {
         assertRejected(READ_COUNTER.replace("critical-read", "critical-write"));
         assertRejected(READ_COUNTER.replace("critical-read", "critical-unknown"));
         assertRejected(READ_COUNTER.replace("region.count;", "region.unknown;"));
+        assertRejected(READ_COUNTER.replace("region.count;", "rt unknown region;"));
         assertRejected(READ_COUNTER.replace("|region|", "|ignored|"));
         assertRejected(CART.replace("critical-write", "critical-read"));
         var forged = assertThrows(IllegalArgumentException.class, () ->
