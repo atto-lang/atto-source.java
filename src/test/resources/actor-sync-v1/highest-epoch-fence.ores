@@ -1,0 +1,19 @@
+// Portable actor epoch fencing: retain the highest announced generation.
+// This is pure owned cursor metadata, NOT a durable actor/storage guest.
+import * as sync from "std/actor_sync";
+pub routine main(): void {
+  let replica = sync.replica_cursor(2,7);
+  stdio.println(replica.apply_delta(4,8));
+  stdio.println(replica.apply_delta(6,8));
+  stdio.println(replica.apply_snapshot(5,7));
+  stdio.println(replica.needs_resync());
+  stdio.println(replica.apply_snapshot(6,7));
+  stdio.println(replica.needs_resync());
+  stdio.println(replica.apply_delta(6,8));
+  stdio.println(replica.applied());
+  let recover = sync.replica_cursor(3,4);
+  stdio.println(recover.apply_delta(3,6));
+  stdio.println(recover.apply_snapshot(3,4));
+  stdio.println(recover.apply_delta(3,5));
+  return;
+}
