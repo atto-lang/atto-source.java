@@ -1,0 +1,102 @@
+name: AttoLang Java semantic admission and linked guest evidence
+
+on:
+  push:
+    branches:
+      - 'integration/atto-negative-diagnostics-*'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/test/java/dev/oreslang/AttoNegativeDiagnosticsAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/AttoSourceAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/AttoCacheShapeAdmissionTest.java'
+      - '.github/workflows/atto-semantic-negative-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java-semantic-negative-and-linked-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove checkout and source tree identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          echo "ATTO_JAVA_SOURCE_HEAD=$(git rev-parse HEAD)"
+          echo "ATTO_JAVA_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build compiler and execute scoped Java JUnit plus .atto guest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
+            -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest \
+            clean test
+          test -s target/classes/dev/oreslang/compiler/OresCompiler.class
+          sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+          expected = {
+              "AttoNegativeDiagnosticsAdmissionTest": {
+                  "criticalAndSuspendsCallableOrdersRemainDenied",
+                  "lruShapedCriticalMethodIsRejectedBeforeAnyGuestExecution",
+                  "explicitAttoEntryUsesSameDiagnosticNotLegacySourceEscape",
+                  "ownedMutableArrayAndInlineConstructionCannotBeShared",
+                  "immutableCopyableScalarRemainsShareable",
+                  "unloweredCriticalCallableDoesNotBecomeSynchronousCallable",
+              },
+              "AttoSourceAdmissionTest": {
+                  "executesAttoGuestWithExtensionlessAttoImport",
+                  "explicitAttoImportNeverResolvesToLegacyOresTwin",
+              },
+              "AttoCacheShapeAdmissionTest": {
+                  "integerColumnsBoundedLoopsAndOptionLinkAsAttoGuest",
+              },
+          }
+          total = 0
+          for suite, methods in expected.items():
+              path = Path("target/surefire-reports") / ("TEST-dev.oreslang." + suite + ".xml")
+              if not path.is_file() or not path.stat().st_size:
+                  raise SystemExit("Missing/nonempty JUnit report: " + str(path))
+              root = ElementTree.parse(path).getroot()
+              tests = int(root.get("tests", "0"))
+              bad = sum(int(root.get(k, "0")) for k in ("errors", "failures", "skipped"))
+              if tests <= 0 or bad:
+                  raise SystemExit(f"JUnit report not clean: {suite} tests={tests} rejected={bad}")
+              seen = {case.get("name") for case in root.iter("testcase")}
+              missing = methods - seen
+              if missing:
+                  raise SystemExit(f"Missing required JUnit cases {suite}: {sorted(missing)}")
+              total += tests
+          print(f"ATTO_JAVA_JUNIT_EVIDENCE=PASS suites={len(expected)} executed_tests={total}")
+          print("ATTO_NATIVE_LRU_FIXTURES=NOT_EXECUTED")
+          print("ATTO_OTHER_BACKENDS=NOT_EXECUTED")
+          PY
+      - name: Preserve immutable checkout evidence after tests
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "ATTO_JAVA_SCOPE=AUTHORITATIVE_REPO_JUNIT_ONLY"
+          echo "ATTO_LRU_PRIVATE_SOURCE_NOT_COPIED=PASS"
