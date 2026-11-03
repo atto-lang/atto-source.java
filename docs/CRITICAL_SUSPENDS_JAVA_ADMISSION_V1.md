@@ -167,7 +167,7 @@ critical AST set through the public publishing method. This is JVM API-level
 hardening, not a sandbox against malicious reflection or native access.
 
 Ownership-only checks on programs **without** critical statements remain
-supported and do not need a new typing proof. Eight authored regression
+supported and do not need a new typing proof. Nine authored regression
 cases cover untyped ownership-only admission, equivalent untyped ASTs and equal Program aliases sharing the exact critical node,
 ordinary typing failures, failed linked-metadata rechecks, successful
 rechecks with stale ownership epochs, ordinary noncritical ownership
@@ -210,3 +210,22 @@ GitHub App (403). The checked-in
 Do not bypass with GitHub connector blob/tree writes. The concrete
 candidate IDs, source head/tree and capacity receipt are recorded on
 [governance issue #962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962).
+
+### Atomic cross-ledger publication and race validation (2026-11-03)
+
+The ownership checker now stages critical candidates and validates the exact
+pending ownership epoch and type-check generation before publishing a positive
+Task epoch. Publication enters a fixed **Critical -> Task -> Type** monitor
+order. Both the critical preflight and its final publisher independently assert
+that all three publication locks are held, so a future call site cannot
+silently skip the cross-ledger protocol. The Task epoch cannot be observed as
+positive by other callers until the critical admission commit completes.
+
+A new controlled interleaving JUnit test holds the critical monitor, waits
+until an ownership-check thread is blocked at the publication boundary,
+then starts a failing linked-metadata type recheck. It verifies the Task
+epoch is still pending before release, and remains non-executable after
+the rejected publication. This regression is **authored only** until exact-head
+Java 21 JUnit execution demonstrates it. It does not prove all out-of-memory,
+VM termination, or foreign host reflection cases safe.
+
