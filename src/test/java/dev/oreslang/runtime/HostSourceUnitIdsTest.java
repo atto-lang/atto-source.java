@@ -302,4 +302,24 @@ final class HostSourceUnitIdsTest {
         assertTrue(denied.getMessage().contains("changed between admission"),
                 denied::toString);
     }
+
+    @Test
+    void externalEnvironmentRootCanStillSupplyOrdinaryRuntimeDeclarations() throws Exception {
+        Path project = temp.resolve("project");
+        Path external = temp.resolve("ambient");
+        Files.createDirectories(project);
+        Files.createDirectories(external);
+        Path consumer = project.resolve("consumer.atto");
+        Path producer = external.resolve("producer.atto");
+        Files.writeString(consumer, """
+                import * as lib from "producer";
+                pub fnc main() -> int { return 42; }
+                """);
+        Files.writeString(producer, "pub fnc helper() -> int { return 7; }");
+        IncrementalCompiler.BuildResult result = assertDoesNotThrow(
+                () -> LinkedProgramRunner.validate(consumer,
+                        Map.of(OresProjectConfig.ENV_ORESLANG_PATH, external.toString())));
+        assertTrue(result.units().containsKey("project/consumer.atto"));
+        assertTrue(result.units().containsKey("external/1/producer.atto"));
+    }
 }
