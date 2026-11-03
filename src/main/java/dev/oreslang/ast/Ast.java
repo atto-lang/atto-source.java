@@ -77,12 +77,26 @@ public final class Ast {
      * may be discarded, lowered as an ordinary class, or executed from here.
      */
     public record ProtectedMethod(String name, List<Param> parameters,
-                                  TypeRef returnType, List<String> bodyTokens) {
+                                  TypeRef returnType, List<String> bodyTokens,
+                                  List<String> bodyTokenKinds) {
         public ProtectedMethod {
             java.util.Objects.requireNonNull(name, "method name");
             java.util.Objects.requireNonNull(returnType, "return type");
             parameters = List.copyOf(parameters);
             bodyTokens = List.copyOf(bodyTokens);
+            bodyTokenKinds = List.copyOf(bodyTokenKinds);
+            if (bodyTokens.size() != bodyTokenKinds.size())
+                throw new IllegalArgumentException("protected method token provenance mismatch");
+        }
+
+        /**
+         * Compatibility for hand-authored ASTs. Untyped token lists are never
+         * valid evidence for executable protected-state MIR admission.
+         */
+        public ProtectedMethod(String name, List<Param> parameters,
+                               TypeRef returnType, List<String> bodyTokens) {
+            this(name, parameters, returnType, bodyTokens,
+                    java.util.Collections.nCopies(bodyTokens.size(), "UNVERIFIED"));
         }
     }
 
