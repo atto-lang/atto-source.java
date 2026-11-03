@@ -114,4 +114,20 @@ final class AotStaticTypeOfQueryV1Test {
                 OresCompiler.compileStaticTypeOfQueryV1(
                         unresolved, "pkg@revision1", "type_of<K>()"));
     }
+
+    @Test
+    void guestCallMustRejectUntilNativeLoweringExists() {
+        String guestSource = SOURCE + """
+                pub fnc main(): int {
+                  val descriptor = type_of<Person>();
+                  return 0;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(guestSource));
+        assertTrue(error.getMessage().contains(
+                "type_of<T>() requires compiler-backed guest AOT lowering"),
+                error.getMessage());
+    }
+
 }
