@@ -133,6 +133,12 @@ final class OresProjectConfigTest {
                 config.resolveImport(importer, "./cache").orElseThrow());
         assertEquals(javaTwin.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./cache.java").orElseThrow());
+        Files.delete(attoOnly);
+        // No silent migration to an .ores/.java sibling when an Atto import
+        // disappears. An explicitly qualified legacy import still works.
+        assertTrue(config.resolveImport(importer, "./cache").isEmpty());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache.ores").orElseThrow());
         assertTrue(config.resolveImport(importer, "./missing.atto").isEmpty());
     }
 
@@ -210,6 +216,21 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void legacyImporterStillResolvesLegacyOnlyDependencyForMigration() throws Exception {
+        Path legacyEntry = temp.resolve("entry.ores");
+        Path legacySource = temp.resolve("dependency.ores");
+        Files.writeString(legacyEntry, "pub fnc main(): void { return; }");
+        Files.writeString(legacySource, "pub fnc answer(): int { return 17; }");
+        OresProjectConfig cfg = OresProjectConfig.discover(legacyEntry, Map.of());
+        assertEquals(legacySource.toAbsolutePath().normalize(),
+                cfg.resolveImport(legacyEntry, "./dependency").orElseThrow());
+        // The same unqualified import is not legal for a new Atto file.
+        Path attoEntry = temp.resolve("entry.atto");
+        Files.writeString(attoEntry, "pub fnc main(): void { return; }");
+        assertTrue(cfg.resolveImport(attoEntry, "./dependency").isEmpty());
+    }
+
+    @Test
     void canonicalAttoUsesSearchRootPrecedenceWithoutEscapingRoot() throws Exception {
         Path source = temp.resolve("source");
         Path ambient = temp.resolve("ambient");
@@ -230,8 +251,9 @@ final class OresProjectConfigTest {
 
         OresProjectConfig cfg = OresProjectConfig.discover(importer,
                 Map.of(OresProjectConfig.ENV_ATTOLANG_PATH, ambient.toString()));
-        // Root locality is stronger than extension priority across roots.
-        assertEquals(localLegacy.toAbsolutePath().normalize(),
+        // New Atto importers skip legacy-only candidates even when they are
+        // closer; no implicit .ores dependency crosses a canonical boundary.
+        assertEquals(ambientAtto.toAbsolutePath().normalize(),
                 cfg.resolveImport(importer, "pkg/value").orElseThrow());
         Path localAtto = source.resolve("pkg/value.atto");
         Files.writeString(localAtto, "pub fnc value(): int { return 1; }");
