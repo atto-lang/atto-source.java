@@ -79,6 +79,20 @@ final class AttoImportedModuleClassGuestTest {
                 }
                 """);
         assertEquals("9", run(entry));
+
+        // The import resolver must preserve a validated module alias in the
+        // ownership/type metadata; neither the original module name nor a
+        // local Request class is an acceptable implicit fallback.
+        Path aliased = temp.resolve("aliased-main.atto");
+        Files.writeString(aliased, """
+                import module transport_contract as tc from "./transport_contract.atto";
+                pub fnc main(): void {
+                  val tc.Request request = new tc.Request(11);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        assertEquals("11", run(aliased));
     }
 
     @Test
