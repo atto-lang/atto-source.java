@@ -23,6 +23,14 @@ case "${RECORD_GATE_INJECT-}" in
   untracked) printf 'late source injection\n' > late-source.txt ;;
   ignored-source) printf '// hidden source injection\n' > scripts/injected.java ;;
   ignored-maven-config) mkdir -p .mvn; printf '<extensions/>\n' > .mvn/extensions.xml ;;
+  index-skip)
+    git update-index --skip-worktree scripts/check-record-parser.sh
+    printf '\n# hidden tracked mutation\n' >> scripts/check-record-parser.sh
+    ;;
+  index-assume)
+    git update-index --assume-unchanged scripts/check-record-parser.sh
+    printf '\n# hidden tracked mutation\n' >> scripts/check-record-parser.sh
+    ;;
 esac
 STUB_MVN
 chmod +x "$tmp/bin/mvn"
@@ -86,6 +94,23 @@ rm "$repo/scripts/injected.java"
 # no source paths change. Treat ignored .mvn inputs as untrusted too.
 assert_exit 6 env RECORD_GATE_INJECT=ignored-maven-config bash scripts/check-record-inference.sh --tree "$tree"
 rm -rf "$repo/.mvn"
+
+# Neither status nor diff sees a tracked source tampered after setting
+# skip-worktree or assume-unchanged. The gate must check the index flags.
+assert_exit 6 env RECORD_GATE_INJECT=index-skip bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-skip-worktree scripts/check-record-parser.sh
+git -C "$repo" restore --worktree scripts/check-record-parser.sh
+assert_exit 6 env RECORD_GATE_INJECT=index-assume bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-assume-unchanged scripts/check-record-parser.sh
+git -C "$repo" restore --worktree scripts/check-record-parser.sh
+
+# Flagged index entries are never valid even without a visible file change.
+git -C "$repo" update-index --skip-worktree scripts/check-record-parser.sh
+assert_exit 4 bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-skip-worktree scripts/check-record-parser.sh
+git -C "$repo" update-index --assume-unchanged scripts/check-record-parser.sh
+assert_exit 4 bash scripts/check-record-inference.sh --tree "$tree"
+git -C "$repo" update-index --no-assume-unchanged scripts/check-record-parser.sh
 
 # Validate the missing-tool guard without depending on whether CI happens
 # to have a global Maven binary. Give the test only the required early tools.
