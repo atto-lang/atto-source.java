@@ -752,6 +752,10 @@ public final class Parser {
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
+            if (injectedMutableState && mods.isStatic) {
+                throw error(peek(), "injected mutable state v0 forbids static class functions"
+                        + " until class initialization and storage isolation are verified");
+            }
             if (mods.isStatic) {
                 if (explicitMethod) {
                     throw error(previous(), "static class functions use 'static fnc', not 'static method'");
