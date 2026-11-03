@@ -54,6 +54,28 @@ jobs:
           mvn -B -ntp -DskipTests exec:java \
             -Dexec.args="--check examples/atto-canonical/src/main.atto"
           echo 'ATTO_CANONICAL_CLI_LINKED_CHECK=PASS'
+      - name: Execute real linked AttoLang CLI guest and require exact output
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/atto-canonical-guest.stdout"
+          errors="$RUNNER_TEMP/atto-canonical-guest.stderr"
+          mvn -q -B -ntp -DskipTests exec:java \
+            -Dexec.args="examples/atto-canonical/src/main.atto" \
+            > "$output" 2> "$errors"
+          # Only a real AttoLang-linked guest may produce this exact payload;
+          # shell-side printf/echo is never the source of the output.
+          printf 42 | cmp -s - "$output" || {
+            echo "ATTO_CANONICAL_CLI_OUTPUT_MISMATCH" >&2
+            cat "$errors" >&2
+            exit 1
+          }
+          test ! -s "$errors" || {
+            echo "ATTO_CANONICAL_CLI_STDERR_NOT_EMPTY" >&2
+            cat "$errors" >&2
+            exit 1
+          }
+          echo 'ATTO_CANONICAL_CLI_LINKED_EXECUTE_42=PASS'
       - name: Confirm exact checkout HEAD and tracked source integrity
         shell: bash
         env:
