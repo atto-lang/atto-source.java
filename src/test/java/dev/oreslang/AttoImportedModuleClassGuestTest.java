@@ -128,8 +128,23 @@ final class AttoImportedModuleClassGuestTest {
                   define class Hidden as
                     constructor() { return; }
                   end
+                  pub define class Visible as
+                    pub val int value;
+                    pub constructor(int value) { self.value = value; }
+                  end
                 end
                 """);
+        Path publicClass = temp.resolve("visible.atto");
+        Files.writeString(publicClass, """
+                import module transport_contract from "./transport_contract.atto";
+                pub fnc main(): void {
+                  val transport_contract.Visible item = new transport_contract.Visible(5);
+                  stdio.stdout.write(item.value);
+                  return;
+                }
+                """);
+        assertEquals("5", run(publicClass));
+
         Path entry = temp.resolve("private.atto");
         Files.writeString(entry, """
                 import module transport_contract from "./transport_contract.atto";
@@ -147,11 +162,26 @@ final class AttoImportedModuleClassGuestTest {
         Files.writeString(temp.resolve("field_contract.atto"), """
                 define module field_contract as
                   pub define class Request as
+                    pub val int value;
                     val int secret;
-                    pub constructor(int secret) { self.secret = secret; }
+                    pub constructor(int secret) {
+                      self.value = secret;
+                      self.secret = secret;
+                    }
                   end
                 end
                 """);
+        Path publicField = temp.resolve("public-field.atto");
+        Files.writeString(publicField, """
+                import module field_contract from "./field_contract.atto";
+                pub fnc main(): void {
+                  val field_contract.Request request = new field_contract.Request(7);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        assertEquals("7", run(publicField));
+
         Path privateField = temp.resolve("private-field.atto");
         Files.writeString(privateField, """
                 import module field_contract from "./field_contract.atto";
@@ -171,9 +201,21 @@ final class AttoImportedModuleClassGuestTest {
                 define module transport_contract as
                   pub define class Request as
                     pub val int value;
+                    pub constructor(int value) { self.value = value; }
                   end
                 end
                 """);
+        Path known = temp.resolve("known-owner.atto");
+        Files.writeString(known, """
+                import module transport_contract from "./transport_contract.atto";
+                pub fnc main(): void {
+                  val transport_contract.Request request = new transport_contract.Request(9);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        assertEquals("9", run(known));
+
         Path entry = temp.resolve("unknown-owner.atto");
         Files.writeString(entry, """
                 import module transport_contract from "./transport_contract.atto";
@@ -187,5 +229,50 @@ final class AttoImportedModuleClassGuestTest {
                 """);
         org.junit.jupiter.api.Assertions.assertThrows(
                 RuntimeException.class, () -> run(entry));
+
+        // Aliasing a module must not also expose its unaliased namespace.
+        Path leakedAlias = temp.resolve("leaked-alias.atto");
+        Files.writeString(leakedAlias, """
+                import module transport_contract as tc from "./transport_contract.atto";
+                pub fnc main(): void {
+                  val transport_contract.Request request = new transport_contract.Request(9);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RuntimeException.class, () -> run(leakedAlias));
+
+        // A correctly resolved source file does not authorize a different
+        // module name. Prove that source is valid first to isolate the denial.
+        Files.writeString(temp.resolve("sibling_contract.atto"), """
+                define module sibling_contract as
+                  pub define class Request as
+                    pub val int value;
+                    pub constructor(int value) { self.value = value; }
+                  end
+                end
+                """);
+        Path sibling = temp.resolve("sibling.atto");
+        Files.writeString(sibling, """
+                import module sibling_contract from "./sibling_contract.atto";
+                pub fnc main(): void {
+                  val sibling_contract.Request request = new sibling_contract.Request(13);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        assertEquals("13", run(sibling));
+        Path wrongModule = temp.resolve("wrong-module.atto");
+        Files.writeString(wrongModule, """
+                import module transport_contract from "./sibling_contract.atto";
+                pub fnc main(): void {
+                  val transport_contract.Request request = new transport_contract.Request(13);
+                  stdio.stdout.write(request.value);
+                  return;
+                }
+                """);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RuntimeException.class, () -> run(wrongModule));
     }
 }
