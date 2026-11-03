@@ -111,7 +111,7 @@ final class DurableActivityWorkflowDeclarationTest {
                 () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas())).getMessage()
                 .contains("WORKFLOW_CAPABILITY_CHECK_UNSUPPORTED"));
         assertThrows(IllegalArgumentException.class,
-                () -> new IncrementalCompiler().compile(java.util.Map.of("workflow.ores", source)));
+                () -> new IncrementalCompiler().compile(java.util.Map.of("workflow.atto", source)));
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source)).getMessage()
                 .contains("WORKFLOW_EXECUTION_UNSUPPORTED"));
