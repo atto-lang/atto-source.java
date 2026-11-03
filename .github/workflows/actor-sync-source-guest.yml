@@ -3,6 +3,12 @@ on:
   pull_request:
     paths:
       - 'stdlib/actor_sync.ores'
+      - 'stdlib/actor_sync.atto'
+      - 'pom.xml'
+      - 'src/main/java/dev/oreslang/interop/MixedSourceUnit.java'
+      - 'src/main/java/dev/oreslang/config/OresProjectConfig.java'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/java/dev/oreslang/config/OresProjectConfigTest.java'
       - 'src/test/java/dev/oreslang/ActorSyncStdlibTest.java'
       - 'src/test/resources/actor-sync-v1/**'
       - '.github/workflows/actor-sync-source-guest.yml'
@@ -11,7 +17,7 @@ permissions:
   contents: read
 jobs:
   exact-head-graal-source-guest:
-    name: Exact-head Oreslang source guest semantics (NOT durable sync)
+    name: Exact-head AttoLang source guest semantics (NOT durable sync)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -28,6 +34,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
           test "$(git hash-object stdlib/actor_sync.ores)" = "3aae079ffe3be8bc2eb2b77bacbd6bddf7e1ce65"
+          test "$(git hash-object stdlib/actor_sync.atto)" = "3aae079ffe3be8bc2eb2b77bacbd6bddf7e1ce65"
           test "$(git hash-object src/test/resources/actor-sync-v1/cursor-progression.ores)" = "a454e7107ab62bbaa38cca44627c794b3bf0d4c2"
           test "$(git hash-object src/test/resources/actor-sync-v1/cross-epoch-delta-reject.ores)" = "0f93036cf7ed0581273444159a6a619b75505020"
           test "$(git hash-object src/test/resources/actor-sync-v1/highest-epoch-fence.ores)" = "ae9063472b39f554fa195d79283bd9952e57483d"
@@ -47,5 +54,5 @@ jobs:
       - name: Execute Oreslang guest progress fixture with JUnit
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorSyncStdlibTest test
+          mvn -B -ntp -Dtest=ActorSyncStdlibTest,OresProjectConfigTest test
           echo "ACTOR_SYNC_SOURCE_GUEST_PROGRESS_ONLY=${{ github.event.pull_request.head.sha || github.sha }}"
