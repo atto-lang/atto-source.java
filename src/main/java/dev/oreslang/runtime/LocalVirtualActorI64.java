@@ -50,11 +50,10 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
 
     private static final class Envelope {
         final long value;
-        final VirtualActorActivationRegistry.Admission receipt;
+        VirtualActorActivationRegistry.Admission receipt;
         final CompletableFuture<Outcome> result = new CompletableFuture<>();
-        Envelope(long value, VirtualActorActivationRegistry.Admission receipt) {
+        Envelope(long value) {
             this.value = value;
-            this.receipt = receipt;
         }
     }
 
@@ -181,11 +180,30 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
             if (closed || closing || slot.failed || slot.retiring
                     || slot.activation == null || !slot.activation.active())
                 return new SendResult(AdmissionKind.UNAVAILABLE, null);
-            var ticket = registry.tryAdmit(slot.activation);
-            if (ticket == null) return new SendResult(AdmissionKind.BACKPRESSURE, null);
-            var envelope = new Envelope(value, ticket);
+            // Allocate the envelope, future and returned handle BEFORE the
+            // registry accepts the turn. Queue the provisional envelope under
+            // the slot monitor, then atomically acquire its admission ticket.
+            // No worker can observe it until this monitor is released.
+            // There must be no allocation/queue-growth failure after acceptance
+            // that can silently strand an outstanding registry credit.
+            var envelope = new Envelope(value);
+            var accepted = new SendResult(AdmissionKind.ADMITTED, envelope.result);
             slot.pending.addLast(envelope);
-            return new SendResult(AdmissionKind.ADMITTED, envelope.result);
+            VirtualActorActivationRegistry.Admission ticket;
+            try {
+                ticket = registry.tryAdmit(slot.activation);
+            } catch (RuntimeException | Error failure) {
+                if (slot.pending.removeLast() != envelope)
+                    throw new IllegalStateException("virtual actor admission rollback corrupted", failure);
+                throw failure;
+            }
+            if (ticket == null) {
+                if (slot.pending.removeLast() != envelope)
+                    throw new IllegalStateException("virtual actor backpressure rollback corrupted");
+                return new SendResult(AdmissionKind.BACKPRESSURE, null);
+            }
+            envelope.receipt = ticket;
+            return accepted;
         }
     }
 
