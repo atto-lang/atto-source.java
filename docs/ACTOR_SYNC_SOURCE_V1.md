@@ -49,3 +49,19 @@ The first source-guest CI attempt could not compile the new module as written: `
 The Java mixed-language source front end admits `.atto` as the native AttoLang source extension, and project-root import resolution discovers `.atto` modules. An ambiguous suffixless import with both `name.atto` and `name.ores` **fails closed**; callers must specify the extension during migration. Existing `.ores` paths continue to work. The updated Java test suite includes canonical packaged-module verification, a real `.atto` entry executing the shared cursor fixture, and an `.atto` isolated-actor turn using the source commit-window metadata.
 
 **Evidence gate:** these are source-authored tests, not demonstrated guest passes. Run `ActorSyncStdlibTest`, `OresProjectConfigTest`, and `NativeCoreLibraryTest` on the exact checked-out PR tree. No `suspends` storage adapter, persistent Oreslang guest state, or verified two-process AttoLang guest recovery exists yet.
+
+## 2026-11-03 named AttoLang fixture admission hardening
+
+The Java test bundle now includes `cursor-progression.atto`,
+`cross-epoch-delta-reject.atto`, and `highest-epoch-fence.atto` as
+separately named files, each byte-identical to its retained `.ores`
+compatibility fixture and the corresponding conformance #300 Git blob.
+JUnit asserts exact stdout for both extensions and verifies canonical
+packaged stdlib import identity, while rejecting explicit `.atto` aliases
+for stdlib modules that still exist only as `.ores` sources. This closes an
+**authored-fixture/admission gap**, not AS25 durable restart coverage.
+
+The exact-head GitHub workflow must execute real steps, compile the current
+compiler, and run those guest paths before Java `.atto` execution can be
+recorded as PASS. A source blob match, host-model test, or steps=null job
+cannot promote any of the 25 actor-sync runtime scenarios.

@@ -244,6 +244,15 @@ final class NativeCoreLibraryTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> CoreLibrarySources.source("std/not-a-real-module"));
+        // Explicit .atto imports are valid only for migrated source modules.
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.unitId("std/core.atto"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("ores.std/core.atto"));
+        assertEquals(CoreLibrarySources.unitId("std/actor_sync"),
+                CoreLibrarySources.unitId("std/actor_sync.atto"));
+        assertEquals(CoreLibrarySources.unitId("std/actor_sync"),
+                CoreLibrarySources.unitId("ores.std/actor_sync.ores"));
         assertEquals(CoreLibrarySources.unitId("std/core"),
                 CoreLibrarySources.unitId("std/core.ores"));
         assertEquals(CoreLibrarySources.source("std/core"),

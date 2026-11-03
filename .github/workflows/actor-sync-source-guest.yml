@@ -26,7 +26,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact revision and pinned .ores fixture identity
+      - name: Verify exact revision and pinned .atto/.ores fixture identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -39,6 +39,9 @@ jobs:
           test "$(git hash-object src/test/resources/actor-sync-v1/cursor-progression.ores)" = "a454e7107ab62bbaa38cca44627c794b3bf0d4c2"
           test "$(git hash-object src/test/resources/actor-sync-v1/cross-epoch-delta-reject.ores)" = "0f93036cf7ed0581273444159a6a619b75505020"
           test "$(git hash-object src/test/resources/actor-sync-v1/highest-epoch-fence.ores)" = "ae9063472b39f554fa195d79283bd9952e57483d"
+          test "$(git hash-object src/test/resources/actor-sync-v1/cursor-progression.atto)" = "a454e7107ab62bbaa38cca44627c794b3bf0d4c2"
+          test "$(git hash-object src/test/resources/actor-sync-v1/cross-epoch-delta-reject.atto)" = "0f93036cf7ed0581273444159a6a619b75505020"
+          test "$(git hash-object src/test/resources/actor-sync-v1/highest-epoch-fence.atto)" = "ae9063472b39f554fa195d79283bd9952e57483d"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'

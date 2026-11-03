@@ -149,7 +149,14 @@ public final class CoreLibrarySources {
         // One canonical module identity for the migrated AttoLang module.
         // Legacy .ores and new .atto specifiers must never create two
         // independently mutable instances or bypass the closed whitelist.
-        return relative.equals("actor_sync.ores") ? "actor_sync.atto" : relative;
+        String canonical = relative.equals("actor_sync.ores") ? "actor_sync.atto" : relative;
+        // Do not silently treat an unconverted legacy .ores module as if
+        // its .atto source existed. That would create false admission evidence.
+        if (importPath.endsWith(".atto") && !canonical.endsWith(".atto")) {
+            throw new IllegalArgumentException(
+                    "no canonical .atto stdlib source for: " + importPath);
+        }
+        return canonical;
     }
 
     private static String canonicalPathBody(String importPath, String prefix) {

@@ -58,7 +58,7 @@ final class ActorSyncStdlibTest {
     @Test
     void actualAttoEntryRunsCanonicalGuestFixtureWithoutLegacyExtension() throws Exception {
         String fixture=Files.readString(Path.of(
-            "src/test/resources/actor-sync-v1/highest-epoch-fence.ores"));
+            "src/test/resources/actor-sync-v1/highest-epoch-fence.atto"));
         assertEquals("""
                 false
                 false
@@ -72,6 +72,29 @@ final class ActorSyncStdlibTest {
                 true
                 true
                 """, runAtto(fixture));
+    }
+
+
+    @Test
+    void namedAttoFixturesExecuteSeparatelyFromCompatibleOresFiles() throws Exception {
+        // A .ores file copied into a generic .atto entry is not evidence that
+        // the named .atto contract fixtures are present and source-identical.
+        Path root = Path.of("src/test/resources/actor-sync-v1");
+        Map<String, String> expectations = Map.of(
+                "cursor-progression", "true\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\n3\n5\n",
+                "cross-epoch-delta-reject", "false\ntrue\n5\ntrue\ntrue\n7\n5\n",
+                "highest-epoch-fence", "false\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\n8\nfalse\ntrue\ntrue\n");
+        for (var caseEntry : expectations.entrySet()) {
+            String name = caseEntry.getKey();
+            String expected = caseEntry.getValue();
+            String legacy = Files.readString(root.resolve(name + ".ores"));
+            String canonical = Files.readString(root.resolve(name + ".atto"));
+            assertEquals(legacy, canonical, name + ": migration source bytes differ");
+            assertEquals(expected, runNamed(legacy, name + ".ores"),
+                    name + ": legacy source execution");
+            assertEquals(expected, runNamed(canonical, name + ".atto"),
+                    name + ": canonical AttoLang source execution");
+        }
     }
 
     @Test
