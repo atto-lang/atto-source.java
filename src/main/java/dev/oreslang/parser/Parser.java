@@ -906,6 +906,7 @@ public final class Parser {
             Ast.TypeRef result = parseTypeRef();
             consume(DOUBLE_COLON, "protected method body requires '::'");
             List<String> body = new ArrayList<>();
+            List<String> bodyKinds = new ArrayList<>();
             int braceDepth = 0;
             while (!check(EOF)) {
                 if (check(END) && braceDepth == 0) break;
@@ -916,6 +917,7 @@ public final class Parser {
                 if (t.type() == RBRACE && --braceDepth < 0)
                     throw error(t, "unbalanced protected method body braces");
                 body.add(t.lexeme());
+                bodyKinds.add(t.type().name());
                 if (body.size() > 1024)
                     throw error(t, "protected method token budget exceeded (1024)");
             }
@@ -925,7 +927,7 @@ public final class Parser {
             String methodIdentity = method + "/" + parameters.size();
             if (!methodsSeen.add(methodIdentity))
                 throw error(previous(), "duplicate protected method name/arity '" + methodIdentity + "'");
-            methods.add(new Ast.ProtectedMethod(method, parameters, result, body));
+            methods.add(new Ast.ProtectedMethod(method, parameters, result, body, bodyKinds));
             if (methods.size() > 64)
                 throw error(previous(), "protected method budget exceeded (64)");
         }
