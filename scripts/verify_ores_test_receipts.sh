@@ -22,7 +22,7 @@ LC_ALL=C awk -F '|' -v suite="$2" -v expected="$3" -v expected_file="${4:-}" '
       close(expected_file)
     }
   }
-  # Exactly the escaping vocabulary of stdlib/testing.ores. Reject lone or
+  # Escaping vocabulary of canonical stdlib/testing.atto (legacy .ores v1). Reject lone or
   # unknown escapes rather than letting distinct case IDs decode identically.
   function canonical_field(value, i, next_ch) {
     for (i=1; i<=length(value); i++) {
