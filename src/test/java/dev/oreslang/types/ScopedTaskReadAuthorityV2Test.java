@@ -199,6 +199,46 @@ final class ScopedTaskReadAuthorityV2Test {
                 program, task, epoch, root, List.of(), Types.Primitive.INT));
     }
 
+    @Test
+    void runtimeUnverifiedWrappersCannotMintScopedTaskReadProof() {
+        // A general type capability is not automatically proof that a
+        // borrowed reference has a verified cross-thread runtime lowering.
+        // Keep the independent ThreadSafetyTraits admission boundary.
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 41, 1, true);
+
+        var shared = new Types.Named("SharedMutex", List.of(Types.Primitive.INT));
+        for (Types.Type type : List.of(
+                shared,
+                new Types.Named("Option", List.of(shared)),
+                new Types.Named("Result", List.of(Types.Primitive.INT, shared)),
+                new Types.Named("ActorRef", List.of(Types.Primitive.INT)),
+                new Types.Named("Arc", List.of(Types.Primitive.INT)),
+                new Types.Named("Weak", List.of(Types.Primitive.INT)),
+                new Types.Named("Box", List.of(Types.Primitive.INT)))) {
+            assertTrue(TypeAutoTraits.inferClosed(type).sync(),
+                    () -> "regression case no longer exercises general Sync: " + type);
+            assertFalse(ThreadSafetyTraits.has(type,
+                    ThreadSafetyTraits.Trait.SYNC, (named, trait) -> false));
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> ScopedTaskReadAuthority.prove(
+                            program, task, epoch, allocation, List.of(), type));
+            assertTrue(error.getMessage().contains("verified Sync"), error::getMessage);
+        }
+        assertDoesNotThrow(() -> ScopedTaskReadAuthority.prove(
+                program, task, epoch, allocation, List.of(),
+                new Types.Tuple(List.of(Types.Primitive.INT))));
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
