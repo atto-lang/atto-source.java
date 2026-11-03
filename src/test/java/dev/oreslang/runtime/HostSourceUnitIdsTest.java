@@ -134,4 +134,47 @@ final class HostSourceUnitIdsTest {
         assertEquals(42, result.exitStatus());
         assertTrue(result.build().units().containsKey("project/consumer.atto"));
     }
+
+    @Test
+    void linkedImportCannotEscapeProjectRootThroughRelativeTraversal() throws Exception {
+        Path project = temp.resolve("project");
+        Files.createDirectories(project);
+        Path consumer = project.resolve("consumer.atto");
+        Path outside = temp.resolve("outside.atto");
+        Files.writeString(consumer, """
+                import * as external from "../outside.atto";
+                pub fnc main() -> int { return 42; }
+                """);
+        Files.writeString(outside, "pub fnc value() -> int { return 7; }");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(consumer, Map.of()));
+        assertTrue(denied.getMessage().contains("outside the project root"),
+                denied::toString);
+    }
+
+    @Test
+    void linkedImportCannotSmuggleSymlinkAliasAcrossMacroSourceUnits() throws Exception {
+        Path target = temp.resolve("producer.atto");
+        Path alias = temp.resolve("alias.atto");
+        Path consumer = temp.resolve("consumer.atto");
+        Files.writeString(target, """
+                define pub macro literal(Const<int> value) -> Syntax<Expr> {
+                    return quote(value);
+                }
+                """);
+        Files.writeString(consumer, """
+                import * as lib from "./alias.atto";
+                pub fnc main() -> int { return lib.literal!(const 42); }
+                """);
+        try {
+            Files.createSymbolicLink(alias, target.getFileName());
+        } catch (UnsupportedOperationException | java.io.IOException
+                 | SecurityException unsupported) {
+            Assumptions.assumeTrue(false, "symlinks unavailable on this runner");
+        }
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(consumer, Map.of()));
+        assertTrue(denied.getMessage().contains("symlink"),
+                denied::toString);
+    }
 }
