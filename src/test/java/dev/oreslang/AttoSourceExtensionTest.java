@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.DurableExecutionManifest;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.interop.MixedSourceUnit;
@@ -86,4 +87,19 @@ final class AttoSourceExtensionTest {
         assertEquals(preferred.toAbsolutePath().normalize(),
                 project.resolveImport(importer, "service").orElseThrow());
     }
+    @Test
+    void incrementalCompilerUsesAttoPackageIdsAndPrefersAttoImports() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        var result = compiler.compile(Map.of(
+                "service.atto", "pub fnc calc(): int { return 1; }",
+                "service.ores", "pub fnc calc(): int { return 2; }",
+                "main.atto", """
+                        import fnc {calc} from "./service";
+                        pub fnc main(): void { return; }
+                        """));
+        assertEquals("main", result.units().get("main.atto").packageId());
+        assertEquals("service", result.units().get("service.atto").packageId());
+        assertEquals(java.util.Set.of("service.atto"), result.units().get("main.atto").dependencies());
+    }
+
 }
