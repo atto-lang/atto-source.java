@@ -41,6 +41,11 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Test raw exact-head verifier with source-free adversarial Git mutations
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/test-atto-raw-source-verifier.sh
       - name: Run exact-head AttoLang import, manifest and linked guest regressions
         shell: bash
         run: |
