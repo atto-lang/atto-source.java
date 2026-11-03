@@ -149,6 +149,26 @@ final class QueueAdmissionTransactionTest {
         assertEquals(0, transaction.pendingCount());
     }
 
+
+    @Test
+    void oneAdmissionLedgerCannotBeReusedAcrossQueueActorIncarnations() {
+        QueueAdmissionTransaction<String> transaction =
+                new QueueAdmissionTransaction<>(2, 2);
+        ActorRuntime.ActorId firstQueue = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId secondQueue = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED,
+                transaction.admitAuthorized(
+                        firstQueue, sender, 1, transaction.generation(), "first").status());
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.INVALID,
+                transaction.admitAuthorized(
+                        secondQueue, sender, 2, transaction.generation(), "cross-queue").status());
+        assertEquals(1, transaction.outstandingIngress());
+        assertEquals(1, transaction.reservedCompletions());
+    }
+
+
     @Test
     void closeRejectsNewAdmissionButAllowsCommittedWorkToDrain() {
         QueueAdmissionTransaction<String> transaction =
