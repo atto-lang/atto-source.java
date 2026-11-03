@@ -445,6 +445,10 @@ final class LocalVirtualActorQuiescentDisposalTest {
             var dependent = completion.thenRun(callback::incrementAndGet);
             dependent.toCompletableFuture().complete(null);
             assertFalse(completion.isDone(), "derived-stage forgery cannot complete parent");
+            var writableCopy = completion.stage().toCompletableFuture();
+            assertTrue(writableCopy.complete(LocalVirtualActorI64.Outcome.PROCESSED));
+            assertFalse(completion.isDone(),
+                    "copy of read-only stage must not complete the actor's original receipt");
             assertThrows(IllegalStateException.class, runtime::close,
                     "accepted, unprocessed turn still holds a lifetime credit");
             assertEquals(0, handled.get());
