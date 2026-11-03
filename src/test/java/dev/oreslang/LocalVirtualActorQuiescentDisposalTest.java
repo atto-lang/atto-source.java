@@ -195,8 +195,9 @@ final class LocalVirtualActorQuiescentDisposalTest {
         assertThrows(IllegalStateException.class, runtime::close);
         assertEquals(2, disposed.get(), "one broken disposer cannot starve other owners");
         assertThrows(IllegalStateException.class, () -> runtime.resolve("new"));
-        runtime.close();
-        assertEquals(2, disposed.get(), "completed shutdown must not dispose twice");
+        assertThrows(IllegalStateException.class, runtime::close,
+                "failed shutdown must remain visibly failed on every later close");
+        assertEquals(2, disposed.get(), "failed shutdown must not dispose twice");
     }
 
     @Test void disposerNeverRunsUnderDirectoryOrSlotMonitor() throws Exception {
