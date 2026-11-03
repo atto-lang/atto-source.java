@@ -56,12 +56,12 @@ public final class BoundedSourceReader {
             }
         }
         if (bytes.length > MAX_BYTES) {
-            throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
+            throw new IllegalArgumentException("AttoLang source exceeds 16 MiB source limit");
         }
         // Reject binary source before lexical analysis (aligns with LLVM/Forge).
         for (byte value : bytes) {
             if (value == 0) {
-                throw new IllegalArgumentException("Oreslang source contains NUL byte");
+                throw new IllegalArgumentException("AttoLang source contains NUL byte");
             }
         }
         String text = StandardCharsets.UTF_8.newDecoder()
