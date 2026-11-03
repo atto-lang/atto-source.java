@@ -1,0 +1,168 @@
+// Oreslang-native *metadata* coordination for future durable actor sync.
+// No disk I/O, actor activation, lease election, FFI or authorization.
+// Local instances belong to one actor's exclusively owned state. A trusted
+// adapter must authenticate any storage receipt or remote event separately.
+//
+// The max supported revision is 2147483646: increments never wrap int32.
+define module actor_sync as
+  pub define class CommitWindow as
+    let int incarnation;
+    let mut int committed_version;
+    let mut String pending_id = "";
+    let mut bool uncertain = false;
+
+    pub constructor(int incarnation, int restored_version) {
+      if incarnation < 1 || restored_version < 0 ||
+         restored_version >= 2147483647; do
+        rt fail("actor_sync: invalid commit window");
+      fi
+      self.incarnation = incarnation;
+      self.committed_version = restored_version;
+    }
+
+    // Reservation is in-memory only and NEVER authorizes a durable write.
+    pub begin(mut self)(int incarnation, int expected_version, String operation_id): bool {
+      if incarnation != self.incarnation || operation_id == "" ||
+         self.pending_id != "" || expected_version != self.committed_version ||
+         self.committed_version >= 2147483646; do
+        return false;
+      fi
+      self.pending_id = operation_id;
+      self.uncertain = false;
+      return true;
+    }
+
+    // Timeout/connection loss must NOT be treated as a proved rollback.
+    pub outcome_unknown(mut self)(int incarnation, String operation_id): bool {
+      if incarnation != self.incarnation || operation_id == "" ||
+         operation_id != self.pending_id; do
+        return false;
+      fi
+      self.uncertain = true;
+      return true;
+    }
+
+    // Only a *trusted, verified* storage receipt can invoke this method.
+    pub acknowledge(mut self)(int incarnation, String operation_id,
+                               int next_version): bool {
+      if incarnation != self.incarnation || operation_id == "" ||
+         operation_id != self.pending_id ||
+         self.committed_version >= 2147483646 ||
+         next_version != self.committed_version + 1; do
+        return false;
+      fi
+      self.committed_version = next_version;
+      self.pending_id = "";
+      self.uncertain = false;
+      return true;
+    }
+
+    // A definite pre-commit rejection can free the in-flight reservation.
+    // An uncertain outcome requires separate authoritative reconciliation.
+    pub abort_known_failure(mut self)(int incarnation, String operation_id): bool {
+      if incarnation != self.incarnation || operation_id == "" ||
+         operation_id != self.pending_id || self.uncertain; do
+        return false;
+      fi
+      self.pending_id = "";
+      return true;
+    }
+
+    // Called only after the trusted adapter proves this operation never
+    // committed (e.g. reads the authoritative idempotency ledger).
+    pub reconcile_not_committed(mut self)(int incarnation,
+                                          String operation_id): bool {
+      if incarnation != self.incarnation || operation_id == "" ||
+         operation_id != self.pending_id || self.uncertain == false; do
+        return false;
+      fi
+      self.pending_id = "";
+      self.uncertain = false;
+      return true;
+    }
+
+    pub committed(): int { return self.committed_version; }
+    pub pending(): bool { return self.pending_id != ""; }
+    pub unknown(): bool { return self.uncertain; }
+    pub generation(): int { return self.incarnation; }
+  end
+
+  pub fnc commit_window(int incarnation, int restored_version): CommitWindow {
+    return new CommitWindow(incarnation, restored_version);
+  }
+
+  // Non-durable cache/supervisor replica watermark, never authoritative
+  // writer or authorization state. The caller must atomically apply the
+  // payload and watermark together in its owned actor turn.
+  pub define class ReplicaCursor as
+    let mut int epoch;
+    let mut int revision;
+    let mut bool gap = false;
+    // Minimum authenticated snapshot epoch needed to clear a poison.
+    // A higher announcement cannot be erased by an older checkpoint.
+    let mut int required_epoch = 0;
+
+    pub constructor(int epoch, int revision) {
+      if epoch < 1 || revision < 0 || revision >= 2147483647; do
+        rt fail("actor_sync: invalid replica cursor");
+      fi
+      self.epoch = epoch;
+      self.revision = revision;
+    }
+
+    // A delta must follow the immediately preceding applied revision.
+    // Seeing a gap poisons incremental advance until an owned snapshot is
+    // authenticated and applied. No silent rewind or auto-gap skipping.
+    pub apply_delta(mut self)(int event_epoch, int event_revision): bool {
+      // Seeing a higher epoch invalidates all outstanding lower-epoch
+      // deltas. Poison incremental consumption until an authenticated full
+      // checkpoint is installed. A stale lower epoch never unpoisons.
+      if event_epoch > self.epoch; do
+        if event_epoch > self.required_epoch; do
+          self.required_epoch = event_epoch;
+        fi
+        self.gap = true;
+        return false;
+      fi
+      if event_epoch != self.epoch || event_revision <= self.revision ||
+         event_revision >= 2147483647 || self.gap; do
+        return false;
+      fi
+      if event_revision != self.revision + 1; do
+        self.gap = true;
+        return false;
+      fi
+      self.epoch = event_epoch;
+      self.revision = event_revision;
+      return true;
+    }
+
+    // Full snapshots can close gaps, but may not rewind a committed replica
+    // revision or replace equal-version data at the same epoch.
+    // The trusted receiver must validate schema, origin and snapshot bytes.
+    pub apply_snapshot(mut self)(int next_epoch, int next_revision): bool {
+      if next_epoch < self.epoch || next_epoch < self.required_epoch ||
+         next_revision < self.revision || next_epoch < 1 ||
+         next_revision < 0 || next_revision >= 2147483647; do
+        return false;
+      fi
+      if next_epoch == self.epoch && next_revision == self.revision &&
+         self.gap == false; do
+        return false;
+      fi
+      self.epoch = next_epoch;
+      self.revision = next_revision;
+      self.gap = false;
+      self.required_epoch = 0;
+      return true;
+    }
+
+    pub applied(): int { return self.revision; }
+    pub owner_epoch(): int { return self.epoch; }
+    pub needs_resync(): bool { return self.gap; }
+  end
+
+  pub fnc replica_cursor(int epoch, int revision): ReplicaCursor {
+    return new ReplicaCursor(epoch, revision);
+  }
+end
