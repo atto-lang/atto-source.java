@@ -204,4 +204,17 @@ final class IncrementalImportedMacroTest {
         assertEquals(42L, assertInstanceOf(Ast.LiteralExpr.class, returnValue(built)).value(),
                 "uninvoked imported identifier generators must not create runtime authority");
     }
+
+    @Test
+    void resolvedAbsolutePathStillCannotAuthorizeMacroExport() {
+        String absPath = "/private/checkout/producer.atto";
+        String consumer = CONSUMER.replace("./producer.atto", absPath);
+        Map<String, Map<String, String>> forgedResolutions =
+                Map.of("consumer.atto", Map.of(absPath, "producer.atto"));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(
+                        units(PUBLIC_LITERAL, consumer), forgedResolutions));
+        assertTrue(denied.getMessage().contains("absolute host path"),
+                denied::toString);
+    }
 }
