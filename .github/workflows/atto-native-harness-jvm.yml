@@ -73,13 +73,13 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           mvn -B -ntp \
-            -Dtest=AttoCanonicalFixtureGuestTest,AttoImportedModuleClassGuestTest,AttoTestingStdlibSourceTest,AttoNativeTestingGuestIntegrationTest \
+            -Dtest=AttoCanonicalFixtureGuestTest,AttoImportedModuleClassGuestTest,AttoTestingStdlibSourceTest,AttoNativeTestingGuestIntegrationTest,AttoManifestHarnessReconciliationTest \
             -DfailIfNoTests=true test
           java -cp "$RUNNER_TEMP/atto-harness-gates" AttoGuestReceiptVerifier \
             "$EXPECTED_HEAD" target/surefire-reports
           java -cp "$RUNNER_TEMP/atto-harness-gates" AttoHarnessGuestReceiptVerifier \
             "$EXPECTED_HEAD" target/surefire-reports
-          echo "ATTO_HARNESS_COMPILER_GUEST_JUNIT_ACCEPTED head=$EXPECTED_HEAD methods=13"
+          echo "ATTO_HARNESS_COMPILER_GUEST_JUNIT_ACCEPTED head=$EXPECTED_HEAD methods=22"
       - name: Execute canonical 40-case AttoLang guest and verify exact identities
         shell: bash
         run: |
@@ -135,4 +135,5 @@ jobs:
             target/surefire-reports/*AttoImportedModuleClassGuestTest*
             target/surefire-reports/*AttoTestingStdlibSourceTest*
             target/surefire-reports/*AttoNativeTestingGuestIntegrationTest*
+            target/surefire-reports/*AttoManifestHarnessReconciliationTest*
           if-no-files-found: warn
