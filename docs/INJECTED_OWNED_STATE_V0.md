@@ -32,6 +32,17 @@ to ordinary class storage before type/ownership checking and guest execution.
   singleton/actor instances, or any hard/soft real-time performance guarantee.
   Those require separate typed callback and runtime-region lowering.
 
+## Annotation capability admission
+
+Only the **exact** `@Inject(MutableStateContainer())` spelling on an
+exclusively owned class is lowerable in this Java v0 branch. Other
+`@Inject` forms (including provider lookup, bare and generic spellings),
+`@StateBacked`, `@MutableStateContainer` and `@StateContainer` fail
+closed with `STATE_INJECTION_UNSUPPORTED` rather than surviving as inert
+method, callable or class annotation metadata. Tests cover six unsupported
+spellings on both classes and callables, with a comment-only control.
+These negative tests are not positive dependency injection or guest parity.
+
 ## CI source-integrity preflight
 
 The exact-head Graal workflow now checks the expected commit and requires the
