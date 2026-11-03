@@ -192,6 +192,15 @@ final class AotReflectionTypedMirV1Test {
                 AotReflectionTypedMirV1.lowerSource(null, "pkg@revision1"));
         assertThrows(IllegalArgumentException.class, () ->
                 AotReflectionTypedMirV1.lowerSource(
+                        source("  return type_of<Person>();"), null));
+        assertThrows(IllegalArgumentException.class, () ->
+                AotReflectionTypedMirV1.lowerSource(
+                        source("  return type_of<Person>();"), ""));
+        assertThrows(IllegalArgumentException.class, () ->
+                AotReflectionTypedMirV1.lowerSource(
+                        source("  return type_of<Person>();"), "x".repeat(513)));
+        assertThrows(IllegalArgumentException.class, () ->
+                AotReflectionTypedMirV1.lowerSource(
                         source("  return type_of<Person>();") +
                         "pub fnc other(): int { return 1; }", "pkg@revision1"));
     }
