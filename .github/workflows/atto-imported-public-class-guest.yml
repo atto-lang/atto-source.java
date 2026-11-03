@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/test/java/dev/oreslang/AttoImportedModuleClassGuestTest.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalFixtureGuestTest.java'
+      - 'scripts/ci/AttoGuestReceiptVerifier.java'
       - 'src/test/resources/atto/canonical-v1/**'
       - 'src/main/java/**'
       - '.github/workflows/atto-imported-public-class-guest.yml'
@@ -30,6 +31,13 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Verify JUnit evidence admission with source-free negative fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/atto-receipt-gate"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-receipt-gate" scripts/ci/AttoGuestReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-receipt-gate" AttoGuestReceiptVerifier --self-test
       - name: Execute eight real .atto fixture and imported-class guest cases
         shell: bash
         env:
@@ -39,6 +47,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           echo "JAVA_ATTO_IMPORTED_CLASS_HEAD=$EXPECTED_HEAD"
           mvn -B -ntp -Dtest=AttoCanonicalFixtureGuestTest,AttoImportedModuleClassGuestTest -DfailIfNoTests=true test
+          java -cp "$RUNNER_TEMP/atto-receipt-gate" AttoGuestReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
           echo "JAVA_ATTO_CANONICAL_LINKED_GUEST_PASS head=$EXPECTED_HEAD cases=8"
       - name: Preserve JUnit evidence on failure or success
         if: always()
