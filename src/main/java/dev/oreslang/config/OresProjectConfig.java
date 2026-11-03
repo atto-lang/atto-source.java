@@ -17,15 +17,18 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Project-level Oreslang compiler configuration.
+ * Project-level AttoLang compiler configuration (legacy Java API name retained).
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
- * file (or current working directory) owns the project. Manifest paths are
- * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
- * process-relative and are searched after project-local roots.</p>
+ * <p>The nearest .atto.pkg.toml is canonical. The older
+ * .oreslangc.cfg.toml remains a migration fallback when there is no
+ * canonical manifest at that directory. Manifest paths are resolved relative
+ * to [project].root. Ambient ATTOLANG_PATH entries are searched after
+ * project-local roots; ORESLANG_PATH is used only if ATTOLANG_PATH is absent.</p>
  */
 public final class OresProjectConfig {
-    public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String MANIFEST_NAME = ".atto.pkg.toml";
+    public static final String LEGACY_MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String ENV_ATTOLANG_PATH = "ATTOLANG_PATH";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -100,6 +103,9 @@ public final class OresProjectConfig {
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
             Path candidate = cursor.resolve(MANIFEST_NAME);
             if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            // Migration fallback only. A same-directory .atto.pkg.toml wins.
+            Path legacy = cursor.resolve(LEGACY_MANIFEST_NAME);
+            if (Files.isRegularFile(legacy)) return load(legacy, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -121,19 +127,19 @@ public final class OresProjectConfig {
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
         if (!Files.isRegularFile(absoluteManifest)) {
-            throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+            throw new IllegalArgumentException("not an AttoLang project manifest: " + absoluteManifest);
         }
 
         TomlParseResult toml = Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
-                    "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
+                    "invalid " + absoluteManifest.getFileName() + ": " + toml.errors().getFirst());
         }
 
         String schemaVersion = toml.getString("schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    absoluteManifest.getFileName() + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Object rawBuild = toml.get("build");
@@ -202,7 +208,7 @@ public final class OresProjectConfig {
 
     /**
      * Ordered import search roots. Project-local paths intentionally win over
-     * ambient ORESLANG_PATH entries for deterministic/reproducible builds.
+     * ambient ATTOLANG_PATH entries for deterministic/reproducible builds.
      */
     public List<Path> searchRoots() {
         LinkedHashSet<Path> ordered = new LinkedHashSet<>();
@@ -213,13 +219,13 @@ public final class OresProjectConfig {
     }
 
     /**
-     * Resolve one Oreslang filesystem import.
+     * Resolve one AttoLang filesystem import.
      *
      * <ul>
      *   <li>java: imports are not filesystem imports.</li>
      *   <li>./ and ../ imports resolve only relative to the importing file.</li>
      *   <li>absolute imports resolve directly.</li>
-     *   <li>bare imports search source.roots, source.import_paths, then ORESLANG_PATH.</li>
+     *   <li>bare imports search source.roots, source.import_paths, then ATTOLANG_PATH.</li>
      * </ul>
      */
     public Optional<Path> resolveImport(Path importer, String importPath) {
@@ -261,17 +267,16 @@ public final class OresProjectConfig {
             return Optional.empty();
         }
 
+        // Canonical AttoLang source wins same-basename extensionless imports.
+        // Explicit legacy .ores/.java imports still resolve exactly as named.
+        Path atto = Path.of(normalized.toString() + ".atto");
+        if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
+
         Path ores = Path.of(normalized.toString() + ".ores");
         if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
 
         Path java = Path.of(normalized.toString() + ".java");
         if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
-
-        // Backwards-compatible unqualified import fallback. Existing .ores
-        // and .java imports retain precedence; an explicit .atto path is
-        // always exact, and a .atto-only project resolves without flags.
-        Path atto = Path.of(normalized.toString() + ".atto");
-        if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
 
         return Optional.empty();
     }
@@ -284,7 +289,10 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
+        // Explicit (even empty) ATTOLANG_PATH suppresses legacy fallback.
+        String raw = environment.containsKey(ENV_ATTOLANG_PATH)
+                ? environment.get(ENV_ATTOLANG_PATH)
+                : environment.get(ENV_ORESLANG_PATH);
         if (raw == null || raw.isBlank()) return List.of();
 
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
