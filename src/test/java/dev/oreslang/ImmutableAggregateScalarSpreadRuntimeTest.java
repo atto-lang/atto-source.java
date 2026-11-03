@@ -423,4 +423,40 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
                 }
                 """));
     }
+
+    @Test
+    void inferCannotMasqueradeAsStructuralViewConstruction() {
+        String source = """
+                pub fnc main(): void {
+                    const invalid = infer structural {value: 42};
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source),
+                "infer constructs a struct/record value, not a structural view");
+    }
+
+    @Test
+    void readonlyStructuralParameterCannotMutateInferredStruct() {
+        String source = """
+                define interface HasValue
+                    value: int;
+                end
+
+                fnc mutate(structural HasValue item): void {
+                    item.value = 47;
+                    return;
+                }
+
+                pub fnc main(): void {
+                    const value = infer struct{value: 42, extra: true};
+                    mutate(value);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source),
+                "a structural loan must never permit field mutation");
+    }
 }
