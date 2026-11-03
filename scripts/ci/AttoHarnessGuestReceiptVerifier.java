@@ -35,6 +35,7 @@ public final class AttoHarnessGuestReceiptVerifier {
                     "legacyManifestWorksOnlyWhenCanonicalMissing",
                     "canonicalEnvironmentPathOverridesLegacyIncludingEmpty",
                     "canonicalManifestSymlinkCannotDowngrade",
+                    "canonicalManifestDirectoryBlocksLegacyFallback",
                     "canonicalAttoImporterRequiresExplicitLegacySuffix",
                     "manifestRejectsMalformedUtf8AndOversize",
                     "canonicalManifestRejectsSymlinkedParent",
@@ -110,7 +111,7 @@ public final class AttoHarnessGuestReceiptVerifier {
             require(seen.containsAll(suite.methods()), "missing named JUnit method");
             total += suite.count();
         }
-        require(total == 14, "wrong aggregate harness JUnit count");
+        require(total == 15, "wrong aggregate harness JUnit count");
         return total;
     }
 
@@ -149,7 +150,7 @@ public final class AttoHarnessGuestReceiptVerifier {
             for (Suite suite : REQUIRED) {
                 putReport(folder, suite, suite.count(), 0, false, false, false, false);
             }
-            require(verify(head, folder) == 14, "valid JUnit evidence rejected");
+            require(verify(head, folder) == 15, "valid JUnit evidence rejected");
             mustReject("wrong HEAD", "not-a-sha", folder);
             putReport(folder, first, first.count(), 1, false, false, false, false);
             mustReject("failure count", head, folder);
