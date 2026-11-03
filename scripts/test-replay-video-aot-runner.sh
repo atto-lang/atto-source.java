@@ -16,7 +16,7 @@ if [[ "$*" == *' --check '* ]]; then
   [[ "$CASE" != check_fail ]] || exit 22
   exit 0
 fi
-cat <<'RECEIPTS'
+lines=$(cat <<'RECEIPTS'
 VIDEO-REPLAY-PASS|capacity
 VIDEO-REPLAY-PASS|first-chunk
 VIDEO-REPLAY-PASS|second-chunk
@@ -26,11 +26,16 @@ VIDEO-REPLAY-PASS|resume-missing
 VIDEO-REPLAY-PASS|stale-generation-denied
 VIDEO-REPLAY-SMOKE-DONE
 RECEIPTS
+)
 case "$CASE" in
-  success|check_fail) ;;
+  wrong_order) printf '%s\n' "$lines" | awk 'NR==1 {a=$0;next} NR==2 {print; print a;next} {print}' ;;
+  missing) printf '%s\n' "$lines" | sed '/^VIDEO-REPLAY-PASS|sent$/d' ;;
+  *) printf '%s\n' "$lines" ;;
+esac
+case "$CASE" in
+  success|check_fail|wrong_order|missing) ;;
   guest_fail) exit 23 ;;
   duplicate) echo 'VIDEO-REPLAY-PASS|capacity' ;;
-  missing) : ;; # overridden by filtered wrapper test below
   extra) echo 'VIDEO-REPLAY-PASS|unexpected' ;;
   stdout_fail) echo 'VIDEO-REPLAY-FAIL|decoder' ;;
   embedded) echo 'a tool printed VIDEO-REPLAY-PASS|capacity' ;;
@@ -58,6 +63,8 @@ run success success
 run check_fail failure
 run guest_fail failure
 run duplicate failure
+run wrong_order failure
+run missing failure
 run extra failure
 run stdout_fail failure
 run embedded failure
@@ -68,4 +75,4 @@ run missing_source failure
 printf '// source-free fixture\n' > "$tmpdir/work/examples/replay-video-disconnect-smoke.atto"
 mv "$tmpdir/work/target/ores-aot" "$tmpdir/aot.bak"
 run missing_image failure
-printf '%s\n' 'AOT-RECEIPT-SELFTEST-DONE|11'
+printf '%s\n' 'AOT-RECEIPT-SELFTEST-DONE|13'
