@@ -20,20 +20,30 @@ for this candidate. This packet cannot be used as an authorization token.
   candidate is Java PR #2422 head
   `d4e1fd1af08264bf928bde0cdcfddfb3d025eaf1`, complete Git root tree
   `f09ffb5fffac56094a9a9dca68917f807d75fbd4`.
-  This is a historical security-hardening candidate. The **current**
-  source PR head is `b0a8ea1a0835dbe9d4124edec0c5a943900f0b64`, with
-  complete Git root tree `1f2fa3ca62b4ffd5442de45e8c6a94b61e09a13a`.
+  That security-hardening candidate, and the subsequent
+  `b0a8ea1a0835dbe9d4124edec0c5a943900f0b64` tree
+  `1f2fa3ca62b4ffd5442de45e8c6a94b61e09a13a`, are historical.
+  The intervening concurrent-typing hardening commit
+  `84c2829aa3662e9bf5766c40102f7880bc244c68` and tree
+  `4cc2363496f486349be87216cf02d7f7452642fb` are historical.
+  On 2026-11-03, the **current proposed source PR head** is
+  `f4c5665ba395edb85909454c3a6772882b919ffa`, with full Git root tree `f15d73dbe39baa7996532a37ee89d808bd5dd5e0`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
-  The current candidate adds an exact-Program type-check proof, a
-  compiler-owned publisher capability, fail-closed ownership-only critical
-  admission, and a typing-generation fence so even successful rechecks
-  cannot restore stale critical permissions. Eight new adversarial and
-  compatibility JUnit tests are authored, including a Program alias that
-  retains the identical nested critical AST node but changes Program identity. The latest focused Java workflow
-  run 41396262327 failed with `steps=null`; **no compiler, JUnit or guest
-  test has executed**.
+  The current candidate retains exact-Program type-check proof, compiler-owned
+  publisher capability, and fail-closed ownership-only critical admission.
+  It adds a cross-ledger publication lock order (critical -> Task -> typing),
+  a stable typing-generation fence, and a pending-ownership/candidate
+  preflight before the positive Task execution epoch is published.
+  Authored JUnit regressions include exact Program/AST alias rejection,
+  concurrent retyping against publication, and superseding concurrent
+  ownership checks. These are **authored, not executed**. The exact-head
+  Java critical workflow [run 41587524288](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41587524288)
+  and source-free synthetic smoke
+  [run 41587524290](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41587524290)
+  completed with zero executed job steps, so **no Java compiler, JUnit or
+  guest test pass is claimed**.
   Source-free alternate runner run 41391572866 attempt 2 independently
   succeeded with five executed steps; this does not authorize private export.
 - Private candidate carrier: `gha-indie-worker/gha-indie-worker-docs`,
