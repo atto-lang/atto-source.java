@@ -11,14 +11,14 @@ import java.util.ArrayList;
  * oreslang compiler; supports only the explicit restricted declaration form
  * admitted by ScalarDeclarationI64Compiler.
  *
- * Usage: ScalarDeclarationI64Cli <source.ores> <signed-i64-delta> ...
+ * Usage: ScalarDeclarationI64Cli <source.atto> <signed-i64-delta> ...
  */
 public final class ScalarDeclarationI64Cli {
     private ScalarDeclarationI64Cli() { }
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2 || args.length > 65) {
-            System.err.println("usage: ScalarDeclarationI64Cli <source.ores> <i64-delta>...");
+            System.err.println("usage: ScalarDeclarationI64Cli <source.atto> <i64-delta>...");
             System.exit(2);
             return;
         }
