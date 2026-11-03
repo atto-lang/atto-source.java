@@ -21,7 +21,7 @@ import java.util.Optional;
  */
 public final class QueueAdmissionTransaction<T> {
     public enum AdmissionStatus {
-        ADMITTED, FULL, COMPLETION_FULL, CLOSED, STALE_GENERATION, INVALID
+        ADMITTED, UNAUTHORIZED, FULL, COMPLETION_FULL, CLOSED, STALE_GENERATION, INVALID
     }
 
     public enum CompletionStatus {
