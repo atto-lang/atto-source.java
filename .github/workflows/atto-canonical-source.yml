@@ -1,0 +1,65 @@
+name: AttoLang canonical .atto compiler gate
+on:
+  push:
+    branches:
+      - feat/attolang-canonical-source-import-manifest-20261103
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canonical-atto-linked-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact source commit without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record source commit and tree identity before building
+        shell: bash
+        env:
+          ATTO_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$ATTO_EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          echo "ATTO_SOURCE_HEAD=$actual"
+          echo "ATTO_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test -f examples/atto-canonical/.atto.pkg.toml
+          test -f examples/atto-canonical/src/main.atto
+          test -f examples/atto-canonical/src/value.atto
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Run exact-head AttoLang import, manifest and linked guest regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=OresProjectConfigTest,AttoMainAdmissionTest,AttoSourceAdmissionTest test
+          echo 'ATTO_CANONICAL_JAVA_GUEST_JUNIT=PASS'
+      - name: Check canonical .atto package with compiler CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests exec:java \
+            -Dexec.args="--check examples/atto-canonical/src/main.atto"
+          echo 'ATTO_CANONICAL_CLI_LINKED_CHECK=PASS'
+      - name: Confirm exact checkout HEAD and tracked source integrity
+        shell: bash
+        env:
+          ATTO_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ATTO_EXPECTED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$(git write-tree)"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          echo 'ATTO_CANONICAL_SOURCE_IDENTITY_AFTER=PASS'
