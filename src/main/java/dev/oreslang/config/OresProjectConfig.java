@@ -19,13 +19,16 @@ import java.util.Optional;
 /**
  * Project-level Oreslang compiler configuration.
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
- * file (or current working directory) owns the project. Manifest paths are
+ * <p>The nearest .atto.pkg.toml or legacy .oreslangc.cfg.toml found by walking
+ * upward from the source file (or current working directory) owns the project.
+ * Two manifest spellings in the same directory are ambiguous and rejected.
+ * Manifest paths are
  * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
  * process-relative and are searched after project-local roots.</p>
  */
 public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String ATTO_MANIFEST_NAME = ".atto.pkg.toml";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -98,8 +101,17 @@ public final class OresProjectConfig {
 
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
-            Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            Path atto = cursor.resolve(ATTO_MANIFEST_NAME);
+            Path legacy = cursor.resolve(MANIFEST_NAME);
+            boolean hasAtto = Files.exists(atto, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+            boolean hasLegacy = Files.exists(legacy, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+            if (hasAtto && hasLegacy) {
+                throw new IllegalArgumentException(
+                        "ambiguous AttoLang project manifests in " + cursor + ": "
+                                + ATTO_MANIFEST_NAME + " and " + MANIFEST_NAME);
+            }
+            if (hasAtto) return load(atto, environment);
+            if (hasLegacy) return load(legacy, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -120,20 +132,24 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(absoluteManifest)) {
-            throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+        if (Files.isSymbolicLink(absoluteManifest)) {
+            throw new IllegalArgumentException("symlinked AttoLang project manifest is forbidden: " + absoluteManifest);
+        }
+        if (!Files.isRegularFile(absoluteManifest, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("not an AttoLang project manifest: " + absoluteManifest);
         }
 
+        String manifestName = absoluteManifest.getFileName().toString();
         TomlParseResult toml = Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
-                    "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
+                    "invalid " + manifestName + ": " + toml.errors().getFirst());
         }
 
         String schemaVersion = toml.getString("schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    manifestName + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Object rawBuild = toml.get("build");
@@ -156,10 +172,10 @@ public final class OresProjectConfig {
         String rootText = defaultString(toml.getString("project.root"), ".");
         Path projectRoot = resolvePath(manifestDir, rootText);
 
-        List<String> sourceRootValues = stringArray(toml, "source.roots");
+        List<String> sourceRootValues = stringArray(toml, "source.roots", manifestName);
         if (sourceRootValues.isEmpty()) sourceRootValues = List.of(".");
         List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
-        List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
+        List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths", manifestName));
 
         String mainText = toml.getString("entrypoints.main");
         Path mainEntrypoint = mainText == null ? null : resolvePath(projectRoot, mainText);
@@ -322,7 +338,7 @@ public final class OresProjectConfig {
         return path.toAbsolutePath().normalize();
     }
 
-    private static List<String> stringArray(TomlParseResult toml, String key) {
+    private static List<String> stringArray(TomlParseResult toml, String key, String manifestName) {
         TomlArray array = toml.getArray(key);
         if (array == null) return List.of();
 
@@ -330,7 +346,7 @@ public final class OresProjectConfig {
         for (int i = 0; i < array.size(); i++) {
             Object value = array.get(i);
             if (!(value instanceof String text)) {
-                throw new IllegalArgumentException(MANIFEST_NAME + " key '" + key + "' must be an array of strings");
+                throw new IllegalArgumentException(manifestName + " key '" + key + "' must be an array of strings");
             }
             result.add(text);
         }

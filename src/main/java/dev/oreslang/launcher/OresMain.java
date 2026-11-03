@@ -204,7 +204,8 @@ public final class OresMain {
             path = project.mainEntrypoint().orElse(null);
             if (path == null) {
                 printUsage();
-                System.err.println("or define [entrypoints].main in " + OresProjectConfig.MANIFEST_NAME);
+                System.err.println("or define [entrypoints].main in " + OresProjectConfig.ATTO_MANIFEST_NAME
+                        + " (legacy: " + OresProjectConfig.MANIFEST_NAME + ")");
                 return 2;
             }
             filename = path.toString();
