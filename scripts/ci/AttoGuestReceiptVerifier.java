@@ -126,6 +126,19 @@ public final class AttoGuestReceiptVerifier {
         System.out.println("PASS negative " + name);
     }
 
+    private static void shouldDenyForReason(String name, String reason, String head, Path dir)
+            throws Exception {
+        try {
+            verify(head, dir);
+        } catch (IllegalStateException expected) {
+            require(expected.getMessage() != null && expected.getMessage().contains(reason),
+                    "wrong rejection reason for " + name + ": " + expected.getMessage());
+            System.out.println("PASS negative " + name + " reason=" + reason);
+            return;
+        }
+        throw new IllegalStateException("verifier accepted invalid evidence: " + name);
+    }
+
     private static void selfTest() throws Exception {
         Path dir = Files.createTempDirectory("atto-junit-receipt-");
         String head = "0123456789abcdef0123456789abcdef01234567";
@@ -159,18 +172,18 @@ public final class AttoGuestReceiptVerifier {
             String validXml = Files.readString(adversarialReport);
             Files.writeString(adversarialReport, validXml.replace(
                     one.methods().get(0), "forgedMethodWithMatchingCount"));
-            shouldDeny("forged-method-name", head, dir);
+            shouldDenyForReason("forged-method-name", "missing or duplicate testcase name", head, dir);
             Files.writeString(adversarialReport, validXml.replace(
                     "</testsuite>", "<testcase classname=\"" + one.name()
                             + "\" name=\"extra\"/></testsuite>"));
             // These negative fixtures must parse successfully; rejection must be semantic.
             secureParse(adversarialReport);
-            shouldDeny("extra-testcase", head, dir);
+            shouldDenyForReason("extra-testcase", "missing or unexpected testcase elements", head, dir);
             Files.writeString(adversarialReport, validXml.replaceFirst(
                     "<testcase", "<wrapper><testcase").replaceFirst(
                     "/>", "/></wrapper>"));
             secureParse(adversarialReport);
-            shouldDeny("nested-testcase", head, dir);
+            shouldDenyForReason("nested-testcase", "nested testcase", head, dir);
             Files.writeString(adversarialReport, validXml + " ".repeat(1_048_576));
             shouldDeny("oversized-report", head, dir);
             Files.writeString(adversarialReport, validXml);
