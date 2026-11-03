@@ -144,4 +144,33 @@ final class AotReflectionSourceRootsV1Test {
                 duplicate, "example@revision1", List.of("__root__.Person")));
     }
 
+
+    @Test
+    void oneShotRootListCannotChangeEmissionAfterValidation() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(PUBLIC_SOURCE);
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        List<String> unstable = new java.util.AbstractList<>() {
+            @Override public int size() { return 1; }
+            @Override public String get(int index) {
+                if (index != 0) throw new IndexOutOfBoundsException(index);
+                return reads.incrementAndGet() == 1
+                        ? "__root__.Person" : "__root__.Forged";
+            }
+        };
+        byte[] encoded = AotReflectionSourceRootsV1.lowerChecked(
+                checked, "example@revision1", unstable).bytes();
+        String representation = new String(encoded, StandardCharsets.UTF_8);
+        assertTrue(representation.contains("__root__.Person"));
+        assertFalse(representation.contains("__root__.Forged"));
+        assertEquals(1, reads.get(), "caller-owned roots may only be read during the immutable snapshot");
+    }
+
+    @Test
+    void nullRootEntriesFailClosedWithStableDiagnosticClass() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(PUBLIC_SOURCE);
+        var roots = new java.util.ArrayList<String>();
+        roots.add(null);
+        assertThrows(IllegalArgumentException.class, () -> AotReflectionSourceRootsV1.lowerChecked(
+                checked, "example@revision1", roots));
+    }
 }
