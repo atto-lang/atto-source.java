@@ -14,6 +14,8 @@ set -euo pipefail
 [[ "$*" == *'examples/replay-video-disconnect-smoke.atto'* ]] || exit 21
 if [[ "$*" == *' --check '* ]]; then
   [[ "$CASE" != check_fail ]] || exit 22
+  if [[ "$CASE" == check_stdout_receipt ]]; then echo 'VIDEO-REPLAY-PASS|capacity'; fi
+  if [[ "$CASE" == check_stderr_receipt ]]; then echo 'warning: VIDEO-REPLAY-SMOKE-DONE' >&2; fi
   exit 0
 fi
 lines=$(cat <<'RECEIPTS'
@@ -33,7 +35,7 @@ case "$CASE" in
   *) printf '%s\n' "$lines" ;;
 esac
 case "$CASE" in
-  success|check_fail|wrong_order|missing) ;;
+  success|check_fail|check_stdout_receipt|check_stderr_receipt|wrong_order|missing) ;;
   guest_fail) exit 23 ;;
   duplicate) echo 'VIDEO-REPLAY-PASS|capacity' ;;
   extra) echo 'VIDEO-REPLAY-PASS|unexpected' ;;
@@ -61,6 +63,8 @@ run() {
 }
 run success success
 run check_fail failure
+run check_stdout_receipt failure
+run check_stderr_receipt failure
 run guest_fail failure
 run duplicate failure
 run wrong_order failure
@@ -75,4 +79,4 @@ run missing_source failure
 printf '// source-free fixture\n' > "$tmpdir/work/examples/replay-video-disconnect-smoke.atto"
 mv "$tmpdir/work/target/ores-aot" "$tmpdir/aot.bak"
 run missing_image failure
-printf '%s\n' 'AOT-RECEIPT-SELFTEST-DONE|13'
+printf '%s\n' 'AOT-RECEIPT-SELFTEST-DONE|15'
