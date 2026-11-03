@@ -239,4 +239,97 @@ final class LocalVirtualActorQuiescentDisposalTest {
         }
     }
 
+
+    @Test void inFlightHandlerPreventsShutdownAndPhysicalDisposal() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var disposed = new AtomicInteger();
+        var failure = new AtomicReference<Throwable>();
+        var runtime = new LocalVirtualActorI64("app", "Worker", 1, 1,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) throws Exception {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("guest turn timed out");
+                    }
+                    @Override public void close() { disposed.incrementAndGet(); }
+                }, notice -> fail("unexpected supervisor CONTROL"));
+        var ref = runtime.resolve("one");
+        var ticket = runtime.try_send(ref, 1);
+        assertTrue(ticket.admitted());
+        Thread worker = new Thread(() -> {
+            try {
+                assertTrue(runtime.run_one(ref));
+            } catch (Throwable ex) {
+                failure.set(ex);
+            }
+        }, "virtual-actor-inflight-turn");
+        worker.start();
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertFalse(ticket.completion().isDone());
+            assertThrows(IllegalStateException.class, () -> runtime.deactivate(ref));
+            assertThrows(IllegalStateException.class, runtime::close);
+            assertEquals(0, disposed.get(), "an active handler still owns its state");
+        } finally {
+            release.countDown();
+            worker.join(5000);
+        }
+        assertFalse(worker.isAlive());
+        assertNull(failure.get());
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, ticket.completion().join());
+        runtime.close();
+        assertEquals(1, disposed.get());
+    }
+
+    @Test void pendingSupervisorNoticePreventsPrematureDisposal() throws Exception {
+        var controlEntered = new CountDownLatch(1);
+        var allowControl = new CountDownLatch(1);
+        var disposed = new AtomicInteger();
+        var failure = new AtomicReference<Throwable>();
+        var runtime = new LocalVirtualActorI64("app", "Worker", 1, 1,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) {
+                        throw new IllegalStateException("guest panic");
+                    }
+                    @Override public void close() { disposed.incrementAndGet(); }
+                }, notice -> {
+                    controlEntered.countDown();
+                    try {
+                        if (!allowControl.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("supervisor CONTROL timed out");
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("supervisor CONTROL interrupted", ex);
+                    }
+                });
+        var ref = runtime.resolve("one");
+        var ticket = runtime.try_send(ref, 1);
+        assertTrue(ticket.admitted());
+        Thread worker = new Thread(() -> {
+            try {
+                assertTrue(runtime.run_one(ref));
+            } catch (Throwable ex) {
+                failure.set(ex);
+            }
+        }, "virtual-actor-control-publish");
+        worker.start();
+        try {
+            assertTrue(controlEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(ticket.completion().isDone());
+            assertThrows(IllegalStateException.class, () -> runtime.deactivate(ref));
+            assertThrows(IllegalStateException.class, runtime::close);
+            assertEquals(0, disposed.get(), "state must outlive CONTROL notification");
+        } finally {
+            allowControl.countDown();
+            worker.join(5000);
+        }
+        assertFalse(worker.isAlive());
+        assertNull(failure.get());
+        assertEquals(LocalVirtualActorI64.Outcome.FAILED_CONTROL_NOTIFIED,
+                ticket.completion().join());
+        assertEquals(1, disposed.get(), "retire after CONTROL disposition settles");
+        runtime.close();
+        assertEquals(1, disposed.get());
+    }
 }
