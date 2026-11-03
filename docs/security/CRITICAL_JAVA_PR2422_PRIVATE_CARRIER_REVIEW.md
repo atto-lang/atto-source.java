@@ -27,7 +27,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `84c2829aa3662e9bf5766c40102f7880bc244c68` and tree
   `4cc2363496f486349be87216cf02d7f7452642fb` are historical.
   On 2026-11-03, the **current proposed source PR head** is
-  `ec5651117764ae85630c91b7f768b54bf3e889c4`, with full Git root tree `7240b6f2914983c686ff1616006092fffc59ef02`.
+  `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`, with full Git root tree `53c7e44ad9fd4d384742c692ba18a75dd9edebcd`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
@@ -48,7 +48,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `clean test`, `-DfailIfNoTests=true`, five nonempty JUnit XML reports,
   both critical actor guest testcases, and both concurrency race testcases.
   Source workflow blob `67b5dbf3f8e67c6d4e0543a5fca370338cf2555c`
-  is part of current source tree `7240b6f2914983c686ff1616006092fffc59ef02`, not a
+  is part of current source tree `53c7e44ad9fd4d384742c692ba18a75dd9edebcd`, not a
   carrier-workflow authorization. New source workflow
   [run 41588063452](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41588063452)
   was still queued when this packet was updated; its verdict is not
@@ -163,8 +163,8 @@ Related tracking:
 
 ## 2026-11-03 failed-suspension critical admission cleanup
 
-Latest Java source head: `ec5651117764ae85630c91b7f768b54bf3e889c4`; exact full Git root tree:
-`7240b6f2914983c686ff1616006092fffc59ef02`. `OresEvalRootNode.java` blob
+Latest Java source head: `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`; exact full Git root tree:
+`53c7e44ad9fd4d384742c692ba18a75dd9edebcd`. `OresEvalRootNode.java` blob
 `78faa483ad79076a39d8f28244afe71bd35a449b` adds immediate
 ticket revocation when critical cleanup registration fails or
 `SourceTask.suspend` rejects an invalid second terminal step. The
@@ -174,8 +174,8 @@ testing nor private-source export is authorized by this packet.
 
 ## 2026-11-03 focused ticket-unwind regression evidence (source remains private)
 
-Current restricted Java source PR #2422 head `ec5651117764ae85630c91b7f768b54bf3e889c4`; root Git tree
-`7240b6f2914983c686ff1616006092fffc59ef02`. This head extracts the exact `SourceTask` critical orphan
+Current restricted Java source PR #2422 head `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`; root Git tree
+`53c7e44ad9fd4d384742c692ba18a75dd9edebcd`. This head extracts the exact `SourceTask` critical orphan
 ticket revocation into a package-private `CriticalTicketCleanup` helper
 (blob `da1365b7d3e31fc831779a92b3c6e2016996e22e`).
 Four authored JUnit tests cover immediate release, queued cancellation,
@@ -195,3 +195,16 @@ failed with `steps=null`. These are runner-admission failures, not
 executed source test results. Source protection, exact independent security
 approval, carrier review, and the zero-active-entry source allowlist
 remain hard gates. **NO PRIVATE SOURCE EXPORT IS AUTHORIZED.**
+
+## 2026-11-03 all-suite Java test evidence hardening
+
+Latest source commit `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`, exact root tree
+`53c7e44ad9fd4d384742c692ba18a75dd9edebcd`, workflow blob
+`a92ed18acadff1313fcc9bf6938c544f8a3320da`.
+The CI verifier now refuses zero-test Surefire suites and any nonzero
+skips/failures/errors across **all six selected JUnit reports**. Existing
+guest/race test-case identity assertions remain. These source-free static
+changes are not proof that Maven, JUnit, actors or GraalVM executed.
+
+Independent approval, source-main protection, carrier authorization and
+private destination allowlist requirements remain unchanged and unsatisfied.
