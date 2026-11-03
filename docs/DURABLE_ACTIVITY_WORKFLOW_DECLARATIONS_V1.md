@@ -1,6 +1,8 @@
-# Durable activity and workflow declarations v1
+# AttoLang durable activity and workflow declarations v1
 
 Status: class-shaped declarations, first member-semantic checking phase, typed command AST, and canonical declaration manifest. Dispatch/replay/history execution remains fail-closed.
+
+**Source format:** AttoLang programs and new fixtures use `*.atto`. Java/Graal source loading, mixed-source classification, extensionless project imports, incremental import linking and test resource packaging accept `.atto` as primary; `.ores` is a temporary compatibility fallback for existing projects and stdlib assets. The Java `dev.oreslang` packages, artifact coordinates and legacy CLI names are intentionally not renamed as part of this isolated compiler slice. See `src/test/resources/fixtures/durable/m0-checkout.atto` for the first accepted compiler-only fixture.
 
 ## Canonical declarations
 
