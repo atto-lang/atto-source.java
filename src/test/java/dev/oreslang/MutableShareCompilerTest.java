@@ -11,6 +11,7 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,6 +37,50 @@ final class MutableShareCompilerTest {
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(TypeChecker.check(Parser.parse(code))));
         assertTrue(error.getMessage().contains(diagnostic), error.getMessage());
+    }
+
+    private static String fixture(String fileName) throws IOException {
+        // This is real AttoLang source on disk, not a synthesized syntax string.
+        // The Graal guest ID is deliberately retained as "ores" for ABI compatibility.
+        try (var input = MutableShareCompilerTest.class.getResourceAsStream(
+                "/atto/ownership/" + fileName)) {
+            assertNotNull(input, "missing canonical AttoLang fixture: " + fileName);
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void canonicalAttoFixtureCompilesAndExecutesUnderRetainedGuestId() throws Exception {
+        String program = fixture("guarded-mutable-share.atto");
+        checked(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores")
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder("ores", program, "guarded-mutable-share.atto").build());
+        }
+        assertEquals("9", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void canonicalAttoFixtureRejectsUnguardedMutableSharing() throws Exception {
+        rejected(fixture("unguarded-mutable-share.atto"), "rt mut share requires");
+    }
+
+    @Test
+    void legacyOresSourceNameRemainsAnExplicitCompatibilityCase() throws Exception {
+        // Legacy extension support is tested, but no new language source is written as .ores.
+        String program = fixture("guarded-mutable-share.atto");
+        checked(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores")
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder("ores", program, "legacy-compatibility.ores").build());
+        }
+        assertEquals("9", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -77,7 +122,7 @@ final class MutableShareCompilerTest {
                 .allowAllAccess(false)
                 .out(output)
                 .build()) {
-            context.eval(Source.newBuilder("ores", program, "rt-mut-share.ores").build());
+            context.eval(Source.newBuilder("ores", program, "rt-mut-share.atto").build());
         }
         assertEquals("9", output.toString(StandardCharsets.UTF_8));
     }
@@ -474,7 +519,7 @@ final class MutableShareCompilerTest {
                 .allowAllAccess(false)
                 .out(output)
                 .build()) {
-            context.eval(Source.newBuilder("ores", program, "rt-mut-share-nested.ores").build());
+            context.eval(Source.newBuilder("ores", program, "rt-mut-share-nested.atto").build());
         }
         assertEquals("17", output.toString(StandardCharsets.UTF_8));
     }
