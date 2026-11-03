@@ -164,8 +164,8 @@ public final class AttoGuestReceiptVerifier {
                     "</testsuite>", "<testcase classname=\\\"" + one.name()
                             + "\\\" name=\\\"extra\\\"/></testsuite>"));
             shouldDeny("extra-testcase", head, dir);
-            Files.writeString(adversarialReport, validXml.replace(
-                    "<testcase", "<wrapper><testcase").replace(
+            Files.writeString(adversarialReport, validXml.replaceFirst(
+                    "<testcase", "<wrapper><testcase").replaceFirst(
                     "/>", "/></wrapper>"));
             shouldDeny("nested-testcase", head, dir);
             Files.writeString(adversarialReport, validXml + " ".repeat(1_048_576));
