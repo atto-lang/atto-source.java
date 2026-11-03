@@ -275,7 +275,7 @@ final class OresProjectConfigTest {
         try {
             Files.createSymbolicLink(canonical, target);
         } catch (UnsupportedOperationException | java.nio.file.FileSystemException failure) {
-            org.junit.jupiter.api.Assumptions.abort("symlinks unavailable: " + failure);
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
         }
         Files.writeString(temp.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME),
                 "schema_version = \"1\"\\n[project]\\nname = \"legacy\"\\n");
@@ -291,7 +291,7 @@ final class OresProjectConfigTest {
         try {
             Files.createSymbolicLink(canonical, temp.resolve("missing.toml"));
         } catch (UnsupportedOperationException | java.nio.file.FileSystemException failure) {
-            org.junit.jupiter.api.Assumptions.abort("symlinks unavailable: " + failure);
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
         }
         Files.writeString(temp.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME),
                 "schema_version = \"1\"\\n");
@@ -311,7 +311,7 @@ final class OresProjectConfigTest {
         try {
             Files.createSymbolicLink(alias, actual);
         } catch (UnsupportedOperationException | java.nio.file.FileSystemException failure) {
-            org.junit.jupiter.api.Assumptions.abort("symlinks unavailable: " + failure);
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
         }
         assertThrows(SecurityException.class,
                 () -> OresProjectConfig.discover(alias.resolve("main.atto"), Map.of()));
