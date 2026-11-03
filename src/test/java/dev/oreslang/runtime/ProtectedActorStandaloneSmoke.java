@@ -305,6 +305,102 @@ public final class ProtectedActorStandaloneSmoke {
         cases++;
     }
 
+
+    private static void physicalInitializerIsQuiescencePrerequisite() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        var result = new AtomicReference<LocalVirtualActorI64.SendResult>();
+        var disposed = new AtomicInteger();
+        var runtime = new LocalVirtualActorI64("app", "Init", 1, 1,
+                ignored -> {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("initializer timed out");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("initializer interrupted", interrupted);
+                    }
+                    return new LocalVirtualActorI64.Turn() {
+                        @Override public void on_message(long value) { }
+                        @Override public void close() { disposed.incrementAndGet(); }
+                    };
+                }, notice -> { throw new AssertionError("unexpected CONTROL"); });
+        var ref = runtime.resolve("one");
+        Thread worker = new Thread(() -> {
+            try {
+                result.set(runtime.try_send(ref, 1));
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+        worker.start();
+        try {
+            check(entered.await(5, TimeUnit.SECONDS), "factory entered");
+            check(runtime.try_send(ref, 2).kind() == LocalVirtualActorI64.AdmissionKind.ACTIVATING,
+                    "in-flight factory fences concurrent sender");
+            rejects(runtime::close, "shutdown must not close active factory");
+            check(disposed.get() == 0, "no early disposal during factory");
+        } finally {
+            release.countDown();
+            worker.join(5000);
+        }
+        check(!worker.isAlive() && failure.get() == null, "initializer physically finished");
+        check(result.get() != null && result.get().admitted(), "initializer's message admitted");
+        check(runtime.run_one(ref), "run admitted message");
+        check(result.get().completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                "post-factory receipt");
+        runtime.close();
+        check(disposed.get() == 1, "dispose exactly once after initialized lifetime");
+        cases++;
+    }
+
+    private static void failedInitializationCanRestartWithoutCreditLeak() {
+        var initialized = new AtomicInteger();
+        var disposed = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Retry", 1, 1,
+                ignored -> {
+                    if (initialized.incrementAndGet() == 1)
+                        throw new IllegalStateException("guest factory rejected");
+                    return new LocalVirtualActorI64.Turn() {
+                        @Override public void on_message(long value) { }
+                        @Override public void close() { disposed.incrementAndGet(); }
+                    };
+                }, notice -> { throw new AssertionError("unexpected CONTROL"); })) {
+            var ref = runtime.resolve("one");
+            rejects(() -> runtime.try_send(ref, 1), "first factory rejects admission");
+            var accepted = runtime.try_send(ref, 2);
+            check(accepted.admitted(), "second factory recovers");
+            check(runtime.run_one(ref), "recovered turn executes");
+            check(accepted.completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "recovered receipt");
+        }
+        check(initialized.get() == 2, "one failed and one published incarnation");
+        check(disposed.get() == 1, "only successful incarnation disposed");
+        cases++;
+    }
+
+    private static void copiedStageCancellationNeverCancelsOriginal() {
+        var executed = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Cancel", 1, 1,
+                ignored -> ignoredMessage -> executed.incrementAndGet(),
+                notice -> { throw new AssertionError("unexpected CONTROL"); })) {
+            var ref = runtime.resolve("one");
+            var accepted = runtime.try_send(ref, 1);
+            check(accepted.admitted(), "cancellation test admission");
+            check(accepted.completion().stage().toCompletableFuture().cancel(true),
+                    "copied stage cancelled");
+            check(!accepted.completion().isDone(), "parent still unresolved");
+            rejects(runtime::close, "uncleared credit prevents close");
+            check(runtime.run_one(ref), "original message executes");
+            check(accepted.completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "original message settles despite copy cancellation");
+            check(executed.get() == 1, "guest ran once");
+        }
+        cases++;
+    }
+
     public static void main(String[] args) throws Exception {
         scalarLeaseAndOverflow();
         closeRevokesOutstandingGateLoans();
@@ -316,6 +412,9 @@ public final class ProtectedActorStandaloneSmoke {
         foreignRuntimeRefNeverCrossesDirectory();
         concurrentBackpressureAndSettlement();
         senderCannotForgeMessageCompletion();
+        physicalInitializerIsQuiescencePrerequisite();
+        failedInitializationCanRestartWithoutCreditLeak();
+        copiedStageCancellationNeverCancelsOriginal();
         System.out.println("PROTECTED_ACTOR_JDK21_SMOKE|passed=" + cases);
     }
 }
