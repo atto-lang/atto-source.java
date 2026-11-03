@@ -361,4 +361,25 @@ final class LocalVirtualActorQuiescentDisposalTest {
         assertEquals(1, retired.get());
     }
 
+    @Test void completingAnAcceptedTurnPublishesSettledCreditBeforeDependentCallback() {
+        var processed = new ArrayList<Long>();
+        try (var runtime = new LocalVirtualActorI64("app", "Queue", 1, 1,
+                ignored -> processed::add,
+                notice -> fail("unexpected supervisor notice"))) {
+            var ref = runtime.resolve("one");
+            var first = runtime.try_send(ref, 10);
+            assertTrue(first.admitted());
+            var chained = new AtomicReference<LocalVirtualActorI64.SendResult>();
+            first.completion().thenRun(() -> chained.set(runtime.try_send(ref, 20)));
+            assertTrue(runtime.run_one(ref));
+            assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, first.completion().join());
+            assertNotNull(chained.get(), "completion callback must be invoked");
+            assertTrue(chained.get().admitted(),
+                    "a settled credit must be reusable before completion callbacks");
+            assertTrue(runtime.run_one(ref));
+            assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, chained.get().completion().join());
+            assertEquals(java.util.List.of(10L, 20L), processed);
+        }
+    }
+
 }
