@@ -2120,8 +2120,15 @@ public final class OwnershipChecker {
             VarState state = scope.lookup(name.name());
             if (state != null) roots.add(ownershipRoot(state));
         } else if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
-            // Only a stable, checked projection may borrow an existing owner.
-            roots.add(ownershipRoot(borrowPlace(value, scope).owner()));
+            Ast.Expr base = projectionBase(value);
+            if (base instanceof Ast.NameExpr) {
+                // Only a stable, checked projection may borrow an existing owner.
+                roots.add(ownershipRoot(borrowPlace(value, scope, true).owner()));
+            } else {
+                // A projection of a temporary pins exactly what the temporary
+                // itself would pin when formatted; no named owner exists.
+                collectFormattingRoots(base, scope, roots);
+            }
         } else {
             VarState root = invocationLoanRoot(value, scope);
             if (root != null) roots.add(root);
@@ -2679,17 +2686,41 @@ public final class OwnershipChecker {
     private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
 
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
+        return borrowPlace(operand, scope, false);
+    }
+
+    private static Ast.Expr projectionBase(Ast.Expr operand) {
+        Ast.Expr base = operand;
+        while (true) {
+            if (base instanceof Ast.MemberExpr member) base = member.receiver();
+            else if (base instanceof Ast.IndexExpr indexed) base = indexed.receiver();
+            else return base;
+        }
+    }
+
+    /**
+     * {@code wholeOwnerForUnlinked} admits projections through class layouts
+     * this checker was not given (classes reached through a module import),
+     * whose field types are unknown here even though TypeChecker proved them.
+     * The returned place still leases the same named root owner; only its
+     * projected type is unknown. Class/actor fields never hold borrows (see
+     * the field-storage check), so freezing the whole root owner is at least
+     * as strict as a precise projected loan. Linked layouts keep every rule.
+     */
+    private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope, boolean wholeOwnerForUnlinked) {
         if (operand instanceof Ast.NameExpr name) {
             VarState owner = borrowOwner(operand, scope);
             return new BorrowPlace(owner, owner.type);
         }
         if (operand instanceof Ast.MemberExpr member) {
-            BorrowPlace receiver = borrowPlace(member.receiver(), scope);
+            BorrowPlace receiver = borrowPlace(member.receiver(), scope, wholeOwnerForUnlinked);
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
             if (type.isClosedAggregateType()) {
                 fieldType = type.aggregateMembers().get(member.member());
+            } else if (wholeOwnerForUnlinked && findClass(type.name()) == null) {
+                return new BorrowPlace(receiver.owner(), Ast.TypeRef.inferred());
             } else {
                 Ast.ClassDecl klass = findClass(type.name());
                 if (klass != null) {
@@ -2714,7 +2745,7 @@ public final class OwnershipChecker {
             return new BorrowPlace(receiver.owner(), fieldType);
         }
         if (operand instanceof Ast.IndexExpr indexed) {
-            BorrowPlace receiver = borrowPlace(indexed.receiver(), scope);
+            BorrowPlace receiver = borrowPlace(indexed.receiver(), scope, wholeOwnerForUnlinked);
             // A computed index may call a mutation/side-effect before a loan is
             // issued. Only lexical integer bindings/literals are admissible.
             if (!(indexed.index() instanceof Ast.NameExpr)
@@ -2724,6 +2755,9 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
+            if (wholeOwnerForUnlinked && type.name().equals("$infer$")) {
+                return new BorrowPlace(receiver.owner(), Ast.TypeRef.inferred());
+            }
             if (!((type.name().equals("Array") || type.name().equals("List"))
                     && type.arguments().size() == 1)) {
                 throw error("projected borrow index requires a statically typed Array/List");
