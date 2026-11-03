@@ -42,7 +42,7 @@ public final class CoreLibrarySources {
     private static final Set<String> STD_SOURCES = Set.of(
             "core.ores", "testing.ores", "assert.ores", "trace.ores",
             "http_wire.ores", "compute.ores", "db_pool.ores",
-            "actor_persistence.ores", "actor_sync.ores", "data_pool.ores");
+            "actor_persistence.ores", "actor_sync.atto", "data_pool.ores");
 
     private CoreLibrarySources() { }
 
@@ -137,14 +137,19 @@ public final class CoreLibrarySources {
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
+        final String relative;
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, STD_IMPORT_PREFIX);
+            relative = canonicalPathBody(importPath, STD_IMPORT_PREFIX);
+        } else if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
+            relative = canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX);
+        } else {
+            throw new IllegalArgumentException(
+                    "standard-library imports must start with 'ores.std/': " + importPath);
         }
-        if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX);
-        }
-        throw new IllegalArgumentException(
-                "standard-library imports must start with 'ores.std/': " + importPath);
+        // One canonical module identity for the migrated AttoLang module.
+        // Legacy .ores and new .atto specifiers must never create two
+        // independently mutable instances or bypass the closed whitelist.
+        return relative.equals("actor_sync.ores") ? "actor_sync.atto" : relative;
     }
 
     private static String canonicalPathBody(String importPath, String prefix) {
@@ -160,7 +165,9 @@ public final class CoreLibrarySources {
         }
 
         String raw = importPath.substring(prefix.length());
-        if (raw.endsWith(".ores")) {
+        if (raw.endsWith(".atto")) {
+            raw = raw.substring(0, raw.length() - ".atto".length());
+        } else if (raw.endsWith(".ores")) {
             raw = raw.substring(0, raw.length() - ".ores".length());
         }
         if (raw.isBlank()) {
