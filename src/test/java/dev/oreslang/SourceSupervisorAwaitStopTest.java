@@ -430,12 +430,12 @@ final class SourceSupervisorAwaitStopTest {
                 var rightPermit = right.reservedStopFor(rightDecision.get());
                 assertNotEquals(leftPermit.child().groupId(), rightPermit.child().groupId());
                 var verifierCalls = new AtomicInteger();
-                assertThrows(IllegalStateException.class, () ->
+                assertThrows(SecurityException.class, () ->
                         left.reconcileConfirmedStop(rightPermit, () -> {
                             verifierCalls.incrementAndGet();
                             return true;
                         }), "foreign group's STOP ticket bypassed authority");
-                assertThrows(IllegalStateException.class, () ->
+                assertThrows(SecurityException.class, () ->
                         right.reconcileConfirmedStop(leftPermit, () -> {
                             verifierCalls.incrementAndGet();
                             return true;
