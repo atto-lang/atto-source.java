@@ -14,7 +14,7 @@ grep -Fq 'MANIFEST_NAME = ".atto.pkg.toml"' "$config" ||
   die "canonical manifest name is not .atto.pkg.toml"
 grep -Fq 'LEGACY_MANIFEST_NAME = ".oreslangc.cfg.toml"' "$config" ||
   die "legacy compatibility manifest missing"
-grep -Fq 'Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)' "$config" ||
+grep -Fq 'if (existsNoFollow(candidate))' "$config" ||
   die "canonical manifest entry can downgrade when a symlink exists"
 grep -Fq 'readPinnedAttoManifestUtf8(' "$config" ||
   die "canonical manifest bypasses pinned reader"
@@ -66,6 +66,12 @@ if [[ "$#" -eq 0 ]]; then
   sed -i 's/\.atto\.pkg\.toml/\.atto\.pkg\.disabled/g' "$tmp/config"
   if bash "$0" "$tmp/config" "$reader" "$launcher" >/dev/null 2>&1; then
     die "accepted canonical manifest rename mutation"
+  fi
+
+  cp "$config" "$tmp/config"
+  sed -i 's/existsNoFollow(candidate)/Files.exists(candidate)/g' "$tmp/config"
+  if bash "$0" "$tmp/config" "$reader" "$launcher" >/dev/null 2>&1; then
+    die "accepted unreadable canonical manifest downgrade mutation"
   fi
 
   cp "$config" "$tmp/config"
