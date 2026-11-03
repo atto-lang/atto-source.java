@@ -2,6 +2,12 @@ package dev.oreslang.runtime;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Set;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.SecureDirectoryStream;
+import java.nio.file.DirectoryStream;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.Channels;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -72,4 +78,81 @@ public final class BoundedSourceReader {
                 .decode(ByteBuffer.wrap(bytes)).toString();
         return new ReadResult(text, bytes.length);
     }
+    /**
+     * Read a canonical AttoLang package manifest using the same pinned,
+     * no-follow source-path admission as .atto source files. Caller chooses
+     * its bounded maximum; unsupported filesystem providers fail closed.
+     */
+    public static String readPinnedAttoManifestUtf8(Path path, int maxBytes)
+            throws IOException {
+        if (maxBytes < 1 || maxBytes >= MAX_BYTES) {
+            throw new IllegalArgumentException("invalid bounded AttoLang manifest size limit");
+        }
+        Path absolute = path.toAbsolutePath().normalize();
+        if (absolute.getFileName() == null ||
+                !absolute.getFileName().toString().equals(".atto.pkg.toml")) {
+            throw new IllegalArgumentException("expected canonical .atto.pkg.toml");
+        }
+        for (Path component = absolute; component != null; component = component.getParent()) {
+            if (Files.isSymbolicLink(component)) {
+                throw new SecurityException("symlinked AttoLang package manifest path: " + component);
+            }
+        }
+        byte[] bytes = readPinnedAtto(absolute, maxBytes);
+        if (bytes.length > maxBytes) {
+            throw new IllegalArgumentException("AttoLang manifest exceeds " + maxBytes + " bytes");
+        }
+        for (byte value : bytes) {
+            if (value == 0) throw new IllegalArgumentException("AttoLang manifest contains NUL byte");
+        }
+        return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes)).toString();
+    }
+
+    /**
+     * Reads a source through provider-pinned, no-follow directory handles.
+     * Fail closed if the filesystem lacks SecureDirectoryStream support:
+     * a preflight realpath check alone is not an atomic security boundary.
+     */
+    private static byte[] readPinnedAtto(Path absolute) throws IOException {
+        return readPinnedAtto(absolute, MAX_BYTES);
+    }
+
+    private static byte[] readPinnedAtto(Path absolute, int maxBytes) throws IOException {
+        Path root = absolute.getRoot();
+        if (root == null) {
+            throw new SecurityException("absolute .atto source root is required");
+        }
+        Path relative = root.relativize(absolute);
+        if (relative.getNameCount() == 0) {
+            throw new SecurityException(".atto source filename is required");
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(root)) {
+            if (!(stream instanceof SecureDirectoryStream<Path> pinnedRoot)) {
+                throw new SecurityException(
+                        "secure directory handles unavailable for .atto source: " + root);
+            }
+            return readPinnedComponent(pinnedRoot, relative, 0, maxBytes);
+        }
+    }
+
+    private static byte[] readPinnedComponent(
+            SecureDirectoryStream<Path> pinned, Path relative, int index, int maxBytes)
+            throws IOException {
+        Path part = relative.getName(index);
+        if (index == relative.getNameCount() - 1) {
+            try (SeekableByteChannel channel = pinned.newByteChannel(part,
+                    Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+                 InputStream input = Channels.newInputStream(channel)) {
+                return input.readNBytes(maxBytes + 1);
+            }
+        }
+        try (SecureDirectoryStream<Path> next =
+                     pinned.newDirectoryStream(part, LinkOption.NOFOLLOW_LINKS)) {
+            return readPinnedComponent(next, relative, index + 1, maxBytes);
+        }
+    }
+
 }
