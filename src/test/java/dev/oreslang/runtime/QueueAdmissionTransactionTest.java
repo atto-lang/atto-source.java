@@ -107,6 +107,47 @@ final class QueueAdmissionTransactionTest {
         assertEquals(0, first.reservedCompletions());
     }
 
+
+    @Test
+    void completionReservationBackpressureIsIndependentOfIngressCapacity() {
+        QueueAdmissionTransaction<String> transaction =
+                new QueueAdmissionTransaction<>(2, 1);
+        ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+
+        var first = transaction.admitAuthorized(
+                sender, 1, transaction.generation(), "first");
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED, first.status());
+        var firstDelivery = transaction.pollDelivery().orElseThrow();
+        transaction.complete(firstDelivery, QueueAdmissionTransaction.CompletionStatus.CONSUMED);
+
+        // Ingress has been released, but completion capacity remains reserved
+        // until the consumer explicitly drains the completion record.
+        assertEquals(0, transaction.outstandingIngress());
+        assertEquals(1, transaction.reservedCompletions());
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.COMPLETION_FULL,
+                transaction.admitAuthorized(
+                        sender, 2, transaction.generation(), "second").status());
+
+        transaction.pollCompletion().orElseThrow();
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED,
+                transaction.admitAuthorized(
+                        sender, 3, transaction.generation(), "third").status());
+    }
+
+    @Test
+    void staleGenerationIsRejectedWithoutReservingEitherResource() {
+        QueueAdmissionTransaction<String> transaction =
+                new QueueAdmissionTransaction<>(2, 2);
+        ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+
+        assertEquals(QueueAdmissionTransaction.AdmissionStatus.STALE_GENERATION,
+                transaction.admitAuthorized(
+                        sender, 9, transaction.generation() + 1, "stale").status());
+        assertEquals(0, transaction.outstandingIngress());
+        assertEquals(0, transaction.reservedCompletions());
+        assertEquals(0, transaction.pendingCount());
+    }
+
     @Test
     void closeRejectsNewAdmissionButAllowsCommittedWorkToDrain() {
         QueueAdmissionTransaction<String> transaction =
