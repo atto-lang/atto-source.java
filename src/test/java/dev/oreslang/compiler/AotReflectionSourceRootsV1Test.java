@@ -85,4 +85,12 @@ final class AotReflectionSourceRootsV1Test {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileAotReflectionTableV1(
                 PUBLIC_SOURCE, "example@revision1", List.of("*")));
     }
+
+    @Test
+    void identityInputsAreBoundedBeforeMetadataAllocation() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileAotReflectionTableV1(
+                PUBLIC_SOURCE, "x".repeat(513), List.of("__root__.Person")));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileAotReflectionTableV1(
+                PUBLIC_SOURCE, "example@revision1", List.of("x".repeat(513))));
+    }
 }
