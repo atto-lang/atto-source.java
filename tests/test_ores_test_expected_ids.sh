@@ -63,7 +63,7 @@ expected40="$root/tests/native-testing-regressions-40.expected-ids.txt"
 # Check the trusted inventory against the actual declarations, in order.
 # This is a source-level inventory check, not guest compilation.
 sed -nE 's/^[[:space:]]*new TestCase\("([A-Za-z0-9][A-Za-z0-9._\/-]*)", case_[0-9]{2}, false, ""\),?[[:space:]]*$/\1/p' \
-  "$root/examples/native-testing-regressions-40.ores" > "$tmp/declared-40.txt"
+  "$root/examples/native-testing-regressions-40.atto" > "$tmp/declared-40.txt"
 if ! cmp -s "$expected40" "$tmp/declared-40.txt"; then
   echo '40-case trusted identity inventory differs from Oreslang TestCase declarations' >&2
   exit 1
