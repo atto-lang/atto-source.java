@@ -53,7 +53,7 @@ final class AotStaticTypeOfQueryV1Test {
         assertArrayEquals(first.descriptorTable(), second.descriptorTable());
         byte[] output = first.descriptorTable();
         output[0] = (byte) 0;
-        assertEquals('A', first.descriptorTable()[0]);
+        assertEquals((byte) 'A', first.descriptorTable()[0]);
         var differentPackage = OresCompiler.compileStaticTypeOfQueryV1(
                 SOURCE, "different-pkg@revision", "type_of<Person>()");
         assertNotEquals(first.typeIdHex(), differentPackage.typeIdHex());
