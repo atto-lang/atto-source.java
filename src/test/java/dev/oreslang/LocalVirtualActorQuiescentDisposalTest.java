@@ -427,6 +427,10 @@ final class LocalVirtualActorQuiescentDisposalTest {
             assertTrue(accepted.admitted());
             var completion = accepted.completion();
             assertNotNull(completion);
+            assertEquals(0, LocalVirtualActorI64.Completion.class.getConstructors().length,
+                    "external code cannot mint an observed completion handle");
+            assertEquals(0, LocalVirtualActorI64.SendResult.class.getConstructors().length,
+                    "external code cannot mint an ADMITTED result");
             assertFalse(java.util.concurrent.CompletableFuture.class.isAssignableFrom(
                     completion.getClass()),
                     "returning mutable CompletableFuture permits sender-forged completion");
