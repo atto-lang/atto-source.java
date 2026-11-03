@@ -184,7 +184,7 @@ final class MacroExportArtifactTest {
         MacroExportArtifact wrongDigestCase = replace(
                 valid, valid.format(), valid.semanticsAbi(),
                 valid.ownerModule(), valid.canonicalContent(),
-                valid.contentSha256().toUpperCase(java.util.Locale.ROOT));
+                "A" + valid.contentSha256().substring(1));
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> wrongDigestCase.verifyAgainst("Producer", original));
