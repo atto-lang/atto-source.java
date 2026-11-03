@@ -113,9 +113,10 @@ final class QueueAdmissionTransactionTest {
         QueueAdmissionTransaction<String> transaction =
                 new QueueAdmissionTransaction<>(2, 1);
         ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId queueOwner = ActorRuntime.ActorId.create();
 
         var first = transaction.admitAuthorized(
-                sender, 1, transaction.generation(), "first");
+                queueOwner, sender, 1, transaction.generation(), "first");
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED, first.status());
         var firstDelivery = transaction.pollDelivery().orElseThrow();
         transaction.complete(firstDelivery, QueueAdmissionTransaction.CompletionStatus.CONSUMED);
