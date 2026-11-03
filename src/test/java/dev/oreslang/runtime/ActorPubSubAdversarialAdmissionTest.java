@@ -43,6 +43,24 @@ final class ActorPubSubAdversarialAdmissionTest {
     }
 
     @Test
+    void zeroRecipientPublicationsAllocateSequenceButDoNotReplay() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            group.events().topic("empty", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            ActorEventBus.PublishReceipt first =
+                    group.events().publishSystem("empty", "first");
+            ActorEventBus.PublishReceipt second =
+                    group.events().publishSystem("empty", "second");
+            assertEquals(0, first.accepted());
+            assertEquals(0, second.accepted());
+            assertEquals(1L, first.sequence());
+            assertEquals(2L, second.sequence());
+            assertEquals("1", first.sequenceUnsignedString());
+            assertEquals("2", second.sequenceUnsignedString());
+        }
+    }
+
+    @Test
     void reliableRejectionRollsBackEverySubscriberReservation() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
@@ -116,8 +134,12 @@ final class ActorPubSubAdversarialAdmissionTest {
             assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
             // No subscriber receives the rejected publication, and its
             // attempt must not burn a topic-local sequence number.
-            assertTrue(group.events().publishSystem("atomic", "accepted")
-                    .completion().isDone());
+            ActorEventBus.PublishReceipt acceptedReceipt =
+                    group.events().publishSystem("atomic", "accepted");
+            assertTrue(acceptedReceipt.completion().isDone());
+            assertEquals(3L, acceptedReceipt.sequence(),
+                    "admission receipt must report contiguous sequence after rejection");
+            assertEquals("3", acceptedReceipt.sequenceUnsignedString());
             b.send("readAccepted");
             assertTrue(acceptedRead.await(5, TimeUnit.SECONDS));
             assertNull(failure.get());
