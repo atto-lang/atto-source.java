@@ -17,9 +17,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Channel<T> moves Sendable data, never executable lexical environments. */
 final class ChannelCallableTransportTest {
     private static void rejectCallable(String code) {
+        var syntax = assertDoesNotThrow(() -> Parser.parse(code),
+                "callable fixture must parse before semantic rejection");
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(code)));
+                () -> TypeChecker.check(syntax));
         assertTrue(error.getMessage().contains("cannot transport functions"),
                 () -> "expected the callable channel diagnostic, got: " + error.getMessage());
     }
