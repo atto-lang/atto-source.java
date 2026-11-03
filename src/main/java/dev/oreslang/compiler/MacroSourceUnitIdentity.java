@@ -81,24 +81,27 @@ public final class MacroSourceUnitIdentity {
         // Validate the entire original spelling, including segments later
         // eliminated by dot-normalization. Source IDs are provenance keys and
         // must never contain control, spoofing or malformed Unicode payloads.
-        for (int i = 0; i < logical.length(); i++) {
-            char c = logical.charAt(i);
-            if (c == ':' || Character.isISOControl(c)
-                    || Character.getType(c) == Character.FORMAT
-                    || Character.getType(c) == Character.LINE_SEPARATOR
-                    || Character.getType(c) == Character.PARAGRAPH_SEPARATOR) {
-                throw new IllegalArgumentException(
-                        "macro source-unit identity contains non-portable or control characters");
-            }
-            if (Character.isHighSurrogate(c)) {
-                if (++i >= logical.length() || !Character.isLowSurrogate(logical.charAt(i))) {
-                    throw new IllegalArgumentException(
-                            "macro source-unit identity contains malformed UTF-16");
+        for (int i = 0; i < logical.length();) {
+            char unit = logical.charAt(i);
+            if (Character.isHighSurrogate(unit)) {
+                if (i + 1 >= logical.length()
+                        || !Character.isLowSurrogate(logical.charAt(i + 1))) {
+                    throw new IllegalArgumentException("macro source-unit identity contains malformed UTF-16");
                 }
-            } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException(
-                        "macro source-unit identity contains malformed UTF-16");
+            } else if (Character.isLowSurrogate(unit)) {
+                throw new IllegalArgumentException("macro source-unit identity contains malformed UTF-16");
             }
+            // Validate complete Unicode codepoints, not individual UTF-16
+            // units: supplementary FORMAT characters are otherwise missed.
+            int codepoint = Character.codePointAt(logical, i);
+            int category = Character.getType(codepoint);
+            if (codepoint == ':' || Character.isISOControl(codepoint)
+                    || category == Character.FORMAT
+                    || category == Character.LINE_SEPARATOR
+                    || category == Character.PARAGRAPH_SEPARATOR) {
+                throw new IllegalArgumentException("macro source-unit identity contains non-portable or control characters");
+            }
+            i += Character.charCount(codepoint);
         }
         ArrayDeque<String> segments = new ArrayDeque<>();
         for (String segment : logical.split("/+")) {
