@@ -55,8 +55,17 @@ public final class ScalarDeclarationI64Compiler {
             return new LocalVirtualActorI64(domain, name, identities, mailboxCapacity,
                     ignored -> {
                         var state = new ScalarStateContainer(initial, 1);
-                        return message -> state.tryAddChecked(message).orElseThrow(
-                                () -> new IllegalStateException("actor state access unavailable"));
+                        return new LocalVirtualActorI64.Turn() {
+                            @Override public void on_message(long message) {
+                                state.tryAddChecked(message).orElseThrow(
+                                        () -> new IllegalStateException("actor state access unavailable"));
+                            }
+                            @Override public void close() {
+                                state.close();
+                                if (!state.readyForReclamation())
+                                    throw new IllegalStateException("actor state lease not quiescent");
+                            }
+                        };
                     }, control);
         }
     }
