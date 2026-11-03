@@ -53,6 +53,25 @@ for program in javac java mvn git; do
   fi
 done
 
+# Git status/diff trust the index. An attacker can set skip-worktree or
+# assume-unchanged and alter a tracked source file without either command
+# noticing. Reject every non-normal entry, including unmerged stages, using
+# NUL-delimited names so embedded whitespace cannot hide a flagged path.
+verify_normal_index_flags() {
+  local entry
+  while IFS= read -r -d '' entry; do
+    if [[ "${entry:0:2}" != "H " ]]; then
+      echo "refusing hidden or unresolved Git index entry (tag ${entry:0:1})" >&2
+      return 1
+    fi
+  done < <(git ls-files -v -z)
+}
+
+if ! verify_normal_index_flags; then
+  echo "refusing pre-admission hidden Git index state" >&2
+  exit 4
+fi
+
 # The entry check rejects all ignored/untracked files. Subsequent Java/Maven
 # commands can legitimately generate ignored build products, but MUST NOT
 # mutate the checked-out source, switch HEAD, or inject unignored files.
@@ -62,6 +81,7 @@ verify_inputs_unchanged() {
   if [[ "$(git rev-parse --show-toplevel)" != "$root" ]] \
       || [[ "$(git rev-parse --verify HEAD^{commit})" != "$commit_sha" ]] \
       || [[ "$(git rev-parse --verify HEAD^{tree})" != "$tree_sha" ]] \
+      || ! verify_normal_index_flags \
       || ! git diff --quiet HEAD -- \
       || [[ -n "$(git ls-files --others --exclude-standard)" ]] \
       || [[ -n "$(git ls-files --others --ignored --exclude-standard -- src stdlib scripts examples .mvn .github)" ]]; then
