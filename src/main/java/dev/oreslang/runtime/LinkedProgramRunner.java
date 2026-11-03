@@ -396,6 +396,7 @@ public final class LinkedProgramRunner {
         budget.checkCanAdmitUnit(depth);
 
         BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        admission.verifyRead(normalized, projectConfig, id);
         budget.admit(source.byteCount(), depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
                 id, normalized.getFileName().toString(), source.text());
