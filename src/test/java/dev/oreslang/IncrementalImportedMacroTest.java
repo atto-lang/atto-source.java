@@ -159,4 +159,35 @@ final class IncrementalImportedMacroTest {
         assertTrue(next.rebuilt("consumer.atto"),
                 "public macro implementation changes must invalidate its .atto dependents");
     }
+
+    @Test
+    void duplicateWildcardAliasesCannotMergeSourceAuthorities() {
+        String consumer = CONSUMER.replace(
+                "import * as lib from \"./producer.atto\";",
+                "import * as lib from \"./producer.atto\";\n"
+                        + "import * as lib from \"./producer.atto\";");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(units(PUBLIC_LITERAL, consumer)));
+        assertTrue(failure.getMessage().contains("duplicate compile-time macro import alias"),
+                failure::toString);
+    }
+
+    @Test
+    void wildcardAliasCannotShadowLocalSourceModule() {
+        String consumer = """
+                import * as lib from "./producer.atto";
+                define module lib as
+                    pub fnc placeholder() -> int {
+                        return 1;
+                    }
+                end
+                pub fnc answer() -> int {
+                    return lib.literal!(const 42);
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(units(PUBLIC_LITERAL, consumer)));
+        assertTrue(failure.getMessage().contains("collides with a local source module"),
+                failure::toString);
+    }
 }
