@@ -1586,7 +1586,7 @@ public final class Parser {
                 if (suspends || (current + 1 < tokens.size()
                         && (tokens.get(current + 1).type() == SUSPENDS
                         || tokens.get(current + 1).lexeme().equals("suspend")))) {
-                    throw error(critical, "'critical suspends' is forbidden: critical bodies cannot suspend");
+                    throw error(critical, "E_CRITICAL_SUSPENDS_DECL: 'critical suspends' is forbidden: critical bodies cannot suspend");
                 }
                 throw error(critical, "critical callable requires non-suspending body verification and scheduler-owned ticket lowering");
             } else if (match(SUSPENDS) || matchContextualSuspendModifier()) {
