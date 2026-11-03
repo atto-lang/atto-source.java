@@ -44,13 +44,25 @@ end
 - `SignalCommand`, `QueryCommand`, and `UpdateCommand`: message endpoints. Queries are read-only and do not receive history command IDs.
 - `ChildWorkflowCommand`, `ContinueAsNewCommand`, and `CompensationCommand`.
 
-History-appending commands require a canonical ASCII command ID and duplicate IDs are rejected within a workflow. The semantic analyzer resolves fully-qualified/local activity and child-workflow targets and rejects ambiguous unqualified names; it binds activity operations and message endpoints by exact member name/arity. Command payload expressions are re-homed into checker-only synthetic methods with the exact `run` parameters and target operation parameter types, then pass the ordinary type and ownership checker. These synthetic methods are never retained in the program. `TimerCommand.delay` is currently an integer millisecond value. Query signatures must exactly match their read-only endpoint method. The manifest canonicalizes payload AST and keeps query endpoint descriptors separate from the history command list. Source grammar for emitting these nodes remains future work; current AST producers can construct them directly.
+History-appending commands require a canonical ASCII command ID and duplicate IDs are rejected within a workflow. Duplicate query descriptors for the same endpoint/arity are also rejected, even though queries have no history ID. The semantic analyzer resolves fully-qualified/local activity and child-workflow targets and rejects ambiguous unqualified names; it binds activity operations and message endpoints by exact member name/arity. Command payload expressions are re-homed into checker-only synthetic methods with the exact `run` parameters and target operation parameter types, then pass the ordinary type and ownership checker. These synthetic methods are never retained in the program. `TimerCommand.delay` is currently an integer millisecond value. Query signatures must exactly match their read-only endpoint method. The manifest canonicalizes payload AST and keeps query endpoint descriptors separate from the history command list. Source grammar for emitting these nodes remains future work; current AST producers can construct them directly.
 
 ## Canonical manifest
 
 `DurableExecutionManifest.analyze(program)` performs durable member analysis and returns immutable canonical UTF-8 JSON bytes plus a SHA-256 digest. The v1 format sorts activity/workflow declarations and operation signatures, binds declaration visibility and complete method signature/effect-shape flags (including parameter names/types/mutability/structural mode, visibility, static/abstract/async/suspends/structural and generic slots), preserves workflow command order, binds command IDs and canonical argument payloads, and marks each declaration version. Query entries intentionally omit a history ID.
 
 The current state schema is explicitly empty. Adding persistent state requires a versioned serializable schema and ownership proof; the manifest must not infer state from ordinary class fields. Unknown or non-canonical command expression nodes are rejected.
+
+## M0 fail-closed compiler regression contract
+
+This increment hardens the source-local semantic and metadata boundary without enabling workflow dispatch or replay.
+
+- The workflow statement visitor must explicitly classify every existing `Ast.Stmt` variant. `break` and `continue` are deterministic lexical control flow; all currently unrecognized or future statement nodes must raise `WORKFLOW_UNKNOWN_AST_STATEMENT_FORBIDDEN` instead of being silently skipped. Runtime/channel/borrow scopes remain rejected.
+- Workflow calls to system time, nondeterministic random sources, raw activity methods, arbitrary Java/host interop and runtime operations remain prohibited. The only activity call admitted in this phase is a compiler-owned, typed `ActivityStepCommand` bound to a declared operation. No source syntax or runtime dispatch exists for that command.
+- The manifest normalizes activity steps, compensations and child-workflow targets to fully qualified durable declaration IDs; signal/update targets are scoped to their declaring workflow. Local and explicitly qualified spellings of the same target produce identical manifest bytes/digest. Local-first binding wins over ambiguous same-named declarations in other modules.
+- M0 still emits `state:[]` and rejects *all* workflow class fields, including apparently serializable primitives. Borrowed scopes and suspension remain closed until versioned serialization, live-loan analysis and checkpoint lowering exist.
+- Read-only query descriptors are sorted separately, cannot be duplicated for the same endpoint/arity, and do not appear in the replay history command array.
+- `sha256()` is the digest of the **full canonical manifest bytes**. It is not yet an independently versioned upgrade compatibility digest, nor evidence of an executable replay interpreter.
+- Java JUnit/regression evidence must be collected from an exact checked-out commit/tree with nonzero executed job steps. Source-free canaries and zero-step GitHub jobs do not count.
 
 ## Execution boundary remains closed
 
