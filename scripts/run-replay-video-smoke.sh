@@ -47,6 +47,13 @@ mvn -B -ntp -q -DskipTests exec:java \
   echo "GUEST_COMPILATION_CHECK_FAILED" >&2
   exit 1
 }
+# --check must never run main or emit a replay receipt on either stream.
+if LC_ALL=C grep -Fq 'VIDEO-REPLAY-' "$tmpdir/check.log" ||
+   LC_ALL=C grep -Fq 'VIDEO-REPLAY-' "$tmpdir/check.err"; then
+  cat "$tmpdir/check.log" "$tmpdir/check.err" >&2
+  echo "GUEST_CHECK_EXECUTED_MAIN" >&2
+  exit 1
+fi
 mvn -B -ntp -q -DskipTests exec:java \
   -Dexec.args="examples/replay-video-disconnect-smoke.atto" \
   >"$tmpdir/guest.log" 2>"$tmpdir/guest.err" || {
