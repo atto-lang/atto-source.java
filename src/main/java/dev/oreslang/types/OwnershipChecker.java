@@ -1145,8 +1145,8 @@ public final class OwnershipChecker {
                     ValueInfo source = checkExpr(argument, scope, false);
                     if (source.kind != ValueKind.COPY) {
                         throw error(
-                                "rt share of move-only values requires the owning Shared<T> convergence; "
-                                        + "this current-main patch fails closed instead of manufacturing shared mutable aliasing");
+                                "E_SHARE_MOVE_ONLY: rt share of move-only values requires the owning Shared<T> convergence; "
+                                        + "the compiler refuses to manufacture shared mutable aliasing");
                     }
                     yield source;
                 }
