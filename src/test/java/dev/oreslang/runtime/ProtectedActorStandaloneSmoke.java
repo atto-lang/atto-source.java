@@ -1,0 +1,204 @@
+package dev.oreslang.runtime;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Dependency-free, exact-source JDK 21 host-substrate smoke.
+ * This does NOT replace production guest compilation, JUnit, native arenas
+ * or any AOT image / five-backend conformance test.
+ */
+public final class ProtectedActorStandaloneSmoke {
+    private static int cases;
+
+    private ProtectedActorStandaloneSmoke() { }
+
+    private static void check(boolean condition, String explanation) {
+        if (!condition) throw new AssertionError(explanation);
+    }
+
+    private static void rejects(Runnable operation, String explanation) {
+        try {
+            operation.run();
+        } catch (IllegalStateException expected) {
+            return;
+        }
+        throw new AssertionError(explanation);
+    }
+
+    private static void scalarLeaseAndOverflow() {
+        var container = new ScalarStateContainer(Long.MAX_VALUE, 2);
+        check(container.tryRead().orElseThrow() == Long.MAX_VALUE, "scalar read");
+        try {
+            container.tryAddChecked(1);
+            throw new AssertionError("checked overflow not rejected");
+        } catch (ArithmeticException expected) {
+            check(container.tryRead().orElseThrow() == Long.MAX_VALUE,
+                    "overflow must not commit mutation");
+        }
+        container.close();
+        check(container.readyForReclamation(), "closed scalar leases quiescent");
+        check(container.tryRead().isEmpty(), "closed scalar admits no read");
+        cases++;
+    }
+
+    private static void closeRevokesOutstandingGateLoans() {
+        var gate = new StateContainerAccessGate(2);
+        var first = gate.tryRead();
+        var second = gate.tryRead();
+        check(first != null && second != null, "two reader leases");
+        check(gate.tryWrite() == null, "writer excluded by readers");
+        gate.close();
+        check(!gate.leasesQuiescentAfterClose(), "cannot reclaim during read");
+        rejects(() -> first.requireActive(StateContainerAccessGate.Mode.READ),
+                "closed reader must be revoked");
+        first.close();
+        check(!gate.leasesQuiescentAfterClose(), "second reader must remain");
+        second.close();
+        check(gate.leasesQuiescentAfterClose(), "physical release required");
+        cases++;
+    }
+
+    private static void fencedIncarnationAndCredits() {
+        var registry = new VirtualActorActivationRegistry("local", 1, 1);
+        var logical = registry.resolve("Counter", "caf\u00e9");
+        var normalized = registry.resolve("Counter", "cafe\u0301");
+        check(logical.identity().equals(normalized.identity()), "NFC identity");
+        var first = registry.activate(logical);
+        check(first.initializer(), "first activation initializes");
+        registry.publish(first);
+        var ticket = registry.tryAdmit(first);
+        check(ticket != null, "ticket admission");
+        check(registry.tryAdmit(first) == null, "bounded capacity");
+        rejects(() -> registry.deactivate(first), "active credit blocks deactivation");
+        ticket.settle(VirtualActorActivationRegistry.Disposition.PROCESSED);
+        registry.deactivate(first);
+        check(!first.active(), "stale activation fenced");
+        var second = registry.activate(logical);
+        check(second.initializer() && second.incarnation() > first.incarnation(),
+                "generation advances");
+        registry.publish(second);
+        registry.deactivate(second);
+        registry.close();
+        cases++;
+    }
+
+    private static void acceptedFifoAndBackpressure() {
+        var history = new ArrayList<Long>();
+        var disposed = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Queue", 1, 1,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) { history.add(value); }
+                    @Override public void close() { disposed.incrementAndGet(); }
+                }, notice -> { throw new AssertionError("unexpected CONTROL"); })) {
+            var ref = runtime.resolve("one");
+            var a = runtime.try_send(ref, 5);
+            check(a.admitted(), "first admitted");
+            check(runtime.try_send(ref, 9).kind() ==
+                    LocalVirtualActorI64.AdmissionKind.BACKPRESSURE, "bounded rejection");
+            check(runtime.run_one(ref), "first turn executes");
+            check(a.completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "first receipt");
+            check(!runtime.run_one(ref), "no ghost message");
+            var b = runtime.try_send(ref, 7);
+            check(b.admitted() && runtime.run_one(ref), "next turn executes");
+            check(b.completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "second receipt");
+            check(history.equals(List.of(5L, 7L)), "strict FIFO and rollback");
+        }
+        check(disposed.get() == 1, "shutdown disposes state exactly once");
+        cases++;
+    }
+
+    private static void completionAllowsReentrantAdmit() {
+        try (var runtime = new LocalVirtualActorI64("app", "Callback", 1, 1,
+                ignored -> ignoredMessage -> { },
+                notice -> { throw new AssertionError("unexpected CONTROL"); })) {
+            var ref = runtime.resolve("one");
+            var first = runtime.try_send(ref, 1);
+            var next = new AtomicReference<LocalVirtualActorI64.SendResult>();
+            first.completion().thenRun(() -> next.set(runtime.try_send(ref, 2)));
+            check(runtime.run_one(ref), "complete first");
+            check(next.get() != null && next.get().admitted(),
+                    "completion callback sees settled credit");
+            check(runtime.run_one(ref), "complete reentrant message");
+            check(next.get().completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "reentrant receipt");
+        }
+        cases++;
+    }
+
+    private static void missingControlPreservesAcceptedTurn() {
+        var disposed = new AtomicInteger();
+        var runtime = new LocalVirtualActorI64("app", "Worker", 1, 1,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) {
+                        throw new IllegalStateException("guest panic");
+                    }
+                    @Override public void close() { disposed.incrementAndGet(); }
+                }, notice -> { throw new IllegalStateException("CONTROL unavailable"); });
+        var ref = runtime.resolve("one");
+        var ticket = runtime.try_send(ref, 4);
+        check(ticket.admitted(), "accepted panic message");
+        rejects(() -> runtime.run_one(ref), "failed CONTROL refuses success");
+        check(!ticket.completion().isDone(), "failed CONTROL retains completion");
+        rejects(runtime::close, "outstanding credit must block shutdown");
+        check(disposed.get() == 0, "cannot dispose with unnotified credit");
+        cases++;
+    }
+
+    private static void physicalHandlerBlocksTeardown() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var disposed = new AtomicInteger();
+        var workerFailure = new AtomicReference<Throwable>();
+        var runtime = new LocalVirtualActorI64("app", "Worker", 1, 1,
+                ignored -> new LocalVirtualActorI64.Turn() {
+                    @Override public void on_message(long value) throws Exception {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("worker timeout");
+                    }
+                    @Override public void close() { disposed.incrementAndGet(); }
+                }, notice -> { throw new AssertionError("unexpected CONTROL"); });
+        var ref = runtime.resolve("one");
+        var accepted = runtime.try_send(ref, 1);
+        Thread worker = new Thread(() -> {
+            try {
+                check(runtime.run_one(ref), "physical turn runs");
+            } catch (Throwable problem) {
+                workerFailure.set(problem);
+            }
+        }, "protected-actor-smoke-worker");
+        worker.start();
+        try {
+            check(entered.await(5, TimeUnit.SECONDS), "worker started");
+            rejects(runtime::close, "shutdown must wait for guest to retire");
+            check(disposed.get() == 0, "no early disposal");
+        } finally {
+            release.countDown();
+            worker.join(5000);
+        }
+        check(!worker.isAlive() && workerFailure.get() == null, "worker exits cleanly");
+        check(accepted.completion().join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                "worker settles");
+        runtime.close();
+        check(disposed.get() == 1, "post-quiescence cleanup exactly once");
+        cases++;
+    }
+
+    public static void main(String[] args) throws Exception {
+        scalarLeaseAndOverflow();
+        closeRevokesOutstandingGateLoans();
+        fencedIncarnationAndCredits();
+        acceptedFifoAndBackpressure();
+        completionAllowsReentrantAdmit();
+        missingControlPreservesAcceptedTurn();
+        physicalHandlerBlocksTeardown();
+        System.out.println("PROTECTED_ACTOR_JDK21_SMOKE|passed=" + cases);
+    }
+}
