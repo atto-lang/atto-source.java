@@ -49,17 +49,45 @@ public final class OresScheduler implements AutoCloseable {
         }
         return value;
     }
-    private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
-    /** The carrier still belongs to this scheduler during terminal callbacks. */
-    private static final ThreadLocal<OresScheduler> CURRENT_CARRIER_SCHEDULER =
-            new ThreadLocal<>();
-    private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
-    private static final ThreadLocal<ExecutionContext> CURRENT_EXECUTION_CONTEXT = new ThreadLocal<>();
-    private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
-    private static final ThreadLocal<Boolean> CURRENT_CANCELLATION_CLEANUP =
-            new ThreadLocal<>();
-    private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
-            new ThreadLocal<>();
+    /**
+     * All per-thread scheduler state in one object behind one ThreadLocal.
+     * Each turn used to set() and remove() about six separate ThreadLocals;
+     * remove() deletes the map entry, so the next set() re-probes and
+     * re-inserts it. Plain field writes on one holder avoid that churn.
+     * A null field means what an absent ThreadLocal value meant before.
+     */
+    private static final class ThreadState {
+        OresScheduler current;
+        /** The carrier still belongs to this scheduler during terminal callbacks. */
+        OresScheduler carrierScheduler;
+        ExecutionContext executionContext;
+        Boolean schedulerCarrier;
+        Boolean cancellationCleanup;
+        ActorTurnWatchdog.Lease watchdogLease;
+        long dispatchId;   // 0 outside a dispatch
+        long dispatchNext; // [dispatchNext, dispatchLimit) unused ids owned by this thread
+        long dispatchLimit;
+    }
+    private static final ThreadLocal<ThreadState> STATE =
+            ThreadLocal.withInitial(ThreadState::new);
+    /**
+     * Dispatch ids only need to be unique and nonzero, so each thread takes a
+     * private block from the global counter: one contended atomic per
+     * DISPATCH_ID_BLOCK turns instead of one per turn.
+     */
+    private static final int DISPATCH_ID_BLOCK = 1024;
+
+    private static long nextDispatchId(ThreadState state) {
+        if (state.dispatchNext == state.dispatchLimit) {
+            long end = NEXT_DISPATCH_ID.addAndGet(DISPATCH_ID_BLOCK);
+            if (end < DISPATCH_ID_BLOCK) { // wrapped past Long.MAX_VALUE
+                throw new IllegalStateException("OresScheduler dispatch id space exhausted");
+            }
+            state.dispatchNext = end - DISPATCH_ID_BLOCK + 1;
+            state.dispatchLimit = end + 1;
+        }
+        return state.dispatchNext++;
+    }
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
     // A timed source task owns one global reservation until its Future's
     // terminal subscriber drain completes, even if its guest resources retired.
@@ -160,8 +188,9 @@ public final class OresScheduler implements AutoCloseable {
     private static final IdentityHashMap<OresFuture<?>, OresFuture<?>> AWAIT_GRAPH =
             new IdentityHashMap<>();
 
-    private static boolean registerAwaitDependency(
-            OresFuture<?> owner, OresFuture<?> awaited) {
+    private static boolean registerAwaitDependency(TaskRunner<?> runner,
+            OresFuture<?> awaited) {
+        OresFuture<?> owner = runner.completion;
         synchronized (AWAIT_GRAPH_LOCK) {
             if (AWAIT_GRAPH.containsKey(owner)) {
                 throw new IllegalStateException("task already has an active Future await");
@@ -177,13 +206,24 @@ public final class OresScheduler implements AutoCloseable {
                 throw new IllegalStateException("Future await graph contains a cycle");
             }
             AWAIT_GRAPH.put(owner, awaited);
+            runner.awaitEdgeRegistered = true;
             return true;
         }
     }
 
-    private static void removeAwaitDependency(OresFuture<?> owner) {
+    /**
+     * Runs at the start and end of every turn, so the common case (no edge)
+     * must not take the VM-wide graph lock. The flag is written only under
+     * the lock together with the map, so reading false here is equivalent to
+     * having acquired the lock before any concurrent registration.
+     */
+    private static void removeAwaitDependency(TaskRunner<?> runner) {
+        if (!runner.awaitEdgeRegistered) return;
         synchronized (AWAIT_GRAPH_LOCK) {
-            AWAIT_GRAPH.remove(owner);
+            if (runner.awaitEdgeRegistered) {
+                AWAIT_GRAPH.remove(runner.completion);
+                runner.awaitEdgeRegistered = false;
+            }
         }
     }
 
@@ -212,6 +252,9 @@ public final class OresScheduler implements AutoCloseable {
     private final AtomicReference<Throwable> physicalRetirementFailure = new AtomicReference<>();
     private volatile Runnable actorStopQuiescenceListener;
     private final AtomicLong watchdogOverruns = new AtomicLong();
+    /** Built once: a per-turn lambda here allocated on every dispatch. */
+    private final java.util.function.Consumer<ActorTurnWatchdog.Lease> onWatchdogOverrun =
+            ignored -> watchdogOverruns.incrementAndGet();
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -246,11 +289,11 @@ public final class OresScheduler implements AutoCloseable {
                 .daemon(true)
                 .name(name + "-carrier-" + carrierId.getAndIncrement())
                 .unstarted(() -> {
-                    SCHEDULER_CARRIER.set(Boolean.TRUE);
+                    STATE.get().schedulerCarrier = Boolean.TRUE;
                     try {
                         task.run();
                     } finally {
-                        SCHEDULER_CARRIER.remove();
+                        STATE.get().schedulerCarrier = null;
                     }
                 });
         ThreadPoolExecutor pool = new ThreadPoolExecutor(
@@ -332,7 +375,7 @@ public final class OresScheduler implements AutoCloseable {
 
     /** True only on private carriers owned by user-created OresSchedulers. */
     public static boolean isSchedulerCarrierThread() {
-        return Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+        return Boolean.TRUE.equals(STATE.get().schedulerCarrier);
     }
 
     public String name() {
@@ -350,13 +393,13 @@ public final class OresScheduler implements AutoCloseable {
 
     /** Poll records forward progress without claiming a physical carrier handoff. */
     static void checkpointCurrentTurn() {
-        ActorTurnWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
+        ActorTurnWatchdog.Lease lease = STATE.get().watchdogLease;
         if (lease != null) lease.checkpoint();
     }
 
     /** Advisory request; only a compiler-lowered continuation may actually yield. */
     public static boolean preemptionRequested() {
-        ActorTurnWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
+        ActorTurnWatchdog.Lease lease = STATE.get().watchdogLease;
         return lease != null && lease.preemptionRequested();
     }
 
@@ -366,11 +409,11 @@ public final class OresScheduler implements AutoCloseable {
 
     /** Scheduler currently executing this Ores task turn, if any. */
     public static OresScheduler current() {
-        return CURRENT.get();
+        return STATE.get().current;
     }
 
     public static OresScheduler requireCurrent() {
-        OresScheduler scheduler = CURRENT.get();
+        OresScheduler scheduler = STATE.get().current;
         if (scheduler == null) {
             throw new IllegalStateException(
                     "operation requires an executing OresScheduler task");
@@ -386,7 +429,7 @@ public final class OresScheduler implements AutoCloseable {
      * distinct for concurrent tasks sharing the same OresScheduler.</p>
      */
     public static Object currentTaskDomain() {
-        return CURRENT_EXECUTION_CONTEXT.get();
+        return STATE.get().executionContext;
     }
 
     /**
@@ -397,7 +440,7 @@ public final class OresScheduler implements AutoCloseable {
      * actor heap/allocation domain.</p>
      */
     public static ExecutionContext currentExecutionContext() {
-        return CURRENT_EXECUTION_CONTEXT.get();
+        return STATE.get().executionContext;
     }
 
     /**
@@ -407,8 +450,7 @@ public final class OresScheduler implements AutoCloseable {
      * the same physical carrier thread immediately.
      */
     public static long currentDispatchId() {
-        Long id = CURRENT_DISPATCH_ID.get();
-        return id == null ? 0L : id;
+        return STATE.get().dispatchId;
     }
 
     public static <T> Step<T> done(T value) {
@@ -444,7 +486,7 @@ public final class OresScheduler implements AutoCloseable {
      * caller-provided CancellationException classifier or general guest right.
      */
     public static boolean cancellationCleanupTurn() {
-        return Boolean.TRUE.equals(CURRENT_CANCELLATION_CLEANUP.get());
+        return Boolean.TRUE.equals(STATE.get().cancellationCleanup);
     }
 
     /**
@@ -647,23 +689,17 @@ public final class OresScheduler implements AutoCloseable {
     void runBound(Runnable turn) {
         Objects.requireNonNull(turn, "turn");
         ensureOpen();
-        OresScheduler prior = CURRENT.get();
-        Long priorDispatch = CURRENT_DISPATCH_ID.get();
-        CURRENT.set(this);
-        CURRENT_DISPATCH_ID.set(allocatePositiveId(NEXT_DISPATCH_ID, "dispatch"));
+        ThreadState state = STATE.get();
+        OresScheduler prior = state.current;
+        long priorDispatch = state.dispatchId;
+        long id = nextDispatchId(state);
+        state.current = this;
+        state.dispatchId = id;
         try {
             turn.run();
         } finally {
-            if (priorDispatch == null) {
-                CURRENT_DISPATCH_ID.remove();
-            } else {
-                CURRENT_DISPATCH_ID.set(priorDispatch);
-            }
-            if (prior == null) {
-                CURRENT.remove();
-            } else {
-                CURRENT.set(prior);
-            }
+            state.dispatchId = priorDispatch;
+            state.current = prior;
         }
     }
 
@@ -673,10 +709,11 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
         executor.execute(() -> {
-            boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
-            OresScheduler previousCarrierScheduler = CURRENT_CARRIER_SCHEDULER.get();
-            SCHEDULER_CARRIER.set(Boolean.TRUE);
-            CURRENT_CARRIER_SCHEDULER.set(this);
+            ThreadState state = STATE.get();
+            boolean priorCarrier = Boolean.TRUE.equals(state.schedulerCarrier);
+            OresScheduler previousCarrierScheduler = state.carrierScheduler;
+            state.schedulerCarrier = Boolean.TRUE;
+            state.carrierScheduler = this;
             try {
                 turnExecutor.execute(() -> runBound(turn));
             } catch (RuntimeException | Error failure) {
@@ -690,16 +727,8 @@ public final class OresScheduler implements AutoCloseable {
                 try {
                     afterTurn.run();
                 } finally {
-                    if (previousCarrierScheduler == null) {
-                        CURRENT_CARRIER_SCHEDULER.remove();
-                    } else {
-                        CURRENT_CARRIER_SCHEDULER.set(previousCarrierScheduler);
-                    }
-                    if (priorCarrier) {
-                        SCHEDULER_CARRIER.set(Boolean.TRUE);
-                    } else {
-                        SCHEDULER_CARRIER.remove();
-                    }
+                    state.carrierScheduler = previousCarrierScheduler;
+                    state.schedulerCarrier = priorCarrier ? Boolean.TRUE : null;
                 }
             }
         });
@@ -722,7 +751,7 @@ public final class OresScheduler implements AutoCloseable {
 
     @Override
     public void close() {
-        if (CURRENT.get() == this) {
+        if (STATE.get().current == this) {
             throw new IllegalStateException(
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
@@ -753,7 +782,7 @@ public final class OresScheduler implements AutoCloseable {
             // A terminal Future listener runs after CURRENT has been cleared
             // but may still be executing on this executor's physical carrier.
             // Waiting for our own thread to terminate would deadlock/time out.
-            if (CURRENT_CARRIER_SCHEDULER.get() != this) {
+            if (STATE.get().carrierScheduler != this) {
                 try {
                     if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException(
@@ -802,6 +831,9 @@ public final class OresScheduler implements AutoCloseable {
                 new AtomicReference<>();
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
+        /** True iff AWAIT_GRAPH holds an edge for completion; written only
+         *  under AWAIT_GRAPH_LOCK. Lets turns skip that VM-wide lock. */
+        private volatile boolean awaitEdgeRegistered;
         private final OresFuture<T> completion;
         private final boolean timedAdmission;
         private final Runnable onNotificationDrained;
@@ -936,13 +968,13 @@ public final class OresScheduler implements AutoCloseable {
             ownsExecution.set(true);
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
 
-            ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(
-                    ignored -> watchdogOverruns.incrementAndGet());
+            ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(onWatchdogOverrun);
             watchdogLease = lease;
-            ActorTurnWatchdog.Lease previousWatchdog = CURRENT_WATCHDOG_LEASE.get();
-            CURRENT_WATCHDOG_LEASE.set(lease);
-            ExecutionContext priorExecutionContext = CURRENT_EXECUTION_CONTEXT.get();
-            CURRENT_EXECUTION_CONTEXT.set(executionContext);
+            final ThreadState state = STATE.get();
+            ActorTurnWatchdog.Lease previousWatchdog = state.watchdogLease;
+            state.watchdogLease = lease;
+            ExecutionContext priorExecutionContext = state.executionContext;
+            state.executionContext = executionContext;
             try {
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
@@ -979,14 +1011,10 @@ public final class OresScheduler implements AutoCloseable {
                 }
 
                 final Step<T> step;
-                Boolean priorCleanup = CURRENT_CANCELLATION_CLEANUP.get();
+                Boolean priorCleanup = state.cancellationCleanup;
                 // A source defer may itself suspend repeatedly. Every one of
                 // those resumes is still a cleanup-only Task turn.
-                if (cleanupCancellationInjected.get()) {
-                    CURRENT_CANCELLATION_CLEANUP.set(true);
-                } else {
-                    CURRENT_CANCELLATION_CLEANUP.remove();
-                }
+                state.cancellationCleanup = cleanupCancellationInjected.get() ? Boolean.TRUE : null;
                 try {
                     step = Objects.requireNonNull(
                             task.resume(resume),
@@ -1010,8 +1038,7 @@ public final class OresScheduler implements AutoCloseable {
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
                 } finally {
-                    if (priorCleanup == null) CURRENT_CANCELLATION_CLEANUP.remove();
-                    else CURRENT_CANCELLATION_CLEANUP.set(priorCleanup);
+                    state.cancellationCleanup = priorCleanup;
                 }
 
                 if (step instanceof Done<?> done) {
@@ -1034,16 +1061,8 @@ public final class OresScheduler implements AutoCloseable {
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
-                if (previousWatchdog == null) {
-                    CURRENT_WATCHDOG_LEASE.remove();
-                } else {
-                    CURRENT_WATCHDOG_LEASE.set(previousWatchdog);
-                }
-                if (priorExecutionContext == null) {
-                    CURRENT_EXECUTION_CONTEXT.remove();
-                } else {
-                    CURRENT_EXECUTION_CONTEXT.set(priorExecutionContext);
-                }
+                state.watchdogLease = previousWatchdog;
+                state.executionContext = priorExecutionContext;
             }
         }
 
@@ -1128,7 +1147,7 @@ public final class OresScheduler implements AutoCloseable {
                 // Register before callback publication. Detect A -> B -> ... -> A
                 // under one lock, including cycles crossing scheduler instances.
                 // No user code executes while the graph lock is held.
-                if (!registerAwaitDependency(completion, awaited)) {
+                if (!registerAwaitDependency(this, awaited)) {
                     // The producer may have settled while another task
                     // published a dependency. Prefer the terminal outcome
                     // over a now-obsolete await graph.
@@ -1147,7 +1166,7 @@ public final class OresScheduler implements AutoCloseable {
                 // edge was installed. Recheck admission before fast-path
                 // observation so terminal results cannot strand an edge.
                 if (phase.get() != WAITING) {
-                    removeAwaitDependency(completion);
+                    removeAwaitDependency(this);
                     return;
                 }
                 // Hot path: terminal Futures are immutable. Observe their
@@ -1200,7 +1219,7 @@ public final class OresScheduler implements AutoCloseable {
                     || (task instanceof CleanupAwareTask<?>
                         && completion.deferredCancellationCause() != null
                         && !cleanupCancellationInjected.get())) {
-                removeAwaitDependency(completion);
+                removeAwaitDependency(this);
                 return;
             }
 
@@ -1215,7 +1234,7 @@ public final class OresScheduler implements AutoCloseable {
 
             // The awaited Future has settled: this is no longer a pending
             // dependency, even though scheduling the continuation may lag.
-            removeAwaitDependency(completion);
+            removeAwaitDependency(this);
             if (phase.get() == TERMINAL) {
                 pendingResume.compareAndSet(resume, null);
                 return;
@@ -1241,7 +1260,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void detachActiveAwaitRegistration() {
-            removeAwaitDependency(completion);
+            removeAwaitDependency(this);
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();
