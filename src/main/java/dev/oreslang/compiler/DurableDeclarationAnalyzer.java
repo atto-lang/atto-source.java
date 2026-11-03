@@ -421,6 +421,7 @@ public final class DurableDeclarationAnalyzer {
             checkStatements(method.body(), memberNames);
         }
         Set<String> commandIds = new HashSet<>();
+        Set<String> queryIdentities = new HashSet<>();
         for (Ast.WorkflowCommand command : workflow.commands()) {
             if (command instanceof Ast.ActivityStepCommand c) c.arguments().forEach(e -> checkExpr(e, memberNames));
             else if (command instanceof Ast.TimerCommand c) checkExpr(c.delay(), memberNames);
@@ -430,7 +431,17 @@ public final class DurableDeclarationAnalyzer {
             else if (command instanceof Ast.ContinueAsNewCommand c) checkExpr(c.input(), memberNames);
             else if (command instanceof Ast.CompensationCommand c) c.arguments().forEach(e -> checkExpr(e, memberNames));
             String id = commandId(command);
-            if (id != null && !commandIds.add(id)) {
+            if (command instanceof Ast.QueryCommand query) {
+                String identity = query.endpoint() + "#" + query.parameters().size();
+                if (!queryIdentities.add(identity)) {
+                    throw new IllegalArgumentException(
+                            "WORKFLOW_DUPLICATE_QUERY_ENDPOINT: duplicate read-only query '" + identity + "'");
+                }
+            } else if (id == null) {
+                throw new IllegalArgumentException(
+                        "WORKFLOW_UNKNOWN_COMMAND_FORBIDDEN: unrecognized history command "
+                                + command.getClass().getSimpleName());
+            } else if (!commandIds.add(id)) {
                 throw new IllegalArgumentException(
                         "WORKFLOW_DUPLICATE_COMMAND_ID: duplicate stable command ID '" + id + "'");
             }
@@ -657,6 +668,14 @@ public final class DurableDeclarationAnalyzer {
                     || statement instanceof Ast.SelectStmt) {
                 throw new IllegalArgumentException(
                         "WORKFLOW_CONCURRENCY_FORBIDDEN: use typed durable command nodes, not runtime task/channel suspension");
+            } else if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
+                // Pure lexical control flow is deterministic; no guest effect is invoked here.
+            } else {
+                // Fail closed when the parser gains a statement kind that has not been
+                // classified for replay determinism. Do not silently omit its effects.
+                throw new IllegalArgumentException(
+                        "WORKFLOW_UNKNOWN_AST_STATEMENT_FORBIDDEN: "
+                                + statement.getClass().getSimpleName());
             }
         }
     }
