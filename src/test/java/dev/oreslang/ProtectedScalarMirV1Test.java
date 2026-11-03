@@ -78,6 +78,41 @@ final class ProtectedScalarMirV1Test {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(CART));
     }
 
+    @Test void tokenKindSpoofingAndParameterShadowingFailClosed() {
+        for (String source : java.util.List.of(
+                COUNTER.replace("return handle_state", "\"return\" handle_state"),
+                COUNTER.replace("handle_state(", "\"handle_state\"("),
+                COUNTER.replace("critical-write", "\"critical\"-write"),
+                COUNTER.replace("critical-write", "critical-\"write\""),
+                COUNTER.replace("handle_state(", "#handle_state("),
+                COUNTER.replace("critical-write", "#critical-write"),
+                COUNTER.replace("|s|", "|\"s\"|"),
+                COUNTER.replace("s.count + amount", "s.count + \"amount\""),
+                COUNTER.replace("|s|", "|amount|").replace("s.count", "amount.count"))) {
+            assertRejected(source);
+        }
+        var method = ((Ast.StateContainerDecl) Parser.parse(COUNTER).modules().getFirst()
+                .declarations().getFirst()).methods().getFirst();
+        assertEquals(method.bodyTokens().size(), method.bodyTokenKinds().size());
+        assertTrue(method.bodyTokenKinds().contains("RETURN"));
+        assertTrue(method.bodyTokenKinds().contains("IDENT"));
+    }
+
+    @Test void manuallyConstructedTokenlessMethodCannotLower() {
+        Ast.Program parsed = Parser.parse(COUNTER);
+        var module = parsed.modules().getFirst();
+        var original = (Ast.StateContainerDecl) module.declarations().getFirst();
+        var method = original.methods().getFirst();
+        var unverified = new Ast.ProtectedMethod(method.name(), method.parameters(),
+                method.returnType(), method.bodyTokens());
+        var declaration = new Ast.StateContainerDecl(original.name(), original.visibility(),
+                original.stateFields(), java.util.List.of(unverified));
+        var program = new Ast.Program(parsed.namespace(), parsed.imports(),
+                java.util.List.of(new Ast.ModuleDecl(module.name(), module.annotations(),
+                        module.contracts(), java.util.List.of(declaration))));
+        assertThrows(IllegalArgumentException.class, () -> ProtectedScalarMirV1.lower(program));
+    }
+
     @Test void noUnprovenHeapOrEscapedStateCanBeLowered() {
         assertRejected(COUNTER.replace("critical-write", "critical-read"));
         assertRejected(COUNTER.replace("s.count = s.count + amount", "s.count = amount"));
