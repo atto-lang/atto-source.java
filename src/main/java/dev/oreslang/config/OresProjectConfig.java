@@ -1,6 +1,7 @@
 package dev.oreslang.config;
 
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.runtime.BoundedSourceReader;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
@@ -22,15 +23,18 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Project-level Oreslang compiler configuration.
+ * Project-level AttoLang compiler configuration (legacy Java API name retained).
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
- * file (or current working directory) owns the project. Manifest paths are
- * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
- * process-relative and are searched after project-local roots.</p>
+ * <p>The nearest .atto.pkg.toml is canonical. The older
+ * .oreslangc.cfg.toml remains a migration fallback when there is no
+ * canonical manifest at that directory. Manifest paths are resolved relative
+ * to [project].root. Ambient ATTOLANG_PATH entries are searched after
+ * project-local roots; ORESLANG_PATH is used only if ATTOLANG_PATH is absent.</p>
  */
 public final class OresProjectConfig {
-    public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String MANIFEST_NAME = ".atto.pkg.toml";
+    public static final String LEGACY_MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String ENV_ATTOLANG_PATH = "ATTOLANG_PATH";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -104,7 +108,14 @@ public final class OresProjectConfig {
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
             Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            // NOFOLLOW detection is necessary: a dangling/symlinked
+            // canonical manifest must fail, not downgrade to a legacy file.
+            if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                return load(candidate, environment);
+            }
+            // Migration fallback only. A same-directory .atto.pkg.toml wins.
+            Path legacy = cursor.resolve(LEGACY_MANIFEST_NAME);
+            if (Files.isRegularFile(legacy)) return load(legacy, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -125,20 +136,35 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(absoluteManifest)) {
-            throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+        boolean canonicalAttoManifest = absoluteManifest.getFileName() != null
+                && absoluteManifest.getFileName().toString().equals(MANIFEST_NAME);
+        if (canonicalAttoManifest && !Files.isRegularFile(
+                absoluteManifest, LinkOption.NOFOLLOW_LINKS)) {
+            throw new SecurityException(
+                    "canonical AttoLang package manifest must be a regular non-symlink file: "
+                            + absoluteManifest);
+        }
+        if (!canonicalAttoManifest && !Files.isRegularFile(absoluteManifest)) {
+            throw new IllegalArgumentException("not an AttoLang project manifest: " + absoluteManifest);
         }
 
-        TomlParseResult toml = Toml.parse(absoluteManifest);
+        // The canonical manifest is security-critical compiler input. Its
+        // entire ancestor chain is held by pinned NOFOLLOW directory handles
+        // through the bounded UTF-8 read. Never fall back to a legacy sibling
+        // after this parser reports an error.
+        TomlParseResult toml = canonicalAttoManifest
+                ? Toml.parse(BoundedSourceReader.readPinnedAttoManifestUtf8(
+                        absoluteManifest, 64 * 1024))
+                : Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
-                    "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
+                    "invalid " + absoluteManifest.getFileName() + ": " + toml.errors().getFirst());
         }
 
         String schemaVersion = toml.getString("schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    absoluteManifest.getFileName() + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Object rawBuild = toml.get("build");
@@ -236,12 +262,14 @@ public final class OresProjectConfig {
 
         String unix = importPath.replace('\\', '/');
         Path raw = Path.of(unix);
-        if (raw.isAbsolute()) return existingSource(raw);
+        boolean canonicalAttoImporter = importer.getFileName() != null
+                && importer.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".atto");
+        if (raw.isAbsolute()) return existingSource(raw, canonicalAttoImporter);
 
         if (unix.startsWith(".")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
-            return existingSource(parent.resolve(raw).normalize());
+            return existingSource(parent.resolve(raw).normalize(), canonicalAttoImporter);
         }
 
         for (Path root : searchRoots()) {
@@ -251,13 +279,13 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException(
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
-            Optional<Path> resolved = existingSource(candidate);
+            Optional<Path> resolved = existingSource(candidate, canonicalAttoImporter);
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
     }
 
-    private static Optional<Path> existingSource(Path candidate) {
+    private static Optional<Path> existingSource(Path candidate, boolean canonicalAttoImporter) {
         Path normalized = candidate.toAbsolutePath().normalize();
         String filename = normalized.getFileName().toString();
         String lowerFilename = filename.toLowerCase(Locale.ROOT);
@@ -276,7 +304,11 @@ public final class OresProjectConfig {
 
         // Canonical extension wins over legacy sources when both exist.
         // An explicitly suffixed import can still select the legacy file.
-        for (String extension : List.of(".atto", ".ores", ".java")) {
+        // Canonical .atto callers must spell legacy .ores/.java imports explicitly.
+        // Preserve NOFOLLOW collision handling even when .atto is a dangling
+        // symlink or directory: never let an unusable canonical entry downgrade.
+        for (String extension : canonicalAttoImporter
+                ? List.of(".atto") : List.of(".atto", ".ores", ".java")) {
             Path source = Path.of(normalized.toString() + extension);
             // Inspect the canonical .atto path without following links. Even a
             // dangling symlink or directory occupies the canonical name and
@@ -307,7 +339,10 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
+        // Explicit (even empty) ATTOLANG_PATH suppresses legacy fallback.
+        String raw = environment.containsKey(ENV_ATTOLANG_PATH)
+                ? environment.get(ENV_ATTOLANG_PATH)
+                : environment.get(ENV_ORESLANG_PATH);
         if (raw == null || raw.isBlank()) return List.of();
 
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
