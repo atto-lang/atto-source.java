@@ -146,6 +146,18 @@ public final class ScopedTaskReadAuthority {
             throw new IllegalArgumentException(
                     "scoped Task READ referent requires canonical compiler-derived Sync proof");
         }
+        // The generic auto-trait table describes potential capabilities, not
+        // necessarily an audited runtime-backed cross-thread borrow. For
+        // example, SharedMutex<T> may be explicitly shareable as an owned
+        // handle while ThreadSafetyTraits still withholds a borrowed Sync
+        // proof pending its exact lowering/lifetime audit. Never derive a
+        // scoped Task READ authority from that weaker classification alone.
+        if (!ThreadSafetyTraits.has(
+                referentType, ThreadSafetyTraits.Trait.SYNC,
+                (named, trait) -> false)) {
+            throw new IllegalArgumentException(
+                    "scoped Task READ referent requires independently verified Sync proof");
+        }
         if (projections.size() > MAX_PROJECTION_DEPTH) {
             throw new IllegalArgumentException(
                     "scoped Task READ projection depth exceeded");
