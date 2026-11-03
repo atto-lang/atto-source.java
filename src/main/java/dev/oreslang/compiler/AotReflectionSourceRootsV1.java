@@ -29,7 +29,7 @@ final class AotReflectionSourceRootsV1 {
     static AotReflectionTableV1.Encoded lowerChecked(
             Ast.Program checked, String packageIdentity, List<String> explicitRoots) {
         Objects.requireNonNull(checked, "checked type/ownership program");
-        if (packageIdentity == null || packageIdentity.isBlank()
+        if (packageIdentity == null || packageIdentity.isBlank() || packageIdentity.length() > 512
                 || explicitRoots == null || explicitRoots.isEmpty()
                 || explicitRoots.size() > MAX_ROOTS) {
             throw new IllegalArgumentException("bounded package identity and explicit reflection roots required");
@@ -52,7 +52,7 @@ final class AotReflectionSourceRootsV1 {
         Set<String> rootsSeen = new HashSet<>();
         List<AotReflectionTableV1.ResolvedType> entries = new ArrayList<>(explicitRoots.size());
         for (String root : explicitRoots) {
-            if (root == null || root.isBlank() || !rootsSeen.add(root)) {
+            if (root == null || root.isBlank() || root.length() > 512 || !rootsSeen.add(root)) {
                 throw new IllegalArgumentException("missing or duplicate reflection root");
             }
             Ast.ClassDecl klass = declarations.get(root);
