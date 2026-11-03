@@ -122,6 +122,35 @@ final class ProtectedScalarMirV1Test {
                 forged::toString);
     }
 
+    @Test void actualAttoFilesUseBoundedSourceReaderAndRestrictedMir() throws Exception {
+        var sourcePath = java.nio.file.Path.of("examples/attolang/protected-read-scalar.atto");
+        var mutationPath = java.nio.file.Path.of("examples/attolang/negative-read-mutation.atto");
+        var escapePath = java.nio.file.Path.of("examples/attolang/negative-region-alias-escape.atto");
+
+        // The .atto files are read through the bounded, strict UTF-8 gate.
+        // Only the dedicated opt-in scalar MIR is eligible to execute.
+        String source = dev.oreslang.runtime.BoundedSourceReader.readUtf8(sourcePath);
+        var plan = OresCompiler.compileProtectedScalarI64(source);
+        assertTrue(plan.readOnly());
+        try (var state = plan.new_state_container()) {
+            assertEquals(41L, plan.invoke(state, -1));
+            assertEquals(41L, state.tryRead().orElseThrow());
+        }
+        var mutation = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileProtectedScalarI64(
+                        dev.oreslang.runtime.BoundedSourceReader.readUtf8(mutationPath)));
+        assertTrue(mutation.getMessage().contains("E_CRITICAL_READ_MUTATION"),
+                mutation::toString);
+        var escape = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileProtectedScalarI64(
+                        dev.oreslang.runtime.BoundedSourceReader.readUtf8(escapePath)));
+        assertTrue(escape.getMessage().contains("E_STATE_BORROW_ESCAPE"),
+                escape::toString);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source),
+                "general protected-state MIR remains deliberately closed");
+    }
+
     @Test void actualParserAndCompilerEntryPointProduceCheckedMIR() {
         var checked = OresCompiler.compileProtectedScalarI64(COUNTER);
         assertEquals(ProtectedScalarMirV1.Kind.STATE_CONTAINER, checked.kind());
