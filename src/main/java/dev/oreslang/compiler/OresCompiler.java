@@ -18,7 +18,27 @@ public final class OresCompiler {
      * admission for general compilation and does not claim native AOT.
      */
     public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(String source) {
-        return ProtectedScalarMirV1.lower(Parser.parse(source));
+        // Route through the bounded entrypoint BEFORE parsing. The previous
+        // Parser.parse(source) -> lower(AST) path skipped the 8 KiB byte budget.
+        return ProtectedScalarMirV1.lower(source);
+    }
+
+    /**
+     * Canonical .atto file admission for the opt-in scalar protected MIR.
+     * The established source reader verifies strict UTF-8 and pins the whole
+     * parent/leaf chain against symlink swaps before any parser invocation.
+     * This is not general linked program or guest executable admission.
+     */
+    public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(
+            java.nio.file.Path sourceFile) throws java.io.IOException {
+        java.util.Objects.requireNonNull(sourceFile, "protected scalar source file");
+        java.nio.file.Path fileName = sourceFile.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(".atto")) {
+            throw new IllegalArgumentException(
+                    "PROTECTED_MIR_UNSUPPORTED: protected source-file admission requires .atto");
+        }
+        return compileProtectedScalarI64(
+                dev.oreslang.runtime.BoundedSourceReader.readUtf8(sourceFile));
     }
 
     public static Ast.Program parseAndTypeCheck(String source) {
