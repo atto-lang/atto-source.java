@@ -194,6 +194,25 @@ final class ActorSyncStdlibTest {
 
 
     @Test
+    void highestObservedEpochAndSameRevisionCheckpointFollowCanonicalSource() throws Exception {
+        String fixture=Files.readString(Path.of(
+            "src/test/resources/actor-sync-v1/highest-epoch-fence.ores"));
+        assertEquals("""
+                false
+                false
+                false
+                true
+                true
+                false
+                true
+                8
+                false
+                true
+                true
+                """,run(fixture));
+    }
+
+    @Test
     void canonicalCrossEpochFixtureRunsWithoutChangingSourceBytes() throws Exception {
         String fixture=Files.readString(Path.of(
             "src/test/resources/actor-sync-v1/cross-epoch-delta-reject.ores"));
