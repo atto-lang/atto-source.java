@@ -10,6 +10,7 @@ on:
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/main/java/dev/oreslang/compiler/ProtectedScalarMirV1.java'
       - 'src/test/java/dev/oreslang/ProtectedScalarMirV1Test.java'
+      - 'examples/attolang/**'
       - 'src/test/java/dev/oreslang/AttoNegativeDiagnosticsAdmissionTest.java'
       - 'src/test/java/dev/oreslang/AttoSourceAdmissionTest.java'
       - 'src/test/java/dev/oreslang/AttoCacheShapeAdmissionTest.java'
@@ -75,6 +76,7 @@ jobs:
               },
               "ProtectedScalarMirV1Test": {
                   "actualParserAndCompilerEntryPointProduceCheckedMIR",
+                  "actualAttoFilesUseBoundedSourceReaderAndRestrictedMir",
                   "checkedReadRegionReturnsOnlyOwnedScalarWithoutMutatingState",
                   "mutationUnderReadLeaseHasDistinctSemanticDiagnostic",
                   "protectedRegionAliasCannotEscapeReadOrWriteScope",
@@ -99,7 +101,8 @@ jobs:
                   raise SystemExit(f"Missing required JUnit cases {suite}: {sorted(missing)}")
               total += tests
           print(f"ATTO_JAVA_JUNIT_EVIDENCE=PASS suites={len(expected)} executed_tests={total}")
-          print("ATTO_SCALAR_PROTECTED_MIR=JAVA_HOST_VM_PROOF_ONLY")
+          print("ATTO_SCALAR_PROTECTED_MIR=OPT_IN_PRODUCTION_AST_HOST_VM_ONLY")
+          print("ATTO_PROTECTED_READ_NEGATIVES=REQUIRE_SCOPED_JUNIT_RECEIPTS")
           print("ATTO_NATIVE_LRU_FIXTURES=NOT_EXECUTED")
           print("ATTO_OTHER_BACKENDS=NOT_EXECUTED")
           PY
