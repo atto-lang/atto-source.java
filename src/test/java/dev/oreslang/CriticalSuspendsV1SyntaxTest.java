@@ -281,6 +281,65 @@ final class CriticalSuspendsV1SyntaxTest {
                 retyped, actorCritical(retyped), newEpoch));
     }
 
+    @Test void criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation()
+            throws InterruptedException {
+        Ast.Program program = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        java.util.concurrent.atomic.AtomicReference<Throwable> outcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread ownership;
+
+        // This is a deliberate monitor barrier, not a probabilistic race:
+        // the ownership pass must reach its transaction's first monitor
+        // while that monitor is held by the test. Retyping then invalidates
+        // the precise type generation before the publisher can commit.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            ownership = Thread.ofPlatform().start(() -> {
+                try {
+                    dev.oreslang.types.OwnershipChecker.check(program);
+                } catch (Throwable failure) {
+                    outcome.set(failure);
+                }
+            });
+
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+            boolean atPublicationBarrier = false;
+            while (System.nanoTime() < deadline) {
+                if (ownership.getState() == Thread.State.BLOCKED) {
+                    for (StackTraceElement frame : ownership.getStackTrace()) {
+                        if (frame.getMethodName().equals("publishTaskAdmissions")) {
+                            atPublicationBarrier = true;
+                            break;
+                        }
+                    }
+                }
+                if (atPublicationBarrier) break;
+                Thread.sleep(2);
+            }
+            assertTrue(atPublicationBarrier,
+                    "ownership checker never reached critical publish barrier");
+            // A validation failure after the transaction is staged must
+            // revoke the proof before either ledger becomes executable.
+            assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker
+                            .checkTypesWithLinkedMetadataWithDiagnostics(
+                                    program, java.util.Map.of(), java.util.Map.of(), null));
+        }
+
+        ownership.join(10_000);
+        assertFalse(ownership.isAlive(), "ownership publish was deadlocked");
+        assertInstanceOf(IllegalStateException.class, outcome.get(),
+                "a revoked type proof must reject the entire publication");
+        // Crucially, an aborted critical commit cannot expose the positive
+        // Task epoch (and therefore cannot expose Task capture admission).
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(program));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        program, actorCritical(program), 1L));
+    }
+
     @Test void failedLinkedTypeRecheckRevokesPreviouslyExecutablePermit() {
         Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(
                 Parser.parse(TYPED_CRITICAL_ACTOR));
