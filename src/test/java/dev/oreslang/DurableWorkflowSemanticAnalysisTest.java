@@ -125,7 +125,7 @@ final class DurableWorkflowSemanticAnalysisTest {
     }
 
     @Test
-    void manifestBytesAreCanonicalAndCommandOrderIsPreserved() {
+    void manifestBytesAreCanonicalAndCommandOrderIsPreserved() throws Exception {
         Ast.Program original = parseValidPair();
         Ast.WorkflowDecl old = workflow(original);
         Ast.WorkflowDecl withCommands = new Ast.WorkflowDecl(old.body(), old.annotations(), List.of(
