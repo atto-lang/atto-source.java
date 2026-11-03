@@ -190,4 +190,32 @@ final class MacroExportArtifactTest {
                 () -> wrongDigestCase.verifyAgainst("Producer", original));
         assertTrue(failure.getMessage().contains("invalid SHA-256"));
     }
+
+    @Test
+    void artifactNamesMustMatchFlatSourceIdentifierGrammar() {
+        Ast.MacroDecl original = macro("return value;", true);
+        for (String invalidOwner : java.util.List.of(
+                "../external", "Module.Other", "9Module", "Module/Root", "Module Name")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExportArtifact.fromDeclaration(invalidOwner, original),
+                    invalidOwner);
+        }
+        for (String invalidMacroName : java.util.List.of(
+                "identity/escape", "identity.method", "9identity", "identity name")) {
+            Ast.MacroDecl forged = new Ast.MacroDecl(
+                    invalidMacroName, original.visibility(),
+                    original.parameters(), original.resultKind(),
+                    original.body(), original.site());
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroExportArtifact.fromDeclaration("Producer", forged),
+                    invalidMacroName);
+        }
+
+        Ast.MacroDecl unicode = new Ast.MacroDecl(
+                "álgebra", original.visibility(), original.parameters(),
+                original.resultKind(), original.body(), original.site());
+        assertDoesNotThrow(() ->
+                MacroExportArtifact.fromDeclaration("Prodúcer", unicode)
+                        .verifyAgainst("Prodúcer", unicode));
+    }
 }
