@@ -28,7 +28,17 @@ public final class AttoHarnessGuestReceiptVerifier {
             new Suite("dev.oreslang.AttoTestingStdlibSourceTest", List.of(
                     "extensionlessTestingImportResolvesCanonicalAttoResource",
                     "legacyOresSuffixIsExplicitAndDoesNotOverrideCanonicalAtto",
-                    "rejectsPathTraversalAndForgedCanonicalTestingSuffixes")));
+                    "rejectsPathTraversalAndForgedCanonicalTestingSuffixes")),
+            new Suite("dev.oreslang.AttoManifestHarnessReconciliationTest", List.of(
+                    "canonicalManifestOverridesLegacyInSameDirectory",
+                    "malformedCanonicalManifestCannotDowngrade",
+                    "legacyManifestWorksOnlyWhenCanonicalMissing",
+                    "canonicalEnvironmentPathOverridesLegacyIncludingEmpty",
+                    "canonicalManifestSymlinkCannotDowngrade",
+                    "canonicalAttoImporterRequiresExplicitLegacySuffix",
+                    "manifestRejectsMalformedUtf8AndOversize",
+                    "canonicalManifestRejectsSymlinkedParent",
+                    "canonicalManifestAdmitsRealLinkedAttoGuest")));
 
     private static void require(boolean predicate, String message) {
         if (!predicate) throw new IllegalStateException(message);
@@ -100,7 +110,7 @@ public final class AttoHarnessGuestReceiptVerifier {
             require(seen.containsAll(suite.methods()), "missing named JUnit method");
             total += suite.count();
         }
-        require(total == 5, "wrong aggregate harness JUnit count");
+        require(total == 14, "wrong aggregate harness JUnit count");
         return total;
     }
 
@@ -136,9 +146,10 @@ public final class AttoHarnessGuestReceiptVerifier {
         String head = "0123456789abcdef0123456789abcdef01234567";
         Suite first = REQUIRED.get(0), second = REQUIRED.get(1);
         try {
-            putReport(folder, first, first.count(), 0, false, false, false, false);
-            putReport(folder, second, second.count(), 0, false, false, false, false);
-            require(verify(head, folder) == 5, "valid JUnit evidence rejected");
+            for (Suite suite : REQUIRED) {
+                putReport(folder, suite, suite.count(), 0, false, false, false, false);
+            }
+            require(verify(head, folder) == 14, "valid JUnit evidence rejected");
             mustReject("wrong HEAD", "not-a-sha", folder);
             putReport(folder, first, first.count(), 1, false, false, false, false);
             mustReject("failure count", head, folder);
