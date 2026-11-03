@@ -1,0 +1,12 @@
+schema_version = "1"
+
+[project]
+name = "attolang-canonical-import"
+version = "0.1.0"
+root = "."
+
+[source]
+roots = ["src"]
+
+[entrypoints]
+main = "src/main.atto"
