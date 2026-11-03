@@ -15,6 +15,8 @@ case "$*" in
   *exec:java*)
     if [[ "$*" == *"-Dexec.args=--check examples/replay-video-disconnect-smoke.atto"* ]]; then
       if [[ "$CASE" == typecheck_fail ]]; then exit 23; fi
+      if [[ "$CASE" == check_stdout_receipt ]]; then echo 'VIDEO-REPLAY-PASS|capacity'; fi
+      if [[ "$CASE" == check_stderr_receipt ]]; then echo 'warning: VIDEO-REPLAY-SMOKE-DONE' >&2; fi
       exit 0
     fi
     [[ "$*" == *"-Dexec.args=examples/replay-video-disconnect-smoke.atto"* ]] || exit 22
@@ -35,7 +37,7 @@ EXPECTED
 case "$CASE" in
   wrong_order) printf '%s\n' "$lines" | awk 'NR==1 {a=$0;next} NR==2 {print;print a;next} {print}' ;;
   missing) printf '%s\n' "$lines" | sed '/^VIDEO-REPLAY-PASS|sent$/d' ;;
-  success|duplicate|extra|fail_marker|embedded_fail|embedded_pass|invalid_marker|runtime_fail|typecheck_fail|stderr_fail|stderr_embedded_fail)
+  success|duplicate|extra|fail_marker|embedded_fail|embedded_pass|invalid_marker|runtime_fail|typecheck_fail|check_stdout_receipt|check_stderr_receipt|stderr_fail|stderr_embedded_fail)
     printf '%s\n' "$lines" ;;
   *) exit 15 ;;
 esac
@@ -48,7 +50,7 @@ case "$CASE" in
   embedded_pass) printf '%s\n' 'mvn: VIDEO-REPLAY-PASS|payload' ;;
   invalid_marker) printf '%s\n' 'VIDEO-REPLAY-PASS|bad extra text' ;;
   runtime_fail) exit 14 ;;
-  typecheck_fail) exit 17 ;;
+  typecheck_fail|check_stdout_receipt|check_stderr_receipt) ;;
   stderr_fail) printf '%s\n' 'VIDEO-REPLAY-FAIL|decoder' >&2 ;;
   stderr_embedded_fail) printf '%s\n' 'guest: VIDEO-REPLAY-FAIL|decoder' >&2 ;;
 esac
@@ -82,6 +84,8 @@ run_case embedded_pass failure
 run_case invalid_marker failure
 run_case runtime_fail failure
 run_case typecheck_fail failure
+run_case check_stdout_receipt failure
+run_case check_stderr_receipt failure
 run_case stderr_fail failure
 run_case stderr_embedded_fail failure
-printf '%s\n' 'RECEIPT-GATE-SELFTEST-DONE|14'
+printf '%s\n' 'RECEIPT-GATE-SELFTEST-DONE|16'
