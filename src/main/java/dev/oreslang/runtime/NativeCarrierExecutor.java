@@ -99,12 +99,13 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      * @throws IllegalStateException if the native pool could not be created
      */
     public boolean ensureStarted() {
-        if (nativeHandle != 0L) return false;
+        // Shutdown must win over an already-published native handle. Serialize
+        // the check with both first creation and native retirement.
         synchronized (nativeLifecycleLock) {
-            if (nativeHandle != 0L) return false;
             if (shutdown.get()) {
                 throw new RejectedExecutionException("native carrier executor is shut down");
             }
+            if (nativeHandle != 0L) return false;
             int desired = corePoolSize.get();
             long handle = nativeCreate(
                     this, maximumPoolSize, desired, threadPrefix, nativeStackBytes);
@@ -263,10 +264,15 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 throw rejected;
             }
         }
-        if (shutdown.get() || !queue.offer(task)) {
-            throw new RejectedExecutionException(
-                    shutdown.get() ? "native carrier executor is shut down"
-                            : "native carrier ready queue is full");
+        // Admission and shutdownNow's queue drain are one linearizable
+        // boundary. Otherwise a producer can offer after shutdown's drain,
+        // losing an accepted Runnable with no carrier left to execute it.
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get() || !queue.offer(task)) {
+                throw new RejectedExecutionException(
+                        shutdown.get() ? "native carrier executor is shut down"
+                                : "native carrier ready queue is full");
+            }
         }
     }
 
@@ -304,7 +310,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private List<Runnable> beginShutdown(boolean interruptActiveCarriers) {
         if (!shutdown.compareAndSet(false, true)) return List.of();
         ArrayList<Runnable> abandoned = new ArrayList<>();
-        queue.drainTo(abandoned);
 
         if (interruptActiveCarriers) {
             // Match ThreadPoolExecutor.shutdownNow(): signal any active carrier
@@ -317,6 +322,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
 
         synchronized (nativeLifecycleLock) {
+            // Take the same lock as execute(): every submitted task is either
+            // already claimed by a worker or returned in this exact drain.
+            queue.drainTo(abandoned);
             // Native shutdown is non-blocking: it marks the pool closed and
             // hands joins/reclamation to a native reaper so an uncooperative
             // guest stack can never hold this caller hostage. A pool that
