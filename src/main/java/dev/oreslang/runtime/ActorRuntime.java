@@ -992,7 +992,11 @@ public final class ActorRuntime implements AutoCloseable {
             requireCurrentOwner();
             if (bytes <= 0) throw new IllegalArgumentException("linear arena byte capacity must be positive");
             if (slots <= 0) throw new IllegalArgumentException("linear arena slot capacity must be positive");
-            MemoryReservation reservation = reserve(bytes, "private actor linear arena");
+            // Charge the slot metadata too: it is JVM heap this actor caused, and
+            // uncharged it lets a one-byte arena hold megabytes of metadata.
+            long charged = Math.addExact((long) bytes,
+                    Math.multiplyExact((long) slots, (long) ActorLinearArena.METADATA_BYTES_PER_SLOT));
+            MemoryReservation reservation = reserve(charged, "private actor linear arena");
             try {
                 PrivateLinearArena arena = new PrivateLinearArena(this, reservation, bytes, slots);
                 linearArenas.add(arena);

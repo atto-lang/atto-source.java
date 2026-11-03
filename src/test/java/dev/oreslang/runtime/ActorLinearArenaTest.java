@@ -6,6 +6,23 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorLinearArenaTest {
     @Test
+    void staleHandleNeverRevalidatesAcrossSlotReuse() {
+        try (var arena = new ActorLinearArena(64, 1)) {
+            long first = arena.allocate(8);
+            assertTrue(arena.remove(first));
+            long previous = first;
+            for (int i = 0; i < 100_000; i++) {
+                long next = arena.allocate(8);
+                assertNotEquals(ActorLinearArena.INVALID_HANDLE, next);
+                assertNotEquals(previous, next, "a reused slot must issue a new generation");
+                assertFalse(arena.putLong(first, 0, 1L), "a stale handle must stay dead");
+                assertTrue(arena.remove(next));
+                previous = next;
+            }
+        }
+    }
+
+    @Test
     void primitiveHandlesStayActorLocalAndStaleHandlesNeverRevive() {
         try (var alice = new ActorLinearArena(256, 8);
              var bob = new ActorLinearArena(256, 8)) {

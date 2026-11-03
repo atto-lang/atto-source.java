@@ -23,13 +23,24 @@ public final class ActorLinearArena implements AutoCloseable {
     private static final int MAX_SLOTS = 65_535;
     private static final int SLOT_BITS = 16;
     private static final long SLOT_MASK = (1L << SLOT_BITS) - 1L;
-    private static final long MAX_SEQUENCE = (1L << (64 - SLOT_BITS)) - 1L;
-    private static final AtomicLong NEXT_SEQUENCE = new AtomicLong(1L);
+    private static final long MAX_GENERATION = (1L << (64 - SLOT_BITS)) - 1L;
+    /** Golden-ratio stride so arenas start from well-separated handle salts. */
+    private static final long SALT_STRIDE = 0x9E3779B97F4A7C15L;
+    private static final AtomicLong NEXT_ARENA_SALT = new AtomicLong(SALT_STRIDE);
+    /** JVM metadata per slot: every parallel array below, for quota accounting. */
+    static final int METADATA_BYTES_PER_SLOT = 3 * Integer.BYTES + Long.BYTES + 1 + Integer.BYTES
+            + 2 * Long.BYTES + 3 * Integer.BYTES;
 
+    // Mixed into handles so a token from one arena does not validate in another,
+    // without any shared state on the allocation path. This catches confused
+    // handles; authority still comes from the actor-owner check on the facade.
+    private final long handleSalt;
     private final ByteBuffer memory;
     private final int[] offsets;
     private final int[] reservationStarts;
     private final int[] lengths;
+    // Holds the current token while live, and the last issued token while free so
+    // the slot generation survives removal.
     private final long[] tokens;
     private final boolean[] live;
     private final int[] freeSlots;
@@ -57,6 +68,7 @@ public final class ActorLinearArena implements AutoCloseable {
         if (bytes <= 0) throw new IllegalArgumentException("positive arena byte capacity required");
         if (slots <= 0 || slots > MAX_SLOTS)
             throw new IllegalArgumentException("bounded positive slot capacity required");
+        handleSalt = NEXT_ARENA_SALT.getAndAdd(SALT_STRIDE) & MAX_GENERATION;
         memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder());
         offsets = new int[slots];
         reservationStarts = new int[slots];
@@ -92,14 +104,13 @@ public final class ActorLinearArena implements AutoCloseable {
         if (aligned > memory.capacity() || bytes > memory.capacity() - aligned)
             return INVALID_HANDLE;
 
-        long sequence = nextSequence();
-        if (sequence == 0) return INVALID_HANDLE;
         int slot = freeCount == 0 ? nextSlot++ : freeSlots[--freeCount];
+        long generation = generationOf(tokens[slot]) + 1L;
         // A previous owner may have been removed out of band. Its cleanup node
         // remains in the list for error reporting, but cannot authorize a new
         // allocation that reuses this storage slot.
         trackedNodeBySlot[slot] = -1;
-        long token = (sequence << SLOT_BITS) | (slot + 1L);
+        long token = ((generation ^ handleSalt) << SLOT_BITS) | (slot + 1L);
         offsets[slot] = aligned;
         reservationStarts[slot] = cursor;
         lengths[slot] = bytes;
@@ -189,11 +200,12 @@ public final class ActorLinearArena implements AutoCloseable {
         // before any future allocation may reuse these bytes.
         zero(reservationStart, reservationEnd - reservationStart);
         live[slot] = false;
-        tokens[slot] = 0L;
         offsets[slot] = 0;
         reservationStarts[slot] = 0;
         lengths[slot] = 0;
-        freeSlots[freeCount++] = slot;
+        // A slot whose generation space is spent is retired, never wrapped, so a
+        // stale handle can never validate again.
+        if (generationOf(handle) != MAX_GENERATION) freeSlots[freeCount++] = slot;
         liveCount--;
         if (liveCount == 0) {
             zero(0, cursor);
@@ -324,11 +336,7 @@ public final class ActorLinearArena implements AutoCloseable {
         for (int i = 0; i < length; i++) memory.put(start + i, (byte) 0);
     }
 
-    private static long nextSequence() {
-        for (;;) {
-            long current = NEXT_SEQUENCE.get();
-            if (current <= 0 || current > MAX_SEQUENCE) return 0L;
-            if (NEXT_SEQUENCE.compareAndSet(current, current + 1L)) return current;
-        }
+    private long generationOf(long token) {
+        return token == 0L ? 0L : (token >>> SLOT_BITS) ^ handleSalt;
     }
 }
