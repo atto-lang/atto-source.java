@@ -348,8 +348,15 @@ public final class ActorRuntime implements AutoCloseable {
             // Account for process CPU quotas once at VM construction, not on
             // every actor turn. Independently sized full-core pools multiply
             // runnable pthread carriers and can thrash cpuset-limited hosts.
-            CpuCarrierBudget.PoolSizes pools =
-                    CpuCarrierBudget.defaults(CpuCarrierBudget.effectiveProcessors());
+            // ores.runtime.actor.max-carriers (--actor-carriers-max) replaces
+            // the CPU count as the budget the actor pools are sized from.
+            int budget = Integer.getInteger("ores.runtime.actor.max-carriers", 0);
+            if (budget < 0 || budget > 1024) {
+                throw new IllegalArgumentException(
+                        "ores.runtime.actor.max-carriers must be in [1,1024]");
+            }
+            CpuCarrierBudget.PoolSizes pools = CpuCarrierBudget.defaults(
+                    budget == 0 ? CpuCarrierBudget.effectiveProcessors() : budget);
             int shared = Integer.getInteger(
                     "ores.runtime.actor.shared.parallelism", pools.sharedWorkers());
             return new DispatcherConfig(pools.privateWorkers(), shared, 64, 16_384);
