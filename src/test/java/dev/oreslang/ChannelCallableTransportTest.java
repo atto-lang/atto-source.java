@@ -26,6 +26,14 @@ final class ChannelCallableTransportTest {
                 () -> "expected the callable channel diagnostic, got: " + error.getMessage());
     }
 
+
+    /** Parsing failures must never count as MessageData type-system rejections. */
+    private static void semanticCheck(String source) {
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source),
+                "guest test fixture must parse before semantic type checking");
+        TypeChecker.check(parsed);
+    }
+
     @Test
     void directFunctionAndFunctionAliasPayloadsAreRejected() {
         rejectCallable("""
@@ -126,8 +134,8 @@ final class ChannelCallableTransportTest {
         }) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(
-                            "fnc bad(Channel<" + payload + "> input): void { return; }")));
+                    () -> semanticCheck(
+                            "fnc bad(Channel<" + payload + "> input): void { return; }"));
             assertTrue(error.getMessage().contains("MessageData"),
                     () -> "expected data-only rejection for " + payload
                             + " but got: " + error.getMessage());
@@ -137,12 +145,12 @@ final class ChannelCallableTransportTest {
     @Test
     void aNominalFieldCannotLaunderASynchronizedCapability() {
         IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                IllegalArgumentException.class, () -> semanticCheck("""
                 define class WrappedState as
                   val Mutex<int> locked;
                 end
                 fnc bad(Channel<WrappedState> input): void { return; }
-                """)));
+                """));
         assertTrue(error.getMessage().contains("MessageData"),
                 () -> "expected nested MessageData rejection, got: " + error.getMessage());
     }
@@ -154,12 +162,12 @@ final class ChannelCallableTransportTest {
                 "Result<int, Envelope>"
         }) {
             IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                    IllegalArgumentException.class, () -> semanticCheck(
                             "define class Envelope as\n"
                                     + "  val int code;\n"
                                     + "end\n"
                                     + "fnc bad(Channel<" + payload
-                                    + "> values): void { return; }")));
+                                    + "> values): void { return; }"));
             assertTrue(error.getMessage().contains("requires MessageData"),
                     () -> "nominal message must reject owner-bearing type "
                             + payload + ": " + error.getMessage());
@@ -172,7 +180,7 @@ final class ChannelCallableTransportTest {
                 java.nio.file.Path.of("contracts", "v1", "fixtures",
                         "channel-reject-nominal-payload.ores"));
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(source)));
+                () -> semanticCheck(source));
         assertTrue(error.getMessage().contains("requires MessageData"),
                 error.getMessage());
     }
@@ -180,9 +188,9 @@ final class ChannelCallableTransportTest {
     @Test
     void actorRefCapabilityExceptionRequiresAConcreteActorTarget() {
         IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                IllegalArgumentException.class, () -> semanticCheck("""
                 fnc bad(Channel<ActorRef<int>> input): void { return; }
-                """)));
+                """));
         assertTrue(error.getMessage().contains("ActorRef target"),
                 () -> "opaque ActorRef must not become a channel escape hatch: "
                         + error.getMessage());
@@ -190,9 +198,9 @@ final class ChannelCallableTransportTest {
 
     @Test
     void borrowedTypesRemainRejectedForChannels() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> semanticCheck("""
                 fnc bad(Channel<Option<&int>> values): void { return; }
-                """)));
+                """));
     }
 
     @Test
@@ -200,8 +208,8 @@ final class ChannelCallableTransportTest {
         for (String type : new String[] {"Future<int>", "Rc<int>"}) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(
-                            "fnc bad(Channel<" + type + "> value): void { return; }")));
+                    () -> semanticCheck(
+                            "fnc bad(Channel<" + type + "> value): void { return; }"));
             assertTrue(error.getMessage().contains("requires concrete Sendable data"),
                     () -> "expected Sendable diagnostic for " + type + ", got: " + error.getMessage());
         }
@@ -209,7 +217,7 @@ final class ChannelCallableTransportTest {
 
     @Test
     void callbacksStayLocalAndChannelCarriesOnlyTheirResults() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+        assertDoesNotThrow(() -> semanticCheck("""
                 fnc apply(Fnc<int, int> callback, int value): int {
                   return callback(value);
                 }
@@ -220,17 +228,17 @@ final class ChannelCallableTransportTest {
                   writech values, result;
                   return;
                 }
-                """)));
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                """));
+        assertDoesNotThrow(() -> semanticCheck("""
                 fnc ok(Channel<Option<List<int>>> values): void { return; }
-                """)));
+                """));
     }
 
     @Test
     void actorCallableParametersStillRejectFunctionsTransitively() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> semanticCheck("""
                 actor fnc bad(Fnc<int, int> callback): void { return; }
-                """)));
+                """));
     }
 
     @Test
@@ -244,7 +252,7 @@ final class ChannelCallableTransportTest {
                   return;
                 }
                 """;
-        TypeChecker.check(Parser.parse(program));
+        semanticCheck(program);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "data-channel.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
@@ -257,21 +265,21 @@ final class ChannelCallableTransportTest {
 
     @Test
     void nestedBorrowedPayloadsRemainRejected() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> semanticCheck("""
                 fnc bad(Channel<Array<&int>> payload): void { return; }
-                """)));
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                """));
+        assertThrows(IllegalArgumentException.class, () -> semanticCheck("""
                 fnc bad(Channel<Option<&int>> payload): void { return; }
-                """)));
+                """));
     }
 
     @Test
     void actorMessageCannotHideCallableInNominalClass() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> semanticCheck("""
                 define class HandlerBox as
                   val Fnc<int, int> callback;
                 end
                 actor fnc bad(HandlerBox box): void { return; }
-                """)));
+                """));
     }
 }
