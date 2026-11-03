@@ -63,21 +63,31 @@ public final class AotReflectionTypedMirV1 {
         }
     }
 
-    public record Plan(String entryPoint, TypeDescriptorType resultType,
-                       byte[] descriptorTable, List<Instruction> instructions) {
-        public Plan {
+    /**
+     * Compiler-issued, immutable typed plan. The private constructor prevents
+     * callers from turning a self-authored descriptor blob into allegedly
+     * checked MIR; only the guarded source lowering path can issue one.
+     */
+    public static final class Plan {
+        private final String entryPoint;
+        private final TypeDescriptorType resultType;
+        private final byte[] descriptorTable;
+        private final List<Instruction> instructions;
+
+        private Plan(String entryPoint, TypeDescriptorType resultType,
+                     byte[] descriptorTable, List<Instruction> instructions) {
             if (!ENTRY_NAME.equals(entryPoint) || resultType == null ||
                     descriptorTable == null || instructions == null) {
                 throw invalid("invalid typed descriptor plan");
             }
-            descriptorTable = descriptorTable.clone();
-            instructions = List.copyOf(instructions);
-            if (!instructions.equals(List.of(
+            byte[] stable = descriptorTable.clone();
+            List<Instruction> copied = List.copyOf(instructions);
+            if (!copied.equals(List.of(
                     new LoadTypeDescriptor(0, resultType.typeIdHex()),
                     new ReturnDescriptor(0)))) {
                 throw invalid("typed MIR sequence must load and return one descriptor");
             }
-            var decoded = AotReflectionTableV1Reader.decode(descriptorTable);
+            var decoded = AotReflectionTableV1Reader.decode(stable);
             if (decoded.types().size() != 1 ||
                     !decoded.types().getFirst().resolvedSymbol().equals(
                             resultType.qualifiedNominal()) ||
@@ -86,9 +96,16 @@ public final class AotReflectionTypedMirV1 {
                     decoded.findByTypeId(resultType.typeIdHex()).isEmpty()) {
                 throw invalid("descriptor table and typed MIR identity disagree");
             }
+            this.entryPoint = entryPoint;
+            this.resultType = resultType;
+            this.descriptorTable = stable;
+            this.instructions = copied;
         }
 
-        @Override public byte[] descriptorTable() { return descriptorTable.clone(); }
+        public String entryPoint() { return entryPoint; }
+        public TypeDescriptorType resultType() { return resultType; }
+        public byte[] descriptorTable() { return descriptorTable.clone(); }
+        public List<Instruction> instructions() { return instructions; }
     }
 
     /**
