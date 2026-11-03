@@ -5,6 +5,10 @@ on:
   pull_request:
     paths:
       - 'stdlib/testing.atto'
+      - 'examples/atto-canonical/**'
+      - 'src/main/java/dev/oreslang/config/OresProjectConfig.java'
+      - 'src/main/java/dev/oreslang/runtime/BoundedSourceReader.java'
+      - 'tests/test_atto_manifest_reconciliation.sh'
       - 'src/main/java/dev/oreslang/**'
       - 'src/test/java/dev/oreslang/Atto*Test.java'
       - 'examples/native-testing*.atto'
@@ -45,6 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           bash tests/test_atto_harness_migration.sh
+          bash tests/test_atto_manifest_reconciliation.sh
           bash tests/test_native_test_manifests.sh
           bash tests/test_ores_test_expected_ids.sh
       - name: Setup GraalVM Java 25
