@@ -39,11 +39,11 @@ on the **exact PR head Git tree**, with nonzero recorded runner steps.
 It compiles the Java source and requires three nonempty zero-failure JUnit
 Surefire suites:
 
-- `AttoNegativeDiagnosticsAdmissionTest` (negative parser/ownership admission)
+- `AttoNegativeDiagnosticsAdmissionTest` (negative parser/ownership admission, plus a real `.atto` copyable scalar-share guest-output `42` candidate)
 - `AttoSourceAdmissionTest` (extension imports and linked `.atto` guest)
 - `AttoCacheShapeAdmissionTest` (tiny linked integer-column/cache-like `.atto` guest)
 
-The two latter classes contain actual guest compile/execute test candidates,
+The latter two classes and the new positive scalar-share method contain actual guest compile/execute test candidates,
 but their successful **hosted execution has NOT yet been established**.
 A JUnit source file or GitHub workflow definition is not evidence.
 Only nonzero job steps, unskipped Surefire XML and actual guest outputs count.
