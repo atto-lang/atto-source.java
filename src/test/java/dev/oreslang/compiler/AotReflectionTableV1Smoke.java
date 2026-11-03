@@ -46,6 +46,23 @@ public final class AotReflectionTableV1Smoke {
         deny(() -> AotReflectionTableV1.encode(java.util.Collections.nCopies(1025,t("x",List.of()))));
         var type = new AotReflectionTableV1.ResolvedType("pkg@revision","Vector",List.of("core.i64"),List.of());
         good(!Arrays.equals(AotReflectionTableV1.encode(List.of(type)).bytes(),AotReflectionTableV1.encode(List.of(t("Vector",List.of()))).bytes()));
+        // Nonprinting Unicode can spoof a portable descriptor identity. Every
+        // metadata entry (including non-emitted private fields) must reject it.
+        deny(() -> AotReflectionTableV1.encode(List.of(t("B\u2066", List.of())))); // LRI
+        deny(() -> AotReflectionTableV1.encode(List.of(t("B\u2069", List.of())))); // PDI
+        deny(() -> AotReflectionTableV1.encode(List.of(t("N", List.of(f("x\u200B", "int", AotReflectionTableV1.Visibility.PUBLIC))))));
+        deny(() -> AotReflectionTableV1.encode(List.of(t("N", List.of(f("private", "T\uFEFF", AotReflectionTableV1.Visibility.PRIVATE))))));
+        deny(() -> AotReflectionTableV1.encode(List.of(new AotReflectionTableV1.ResolvedType("pkg\u061C", "N", List.of(), List.of()))));
+        deny(() -> AotReflectionTableV1.encode(List.of(t("N\uFDD0", List.of()))));
+        deny(() -> AotReflectionTableV1.encode(List.of(t("N\uD83F\uDFFE", List.of())))); // U+1FFFE
+        deny(() -> AotReflectionTableV1.encode(List.of(new AotReflectionTableV1.ResolvedType("pkg", "N", List.of("X\u2066"), List.of()))));
+        deny(() -> new AotReflectionTableV1.ResolvedType("pkg", "N", null, List.of()));
+        deny(() -> new AotReflectionTableV1.ResolvedType("pkg", "N", List.of(), null));
+        deny(() -> new AotReflectionTableV1.ResolvedType("pkg", "N", java.util.Collections.singletonList(null), List.of()));
+        deny(() -> new AotReflectionTableV1.ResolvedType("pkg", "N", List.of(), java.util.Collections.singletonList(null)));
+        good(AotReflectionTableV1.encode(List.of(t("Emoji\uD83D\uDE80", List.of()))).bytes().length > 52);
+        good(AotReflectionTableV1.encode(List.of(new AotReflectionTableV1.ResolvedType("pkg", "N", java.util.Collections.nCopies(64, "T"), List.of()))).bytes().length > 52);
+        deny(() -> AotReflectionTableV1.encode(List.of(new AotReflectionTableV1.ResolvedType("pkg", "N", java.util.Collections.nCopies(65, "T"), List.of()))));
         System.out.println("HOST_JDK21_AOT_DESCRIPTOR_SMOKE_PASS checks="+checks);
     }
 }
