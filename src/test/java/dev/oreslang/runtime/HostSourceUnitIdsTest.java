@@ -241,4 +241,30 @@ final class HostSourceUnitIdsTest {
         assertEquals("project/single.atto",
                 admission.id(source.toAbsolutePath().normalize(), projectConfig));
     }
+
+    @Test
+    void externalEnvironmentRootCannotGrantCompileTimeMacroAuthority() throws Exception {
+        Path project = temp.resolve("project");
+        Path external = temp.resolve("ambient");
+        Files.createDirectories(project);
+        Files.createDirectories(external);
+        Path consumer = project.resolve("consumer.atto");
+        Path producer = external.resolve("producer.atto");
+        Files.writeString(consumer, """
+                import * as lib from "producer";
+                pub fnc main() -> int {
+                    return lib.literal!(const 40 + 2);
+                }
+                """);
+        Files.writeString(producer, """
+                define pub macro literal(Const<int> value) -> Syntax<Expr> {
+                    return quote(value);
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(consumer,
+                        Map.of(OresProjectConfig.ENV_ORESLANG_PATH, external.toString())));
+        assertTrue(denied.getMessage().contains("verified source ownership"),
+                denied::toString);
+    }
 }
