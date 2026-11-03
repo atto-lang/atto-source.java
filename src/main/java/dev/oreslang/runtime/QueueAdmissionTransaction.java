@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -86,9 +85,11 @@ public final class QueueAdmissionTransaction<T> {
 
     private final int ingressCapacity;
     private final int completionCapacity;
-    private final ArrayDeque<Delivery<T>> pending = new ArrayDeque<>();
+    /** Sole bounded FIFO storage for admitted but not-yet-dispatched work. */
+    private final ChannelRuntime.Channel<Delivery<T>> pending;
     private final Map<Long, Delivery<T>> inFlight = new HashMap<>();
-    private final ArrayDeque<Completion> completions = new ArrayDeque<>();
+    /** Sole bounded completion storage; reservations are retained until drained. */
+    private final ChannelRuntime.Channel<Completion> completions;
     /** Bound on first successful admission; one ledger belongs to one actor incarnation. */
     private ActorRuntime.ActorId queueOwner;
     private long generation = 1;
@@ -106,6 +107,8 @@ public final class QueueAdmissionTransaction<T> {
         }
         this.ingressCapacity = ingressCapacity;
         this.completionCapacity = completionCapacity;
+        this.pending = new ChannelRuntime.Channel<>(ingressCapacity);
+        this.completions = new ChannelRuntime.Channel<>(completionCapacity);
     }
 
     public synchronized long generation() { return generation; }
@@ -155,10 +158,17 @@ public final class QueueAdmissionTransaction<T> {
         if (queueOwner == null) queueOwner = queueActor;
         Delivery<T> delivery = new Delivery<>(
                 this, id, generation, sender, mailboxSequence, payload);
-        // Reserve both resources before publishing the delivery.
+        // Charge both independent budgets before attempting channel publication.
+        // The transaction monitor prevents a poller from observing a partially
+        // published reservation. Roll both counters back if the bounded channel
+        // rejects the immediate write.
         outstandingIngress++;
         reservedCompletions++;
-        pending.addLast(delivery);
+        if (!pending.tryWrite(delivery)) {
+            outstandingIngress--;
+            reservedCompletions--;
+            return rejected(AdmissionStatus.FULL);
+        }
         return new AdmissionResult<>(AdmissionStatus.ADMITTED, Optional.of(delivery));
     }
 
@@ -168,7 +178,7 @@ public final class QueueAdmissionTransaction<T> {
 
     /** FIFO transfer from pending ingress to the in-flight set. */
     public synchronized Optional<Delivery<T>> pollDelivery() {
-        Delivery<T> delivery = pending.pollFirst();
+        Delivery<T> delivery = pending.tryRead().orElse(null);
         if (delivery == null) return Optional.empty();
         inFlight.put(delivery.admissionId, delivery);
         return Optional.of(delivery);
@@ -191,22 +201,28 @@ public final class QueueAdmissionTransaction<T> {
         if (delivery.generation != generation && !closed) {
             throw new IllegalStateException("delivery generation is no longer current");
         }
+        Completion completion = new Completion(
+                delivery.admissionId,
+                delivery.generation,
+                delivery.sender,
+                delivery.mailboxSequence,
+                status);
+        // This write must succeed: admission reserved this exact channel slot.
+        // Never drop an accepted delivery's completion silently.
+        if (!completions.tryWrite(completion)) {
+            throw new IllegalStateException(
+                    "reserved queue completion capacity was unexpectedly unavailable");
+        }
         inFlight.remove(delivery.admissionId);
         delivery.completed = true;
         outstandingIngress--;
         // reservedCompletions is deliberately retained until the consumer
         // drains this completion, so publication cannot exceed reserved space.
-        completions.addLast(new Completion(
-                delivery.admissionId,
-                delivery.generation,
-                delivery.sender,
-                delivery.mailboxSequence,
-                status));
     }
 
     /** Draining a completion releases the exact capacity reserved at admission. */
     public synchronized Optional<Completion> pollCompletion() {
-        Completion completion = completions.pollFirst();
+        Completion completion = completions.tryRead().orElse(null);
         if (completion != null) reservedCompletions--;
         return Optional.ofNullable(completion);
     }
@@ -217,8 +233,13 @@ public final class QueueAdmissionTransaction<T> {
     }
 
     public synchronized boolean isDrained() {
-        return closed && pending.isEmpty() && inFlight.isEmpty()
+        boolean drained = closed && pending.isEmpty() && inFlight.isEmpty()
                 && completions.isEmpty() && outstandingIngress == 0
                 && reservedCompletions == 0;
+        if (drained) {
+            pending.close();
+            completions.close();
+        }
+        return drained;
     }
 }
