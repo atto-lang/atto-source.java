@@ -34,6 +34,15 @@ final class AotReflectionSourceRootsV1 {
                 || explicitRoots.size() > MAX_ROOTS) {
             throw new IllegalArgumentException("bounded package identity and explicit reflection roots required");
         }
+        // Freeze potentially caller-owned root lists before validation and lookup.
+        // The same immutable snapshot drives both admission and emission; a
+        // concurrently modified list must not alter which descriptor is emitted.
+        final List<String> stableRoots;
+        try {
+            stableRoots = List.copyOf(explicitRoots);
+        } catch (NullPointerException malformedRoots) {
+            throw new IllegalArgumentException("null reflection root", malformedRoots);
+        }
         // V1 deliberately has no namespace/import dependency identity field.
         // Never hash two distinct namespaced or imported symbols as the same
         // apparently closed "__root__.Type" descriptor.
@@ -45,8 +54,8 @@ final class AotReflectionSourceRootsV1 {
         // Validate and bound the explicit root set *before* scanning declarations.
         // Only retained roots are indexed: unrelated classes must not grow the
         // compiler metadata map, and unrooted declarations cannot leak.
-        Set<String> rootsSeen = new HashSet<>(explicitRoots.size());
-        for (String root : explicitRoots) {
+        Set<String> rootsSeen = new HashSet<>(stableRoots.size());
+        for (String root : stableRoots) {
             if (root == null || root.isBlank() || root.length() > 512 || !rootsSeen.add(root)) {
                 throw new IllegalArgumentException("missing or duplicate reflection root");
             }
@@ -71,8 +80,8 @@ final class AotReflectionSourceRootsV1 {
             }
         }
 
-        List<AotReflectionTableV1.ResolvedType> entries = new ArrayList<>(explicitRoots.size());
-        for (String root : explicitRoots) {
+        List<AotReflectionTableV1.ResolvedType> entries = new ArrayList<>(stableRoots.size());
+        for (String root : stableRoots) {
             Ast.ClassDecl klass = declarations.get(root);
             if (klass == null || klass.visibility() != Ast.Visibility.PUBLIC
                     || klass.actorKind() != Ast.ActorKind.NONE
