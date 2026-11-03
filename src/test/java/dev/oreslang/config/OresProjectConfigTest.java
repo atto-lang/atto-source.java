@@ -133,8 +133,10 @@ final class OresProjectConfigTest {
                 config.resolveImport(importer, "./pkg/upper.ATTO").orElseThrow());
 
         Files.delete(canonical);
+        // New .atto source must not silently downgrade to legacy .ores imports.
+        assertTrue(config.resolveImport(importer, "./pkg/value").isEmpty());
         assertEquals(legacy.toAbsolutePath().normalize(),
-                config.resolveImport(importer, "./pkg/value").orElseThrow());
+                config.resolveImport(importer, "./pkg/value.ores").orElseThrow());
     }
 
 
