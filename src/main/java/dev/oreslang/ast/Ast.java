@@ -1839,6 +1839,22 @@ public final class Ast {
         }
 
         /**
+         * The static synchronized critical publisher is only one side of the
+         * transaction. Fail closed if a later caller omits either enclosing
+         * Task or Type monitor and could expose a partial positive epoch or
+         * race a typing-generation change. The caller acquires locks in
+         * Critical -> Task -> Type order, never the reverse.
+         */
+        private static void requireCrossLedgerPublicationLocks() {
+            if (!Thread.holdsLock(CheckedCriticalBlocks.class)
+                    || !Thread.holdsLock(CheckedTaskCaptures.class)
+                    || !Thread.holdsLock(dev.oreslang.types.TypeChecker.class)) {
+                throw new IllegalStateException(
+                        "critical publication requires the full cross-ledger transaction locks");
+            }
+        }
+
+        /**
          * Validate the complete pending critical transaction BEFORE publishing
          * any positive Task epoch. The caller must hold Critical -> Task ->
          * Type monitors through this validation and both publications.
@@ -1847,6 +1863,7 @@ public final class Ast {
         public static synchronized void preparePublish(
                 Program program, long epoch, java.util.Set<CriticalStmt> checked,
                 dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
+            requireCrossLedgerPublicationLocks();
             java.util.Objects.requireNonNull(program, "critical Program");
             if (epoch <= 0)
                 throw new IllegalArgumentException("critical check epoch must be positive");
@@ -1869,6 +1886,7 @@ public final class Ast {
         public static synchronized void publish(Program program, long epoch,
                 java.util.Set<CriticalStmt> checked,
                 dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
+            requireCrossLedgerPublicationLocks();
             java.util.Objects.requireNonNull(program, "critical Program");
             if (epoch <= 0) throw new IllegalArgumentException(
                     "critical check epoch must be positive");
