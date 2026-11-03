@@ -97,7 +97,7 @@ final class AotV2StrictSignedAdmission {
         if(value instanceof Map<?,?> entries){
             List<String> keys=new ArrayList<>(entries.size());
             for(Object key:entries.keySet()){
-                if(!(key instanceof String s))fail("non-string canonical key");
+                if(!(key instanceof String s))throw new IllegalArgumentException("non-string canonical key");
                 keys.add(s);
             }
             keys.sort(String::compareTo);
@@ -153,7 +153,7 @@ final class AotV2StrictSignedAdmission {
     }
     private static String text(Map<String,Object> m,String key){
         Object value=m.get(key);
-        if(!(value instanceof String s))fail("signature field type "+key);
+        if(!(value instanceof String s))throw new IllegalArgumentException("signature field type "+key);
         return s;
     }
     private static void fail(String reason){throw new IllegalArgumentException("V2 signed admission rejected: "+reason);}
