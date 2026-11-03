@@ -221,7 +221,7 @@ public final class ProtectedActorStandaloneSmoke {
         var start = new CountDownLatch(1);
         var done = new CountDownLatch(producerCount);
         var completions = java.util.Collections.synchronizedList(
-                new ArrayList<java.util.concurrent.CompletableFuture<LocalVirtualActorI64.Outcome>>());
+                new ArrayList<LocalVirtualActorI64.Completion>());
 
         try (var runtime = new LocalVirtualActorI64("app", "Stress", 1, 8,
                 ignored -> new LocalVirtualActorI64.Turn() {
