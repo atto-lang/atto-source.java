@@ -1774,7 +1774,60 @@ public final class ActorRuntime implements AutoCloseable {
 
     public void revokeCurrentQueueProducer(ActorRef<?> queue, int slot) {
         ActorCell<?> child = requireCurrentQueueParent(queue);
-        authorityForChild(child).revokeFromParent(slot);
+        synchronized (child.lifecycleLock) {
+            if (child.stopped.get() || child.finalized) {
+                throw new SecurityException("queue actor retired during revoke");
+            }
+            authorityForChild(child).revokeFromParent(slot);
+        }
+    }
+
+    /**
+     * Runtime-only atomic authenticated admission. The active queue actor's
+     * trusted mailbox envelope supplies sender identity and sequence; guest
+     * payloads cannot provide either. Lock order is lifecycleLock ->
+     * QueueCommandAuthority -> QueueAdmissionTransaction. Revocation and
+     * admission use the same first two locks, so an admitted command is
+     * linearized wholly before or after a grant revocation.
+     *
+     * No guest callback is invoked under these locks. The transaction merely
+     * reserves bounded ingress/completion capacity and publishes a data-only
+     * Delivery record.
+     */
+    public <T> QueueAdmissionTransaction.AdmissionResult<T> admitCurrentQueueCommand(
+            QueueAdmissionTransaction<T> transaction,
+            int producerSlot,
+            long expectedGeneration,
+            T frozenPayload) {
+        Objects.requireNonNull(transaction, "transaction");
+        Objects.requireNonNull(frozenPayload, "frozenPayload");
+        requireCallerRuntimeAffinity("admit authenticated queue command");
+        ActorCell<?> actor = currentActor.get();
+        if (actor == null || actor.parent == null || actor.stopped.get()
+                || actor.finalized || actor.activeMail == null) {
+            return new QueueAdmissionTransaction.AdmissionResult<>(
+                    QueueAdmissionTransaction.AdmissionStatus.UNAUTHORIZED,
+                    Optional.empty());
+        }
+        QueueCommandAuthority authority = authorityForChild(actor);
+        synchronized (actor.lifecycleLock) {
+            if (actor.stopped.get() || actor.finalized || actor.activeMail == null) {
+                return new QueueAdmissionTransaction.AdmissionResult<>(
+                        QueueAdmissionTransaction.AdmissionStatus.UNAUTHORIZED,
+                        Optional.empty());
+            }
+            synchronized (authority) {
+                if (!authority.permits(QueueOperation.SEND, producerSlot)) {
+                    return new QueueAdmissionTransaction.AdmissionResult<>(
+                            QueueAdmissionTransaction.AdmissionStatus.UNAUTHORIZED,
+                            Optional.empty());
+                }
+                ActorId sender = authority.admittedSender();
+                long mailboxSequence = actor.activeMail.sequence();
+                return transaction.admitAuthorized(
+                        sender, mailboxSequence, expectedGeneration, frozenPayload);
+            }
+        }
     }
 
     public interface ActorContext<M> {
