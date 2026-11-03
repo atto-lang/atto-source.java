@@ -74,6 +74,10 @@ final class ActorPoolLazyStartTest {
             assertEquals(1, liveThreadsNamed(prefix));
             assertFalse(executor.ensureStarted(), "a second start is a no-op");
             assertEquals(1, liveThreadsNamed(prefix));
+            executor.shutdownNow();
+            assertThrows(RejectedExecutionException.class, executor::ensureStarted,
+                    "a retired native handle must not masquerade as a live carrier");
+            assertThrows(RejectedExecutionException.class, () -> executor.execute(() -> {}));
         }
     }
 
