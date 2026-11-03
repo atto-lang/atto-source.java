@@ -161,8 +161,8 @@ public final class AttoGuestReceiptVerifier {
                     one.methods().get(0), "forgedMethodWithMatchingCount"));
             shouldDeny("forged-method-name", head, dir);
             Files.writeString(adversarialReport, validXml.replace(
-                    "</testsuite>", "<testcase classname=\\"" + one.name()
-                            + "\\" name=\\"extra\\"/></testsuite>"));
+                    "</testsuite>", "<testcase classname=\"" + one.name()
+                            + "\" name=\"extra\"/></testsuite>"));
             // These negative fixtures must parse successfully; rejection must be semantic.
             secureParse(adversarialReport);
             shouldDeny("extra-testcase", head, dir);
