@@ -27,8 +27,8 @@ public final class ScalarStateContainer implements AutoCloseable {
         if (lease == null) return OptionalLong.empty();
         try (lease) {
             synchronized (stateLock) {
-                lease.requireActive(StateContainerAccessGate.Mode.READ);
                 if (closed) return OptionalLong.empty();
+                lease.requireActive(StateContainerAccessGate.Mode.READ);
                 return OptionalLong.of(value);
             }
         }
@@ -39,8 +39,8 @@ public final class ScalarStateContainer implements AutoCloseable {
         if (lease == null) return OptionalLong.empty();
         try (lease) {
             synchronized (stateLock) {
-                lease.requireActive(StateContainerAccessGate.Mode.WRITE);
                 if (closed) return OptionalLong.empty();
+                lease.requireActive(StateContainerAccessGate.Mode.WRITE);
                 long next = Math.addExact(value, delta);
                 value = next;
                 return OptionalLong.of(next);
@@ -53,8 +53,8 @@ public final class ScalarStateContainer implements AutoCloseable {
         if (lease == null) return OptionalLong.empty();
         try (lease) {
             synchronized (stateLock) {
-                lease.requireActive(StateContainerAccessGate.Mode.WRITE);
                 if (closed) return OptionalLong.empty();
+                lease.requireActive(StateContainerAccessGate.Mode.WRITE);
                 value = replacement;
                 return OptionalLong.of(value);
             }
