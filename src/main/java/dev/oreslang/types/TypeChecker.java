@@ -2871,6 +2871,17 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // A host/compiler-side type_of query table exists, but the guest
+            // intrinsic has no typed HIR or AOT machine-code lowering yet.
+            // Fail closed rather than resolving a user-defined generic
+            // function or silently falling back to runtime reflection.
+            if (call.callee() instanceof Ast.NameExpr intrinsic
+                    && intrinsic.name().equals("type_of")
+                    && call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "type_of<T>() requires compiler-backed guest AOT lowering; "
+                        + "static descriptor query admission is not guest execution");
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
