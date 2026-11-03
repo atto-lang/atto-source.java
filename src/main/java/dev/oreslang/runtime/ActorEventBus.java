@@ -127,12 +127,26 @@ public final class ActorEventBus implements AutoCloseable {
             int accepted,
             int dropped,
             int coalesced,
-            OresFuture<List<Void>> completion) {
+            OresFuture<List<Void>> completion,
+            long sequence) {
+        // Preserve the existing host constructor for non-publication paths,
+        // including unchanged reduction results and third-party callers.
+        public PublishReceipt(
+                int subscribers, int accepted, int dropped, int coalesced,
+                OresFuture<List<Void>> completion) {
+            this(subscribers, accepted, dropped, coalesced, completion, 0L);
+        }
+
         public PublishReceipt {
             if (subscribers < 0 || accepted < 0 || dropped < 0 || coalesced < 0) {
                 throw new IllegalArgumentException("publication counts cannot be negative");
             }
             Objects.requireNonNull(completion, "completion");
+        }
+
+        /** Full unsigned 64-bit sequence as decimal text for guest/wire receipts. */
+        public String sequenceUnsignedString() {
+            return Long.toUnsignedString(sequence);
         }
     }
 
@@ -548,7 +562,7 @@ public final class ActorEventBus implements AutoCloseable {
                     topic.sequence.set(sequence);
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                            0, 0, 0, 0, OresFuture.completed(List.of()), sequence);
                 }
 
                 List<Subscription<?>> active =
@@ -568,7 +582,7 @@ public final class ActorEventBus implements AutoCloseable {
                     topic.sequence.set(sequence);
                     topic.published.incrementAndGet();
                     return new PublishReceipt(
-                            0, 0, 0, 0, OresFuture.completed(List.of()));
+                            0, 0, 0, 0, OresFuture.completed(List.of()), sequence);
                 }
 
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
@@ -619,7 +633,8 @@ public final class ActorEventBus implements AutoCloseable {
                             reserved.size(),
                             0,
                             0,
-                            combineReliableWrites(writes));
+                            combineReliableWrites(writes),
+                            sequence);
                 }
 
                 // LATEST/LOSSY admit without waiting for per-subscriber
@@ -661,7 +676,8 @@ public final class ActorEventBus implements AutoCloseable {
                         accepted,
                         dropped,
                         coalesced,
-                        OresFuture.completed(List.of()));
+                        OresFuture.completed(List.of()),
+                        sequence);
             }
         } finally {
             if (event == null) {
