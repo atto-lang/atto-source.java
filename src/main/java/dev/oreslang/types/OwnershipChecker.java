@@ -74,6 +74,8 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    /** Typing generation captured before ownership validation begins. */
+    private final long criticalTypingGenerationAtStart;
     private final Set<Ast.CriticalStmt> pendingCriticalAdmissions =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean insideSuspendingActorMethod;
@@ -106,6 +108,15 @@ public final class OwnershipChecker {
         // Rechecking an existing immutable Program immediately invalidates
         // older executable Task proofs. A failed check must fail closed.
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
+        // Ownership-only programs without critical statements stay supported.
+        // A critical checker must not acquire a proof minted during analysis.
+        long initialTypingGeneration;
+        try {
+            initialTypingGeneration = TypeChecker.requireCriticalTypeProof(checkedProgram);
+        } catch (IllegalStateException noSuccessfulProof) {
+            initialTypingGeneration = 0L;
+        }
+        this.criticalTypingGenerationAtStart = initialTypingGeneration;
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
@@ -169,25 +180,34 @@ public final class OwnershipChecker {
     }
 
     private void publishTaskAdmissions() {
-        // Fail before publishing ANY executable capture authority if a
-        // critical node was seen but this exact Program has no successful
-        // independent type-check proof. Public ownership-only entry points
-        // must not partially commit a task epoch before discovering this.
-        long typingGeneration = pendingCriticalAdmissions.isEmpty()
-                ? 0L : TypeChecker.requireCriticalTypeProof(checkedProgram);
-        Ast.CheckedTaskCaptures.publish(
-                checkedProgram,
-                taskCheckEpoch,
-                pendingTaskCaptures);
-        // Only an entire successful ownership pass may publish critical
-        // authority. Exact AST + Program + epoch prevent post-check swaps
-        // and revocation bypass by rechecking the same Program.
-        Ast.CheckedCriticalBlocks.publish(
-                checkedProgram,
-                taskCheckEpoch,
-                pendingCriticalAdmissions,
-                new CriticalPublishAuthority(
-                        checkedProgram, taskCheckEpoch, typingGeneration));
+        // Global monitor order: critical -> Task -> type.
+        // Readers of critical admission already enter the critical monitor
+        // first. An enclosing critical monitor keeps them from observing a
+        // positive Task epoch before its critical permits are committed.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            synchronized (Ast.CheckedTaskCaptures.class) {
+                synchronized (TypeChecker.class) {
+                    long typingGeneration = pendingCriticalAdmissions.isEmpty()
+                            ? 0L : TypeChecker.requireCriticalTypeProof(checkedProgram);
+                    if (!pendingCriticalAdmissions.isEmpty()
+                            && (criticalTypingGenerationAtStart <= 0L
+                                || typingGeneration != criticalTypingGenerationAtStart)) {
+                        throw new IllegalStateException(
+                                "critical typing changed during ownership analysis");
+                    }
+                    // New typing checks cannot invalidate this generation
+                    // between these two commits. A superseding ownership pass
+                    // is also blocked until the pair completes.
+                    Ast.CheckedTaskCaptures.publish(
+                            checkedProgram, taskCheckEpoch, pendingTaskCaptures);
+                    Ast.CheckedCriticalBlocks.publish(
+                            checkedProgram, taskCheckEpoch,
+                            pendingCriticalAdmissions,
+                            new CriticalPublishAuthority(
+                                    checkedProgram, taskCheckEpoch, typingGeneration));
+                }
+            }
+        }
     }
 
     private void index(Ast.Program program) {

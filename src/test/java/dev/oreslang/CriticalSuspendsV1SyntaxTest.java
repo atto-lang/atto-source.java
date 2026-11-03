@@ -302,6 +302,50 @@ final class CriticalSuspendsV1SyntaxTest {
                 () -> dev.oreslang.types.OwnershipChecker.check(typed));
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission()
+            throws Exception {
+        Ast.Program program = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        java.util.concurrent.atomic.AtomicReference<Throwable> outcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread ownership = new Thread(() -> {
+            try {
+                dev.oreslang.types.OwnershipChecker.check(program);
+            } catch (Throwable failure) {
+                outcome.set(failure);
+            }
+        }, "critical-ownership-publication-race");
+
+        // Old publication ordering committed the positive Task epoch before
+        // blocking on this critical monitor. With atomic publication it cannot.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            ownership.start();
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (ownership.isAlive()
+                    && ownership.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(2L);
+            }
+            assertEquals(Thread.State.BLOCKED, ownership.getState(),
+                    "ownership must reach the blocked critical publication gate");
+            // A successful retyping of the same immutable Program must
+            // invalidate the in-flight ownership pass before publication.
+            dev.oreslang.types.TypeChecker.checkTypes(program);
+        }
+        ownership.join(5_000L);
+        assertFalse(ownership.isAlive(), "ownership publication must finish");
+        assertInstanceOf(IllegalStateException.class, outcome.get(),
+                "superseded typing must reject the ownership attempt");
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(program),
+                "no Task epoch may leak from a failed critical commit");
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(program, actorCritical(program), 1L));
+    }
+
     @Test void CriticalWordsInCommentsDoNotChangeExecution() {
         assertDoesNotThrow(() -> Parser.parse("""
                 // async fnc and critical suspends are deprecated source spellings
