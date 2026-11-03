@@ -27,7 +27,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `84c2829aa3662e9bf5766c40102f7880bc244c68` and tree
   `4cc2363496f486349be87216cf02d7f7452642fb` are historical.
   On 2026-11-03, the **current proposed source PR head** is
-  `ec4c5259df171ab5cb5cd19dd50b7c448294a5d8`, with full Git root tree `6f49261492ba2396400b7e347b9959c724abcd4e`.
+  `c7c6d253f550d0940ce8df0d929bc75f04c47385`, with full Git root tree `95d46b6543c906255bc599c0f04920ec71c5873f`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
@@ -48,7 +48,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `clean test`, `-DfailIfNoTests=true`, five nonempty JUnit XML reports,
   both critical actor guest testcases, and both concurrency race testcases.
   Source workflow blob `67b5dbf3f8e67c6d4e0543a5fca370338cf2555c`
-  is part of current source tree `6f49261492ba2396400b7e347b9959c724abcd4e`, not a
+  is part of current source tree `95d46b6543c906255bc599c0f04920ec71c5873f`, not a
   carrier-workflow authorization. New source workflow
   [run 41588063452](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41588063452)
   was still queued when this packet was updated; its verdict is not
@@ -160,3 +160,14 @@ mirror should be created from this proposal alone.
 Related tracking:
 [private-export issue #962](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962),
 [critical contract issue #210](https://github.com/ores-truffle-oreslang/oreslang-common-source/issues/210).
+
+## 2026-11-03 failed-suspension critical admission cleanup
+
+Latest Java source head: `c7c6d253f550d0940ce8df0d929bc75f04c47385`; exact full Git root tree:
+`95d46b6543c906255bc599c0f04920ec71c5873f`. `OresEvalRootNode.java` blob
+`78faa483ad79076a39d8f28244afe71bd35a449b` adds immediate
+ticket revocation when critical cleanup registration fails or
+`SourceTask.suspend` rejects an invalid second terminal step. The
+change prevents a failed scheduler transition from retaining a gate ticket,
+subject to actual compiler/guest regression execution. Neither source
+testing nor private-source export is authorized by this packet.
