@@ -53,18 +53,39 @@ for program in javac java mvn git; do
   fi
 done
 
+# The entry check rejects all ignored/untracked files. Subsequent Java/Maven
+# commands can legitimately generate ignored build products, but MUST NOT
+# mutate the checked-out source, switch HEAD, or inject unignored files.
+# Check after every stage so a source mutation cannot affect the next stage.
+verify_inputs_unchanged() {
+  local stage="$1"
+  if [[ "$(git rev-parse --show-toplevel)" != "$root" ]] \
+      || [[ "$(git rev-parse --verify HEAD^{commit})" != "$commit_sha" ]] \
+      || [[ "$(git rev-parse --verify HEAD^{tree})" != "$tree_sha" ]] \
+      || ! git diff --quiet HEAD -- \
+      || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    echo "refusing changed Git/source inputs after $stage" >&2
+    exit 6
+  fi
+}
+
 echo "Verified Oreslang source Git commit=$commit_sha tree=$tree_sha mode=$mode"
 # For an approved mirror, the source commit may differ, but the full tree SHA
 # must match the trusted source head. Modes/blobs are covered by Git tree IDs.
 bash scripts/check-record-parser.sh
+verify_inputs_unchanged "record parser"
 bash scripts/check-record-frontend.sh
+verify_inputs_unchanged "record frontend"
 bash scripts/check-soa-snapshot.sh
+verify_inputs_unchanged "SoA snapshot"
 
 # Contains GraalVM guest execution, not only AST and host-only smoke tests.
 mvn -B -ntp \
   -Dtest=RecordTypeValueContextTest,InferredRecordBoundaryTest,InferredStructBoundaryTest,DynamicPropertyAccessBoundaryTest,DynamicPropertyAccessRuntimeTest,DynamicPropertyAccessRuntimeFailureTest,CheckedClassViewMetadataTest,PrecheckedProgramLeaseTest,TreeShakerTest,LinkedPublicClassFieldTypesTest,FileRootPublicClassImportTest,InferredRecordRuntimeTest,NamedInferredTypeTest,SoaSnapshotTest \
   test
+verify_inputs_unchanged "targeted record JUnit"
 mvn -B -ntp -Dores.runtime.carriers=native verify
+verify_inputs_unchanged "native carrier Maven verify"
 
 echo "Oreslang record Maven verification PASS: commit=$commit_sha tree=$tree_sha"
 # Native Image AOT/hybrid, LLVM, sanitizers and formatter parity require their
