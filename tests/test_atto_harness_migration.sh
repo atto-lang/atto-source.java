@@ -56,62 +56,26 @@ grep -Fq 'body.equals("testing.atto")' "$core" ||
 grep -Fq 'body.equals("testing.ores")' "$core" ||
   die "legacy explicit suffix fallback was lost"
 
-# Cross-toolchain scalar parity still records original .ores blob IDs. Require
-# each new .atto twin to be exactly those same reviewed bytes, never a new
-# unreviewed guest that happens to return the expected scalar result.
+# Legacy multi-backend scalar manifest is preserved, while six canonical
+# .atto twins must be byte-identical to the independently reviewed blobs.
 scalar_dir="$root/contracts/parity/native-scalar-zero-v1"
 scalar_manifest="$scalar_dir/cases.tsv"
-[[ -f "$scalar_manifest" ]] || die "missing cross-backend scalar manifest"
+[[ -f "$scalar_manifest" ]] || die "missing reviewed scalar manifest"
 [[ "$(git hash-object "$scalar_manifest")" == "a87f64af3e448ba10927eb2932900679896b283b" ]] ||
-  die "reviewed five-backend scalar manifest changed"
+  die "reviewed scalar manifest changed"
 scalar_count=0
-while IFS=
-  if grep -Eq '(examples/native-testing|tests/test_std_harness_|tests/portable-scalar-v[123]-20261101)[^[:space:]]*\.ores' "$workflow"; then
-    die "CI still executes a legacy .ores harness guest"
-  fi
-  grep -Fq 'examples/native-testing-regressions-40.atto' "$workflow" ||
-    die "missing canonical 40-case guest invocation"
-  grep -Fq 'tests/test_std_harness_regressions.atto' "$workflow" ||
-    die "missing canonical native core guest invocation"
-done
-grep -Fq 'examples/native-testing-negative-${variant}.atto' "$ci" ||
-  die "negative guest matrix must use canonical .atto sources"
-grep -Fq 'native AttoLang test suite failed' "$ci" ||
-  die "negative oracle must identify canonical .atto runtime"
-
-# Source-free adversarial changes must be rejected by the gate itself.
-if [[ "$#" -eq 0 ]]; then
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  cp "$fast" "$tmp/fast.yml"
-  sed -i 's#examples/native-testing-regressions-40.atto#examples/native-testing-regressions-40.ores#' "$tmp/fast.yml"
-  if bash "$0" "$ci" "$tmp/fast.yml" "$pom" "$core" >/dev/null 2>&1; then
-    die "admitted a legacy source CI downgrade"
-  fi
-  cp "$pom" "$tmp/pom.xml"
-  sed -i 's#<include>\*\*/\*.atto</include>##g' "$tmp/pom.xml"
-  if bash "$0" "$ci" "$fast" "$tmp/pom.xml" "$core" >/dev/null 2>&1; then
-    die "admitted a packaging regression"
-  fi
-  cp "$core" "$tmp/CoreLibrarySources.java"
-  sed -i 's#body.equals("testing.atto")#body.equals("testing.disabled")#' "$tmp/CoreLibrarySources.java"
-  if bash "$0" "$ci" "$fast" "$pom" "$tmp/CoreLibrarySources.java" >/dev/null 2>&1; then
-    die "admitted removal of .atto canonical import"
-  fi
-fi
-echo "PASS: AttoLang .atto source, import, resource and CI downgrade admission (source-only)"
-\t' read -r filename expected pinned; do
+while IFS=$'\t' read -r filename expected pinned; do
   [[ -z "$filename" || "$filename" == \#* ]] && continue
   [[ "$filename" == *.ores && "$pinned" =~ ^[0-9a-f]{40}$ ]] ||
-    die "invalid legacy scalar fixture identity"
+    die "invalid scalar fixture identity"
   canonical="$scalar_dir/${filename%.ores}.atto"
   [[ -f "$canonical" && ! -L "$canonical" ]] ||
-    die "missing canonical .atto scalar source: $filename"
+    die "missing .atto scalar source: $filename"
   [[ "$(git hash-object "$canonical")" == "$pinned" ]] ||
-    die "canonical .atto scalar guest differs from reviewed source: $filename"
+    die "canonical .atto source differs from reviewed blob: $filename"
   scalar_count=$((scalar_count + 1))
 done < "$scalar_manifest"
-[[ "$scalar_count" -eq 6 ]] || die "expected six pinned .atto scalar guests"
+[[ "$scalar_count" -eq 6 ]] || die "expected exactly six reviewed .atto scalar guests"
 
 for workflow in "$ci" "$fast"; do
   if grep -Eq '(examples/native-testing|tests/test_std_harness_|tests/portable-scalar-v[123]-20261101)[^[:space:]]*\.ores' "$workflow"; then
