@@ -190,4 +190,18 @@ final class IncrementalImportedMacroTest {
         assertTrue(failure.getMessage().contains("collides with a local source module"),
                 failure::toString);
     }
+
+    @Test
+    void unusedUnsupportedImportedMacroDoesNotBlockSafeScalarImport() {
+        String producer = PUBLIC_LITERAL + """
+                define pub macro generate(Identifier value) -> Syntax<Expr> {
+                    return hygienic(value);
+                }
+                """;
+        IncrementalCompiler.BuildResult built =
+                assertDoesNotThrow(() -> new IncrementalCompiler()
+                        .compile(units(producer, CONSUMER)));
+        assertEquals(42L, assertInstanceOf(Ast.LiteralExpr.class, returnValue(built)).value(),
+                "uninvoked imported identifier generators must not create runtime authority");
+    }
 }
