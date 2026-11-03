@@ -155,4 +155,32 @@ final class ActorTurnWatchdogTest {
                     "host must not retain the carrier's watchdog identity");
         }
     }
+
+    @Test
+    void idleWatchdogStopsPeriodicScanning() throws Exception {
+        // Make sure the monitor exists, then let it observe that no lease is active.
+        ActorTurnWatchdog.enter(ignored -> { }).close();
+        assertTrue(ActorTurnWatchdog.monitorStarted());
+        Thread.sleep(50);
+        long before = ActorTurnWatchdog.scans();
+        Thread.sleep(300);
+        long idleScans = ActorTurnWatchdog.scans() - before;
+        // A 2 ms fixed-rate scanner would do ~150 scans here.
+        assertTrue(idleScans <= 2, "idle watchdog kept scanning: " + idleScans);
+    }
+
+    @Test
+    void leaseAfterIdleWakesWatchdogPromptly() throws Exception {
+        ActorTurnWatchdog.enter(ignored -> { }).close();
+        Thread.sleep(50); // monitor is now parked idle
+        java.util.concurrent.CountDownLatch noticed = new java.util.concurrent.CountDownLatch(1);
+        long start = System.nanoTime();
+        try (ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(ignored -> noticed.countDown())) {
+            assertTrue(noticed.await(2, TimeUnit.SECONDS));
+            long waitedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            // The idle park is bounded at 1 s; an overrun must be seen well before that.
+            assertTrue(waitedMillis < 500, "overrun noticed only after " + waitedMillis + " ms");
+            assertTrue(lease.preemptionRequested());
+        }
+    }
 }
