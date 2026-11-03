@@ -6,13 +6,36 @@ and not an automatic change to existing runtime or CLI defaults.
 
 ## Target behavior
 
-A capable backend's shared profile starts two Oreslang-owned workers in one
-trusted execution domain. Both can execute admitted bounded slices and hold
-the reactor polling role. Exactly one worker owns that role at a time. One
-worker mode is supported; an explicit supervisor may provision up to the
-configured maximum (1..256). Actor creation, socket count and pending awaits
-do not provision workers. No separate selector/completion/bootstrap thread is
-created by these host components.
+The VM boot profile starts two Oreslang-owned infrastructure workers:
+main/CONTROL progress and transferable I/O reactor/execution duty. Exactly
+one of these owns a reactor polling lease at a time; the default does not
+require a permanently dedicated selector thread. These are **boot workers**,
+not a limit on the process's future actor-domain workers.
+
+Actor execution uses separately accounted **lazily populated pools**:
+trusted PRIVATE/SHARED actor lanes may share one physical trusted carrier
+budget, but their admission, heap, locks, and per-actor turn leases remain
+separate; STRONGLY_ISOLATED and UNTRUSTED domains must run on separately
+authorized execution/isolate resources. An empty pool owns **zero** actor
+pthreads. Successful admission of the first actor to an eligible pool eagerly
+starts **at least one pthread** for that pool *before* returning a usable
+ActorRef, even if the actor has not received a message yet. A second, third,
+or ten-thousandth idle actor of that pool does not automatically start another
+pthread. Further growth is demand-driven, explicitly bounded and separately
+budgeted; actor count alone must not drive pthread count. A failed first
+pthread initialization must fail actor admission without publishing a usable
+ActorRef or leaking an actor slot. Pool bootstrap is serialized against
+concurrent first spawns and shutdown. A pool closed before its first actor
+must never create any pthread merely to close.
+
+The 1/2-worker SharedReactorPool host experiment is the boot-domain
+substrate, not yet an actor-pool manager. Existing native actor dispatchers
+precreate all configured pthreads in NativeCarrierExecutor.nativeCreate
+and thus **do not satisfy this production first-actor-lazy contract yet**.
+Do not claim the host experiment or current default ActorRuntime implements
+this contract. In hard-real-time profiles, approved up-front preallocation
+may supersede lazy pthread creation, but the exceptional profile must be
+explicit and its capacity fixed before guest execution.
 
 A worker runs at most 64 bounded slices before attempting an I/O poll. With
 no ready work the poll may wait at most 10ms; otherwise it must be nonblocking.
@@ -66,14 +89,18 @@ separately; these components cannot promise two threads for the whole process.
 
 ## Required evidence
 
-- 1/2-worker startup and explicit growth cap; pending I/O does not grow workers.
+- Two boot workers and zero actor-pool pthreads before the first actor (in the lazy profile).
+- First accepted actor of each physical pool starts at least one real platform/native pthread before ActorRef publication; simultaneous first spawns start only one initial cohort.
+- Subsequent idle actor spawns do not grow the pool; worker growth is bounded by demand and supervisor budgets, not actor count.
+- A failed first-worker start leaves no registered actor; close before first actor does not initialize the pool.
+- 1/2-worker boot-substrate mode and explicit growth cap; pending I/O does not grow workers.
 - Single polling owner, real readiness, no callbacks on the polling stack.
 - Same OS workers observed in both polling and execution roles.
 - Runnable queue remains hot while readiness completion still makes progress.
 - Queue saturation, concurrent producers, exactly-once accepted-work accounting.
 - Ordinary handler failure containment, self-join denial, graceful drain.
 - Completion/cancel/close and kernel retirement tests in the actual backend bridge.
-- Compiler-backed shared .ores fixtures before any source-language parity claim.
+- Compiler-backed shared .atto fixtures before any source-language parity claim.
 - Fixed, prestarted resources and separate RT admission for a real-time profile.
 
 Any eventual CLI flags must go through flags-2-env. These host constructors do
