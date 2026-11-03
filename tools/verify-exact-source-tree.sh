@@ -35,9 +35,12 @@ untracked="$(git ls-files --others -- "${status_path}")" || {
   echo "SOURCE_TREE_INDEX_ERROR; cannot enumerate untracked files" >&2
   exit 68
 }
-if ! git diff --quiet HEAD -- "${status_path}" \
-    || ! git diff --cached --quiet HEAD -- "${status_path}" \
-    || [[ -n "$untracked" ]]; then
+# Do not invoke git diff/status on untrusted checked-out files.
+# Git attributes can select source-controlled clean filters that these
+# commands execute before the raw byte audit. A complete index-vs-tree
+# comparison below catches staged changes, and the raw --no-filters hash
+# plus filesystem inventory catches worktree changes and ignored files.
+if [[ -n "$untracked" ]]; then
   echo "SOURCE_WORKTREE_DIRTY; do not certify a modified checkout" >&2
   exit 67
 fi
