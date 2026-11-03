@@ -278,13 +278,13 @@ pub fnc require_success(borrow RunSummary summary): void {
   // Keep this aligned with oreslang-test.cli's native receipt admission rule.
   let int executed_count = summary.passed + summary.failed;
   if executed_count == 0; do
-    val Result<bool, String> empty = Err("no Oreslang test cases executed");
-    empty.expect("native Oreslang test suite was empty or only skipped/filtered");
+    val Result<bool, String> empty = Err("no AttoLang test cases executed");
+    empty.expect("native AttoLang test suite was empty or only skipped/filtered");
   fi
   let int failed_count = summary.failed;
   if failed_count > 0; do
-    val Result<bool, String> failure = Err("one or more Oreslang tests failed");
-    failure.expect("native Oreslang test suite failed");
+    val Result<bool, String> failure = Err("one or more AttoLang tests failed");
+    failure.expect("native AttoLang test suite failed");
   fi
   return;
 }
