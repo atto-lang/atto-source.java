@@ -1694,6 +1694,20 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
+            } else if (check(IDENT) && peek().lexeme().equals("critical")) {
+                // Preserve source admission without importing the separate
+                // actor-owned critical runtime lowering branch. The callable
+                // modifier is never silently accepted as an ordinary fnc.
+                Token critical = peek();
+                if (suspends || (current + 1 < tokens.size()
+                        && (tokens.get(current + 1).type() == SUSPENDS
+                        || tokens.get(current + 1).lexeme().equals("suspends")
+                        || tokens.get(current + 1).lexeme().equals("suspend")))) {
+                    throw error(critical,
+                            "E_CRITICAL_SUSPENDS_DECL: 'critical suspends' is forbidden: critical bodies cannot suspend");
+                }
+                throw error(critical,
+                        "critical callable requires non-suspending body verification and scheduler-owned ticket lowering");
             } else if (match(SUSPENDS) || matchContextualSuspendModifier()) {
                 if (suspendsSeen) throw error(previous(), "duplicate 'suspends' modifier");
                 suspendsSeen = true;
