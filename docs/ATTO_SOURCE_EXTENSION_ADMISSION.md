@@ -42,8 +42,14 @@ The common `BoundedSourceReader` now performs Atto-only, component-by-component 
 
 Three JUnit regressions were added: symlinked parent entrypoint, symlinked imported directory, and direct CLI `--check` denial. A JDK 21 isolated compilation of the reader logic passed 7/7 checks (normal input; symlinked file and parent; invalid UTF-8; NUL; >16 MiB; legacy `.ores` behavior). **This is a source-reader isolation check, not the Maven project suite, a native compiler receipt, or guest execution.**
 
-### Known remaining boundary
+### Pinned directory-handle admission (source candidate)
 
-Checking ancestor path components before opening a file is *not an atomic resolution guarantee*: an adversary with write permission to parent directories can race directory changes after the check. The leaf open uses `NOFOLLOW_LINKS`, but race-proof ancestor admission still requires an approved secure directory-relative source-root walker (for example a provider supporting `SecureDirectoryStream`) and a fallback policy. Legitimate system-level symlink aliases may also require callers to use their canonical physical path. Keep the security review gate open rather than claiming full race-free traversal.
+`BoundedSourceReader` now opens `.atto` files by traversing from the absolute filesystem root with `SecureDirectoryStream` and `NOFOLLOW_LINKS` at **every directory component and the leaf**. All nested directory streams remain open during the final bounded read. This prevents an ancestor symlink from being substituted between a path check and file open. If the filesystem provider cannot offer secure pinned directory handles (for example ZipFS), `.atto` reading **fails closed** with `SecurityException`; legacy `.ores` and `.java` admission is unchanged. On unsupported platforms/filesystems, this intentionally means `.atto` cannot yet compile until a security-equivalent provider implementation is available.
+
+Two additional JUnit source-reader checks cover ordinary multibyte UTF-8 plus a synthetic ZipFS provider rejection; both remain **NOT_EXECUTED by Maven** until source-org runner admission or an independently authorized compiler-source carrier is available. A standalone source-free JDK 21 secure-handle probe completed **6/6 synthetic path tests** (ordinary, leaf-link, parent-link, empty, oversize, missing) and a separate ZipFS unsupported-provider probe passed locally. Neither is Java compiler or private-source test evidence.
+
+The existing symlink preflight is a diagnostic guard, not relied upon for race-proof authorization; pinned handle traversal is the enforcement path. Filesystems providing weaker semantics, reparse points, and multi-platform AOT behavior remain explicit backend conformance obligations.
+
+Keep the source-export security review gate open; this source fix does not authorize private compiler mirroring.
 
 At exact PR head `2897d19750b6bfffc865b7db9a6ca669a0512af6`, Java Actions `fast-ci` run 41490485954, synthetic CI runner smoke 41490486044, and project manifest run 41490486334 each have a failed job with zero recorded steps. These are **runner-admission failures**, not a JUnit/parser/compiler verdict. Do not bypass private source-transfer holds to use a different organization's Actions minutes.

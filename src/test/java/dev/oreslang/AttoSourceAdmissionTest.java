@@ -256,4 +256,32 @@ final class AttoSourceAdmissionTest {
         assertTrue(denied.getMessage().contains("symlinked .atto"));
     }
 
+    @Test
+    void attoSourceOnUnsupportedFilesystemFailsClosed() throws Exception {
+        // ZipFS provides ordinary DirectoryStream, not provider-pinned
+        // SecureDirectoryStream; a path preflight is insufficient.
+        Path archive = temp.resolve("source.zip");
+        java.net.URI uri = java.net.URI.create("jar:" + archive.toUri());
+        try (java.nio.file.FileSystem zip = java.nio.file.FileSystems.newFileSystem(
+                uri, Map.of("create", "true"))) {
+            Path entry = zip.getPath("/main.atto");
+            Files.writeString(entry, "pub fnc main(): void { return; }");
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    SecurityException.class,
+                    () -> dev.oreslang.runtime.BoundedSourceReader.readUtf8(entry));
+        } catch (java.nio.file.ProviderNotFoundException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "ZipFS provider unavailable");
+        }
+    }
+
+    @Test
+    void regularAttoFileStillAdmitsStrictUtf8ThroughPinnedDirectory() throws Exception {
+        Path entry = temp.resolve("utf8.atto");
+        String source = "pub fnc main(): void { return; } // café";
+        Files.writeString(entry, source, StandardCharsets.UTF_8);
+        var decoded = dev.oreslang.runtime.BoundedSourceReader.readWithByteCount(entry);
+        assertEquals(source, decoded.text());
+        assertEquals(source.getBytes(StandardCharsets.UTF_8).length, decoded.byteCount());
+    }
+
 }
