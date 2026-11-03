@@ -382,4 +382,37 @@ final class LocalVirtualActorQuiescentDisposalTest {
         }
     }
 
+
+    @Test void saturatedMailboxRejectsWithoutPerRequestFutureOrEnvelope() {
+        var handled = new AtomicInteger();
+        var runtime = new LocalVirtualActorI64("app", "Bounded", 1, 1,
+                ignored -> value -> handled.incrementAndGet(),
+                notice -> fail("unexpected supervisor notice"));
+        var ref = runtime.resolve("only");
+        var accepted = runtime.try_send(ref, 7);
+        assertTrue(accepted.admitted());
+        var firstDenied = runtime.try_send(ref, 8);
+        assertEquals(LocalVirtualActorI64.AdmissionKind.BACKPRESSURE, firstDenied.kind());
+        assertNull(firstDenied.completion());
+        for (int i = 0; i < 10_000; i++) {
+            var denied = runtime.try_send(ref, i);
+            assertSame(firstDenied, denied,
+                    "saturated edge must reuse one immutable rejection response");
+            assertNull(denied.completion(), "no rejected message receives a future");
+        }
+        assertTrue(runtime.run_one(ref));
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, accepted.completion().join());
+        assertEquals(1, handled.get(), "no denied message may become a hidden turn");
+        assertFalse(runtime.run_one(ref));
+        var next = runtime.try_send(ref, 11);
+        assertTrue(next.admitted(), "settlement restores exactly one credit");
+        assertTrue(runtime.run_one(ref));
+        assertEquals(2, handled.get());
+        assertEquals(LocalVirtualActorI64.Outcome.PROCESSED, next.completion().join());
+        runtime.close();
+        var closed = runtime.try_send(ref, 12);
+        assertEquals(LocalVirtualActorI64.AdmissionKind.CLOSED, closed.kind());
+        assertSame(closed, runtime.try_send(ref, 13), "closed responses must not allocate");
+    }
+
 }
