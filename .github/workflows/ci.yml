@@ -106,9 +106,9 @@ jobs:
             grep -Fqx "ORES_TEST|SUMMARY|${expected}" "$out"
             test "$(grep -c '^ORES_TEST|SUMMARY|' "$out")" -eq 1
             if [ "$variant" = "failed" ]; then
-              grep -Fq "native Oreslang test suite failed" "$out"
+              grep -Fq "native AttoLang test suite failed" "$out"
             else
-              grep -Fq "native Oreslang test suite was empty or only skipped/filtered" "$out"
+              grep -Fq "native AttoLang test suite was empty or only skipped/filtered" "$out"
             fi
             if grep -Fq "UNEXPECTED_SUCCESS" "$out"; then
               echo "Expected guest rejection continued past require_success: $variant" >&2
