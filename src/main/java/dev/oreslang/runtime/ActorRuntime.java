@@ -1797,10 +1797,8 @@ public final class ActorRuntime implements AutoCloseable {
     public <T> QueueAdmissionTransaction.AdmissionResult<T> admitCurrentQueueCommand(
             QueueAdmissionTransaction<T> transaction,
             int producerSlot,
-            long expectedGeneration,
-            T frozenPayload) {
+            long expectedGeneration) {
         Objects.requireNonNull(transaction, "transaction");
-        Objects.requireNonNull(frozenPayload, "frozenPayload");
         requireCallerRuntimeAffinity("admit authenticated queue command");
         ActorCell<?> actor = currentActor.get();
         if (actor == null || actor.parent == null || actor.stopped.get()
@@ -1824,6 +1822,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 ActorId sender = authority.admittedSender();
                 long mailboxSequence = actor.activeMail.sequence();
+                @SuppressWarnings("unchecked")
+                T frozenPayload = (T) actor.activeMail.value();
                 return transaction.admitAuthorized(
                         sender, mailboxSequence, expectedGeneration, frozenPayload);
             }
