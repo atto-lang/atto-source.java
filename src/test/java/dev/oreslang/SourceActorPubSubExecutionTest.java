@@ -34,6 +34,35 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void attolangExtensionPreservesAuthorityAndPayloadRejections() throws Exception {
+        // Compile-negative protections must survive the .ores -> .atto migration.
+        assertEquals(
+                fixture("actor-pubsub-reject-actor-authority.ores"),
+                fixture("actor-pubsub-reject-actor-authority.atto"));
+        assertEquals(
+                fixture("actor-pubsub-reject-nested-callable-topic.ores"),
+                fixture("actor-pubsub-reject-nested-callable-topic.atto"));
+
+        PolyglotException authorityError = assertThrows(
+                PolyglotException.class,
+                () -> run(
+                        fixture("actor-pubsub-reject-actor-authority.atto"),
+                        "source-pubsub-actor-authority-rejected.atto"));
+        assertTrue(
+                authorityError.getMessage().contains(
+                        "actor code may resolve an existing Topic<T> but cannot define one"),
+                authorityError.getMessage());
+
+        PolyglotException payloadError = assertThrows(
+                PolyglotException.class,
+                () -> run(
+                        fixture("actor-pubsub-reject-nested-callable-topic.atto"),
+                        "source-pubsub-nested-callable-topic-rejected.atto"));
+        assertTrue(payloadError.getMessage().contains("Topic payload"),
+                payloadError.getMessage());
+    }
+
+    @Test
     void actorMayJoinMultipleGroupsAndLeavingOnePreservesTheOther() throws Exception {
         assertEquals(
                 "ready-b|b-still-live",
