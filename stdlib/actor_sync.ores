@@ -98,6 +98,9 @@ define module actor_sync as
     let mut int epoch;
     let mut int revision;
     let mut bool gap = false;
+    // Minimum authenticated snapshot epoch needed to clear a poison.
+    // A higher announcement cannot be erased by an older checkpoint.
+    let mut int required_epoch = 0;
 
     pub constructor(int epoch, int revision) {
       if epoch < 1 || revision < 0 || revision >= 2147483647; do
@@ -115,6 +118,9 @@ define module actor_sync as
       // deltas. Poison incremental consumption until an authenticated full
       // checkpoint is installed. A stale lower epoch never unpoisons.
       if event_epoch > self.epoch; do
+        if event_epoch > self.required_epoch; do
+          self.required_epoch = event_epoch;
+        fi
         self.gap = true;
         return false;
       fi
@@ -135,17 +141,19 @@ define module actor_sync as
     // revision or replace equal-version data at the same epoch.
     // The trusted receiver must validate schema, origin and snapshot bytes.
     pub apply_snapshot(mut self)(int next_epoch, int next_revision): bool {
-      if next_epoch < self.epoch || next_revision < self.revision ||
-         next_epoch < 1 || next_revision < 0 ||
-         next_revision >= 2147483647; do
+      if next_epoch < self.epoch || next_epoch < self.required_epoch ||
+         next_revision < self.revision || next_epoch < 1 ||
+         next_revision < 0 || next_revision >= 2147483647; do
         return false;
       fi
-      if next_epoch == self.epoch && next_revision == self.revision; do
+      if next_epoch == self.epoch && next_revision == self.revision &&
+         self.gap == false; do
         return false;
       fi
       self.epoch = next_epoch;
       self.revision = next_revision;
       self.gap = false;
+      self.required_epoch = 0;
       return true;
     }
 
