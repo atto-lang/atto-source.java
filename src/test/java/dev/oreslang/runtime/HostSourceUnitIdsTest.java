@@ -330,11 +330,14 @@ final class HostSourceUnitIdsTest {
         OresProjectConfig config = OresProjectConfig.discover(valid, Map.of());
         assertEquals("project/emoji-🙂.atto", HostSourceUnitIds.of(valid, config));
 
-        Path colon = temp.resolve("colon:name.atto");
+        Path colon;
         try {
+            colon = temp.resolve("colon:name.atto");
             Files.writeString(colon, "pub fnc answer() -> int { return 42; }");
-        } catch (java.io.IOException | SecurityException unsupported) {
+        } catch (java.nio.file.InvalidPathException | java.io.IOException
+                 | SecurityException unsupported) {
             Assumptions.assumeTrue(false, "filename unsupported by host filesystem");
+            return;
         }
         assertThrows(IllegalArgumentException.class, () -> HostSourceUnitIds.of(colon, config));
     }
