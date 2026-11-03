@@ -182,7 +182,7 @@ final class AttoSourceAdmissionTest {
         Files.writeString(entry, """
                 import class Column from "./column.atto";
                 pub fnc main(): void {
-                  let Column column = new Column(40);
+                  let mut Column column = new Column(40);
                   stdio.stdout.write(column.advance(2));
                   return;
                 }
@@ -218,7 +218,7 @@ final class AttoSourceAdmissionTest {
         Files.writeString(entry, """
                 import class TinyColumn from "./tiny-column.atto";
                 pub fnc main(): void {
-                  let TinyColumn column = new TinyColumn();
+                  let mut TinyColumn column = new TinyColumn();
                   column.add(42);
                   stdio.stdout.write(column.peek().unwrap());
                   return;

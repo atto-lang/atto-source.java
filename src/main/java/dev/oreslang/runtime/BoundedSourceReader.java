@@ -23,17 +23,30 @@ public final class BoundedSourceReader {
         return readWithByteCount(path).text();
     }
 
+    /** Fails closed where the platform cannot report a numeric owner. */
+    private static boolean ownedByRoot(Path link) {
+        try {
+            return Integer.valueOf(0).equals(
+                    Files.getAttribute(link, "unix:uid", LinkOption.NOFOLLOW_LINKS));
+        } catch (IOException | UnsupportedOperationException | IllegalArgumentException unknown) {
+            return false;
+        }
+    }
+
     public static ReadResult readWithByteCount(Path path) throws IOException {
         // AttoLang source admission is independent of the entrypoint used.
-        // Reject symlinked leaf AND ancestor paths before opening the source:
-        // a direct CLI read must enforce the same policy as linked imports.
+        // Reject a symlinked leaf and user-controlled symlinked ancestors before
+        // opening the source: a direct CLI read must enforce the same policy as
+        // linked imports. Root-owned ancestors are OS path aliases, such as /var
+        // and /tmp on macOS, and rejecting them would refuse every path below.
         // NOFOLLOW_LINKS additionally prevents a leaf-link swap at open time.
         Path absolute = path.toAbsolutePath().normalize();
         boolean atto = absolute.getFileName() != null
                 && absolute.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".atto");
         if (atto) {
             for (Path component = absolute; component != null; component = component.getParent()) {
-                if (Files.isSymbolicLink(component)) {
+                if (Files.isSymbolicLink(component)
+                        && (component.equals(absolute) || !ownedByRoot(component))) {
                     throw new SecurityException("symlinked .atto source path is not allowed: " + component);
                 }
             }
