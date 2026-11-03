@@ -55,8 +55,19 @@ final class AotReflectionTableV1Reader {
                     return Optional.empty();
                 }
             }
-            // Descriptors are compiler-owned data, not object, pointer, or actor capabilities.
-            return types.stream().filter(type -> type.typeIdHex().equals(typeIdHex)).findFirst();
+            // Bounded binary lookup, with no stream/lambda allocation or dynamic dispatch.
+            // Canonical lowercase hex has the same order as unsigned type-ID bytes.
+            int low = 0;
+            int high = types.size() - 1;
+            while (low <= high) {
+                int middle = (low + high) >>> 1;
+                TypeDescriptor candidate = types.get(middle);
+                int relation = candidate.typeIdHex().compareTo(typeIdHex);
+                if (relation == 0) return Optional.of(candidate);
+                if (relation < 0) low = middle + 1;
+                else high = middle - 1;
+            }
+            return Optional.empty();
         }
     }
 
