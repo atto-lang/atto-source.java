@@ -27,7 +27,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `84c2829aa3662e9bf5766c40102f7880bc244c68` and tree
   `4cc2363496f486349be87216cf02d7f7452642fb` are historical.
   On 2026-11-03, the **current proposed source PR head** is
-  `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`, with full Git root tree `53c7e44ad9fd4d384742c692ba18a75dd9edebcd`.
+  `539c59c60aeea796c6af1b9269dc7c4070da56b5`, with full Git root tree `b8f1239868a0e59ebee375bad9eca0e4e46de88f`.
   Only this current exact head/tree can enter a *new independent review*;
   any subsequent source change invalidates that pin.
 
@@ -48,7 +48,7 @@ for this candidate. This packet cannot be used as an authorization token.
   `clean test`, `-DfailIfNoTests=true`, five nonempty JUnit XML reports,
   both critical actor guest testcases, and both concurrency race testcases.
   Source workflow blob `67b5dbf3f8e67c6d4e0543a5fca370338cf2555c`
-  is part of current source tree `53c7e44ad9fd4d384742c692ba18a75dd9edebcd`, not a
+  is part of current source tree `b8f1239868a0e59ebee375bad9eca0e4e46de88f`, not a
   carrier-workflow authorization. New source workflow
   [run 41588063452](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41588063452)
   was still queued when this packet was updated; its verdict is not
@@ -163,8 +163,8 @@ Related tracking:
 
 ## 2026-11-03 failed-suspension critical admission cleanup
 
-Latest Java source head: `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`; exact full Git root tree:
-`53c7e44ad9fd4d384742c692ba18a75dd9edebcd`. `OresEvalRootNode.java` blob
+Latest Java source head: `539c59c60aeea796c6af1b9269dc7c4070da56b5`; exact full Git root tree:
+`b8f1239868a0e59ebee375bad9eca0e4e46de88f`. `OresEvalRootNode.java` blob
 `78faa483ad79076a39d8f28244afe71bd35a449b` adds immediate
 ticket revocation when critical cleanup registration fails or
 `SourceTask.suspend` rejects an invalid second terminal step. The
@@ -174,8 +174,8 @@ testing nor private-source export is authorized by this packet.
 
 ## 2026-11-03 focused ticket-unwind regression evidence (source remains private)
 
-Current restricted Java source PR #2422 head `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`; root Git tree
-`53c7e44ad9fd4d384742c692ba18a75dd9edebcd`. This head extracts the exact `SourceTask` critical orphan
+Current restricted Java source PR #2422 head `539c59c60aeea796c6af1b9269dc7c4070da56b5`; root Git tree
+`b8f1239868a0e59ebee375bad9eca0e4e46de88f`. This head extracts the exact `SourceTask` critical orphan
 ticket revocation into a package-private `CriticalTicketCleanup` helper
 (blob `da1365b7d3e31fc831779a92b3c6e2016996e22e`).
 Four authored JUnit tests cover immediate release, queued cancellation,
@@ -198,8 +198,8 @@ remain hard gates. **NO PRIVATE SOURCE EXPORT IS AUTHORIZED.**
 
 ## 2026-11-03 all-suite Java test evidence hardening
 
-Latest source commit `8c9a1cc7a22660c9f30a1e37a961a51cd67dbe7c`, exact root tree
-`53c7e44ad9fd4d384742c692ba18a75dd9edebcd`, workflow blob
+Latest source commit `539c59c60aeea796c6af1b9269dc7c4070da56b5`, exact root tree
+`b8f1239868a0e59ebee375bad9eca0e4e46de88f`, workflow blob
 `a92ed18acadff1313fcc9bf6938c544f8a3320da`.
 The CI verifier now refuses zero-test Surefire suites and any nonzero
 skips/failures/errors across **all six selected JUnit reports**. Existing
@@ -208,3 +208,21 @@ changes are not proof that Maven, JUnit, actors or GraalVM executed.
 
 Independent approval, source-main protection, carrier authorization and
 private destination allowlist requirements remain unchanged and unsatisfied.
+
+
+## 2026-11-03 follow-up: validated lock preconditions (pending CI)
+
+Current Java PR #2422 at the exact head and tree recorded above adds an
+explicit monitor-contract check to both critical publication stages. The
+compiler transaction must hold the **Critical -> Task -> Type** monitors
+through pending-proof verification and both commits; a host caller without
+those locks is rejected before publication. The additional controlled
+interleaving JUnit case blocks the ownership checker at the critical monitor,
+revokes typing with a failing linked-metadata check, then asserts no positive
+Task or critical permit escapes after the failed publication. A second negative
+assertion rejects an unguarded direct critical preflight.
+
+This is source review and **authored test code, not JUnit execution**.
+The source org's CI runner admission must still yield a nonzero executed-step
+receipt before compiler and guest results can be accepted. The independent
+review/branch-protection/private-source export holds remain unchanged.
