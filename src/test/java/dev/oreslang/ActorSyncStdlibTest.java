@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -15,6 +16,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 // Source-level .ores stdlib execution; NOT native durable storage or actor
@@ -23,13 +25,47 @@ final class ActorSyncStdlibTest {
     @TempDir Path temp;
 
     private String run(String source) throws Exception {
-        Path entry=temp.resolve("sync-case.ores");
+        return runNamed(source, "sync-case.ores");
+    }
+
+    private String runAtto(String source) throws Exception {
+        return runNamed(source, "sync-case.atto");
+    }
+
+    private String runNamed(String source, String fileName) throws Exception {
+        Path entry=temp.resolve(fileName);
         Files.writeString(entry,source);
         ByteArrayOutputStream output=new ByteArrayOutputStream();
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
             ExecutionProfile.serverJit(), Set.of(), Map.of(),
             output, new ByteArrayOutputStream());
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void nativeSyncIsRegisteredInCompilerOwnedHostedStd() throws Exception {
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("actor_sync.ores"));
+        assertEquals(Files.readString(Path.of("stdlib/actor_sync.ores")),
+                     CoreLibrarySources.source("std/actor_sync"));
+    }
+
+    @Test
+    void actualAttoEntryRunsCanonicalGuestFixtureWithoutLegacyExtension() throws Exception {
+        String fixture=Files.readString(Path.of(
+            "src/test/resources/actor-sync-v1/highest-epoch-fence.ores"));
+        assertEquals("""
+                false
+                false
+                false
+                true
+                true
+                false
+                true
+                8
+                false
+                true
+                true
+                """, runAtto(fixture));
     }
 
     @Test
