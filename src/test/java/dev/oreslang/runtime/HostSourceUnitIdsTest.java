@@ -322,4 +322,20 @@ final class HostSourceUnitIdsTest {
         assertTrue(result.units().containsKey("project/consumer.atto"));
         assertTrue(result.units().containsKey("external/1/producer.atto"));
     }
+
+    @Test
+    void filesystemUnitNamesMustMatchLogicalUnicodePolicy() throws Exception {
+        Path valid = temp.resolve("emoji-🙂.atto");
+        Files.writeString(valid, "pub fnc answer() -> int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(valid, Map.of());
+        assertEquals("project/emoji-🙂.atto", HostSourceUnitIds.of(valid, config));
+
+        Path colon = temp.resolve("colon:name.atto");
+        try {
+            Files.writeString(colon, "pub fnc answer() -> int { return 42; }");
+        } catch (java.io.IOException | SecurityException unsupported) {
+            Assumptions.assumeTrue(false, "filename unsupported by host filesystem");
+        }
+        assertThrows(IllegalArgumentException.class, () -> HostSourceUnitIds.of(colon, config));
+    }
 }
