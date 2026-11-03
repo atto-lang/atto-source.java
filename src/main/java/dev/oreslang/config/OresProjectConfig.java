@@ -110,7 +110,11 @@ public final class OresProjectConfig {
             Path candidate = cursor.resolve(MANIFEST_NAME);
             // NOFOLLOW detection is necessary: a dangling/symlinked
             // canonical manifest must fail, not downgrade to a legacy file.
-            if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+            // Files.exists returns false for some access/IO failures, which could
+            // incorrectly downgrade an unreadable canonical manifest.
+            // Our closed-world NOFOLLOW probe distinguishes only ENOENT;
+            // all other errors fail closed instead of selecting legacy.
+            if (existsNoFollow(candidate)) {
                 return load(candidate, environment);
             }
             // Migration fallback only. A same-directory .atto.pkg.toml wins.
