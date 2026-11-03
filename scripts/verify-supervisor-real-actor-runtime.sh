@@ -4,7 +4,7 @@
 # Example: bash scripts/verify-supervisor-real-actor-runtime.sh "$(git rev-parse HEAD)"
 set -euo pipefail
 
-if [[ "${1:-}" != "" && "${#1}" -eq 40 && "$1" =~ ^[[:xdigit:]]+$ ]]; then
+if [[ "${1:-}" =~ ^[a-f0-9]{40}$ ]]; then
   expected="$1"
 else
   echo "SUPERVISOR_REAL_RUNTIME_DENIED: exact expected 40-hex commit required" >&2
