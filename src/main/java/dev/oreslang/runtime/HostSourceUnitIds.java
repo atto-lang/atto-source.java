@@ -196,7 +196,7 @@ final class HostSourceUnitIds {
             }
             int cp = Character.codePointAt(id, i);
             int type = Character.getType(cp);
-            if (Character.isISOControl(cp)
+            if (cp == ':' || Character.isISOControl(cp)
                     || type == Character.FORMAT
                     || type == Character.LINE_SEPARATOR
                     || type == Character.PARAGRAPH_SEPARATOR) {
