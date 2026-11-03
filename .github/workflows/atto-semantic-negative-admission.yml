@@ -8,6 +8,8 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/compiler/ProtectedScalarMirV1.java'
+      - 'src/test/java/dev/oreslang/ProtectedScalarMirV1Test.java'
       - 'src/test/java/dev/oreslang/AttoNegativeDiagnosticsAdmissionTest.java'
       - 'src/test/java/dev/oreslang/AttoSourceAdmissionTest.java'
       - 'src/test/java/dev/oreslang/AttoCacheShapeAdmissionTest.java'
@@ -47,7 +49,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
-            -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest \
+            -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest,ProtectedScalarMirV1Test \
             clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
@@ -71,6 +73,15 @@ jobs:
               "AttoCacheShapeAdmissionTest": {
                   "integerColumnsBoundedLoopsAndOptionLinkAsAttoGuest",
               },
+              "ProtectedScalarMirV1Test": {
+                  "actualParserAndCompilerEntryPointProduceCheckedMIR",
+                  "checkedReadRegionReturnsOnlyOwnedScalarWithoutMutatingState",
+                  "mutationUnderReadLeaseHasDistinctSemanticDiagnostic",
+                  "protectedRegionAliasCannotEscapeReadOrWriteScope",
+                  "unsupportedProtectedEffectsAndUnsafeModeChangesRemainClosed",
+                  "virtualActorUsesFencedMailboxAndSettlesOverflowControl",
+                  "noUnprovenHeapOrEscapedStateCanBeLowered",
+              },
           }
           total = 0
           for suite, methods in expected.items():
@@ -88,6 +99,7 @@ jobs:
                   raise SystemExit(f"Missing required JUnit cases {suite}: {sorted(missing)}")
               total += tests
           print(f"ATTO_JAVA_JUNIT_EVIDENCE=PASS suites={len(expected)} executed_tests={total}")
+          print("ATTO_SCALAR_PROTECTED_MIR=JAVA_HOST_VM_PROOF_ONLY")
           print("ATTO_NATIVE_LRU_FIXTURES=NOT_EXECUTED")
           print("ATTO_OTHER_BACKENDS=NOT_EXECUTED")
           PY
