@@ -130,4 +130,23 @@ final class AotStaticTypeOfQueryV1Test {
                 error.getMessage());
     }
 
+
+    @Test
+    void committedAttoDeclarationFixtureBindsDeterministically() throws Exception {
+        final String attoSource;
+        try (var stream = AotStaticTypeOfQueryV1Test.class.getResourceAsStream(
+                "/aot-reflection/closed_nominal.atto")) {
+            assertNotNull(stream, "missing committed .atto public nominal fixture");
+            attoSource = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        var result = OresCompiler.compileStaticTypeOfQueryV1(
+                attoSource, "pkg@revision1", "type_of<Person>()");
+        var table = AotReflectionTableV1Reader.decode(result.descriptorTable());
+        assertEquals(1, table.types().size());
+        assertEquals(result.typeIdHex(), table.types().getFirst().typeIdHex());
+        assertEquals("visible", table.types().getFirst().publicFields().getFirst().name());
+        assertFalse(new String(result.descriptorTable(), StandardCharsets.UTF_8)
+                .contains("hidden_secret_marker"));
+    }
+
 }
