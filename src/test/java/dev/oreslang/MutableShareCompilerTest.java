@@ -4,15 +4,22 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -81,6 +88,34 @@ final class MutableShareCompilerTest {
             context.eval(Source.newBuilder("ores", program, "legacy-compatibility.ores").build());
         }
         assertEquals("9", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void canonicalAttoEntrypointChecksAndRunsGuardedOwnership(@TempDir Path directory)
+            throws Exception {
+        // Unlike direct SourceBuilder smoke, this traverses the AttoLang
+        // bounded file reader, project graph, guest compiler and runtime.
+        Path entry = directory.resolve("guarded-owner.atto");
+        String source = fixture("guarded-mutable-share.atto")
+                .replace("pub routine main(): void", "pub fnc main(): void");
+        Files.writeString(entry, source, StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals("9", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void canonicalAttoEntrypointRejectsUnguardedMutationBeforeRun(@TempDir Path directory)
+            throws Exception {
+        Path entry = directory.resolve("unguarded-owner.atto");
+        Files.writeString(entry, fixture("unguarded-mutable-share.atto")
+                + "\npub fnc main(): void { bad(); return; }\n", StandardCharsets.UTF_8);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+        assertTrue(error.getMessage().contains("rt mut share requires"), error.getMessage());
     }
 
     @Test
