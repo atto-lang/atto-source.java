@@ -97,6 +97,21 @@ public final class LinkedMacroImports {
                 throw new IllegalArgumentException(
                         "macro import source missing after graph resolution: " + sourceId);
             }
+            // The import resolution map is an already-linked fact, but not
+            // authority to bind compiler-only macros to ambient host paths.
+            // Runtime imports may retain legacy absolute spelling; importing
+            // a public macro requires a relocatable project-root/relative path.
+            String importPath = imported.path().replace('\\', '/');
+            if ((importPath.startsWith("/")
+                    || importPath.matches("^[A-Za-z]:/.*"))
+                    && source.modules().stream()
+                            .flatMap(module -> module.declarations().stream())
+                            .anyMatch(declaration -> declaration instanceof Ast.MacroDecl macro
+                                    && macro.visibility() == Ast.Visibility.PUBLIC)) {
+                throw new IllegalArgumentException(
+                        "public compile-time macros cannot be imported from an "
+                                + "absolute host path; use a portable .atto module import");
+            }
             for (Ast.ModuleDecl module : source.modules()) {
                 for (Ast.Decl declaration : module.declarations()) {
                     if (!(declaration instanceof Ast.MacroDecl macro)
