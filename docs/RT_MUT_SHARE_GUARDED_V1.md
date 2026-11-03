@@ -43,7 +43,7 @@ shared-memory capability remains mandatory under the runtime's isolate policy.
 
 ## Compiler tests
 
-Java: `MutableShareCompilerTest` has 36 authored JUnit tests covering distinct
+Java: `MutableShareCompilerTest` has 38 authored JUnit tests covering distinct
 AST forms, runtime handle identity (including nested sharing), exclusive-loan
 non-upgrade, invalid mutable objects/local mutexes/borrows/generics, forged
 nominals, restricted-operand admission order, nested capability denial, and
@@ -90,6 +90,24 @@ compatibility identifiers; changing them is not part of this ownership gate.
 - The cross-organization private-source transfer hold remains active.
   Source-free test plans can pin Git blobs, but they do not authorize
   private compiler-source transfer into an alternate organization.
+
+
+### Stacked Java source-admission integration
+
+The integration branch based directly on Java PR #2460 additionally exercises
+`LinkedProgramRunner` with a **real filesystem `.atto` entrypoint**, rather
+than only passing a source name into Graal's preserved `ores` runtime ID.
+Its two extra JUnit cases prove a guarded write from a compiled `.atto` file
+and compile-time rejection of an ordinary object passed to `rt mut share`.
+These are **authored tests, not validated evidence** until exact-head
+Maven/JUnit runs with recorded job steps.
+
+The ownership modifications were applied by matching each patch hunk
+uniquely against #2460's newer source tree. In particular,
+`OresEvalRootNode` preserves the imported-class linking changes introduced
+by #2460; no full-file overwrite of the newer evaluator was performed.
+This is a stacked draft pending independent review and both parents'
+integration gates.
 
 ## Future admission gates
 
