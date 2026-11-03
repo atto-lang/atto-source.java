@@ -27,7 +27,7 @@ public final class SharedReactorPoolCheck {
     static final class Io implements SharedReactorPool.Reactor, AutoCloseable {
         final Selector selector;
         final Pipe pipe;
-        final AtomicInteger active = new AtomicInteger(), delivered = new AtomicInteger();
+        final AtomicInteger active = new AtomicInteger(), delivered = new AtomicInteger(), wakes = new AtomicInteger();
         final Set<Long> polls = ConcurrentHashMap.newKeySet(), executions = ConcurrentHashMap.newKeySet();
         volatile SharedReactorPool pool;
         int pending;
@@ -36,7 +36,7 @@ public final class SharedReactorPoolCheck {
             pipe.source().configureBlocking(false);
             pipe.source().register(selector, SelectionKey.OP_READ);
         }
-        @Override public void wake() { selector.wakeup(); }
+        @Override public void wake() { wakes.incrementAndGet(); selector.wakeup(); }
         void emit() throws Exception { check(pipe.sink().write(ByteBuffer.wrap(new byte[]{1})) == 1); }
         @Override public void poll(boolean mayWait) {
             check(active.incrementAndGet() == 1); IN_POLL.set(true);
@@ -96,7 +96,9 @@ public final class SharedReactorPoolCheck {
             CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
             pool.execute(() -> { entered.countDown(); await(release); }); await(entered);
             AtomicInteger done = new AtomicInteger();
+            int wakesBeforeHotQueue = io.wakes.get();
             for (int i = 0; i < 1024; ++i) check(pool.try_submit(done::incrementAndGet));
+            check(io.wakes.get() == wakesBeforeHotQueue); // no poller while execution blocks
             check(!pool.try_submit(done::incrementAndGet));
             release.countDown(); pool.close(); check(done.get() == 1024);
         }
