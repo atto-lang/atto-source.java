@@ -50,7 +50,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
-            -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest,ProtectedScalarMirV1Test \
+            -Dtest=AttoNegativeDiagnosticsAdmissionTest,AttoSourceAdmissionTest,AttoCacheShapeAdmissionTest,ProtectedScalarMirV1Test,StateContainerAccessGateTest,StateContainerVirtualActorConcurrencyTest \
             clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
@@ -73,6 +73,16 @@ jobs:
               },
               "AttoCacheShapeAdmissionTest": {
                   "integerColumnsBoundedLoopsAndOptionLinkAsAttoGuest",
+              },
+              "StateContainerAccessGateTest": {
+                  "compatibleReadersAndWriterAreExclusiveWithoutParking",
+                  "shutdownRevokesExistingLeasesAndCannotResurrectAuthority",
+                  "writeLeaseIsRevokedEvenIfHolderKeepsItAfterClose",
+                  "readerReleaseAfterClosingGateDoesNotResurrectWriter",
+              },
+              "StateContainerVirtualActorConcurrencyTest": {
+                  "concurrentReadWriteGateNeverOverlapsIncompatibleLeases",
+                  "concurrentLogicalActivationPublishesExactlyOneInitializer",
               },
               "ProtectedScalarMirV1Test": {
                   "actualParserAndCompilerEntryPointProduceCheckedMIR",
