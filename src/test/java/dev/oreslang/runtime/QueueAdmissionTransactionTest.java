@@ -90,8 +90,9 @@ final class QueueAdmissionTransactionTest {
         QueueAdmissionTransaction<String> second =
                 new QueueAdmissionTransaction<>(2, 2);
         ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId queueOwner = ActorRuntime.ActorId.create();
 
-        var admitted = first.admitAuthorized(sender, 7, first.generation(), "message");
+        var admitted = first.admitAuthorized(queueOwner, sender, 7, first.generation(), "message");
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED, admitted.status());
         var delivery = admitted.delivery().orElseThrow();
         assertThrows(IllegalStateException.class, () ->
@@ -127,12 +128,12 @@ final class QueueAdmissionTransactionTest {
         assertEquals(1, transaction.reservedCompletions());
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.COMPLETION_FULL,
                 transaction.admitAuthorized(
-                        sender, 2, transaction.generation(), "second").status());
+                        queueOwner, sender, 2, transaction.generation(), "second").status());
 
         transaction.pollCompletion().orElseThrow();
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED,
                 transaction.admitAuthorized(
-                        sender, 3, transaction.generation(), "third").status());
+                        queueOwner, sender, 3, transaction.generation(), "third").status());
     }
 
     @Test
@@ -140,10 +141,11 @@ final class QueueAdmissionTransactionTest {
         QueueAdmissionTransaction<String> transaction =
                 new QueueAdmissionTransaction<>(2, 2);
         ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId queueOwner = ActorRuntime.ActorId.create();
 
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.STALE_GENERATION,
                 transaction.admitAuthorized(
-                        sender, 9, transaction.generation() + 1, "stale").status());
+                        queueOwner, sender, 9, transaction.generation() + 1, "stale").status());
         assertEquals(0, transaction.outstandingIngress());
         assertEquals(0, transaction.reservedCompletions());
         assertEquals(0, transaction.pendingCount());
@@ -174,13 +176,14 @@ final class QueueAdmissionTransactionTest {
         QueueAdmissionTransaction<String> transaction =
                 new QueueAdmissionTransaction<>(1, 1);
         ActorRuntime.ActorId sender = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId queueOwner = ActorRuntime.ActorId.create();
         var admitted = transaction.admitAuthorized(
-                sender, 3, transaction.generation(), "committed");
+                queueOwner, sender, 3, transaction.generation(), "committed");
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.ADMITTED, admitted.status());
 
         transaction.close();
         assertEquals(QueueAdmissionTransaction.AdmissionStatus.CLOSED,
-                transaction.admitAuthorized(sender, 4, transaction.generation(), "late").status());
+                transaction.admitAuthorized(queueOwner, sender, 4, transaction.generation(), "late").status());
 
         var delivery = transaction.pollDelivery().orElseThrow();
         transaction.complete(delivery, QueueAdmissionTransaction.CompletionStatus.CONSUMED);
