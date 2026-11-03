@@ -65,7 +65,7 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units, projectConfig);
 
         if (policy != null) {
@@ -177,7 +177,7 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units, projectConfig);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -384,13 +384,14 @@ public final class LinkedProgramRunner {
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions,
+            HostSourceUnitIds.Admission admission,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
         // Enforce recursion depth before host realpath I/O. A back-edge to an
         // already-admitted unit must not consume another unit quota slot.
         budget.checkDepth(depth);
         Path normalized = unit.toAbsolutePath().normalize();
-        String id = HostSourceUnitIds.of(normalized, projectConfig);
+        String id = admission.id(normalized, projectConfig);
         if (units.containsKey(id)) return;
         budget.checkCanAdmitUnit(depth);
 
@@ -435,7 +436,7 @@ public final class LinkedProgramRunner {
             String targetId = HostSourceUnitIds.of(resolvedTarget, projectConfig);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
-                    budget, depth + 1);
+                    admission, budget, depth + 1);
         }
     }
 
