@@ -49,15 +49,19 @@ jobs:
           mvn -B -ntp -Dores.runtime.carriers=java \
             -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
             -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest \
-            test
+            clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
           # A compiled class alone is not guest-execution evidence. Require
           # Surefire's concrete JUnit XML and both real guest test cases.
           guest_report=target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml
           syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
-          test -s "$guest_report"
-          test -s "$syntax_report"
+          for report in "$guest_report" "$syntax_report" \
+            target/surefire-reports/TEST-dev.oreslang.CriticalBodyEffectsTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
+            test -s "$report"
+          done
           grep -Fq 'name="actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop' "$guest_report"
           grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
           grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
