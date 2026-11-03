@@ -2498,9 +2498,10 @@ public final class OresEvalRootNode extends RootNode {
 
         /**
          * Scheduler-facing lowering substrate for a bounded non-suspending
-         * lexical critical body. The compiler intentionally does NOT admit
-         * source critical blocks yet: actor-owned resource identity, transitive
-         * effects and guest acceptance fixtures remain independent gates.
+         * lexical critical body. Only the compiler's restricted actor-owned,
+         * independently typed and ownership-checked critical subset is
+         * executable; transitive effects and guest acceptance remain separate
+         * verification gates.
          *
          * No guest body executes from a Future settlement callback. A queued
          * admission resumes through SourceTask.suspend/OresScheduler only.
@@ -2523,12 +2524,24 @@ public final class OresEvalRootNode extends RootNode {
                     () -> new IllegalStateException("critical entry lost actor execution identity"));
             CriticalGate gate = actorCriticalGate();
             OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
-            SourceCleanupFrame cleanup = task.registerSourceCleanup((owner, finished) -> {
-                // This is an authenticated cancellation-unwind turn; it also
-                // reclaims an already-granted but not-yet-resumed ticket.
-                releaseCriticalAdmission(gate, admission);
-                finished.accept(owner, SourceFlow.normal());
-            });
+            // Ticket admission precedes cleanup registration. If registration
+            // itself fails, the ticket must not escape without an unwind owner.
+            final SourceCleanupFrame cleanup;
+            try {
+                cleanup = task.registerSourceCleanup((owner, finished) -> {
+                    // This is an authenticated cancellation-unwind turn; it
+                    // reclaims an already-granted but not-yet-resumed ticket.
+                    releaseCriticalAdmission(gate, admission);
+                    finished.accept(owner, SourceFlow.normal());
+                });
+            } catch (RuntimeException | Error registrationFailure) {
+                try {
+                    releaseCriticalAdmission(gate, admission);
+                } catch (RuntimeException | Error releaseFailure) {
+                    suppressCleanupFailure(registrationFailure, releaseFailure);
+                }
+                throw registrationFailure;
+            }
             SourceValueCont afterAdmission = (owner, value, failure) -> {
                 if (failure != null) {
                     owner.disarmSourceCleanup(cleanup);
@@ -2605,7 +2618,21 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 afterAdmission.accept(task, value, failure);
             } else {
-                task.suspend(admission, afterAdmission);
+                try {
+                    task.suspend(admission, afterAdmission);
+                } catch (RuntimeException | Error suspensionFailure) {
+                    // suspend() can reject a second terminal step. That error
+                    // must not leave a queued or already-promoted ticket alive
+                    // until a cancellation unwind that may never execute.
+                    try {
+                        releaseCriticalAdmission(gate, admission);
+                    } catch (RuntimeException | Error releaseFailure) {
+                        suppressCleanupFailure(suspensionFailure, releaseFailure);
+                    } finally {
+                        task.disarmSourceCleanup(cleanup);
+                    }
+                    throw suspensionFailure;
+                }
             }
         }
 
