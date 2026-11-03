@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/test/java/dev/oreslang/MutableShareCompilerTest.java'
+      - 'src/test/resources/atto/ownership/**'
       - 'src/main/java/dev/oreslang/parser/**'
       - 'src/main/java/dev/oreslang/types/**'
       - 'src/main/java/dev/oreslang/runtime/CapabilityChecker.java'
@@ -35,6 +36,14 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify canonical AttoLang ownership fixtures exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s src/test/resources/atto/ownership/guarded-mutable-share.atto
+          test -s src/test/resources/atto/ownership/unguarded-mutable-share.atto
+          test ! -e src/test/resources/atto/ownership/guarded-mutable-share.ores
+          test ! -e src/test/resources/atto/ownership/unguarded-mutable-share.ores
       - name: Execute exact-head compiler ownership and mutex JUnit tests
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
