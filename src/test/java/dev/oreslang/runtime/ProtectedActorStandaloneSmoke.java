@@ -275,6 +275,30 @@ public final class ProtectedActorStandaloneSmoke {
         cases++;
     }
 
+    private static void senderCannotForgeMessageCompletion() {
+        var executed = new AtomicInteger();
+        try (var runtime = new LocalVirtualActorI64("app", "Forged", 1, 1,
+                ignored -> message -> executed.incrementAndGet(),
+                notice -> { throw new AssertionError("unexpected CONTROL"); })) {
+            var ref = runtime.resolve("one");
+            var accepted = runtime.try_send(ref, 7);
+            check(accepted.admitted(), "forgery test must admit work");
+            var receipt = accepted.completion();
+            check(!(receipt instanceof java.util.concurrent.CompletableFuture),
+                    "sender must never receive a writable CompletableFuture");
+            var downstream = receipt.thenRun(() -> { });
+            downstream.toCompletableFuture().complete(null);
+            check(!receipt.isDone(), "child completion cannot forge parent receipt");
+            rejects(runtime::close, "unexecuted work still blocks shutdown");
+            check(executed.get() == 0, "guest turn not executed yet");
+            check(runtime.run_one(ref), "execute after attempted forgery");
+            check(receipt.join() == LocalVirtualActorI64.Outcome.PROCESSED,
+                    "only runtime records successful completion");
+            check(executed.get() == 1, "guest executed exactly once");
+        }
+        cases++;
+    }
+
     public static void main(String[] args) throws Exception {
         scalarLeaseAndOverflow();
         closeRevokesOutstandingGateLoans();
@@ -285,6 +309,7 @@ public final class ProtectedActorStandaloneSmoke {
         physicalHandlerBlocksTeardown();
         foreignRuntimeRefNeverCrossesDirectory();
         concurrentBackpressureAndSettlement();
+        senderCannotForgeMessageCompletion();
         System.out.println("PROTECTED_ACTOR_JDK21_SMOKE|passed=" + cases);
     }
 }
