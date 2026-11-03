@@ -37,6 +37,8 @@ jobs:
         run: bash tests/test_native_test_manifests.sh
       - name: Reject AttoLang harness .ores downgrades (source-free)
         run: bash tests/test_atto_harness_migration.sh
+      - name: Verify canonical AttoLang manifest/import/CLI admission (source-free)
+        run: bash tests/test_atto_manifest_reconciliation.sh
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
