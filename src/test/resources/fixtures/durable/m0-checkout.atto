@@ -1,0 +1,10 @@
+// AttoLang durable M0. Compiler semantic/manifest fixture only; not executable.
+define activity PaymentProvider as
+    charge(int cents) -> int { return cents; }
+    refund(int cents) -> bool { return cents > 0; }
+end
+
+define workflow Checkout as
+    normalize(int order_id) -> int { return order_id; }
+    run(int order_id) -> int { return normalize(order_id); }
+end
