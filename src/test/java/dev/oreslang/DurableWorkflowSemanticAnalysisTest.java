@@ -140,6 +140,14 @@ final class DurableWorkflowSemanticAnalysisTest {
 
         assertArrayEquals(first.canonicalBytes(), second.canonicalBytes());
         assertEquals(first.sha256(), second.sha256());
+        byte[] canonical = first.canonicalBytes();
+        assertEquals(first.sha256(), java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(canonical)),
+                "manifest SHA must bind the complete canonical UTF-8 bytes");
+        byte originalFirstByte = canonical[0];
+        canonical[0] = (byte) (originalFirstByte ^ 0xff);
+        assertEquals(originalFirstByte, first.canonicalBytes()[0],
+                "callers must not mutate the manifest through returned byte arrays");
         // Emit source-backed canonical metadata as a receipt in Surefire XML.
         // This is not a guest history or runtime replay receipt.
         System.out.println("DURABLE_M0_MANIFEST_SHA256=" + first.sha256());
