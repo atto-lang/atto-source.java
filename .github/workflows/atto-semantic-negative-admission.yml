@@ -9,6 +9,7 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/main/java/dev/oreslang/compiler/ProtectedScalarMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
       - 'src/test/java/dev/oreslang/ProtectedScalarMirV1Test.java'
       - 'examples/attolang/**'
       - 'src/test/java/dev/oreslang/AttoNegativeDiagnosticsAdmissionTest.java'
@@ -87,6 +88,7 @@ jobs:
               "ProtectedScalarMirV1Test": {
                   "actualParserAndCompilerEntryPointProduceCheckedMIR",
                   "actualAttoFilesUseBoundedSourceReaderAndRestrictedMir",
+                  "scalarAttoFileAdmissionRejectsBudgetSymlinkAndMalformedUtf8",
                   "checkedReadRegionReturnsOnlyOwnedScalarWithoutMutatingState",
                   "mutationUnderReadLeaseHasDistinctSemanticDiagnostic",
                   "protectedRegionAliasCannotEscapeReadOrWriteScope",
