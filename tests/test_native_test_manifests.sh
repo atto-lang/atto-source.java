@@ -45,12 +45,12 @@ while IFS='|' read -r source_path id_path suite count; do
   fi
   checked=$((checked + 1))
 done <<'NATIVE_SUITES'
-examples/native-testing-regressions-40.ores|tests/native-testing-regressions-40.expected-ids.txt|stdlib|40
-tests/test_std_harness_regressions.ores|tests/test_std_harness_regressions.expected-ids.txt|native-testing-core|30
-tests/test_std_harness_scalar_parity_batch4.ores|tests/test_std_harness_scalar_parity_batch4.expected-ids.txt|compiler-scalar-parity-batch4|24
-tests/test_std_harness_meta_batch4.ores|tests/test_std_harness_meta_batch4.expected-ids.txt|harness-meta-batch4|12
-tests/test_std_harness_accounting_batch5.ores|tests/test_std_harness_accounting_batch5.expected-ids.txt|harness-accounting-batch5|16
-tests/portable-scalar-v2-20261101.ores|tests/portable-scalar-v2.expected-ids.txt|portable-scalar-v2|10
+examples/native-testing-regressions-40.atto|tests/native-testing-regressions-40.expected-ids.txt|stdlib|40
+tests/test_std_harness_regressions.atto|tests/test_std_harness_regressions.expected-ids.txt|native-testing-core|30
+tests/test_std_harness_scalar_parity_batch4.atto|tests/test_std_harness_scalar_parity_batch4.expected-ids.txt|compiler-scalar-parity-batch4|24
+tests/test_std_harness_meta_batch4.atto|tests/test_std_harness_meta_batch4.expected-ids.txt|harness-meta-batch4|12
+tests/test_std_harness_accounting_batch5.atto|tests/test_std_harness_accounting_batch5.expected-ids.txt|harness-accounting-batch5|16
+tests/portable-scalar-v2-20261101.atto|tests/portable-scalar-v2.expected-ids.txt|portable-scalar-v2|10
 NATIVE_SUITES
 
 [[ "$checked" -eq 6 ]] || { echo 'expected exactly six native suites' >&2; exit 1; }
