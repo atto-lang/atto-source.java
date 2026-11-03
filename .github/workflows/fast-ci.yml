@@ -44,6 +44,8 @@ jobs:
         run: bash tests/test_ores_test_expected_ids.sh
       - name: Verify six native ordered case manifests (source-free)
         run: bash tests/test_native_test_manifests.sh
+      - name: Reject AttoLang harness .ores downgrades (source-free)
+        run: bash tests/test_atto_harness_migration.sh
       - name: Verify read-only Actions triage unit tests
         run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
       - name: Set up GraalVM
