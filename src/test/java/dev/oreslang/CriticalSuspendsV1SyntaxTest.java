@@ -346,6 +346,64 @@ final class CriticalSuspendsV1SyntaxTest {
                 () -> Ast.CheckedCriticalBlocks.require(program, actorCritical(program), 1L));
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt()
+            throws Exception {
+        Ast.Program program = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        java.util.concurrent.atomic.AtomicReference<Throwable> olderFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> newerFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread older = new Thread(() -> {
+            try {
+                dev.oreslang.types.OwnershipChecker.check(program);
+            } catch (Throwable failure) {
+                olderFailure.set(failure);
+            }
+        }, "older-critical-ownership");
+        Thread newer = new Thread(() -> {
+            try {
+                dev.oreslang.types.OwnershipChecker.check(program);
+            } catch (Throwable failure) {
+                newerFailure.set(failure);
+            }
+        }, "newer-critical-ownership");
+
+        // Both checkers must reach the final publication monitor while it is
+        // held. The second check has a newer epoch and revokes the first.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            older.start();
+            long firstDeadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (older.isAlive() && older.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < firstDeadline)
+                Thread.sleep(2L);
+            assertEquals(Thread.State.BLOCKED, older.getState(),
+                    "older pass must reach the critical publication monitor");
+
+            newer.start();
+            long secondDeadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (newer.isAlive() && newer.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < secondDeadline)
+                Thread.sleep(2L);
+            assertEquals(Thread.State.BLOCKED, newer.getState(),
+                    "newer pass must reach the critical publication monitor");
+        }
+        older.join(5_000L);
+        newer.join(5_000L);
+        assertFalse(older.isAlive(), "older ownership attempt must terminate");
+        assertFalse(newer.isAlive(), "newer ownership attempt must terminate");
+        assertInstanceOf(IllegalStateException.class, olderFailure.get(),
+                "older pending epoch must be rejected");
+        assertNull(newerFailure.get(), "latest ownership attempt must succeed");
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                program, actorCritical(program), epoch));
+    }
+
     @Test void CriticalWordsInCommentsDoNotChangeExecution() {
         assertDoesNotThrow(() -> Parser.parse("""
                 // async fnc and critical suspends are deprecated source spellings

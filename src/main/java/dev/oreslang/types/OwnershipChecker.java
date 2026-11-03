@@ -195,16 +195,24 @@ public final class OwnershipChecker {
                         throw new IllegalStateException(
                                 "critical typing changed during ownership analysis");
                     }
-                    // New typing checks cannot invalidate this generation
-                    // between these two commits. A superseding ownership pass
-                    // is also blocked until the pair completes.
+                    // Prove the pending epoch, exact typing generation and
+                    // complete critical node set BEFORE Task publication.
+                    // This prevents a rejected critical publish from leaving
+                    // behind a positive Task epoch.
+                    CriticalPublishAuthority authority =
+                            new CriticalPublishAuthority(
+                                    checkedProgram, taskCheckEpoch, typingGeneration);
+                    Ast.CheckedCriticalBlocks.preparePublish(
+                            checkedProgram, taskCheckEpoch,
+                            pendingCriticalAdmissions, authority);
+                    // New type/ownership checks cannot supersede either
+                    // admission between these two commits while all three
+                    // monitors remain held.
                     Ast.CheckedTaskCaptures.publish(
                             checkedProgram, taskCheckEpoch, pendingTaskCaptures);
                     Ast.CheckedCriticalBlocks.publish(
                             checkedProgram, taskCheckEpoch,
-                            pendingCriticalAdmissions,
-                            new CriticalPublishAuthority(
-                                    checkedProgram, taskCheckEpoch, typingGeneration));
+                            pendingCriticalAdmissions, authority);
                 }
             }
         }

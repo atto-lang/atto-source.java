@@ -1638,6 +1638,23 @@ public final class Ast {
                     -checkEpoch);
         }
 
+        /**
+         * The exact Program must still be in this ownership attempt's
+         * unpublished state. Called under the cross-ledger publication locks,
+         * before a positive Task epoch can become visible.
+         */
+        private static synchronized void requirePendingEpoch(
+                Program program, long checkEpoch) {
+            java.util.Objects.requireNonNull(program, "pending ownership Program");
+            if (checkEpoch <= 0)
+                throw new IllegalArgumentException("pending ownership epoch must be positive");
+            expunge();
+            Long pending = PROGRAM_EPOCHS.get(new ProgramIdentityKey(program, null));
+            if (pending == null || pending.longValue() != -checkEpoch)
+                throw new IllegalStateException(
+                        "critical ownership attempt superseded before Task publication");
+        }
+
         public static synchronized void publish(
                 Program program,
                 long checkEpoch,
@@ -1822,6 +1839,29 @@ public final class Ast {
         }
 
         /**
+         * Validate the complete pending critical transaction BEFORE publishing
+         * any positive Task epoch. The caller must hold Critical -> Task ->
+         * Type monitors through this validation and both publications.
+         * This method only checks proof/candidates; it grants no authority.
+         */
+        public static synchronized void preparePublish(
+                Program program, long epoch, java.util.Set<CriticalStmt> checked,
+                dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
+            java.util.Objects.requireNonNull(program, "critical Program");
+            if (epoch <= 0)
+                throw new IllegalArgumentException("critical check epoch must be positive");
+            java.util.Objects.requireNonNull(checked, "critical admissions");
+            long typingGeneration = checked.isEmpty()
+                    ? 0L : dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            if (authority == null || !authority.permits(program, epoch, typingGeneration))
+                throw new IllegalStateException(
+                        "critical publish requires compiler-owned ownership authority");
+            for (CriticalStmt node : checked)
+                java.util.Objects.requireNonNull(node, "critical admission node");
+            CheckedTaskCaptures.requirePendingEpoch(program, epoch);
+        }
+
+        /**
          * Publish after BOTH typing and ownership succeed. Rechecking the
          * same Program invalidates older permissions through the shared Task
          * ownership epoch, even if a critical node object was reused.
@@ -1829,9 +1869,14 @@ public final class Ast {
         public static synchronized void publish(Program program, long epoch,
                 java.util.Set<CriticalStmt> checked,
                 dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
+            java.util.Objects.requireNonNull(program, "critical Program");
             if (epoch <= 0) throw new IllegalArgumentException(
                     "critical check epoch must be positive");
             java.util.Objects.requireNonNull(checked, "critical admissions");
+            // Validate the complete candidate set before revoking or altering
+            // previously published per-node permissions.
+            for (CriticalStmt node : checked)
+                java.util.Objects.requireNonNull(node, "critical admission node");
             // Record the exact typing generation, rather than only testing
             // that some successful type proof happens to exist now. Otherwise
             // a later successful recheck could reactivate an old ownership
