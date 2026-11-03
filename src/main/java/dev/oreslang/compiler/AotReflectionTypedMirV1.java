@@ -6,7 +6,6 @@ import dev.oreslang.parser.Parser;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * Narrow, explicitly opted-in typed MIR for a single guest-source declaration:
@@ -103,10 +102,14 @@ public final class AotReflectionTypedMirV1 {
      * it must not be exposed as a normal guest compilation or execution path.
      */
     public static Plan lowerSource(String source, String packageIdentityClaim) {
-        if (source == null || source.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
+        if (source == null || source.length() > MAX_SOURCE_BYTES ||
+                source.getBytes(StandardCharsets.UTF_8).length > MAX_SOURCE_BYTES) {
             throw invalid("source exceeds typed reflection MIR budget");
         }
-        Objects.requireNonNull(packageIdentityClaim, "package identity claim");
+        if (packageIdentityClaim == null || packageIdentityClaim.isBlank() ||
+                packageIdentityClaim.length() > 512) {
+            throw invalid("bounded package identity claim required");
+        }
 
         Ast.Program parsed = Parser.parse(source);
         if (parsed.namespace() != null || !parsed.imports().isEmpty() ||
