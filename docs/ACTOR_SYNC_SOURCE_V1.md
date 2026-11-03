@@ -34,3 +34,9 @@ These two files have **identical Git blobs** in [platform-conformance PR #300](h
 ### Next
 
 The first true actor-sync guest acceptance requires `define isolated actor Cart as ... end`, state + critical handle_state, asynchronous storage effect without holding a carrier, commit-before-reply, restart/recovery, replication between two actual actors/processes, stale writer rejection, and exact source guest oracles across five compilers. Do not implement these with Java-only class semantics or blocking SQLite calls inside the guest actor turn.
+
+## 2026-11-03 higher-generation checkpoint hardening
+
+An announced actor epoch strictly higher than the replica's stored epoch poisons incremental progress and records the **highest observed epoch**. Additional announcements can only raise that watermark. A full snapshot whose epoch is lower than the recorded maximum cannot clear the fence, even if its state revision or payload matches. After a separately authenticated snapshot meeting the watermark, `apply_snapshot` clears the poison; the same exact epoch/revision is accepted only when clearing an existing poison. This is metadata policy, not storage authority or an authenticated snapshot implementation.
+
+The same source is pinned to platform conformance as Git blob `3aae079ffe3be8bc2eb2b77bacbd6bddf7e1ce65`. A third shared fixture `highest-epoch-fence.ores` is Git blob `ae9063472b39f554fa195d79283bd9952e57483d`. Both the Java guest fixture and the C++ host epoch fence still lack stepful GitHub Actions receipts. The target public language is **AttoLang**, using `.atto` source files; the `.ores` files in this transitional Java compiler are compatibility fixtures, not proof of `.atto` admission.
