@@ -64,6 +64,9 @@ jobs:
             target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
             test -s "$report"
+            # A file created by a skipped or empty suite is not test evidence.
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            ! grep -Eq '(skipped|failures|errors)="[1-9][0-9]*"' "$report"
           done
           grep -Fq 'name="actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop' "$guest_report"
           grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
@@ -73,7 +76,6 @@ jobs:
           grep -Fq 'name="queuedTicketIsRetractedWithoutReleasingAnotherOwner' "$cleanup_report"
           grep -Fq 'name="retiredAdmissionIsSafeToUnwind' "$cleanup_report"
           grep -Fq 'name="cancellationRacingWithPromotionCannotLeakActorOwnedTicket' "$cleanup_report"
-          ! grep -Eq 'skipped="[1-9]|failures="[1-9]|errors="[1-9]' "$guest_report" "$syntax_report" "$cleanup_report"
       - name: Mark evidence scope
         run: |
           echo "Scoped Java host-ticket tests plus native Graal actor critical guest fixture."
