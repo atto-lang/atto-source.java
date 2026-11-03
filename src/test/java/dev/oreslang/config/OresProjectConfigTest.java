@@ -268,6 +268,70 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void canonicalManifestSymlinkCannotDowngradeToLegacySibling() throws Exception {
+        Path target = temp.resolve("manifest-target.toml");
+        Files.writeString(target, "schema_version = \"1\"\\n");
+        Path canonical = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        try {
+            Files.createSymbolicLink(canonical, target);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException failure) {
+            org.junit.jupiter.api.Assumptions.abort("symlinks unavailable: " + failure);
+        }
+        Files.writeString(temp.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME),
+                "schema_version = \"1\"\\n[project]\\nname = \"legacy\"\\n");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(entry, "pub fnc main(): void { return; }");
+        assertThrows(SecurityException.class,
+                () -> OresProjectConfig.discover(entry, Map.of()));
+    }
+
+    @Test
+    void danglingCanonicalManifestSymlinkMustNotSelectLegacySibling() throws Exception {
+        Path canonical = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        try {
+            Files.createSymbolicLink(canonical, temp.resolve("missing.toml"));
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException failure) {
+            org.junit.jupiter.api.Assumptions.abort("symlinks unavailable: " + failure);
+        }
+        Files.writeString(temp.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME),
+                "schema_version = \"1\"\\n");
+        assertThrows(SecurityException.class,
+                () -> OresProjectConfig.discover(temp.resolve("main.atto"), Map.of()));
+    }
+
+    @Test
+    void canonicalManifestRejectsSymlinkedParentDirectory() throws Exception {
+        Path actual = temp.resolve("actual");
+        Files.createDirectories(actual);
+        Files.writeString(actual.resolve(OresProjectConfig.MANIFEST_NAME),
+                "schema_version = \"1\"\\n");
+        Files.writeString(actual.resolve("main.atto"),
+                "pub fnc main(): void { return; }");
+        Path alias = temp.resolve("alias");
+        try {
+            Files.createSymbolicLink(alias, actual);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException failure) {
+            org.junit.jupiter.api.Assumptions.abort("symlinks unavailable: " + failure);
+        }
+        assertThrows(SecurityException.class,
+                () -> OresProjectConfig.discover(alias.resolve("main.atto"), Map.of()));
+    }
+
+    @Test
+    void canonicalManifestRejectsInvalidUtf8AndOversizedInput() throws Exception {
+        Path canonical = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.write(canonical, new byte[] {(byte) 0xC0, (byte) 0xAF});
+        assertThrows(java.nio.charset.MalformedInputException.class,
+                () -> OresProjectConfig.load(canonical, Map.of()));
+        Files.writeString(canonical,
+                "schema_version = \"1\"\\n" + "#".repeat(65 * 1024));
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.load(canonical, Map.of()));
+        assertTrue(rejected.getMessage().contains("exceeds"));
+    }
+
+    @Test
     void rejectsUnsupportedSchemaVersion() throws Exception {
         Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
         Files.writeString(manifest, "schema_version = \"999\"\n");
