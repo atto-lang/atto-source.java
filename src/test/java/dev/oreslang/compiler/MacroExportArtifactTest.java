@@ -144,5 +144,18 @@ final class MacroExportArtifactTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> MacroExportArtifact.fromDeclaration("Producer\nForged", original));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroExportArtifact.fromDeclaration("Producer\\uD800", original));
+
+        Ast.MacroDecl forgedName = new Ast.MacroDecl(
+                "identity\\nInjected",
+                original.visibility(),
+                original.parameters(),
+                original.resultKind(),
+                original.body(),
+                original.site());
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroExportArtifact.fromDeclaration("Producer", forgedName));
     }
 }
