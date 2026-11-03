@@ -58,4 +58,45 @@ for suite in "${suites[@]}"; do
   total=$((total + executed))
   echo "EXECUTED $suite: $executed tests"
 done
+# The generic suite-count gate is insufficient: one unrelated test could
+# satisfy it while the new source-guest fixture or security negatives never ran.
+# Require concrete Surefire method names from the exact-head XML documents.
+python3 - <<'PY'
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+expected = {
+    "dev.oreslang.SourceActorPubSubExecutionTest": {
+        "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
+        "portableTryPublishRejectedUntilNativeLowering",
+    },
+    "dev.oreslang.runtime.ActorPubSubV1ContractTest": {
+        "admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText",
+    },
+    "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
+        "zeroRecipientPublicationsAllocateSequenceButDoNotReplay",
+        "reliableRejectionRollsBackEverySubscriberReservation",
+    },
+}
+for suite, required_methods in expected.items():
+    report = Path("target/surefire-reports") / f"TEST-{suite}.xml"
+    root = ET.parse(report).getroot()
+    cases = {
+        case.get("name"): case
+        for case in root.iter("testcase")
+    }
+    missing = required_methods - cases.keys()
+    if missing:
+        raise SystemExit(
+            f"Required pub/sub test methods NOT_EXECUTED in {suite}: {sorted(missing)}")
+    for method in required_methods:
+        case = cases[method]
+        if any(case.find(tag) is not None for tag in ("failure", "error", "skipped")):
+            raise SystemExit(f"Required pub/sub test did not PASS: {suite}.{method}")
+    print(f"EXACT_METHOD_EVIDENCE {suite}: {', '.join(sorted(required_methods))}")
+PY
+
+# The fixture is not a portable try_publish implementation. Preserve its
+# exact on-disk hash alongside the executed JUnit methods in CI logs.
+sha256sum contracts/v1/fixtures/actor-pubsub-legacy-fanout-two.atto
 echo "ACTOR_PUBSUB_EXACT_HEAD_PASS sha=$actual executed_tests=$total"
