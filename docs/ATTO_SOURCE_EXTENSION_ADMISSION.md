@@ -5,7 +5,7 @@ This change originally admitted `.atto` alongside legacy `.ores`. The stacked At
 ## Scope and safety
 
 - CLI `--check`, `--build-analysis` and direct execution now recognize `.atto` and retain `.ores` compatibility.
-- Both explicit `./file.atto` and extensionless imports work. In the stacked canonical milestone an unqualified source import selects `.atto` before a same-directory `.ores` or `.java` twin. Existing `.ores` / `.java` references must be explicit when a canonical twin exists.
+- Both explicit `./file.atto` and extensionless imports work. In the stacked canonical milestone an unqualified import **from a `.atto` file selects only `.atto`**; a same-basename `.ores`/`.java` never becomes an implicit fallback. Explicit legacy paths remain supported for migration.
 - `.atto` is not Java source and does not grant mixed-Java interop capabilities. Native Truffle MIME/language identity remains unchanged for compatibility.
 - Invalid UTF-8, oversized inputs, transitive import budgets, dependency capabilities, and owner paths must obey the same checks as legacy guest source.
 - JUnit `AttoSourceAdmissionTest` constructs actual `.atto` entry/helper files and runs an `answer() == 42` import through the linked Java/Graal guest pipeline, plus a colliding legacy-name control.
@@ -62,12 +62,14 @@ user-facing `attolang` CLI spelling. The internal `dev.oreslang` Java
 packages and Truffle identifiers are temporary ABI compatibility details,
 not recommendations for new projects.
 
-**Resolution priority per search directory:** an explicitly suffixed
-`cache.atto`, `cache.ores`, or `cache.java` is exact; extensionless
-`cache` selects `cache.atto`, then legacy `cache.ores`, then
-`cache.java`. The compiler searches configured project roots before
-ambient paths; it does **not** skip a selected project-local legacy module
-to find an ambient Atto module with the same import name.
+**Resolution priority:** an explicitly suffixed `cache.atto`,
+`cache.ores`, or `cache.java` is exact. For an importer ending in
+`.atto`, an extensionless `cache` resolves **only** `cache.atto`;
+if absent, the search continues through the configured roots and then
+fails closed. It must not silently bind a legacy `.ores` or `.java`
+candidate. Legacy importers retain fallback to `cache.ores`, then
+`cache.java` when no canonical `.atto` candidate exists.
+Project roots still precede ambient roots among eligible candidates.
 
 **Project discovery:** climb from importer directory toward the filesystem
 root; at each directory prefer `.atto.pkg.toml` to
