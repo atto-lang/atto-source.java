@@ -74,6 +74,13 @@ scalar tuples still pass. This does not remove owned synchronized handles
 or prevent legal `SharedMutex` operations; it prevents using a broader
 trait result to forge the narrower unguarded scoped READ exception.
 
+The bounded `ThreadSafetyTraits` validation runs **before** generic
+`TypeAutoTraits` recursion. It rejects malformed or adversarially deep
+referent metadata (256-depth, 100,000-step limits), rather than allowing
+recursive capability derivation to exhaust the compiler first. JUnit and
+the frontend probe both include a 4,096-level nested `Option` negative;
+these latest cases remain unexecuted on the unmodified Java toolchain.
+
 The extra gate is deliberately fail-closed. Lifting it for a wrapper
 requires a verified runtime lowering, allocation/lifetime and lane
 proof, not only changing the static classifier.
