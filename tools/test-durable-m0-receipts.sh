@@ -29,34 +29,44 @@ write_suite() {
 for pair in "${expected[@]}"; do write_suite "${pair%:*}" "${pair#*:}"; done
 java "$script_dir/DurableM0ReceiptVerifier.java" "$work/reports"
 should_reject() {
-  local name="$1"
+  local name="$1" expected_diagnostic="$2"
   if java "$script_dir/DurableM0ReceiptVerifier.java" "$work/reports" >"$work/out" 2>&1; then
     echo "RECEIPT_NEGATIVE_NOT_CAUGHT=$name" >&2; exit 1
   fi
-  echo "RECEIPT_NEGATIVE_CAUGHT=$name"
+  if ! grep -Fq -- "$expected_diagnostic" "$work/out"; then
+    echo "RECEIPT_NEGATIVE_WRONG_REASON=$name; expected=$expected_diagnostic" >&2
+    cat "$work/out" >&2
+    exit 1
+  fi
+  echo "RECEIPT_NEGATIVE_CAUGHT=$name|diagnostic=$expected_diagnostic"
 }
 # Inflated suite metadata without additional actual testcase nodes.
 sed -i 's/tests="5"/tests="6"/' "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
-should_reject inflated-count
+should_reject inflated-count 'unexpected test count'
 write_suite dev.oreslang.AttoSourceExtensionTest 5
 # Hidden per-test failure must not be masked by fabricated zero-failure metadata.
 sed -i 's@case-1"/>@case-1"><failure/></testcase>@' "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
-should_reject hidden-failure
+should_reject hidden-failure 'hidden failed or skipped case'
 write_suite dev.oreslang.AttoSourceExtensionTest 5 0 1
-should_reject skipped-suite
+should_reject skipped-suite 'nonpassing skipped'
 write_suite dev.oreslang.AttoSourceExtensionTest 5
 rm "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
-should_reject missing-report
+should_reject missing-report 'expected exactly 4 Surefire XML reports'
 write_suite dev.oreslang.AttoSourceExtensionTest 5
 printf '<!DOCTYPE testsuite [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><testsuite>&xxe;</testsuite>\n' > "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
-should_reject forbidden-doctype
+should_reject forbidden-doctype 'DOCTYPE'
 write_suite dev.oreslang.AttoSourceExtensionTest 5
 mv "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml" "$work/replacement.xml"
 ln -s "$work/replacement.xml" "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
-should_reject symlink-report
+should_reject symlink-report 'missing or linked test report'
+# Reset all earlier mutations; later manifest checks must not pass only because
+# a preceding symlink-report attack is still present.
+rm "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
+write_suite dev.oreslang.AttoSourceExtensionTest 5
+java "$script_dir/DurableM0ReceiptVerifier.java" "$work/reports" >/dev/null
 write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
 sed -i 's/DURABLE_M0_MANIFEST_SHA256=./DURABLE_M0_MANIFEST_SHA256=f/' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
-should_reject forged-manifest-digest
+should_reject forged-manifest-digest 'canonical manifest receipt digest mismatch'
 write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
 sed -i 's@DURABLE_M0_MANIFEST_HEX=@INVALID_MANIFEST_HEX=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
-should_reject absent-manifest-hex
+should_reject absent-manifest-hex 'missing or noncanonical DURABLE_M0_MANIFEST_HEX'
