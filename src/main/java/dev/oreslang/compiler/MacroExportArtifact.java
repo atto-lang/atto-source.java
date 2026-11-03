@@ -104,14 +104,20 @@ record MacroExportArtifact(
                 || value.length() > MacroSourceUnitIdentity.MAX_UNIT_ID_CHARS) {
             throw invalid("invalid " + label);
         }
+        // Flat module and macro names follow the source lexer's identifier
+        // alphabet: a Unicode BMP letter or underscore, then letters,
+        // underscores or ASCII digits. Dotted/qualified names are not source
+        // ModuleDecl or MacroDecl names; qualification occurs at lookup.
+        // This also rejects path separators, whitespace and control bytes.
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
-            if (c < 0x20 || c == 0x7f) {
-                throw invalid("invalid " + label);
+            boolean letterOrUnderscore = Character.isLetter(c) || c == '_';
+            if (i == 0 ? !letterOrUnderscore
+                    : !(letterOrUnderscore || c >= '0' && c <= '9')) {
+                throw invalid("invalid " + label + " (not a flat source identifier)");
             }
         }
-        // A programmatic AST or untrusted envelope cannot smuggle malformed
-        // Unicode through identifiers the source lexer would have rejected.
+        // Keep strict Unicode admission independent of AST constructor checks.
         strictUtf8(value);
     }
 
