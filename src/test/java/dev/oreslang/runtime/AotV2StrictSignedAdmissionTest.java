@@ -92,18 +92,20 @@ final class AotV2StrictSignedAdmissionTest {
                 SIGNATURE,AotV2DetachedByteProofTest.ARTIFACT,keys,Set.of()));
     }
     @Test void enforcesJcsUnicodeOrderingAndControlEscapes() {
-        var text=Map.<String,Object>of("\uE000",new java.math.BigDecimal("2"),
+        var keys=Map.<String,Object>of("\uE000",new java.math.BigDecimal("2"),
                 "😀",new java.math.BigDecimal("1"));
         String expected="{\"😀\":1,\"\uE000\":2}";
-        if(!expected.equals(AotV2StrictSignedAdmission.canonicalize(text)))
+        if(!expected.equals(AotV2StrictSignedAdmission.canonicalize(keys)))
             throw new AssertionError("JCS UTF16 key ordering drift");
         if(!"{\"x\":0}".equals(AotV2StrictSignedAdmission.canonicalize(
                 Map.of("x",new java.math.BigDecimal("-0.0000")))))
             throw new AssertionError("JCS negative zero drift");
-        if(!"{\"x\":\"\\\\\\\"\\\\\\\\\\\\b\\\\t\\\\n\"}".equals(
-                AotV2StrictSignedAdmission.canonicalize(Map.of("x","\"\\\\\b\t\n"))))
-            throw new AssertionError("JCS escape drift");
-        reject(()->AotV2StrictSignedAdmission.canonicalize(Map.of("broken","\uD800")));
+        String escaped=AotV2StrictSignedAdmission.canonicalize(Map.of("x","\b\t\n"));
+        String expectedEscaped="{\"x\":\"\\b\\t\\n\"}";
+        if(!expectedEscaped.equals(escaped))
+            throw new AssertionError("JCS escaped controls drift: "+escaped);
+        reject(()->AotV2StrictSignedAdmission.canonicalize(
+                Map.of("broken",new String(new char[]{(char)0xd800}))));
     }
     public static void main(String[] args) throws Exception {
         var self=new AotV2StrictSignedAdmissionTest();
