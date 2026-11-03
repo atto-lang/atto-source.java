@@ -1,0 +1,8 @@
+pub define class Person as
+  pub int visible: 7
+  int hidden_secret_marker: 9
+end
+
+pub fnc main(): TypeDescriptor {
+  return type_of<Person>();
+}
