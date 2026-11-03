@@ -232,14 +232,24 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         }
 
         if (problem == null) {
-            synchronized (slot) {
-                if (slot.pending.peekFirst() != next)
-                    throw new IllegalStateException("virtual actor FIFO corrupted");
-                slot.pending.removeFirst();
-                // Keep processing true until ticket settlement.
-            }
             try {
-                next.receipt.settle(VirtualActorActivationRegistry.Disposition.PROCESSED);
+                // The accepted receipt must settle BEFORE the envelope can
+                // leave the mailbox. A failed settlement retains the message
+                // and quarantines the actor, rather than replaying its guest
+                // side effects or losing an outstanding credit.
+                try {
+                    next.receipt.settle(VirtualActorActivationRegistry.Disposition.PROCESSED);
+                } catch (Throwable settlementFailure) {
+                    synchronized (slot) { slot.failed = true; }
+                    throw settlementFailure;
+                }
+                synchronized (slot) {
+                    if (slot.pending.peekFirst() != next) {
+                        slot.failed = true;
+                        throw new IllegalStateException("virtual actor FIFO corrupted");
+                    }
+                    slot.pending.removeFirst();
+                }
                 next.result.complete(Outcome.PROCESSED);
                 return true;
             } finally {
@@ -266,14 +276,17 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
             throw new IllegalStateException("supervisor CONTROL notification failed; accepted messages retained",
                     notifierFailure);
         }
+        // Keep every accepted envelope discoverable until its failure receipt
+        // has settled. If settlement itself fails, the slot stays failed and
+        // retains the original queued message for explicit investigation.
+        for (Envelope envelope : abandoned) {
+            envelope.receipt.settle(VirtualActorActivationRegistry.Disposition.FAILED_CONTROL_NOTIFIED);
+            envelope.result.complete(Outcome.FAILED_CONTROL_NOTIFIED);
+        }
         synchronized (slot) {
             if (slot.pending.size() != abandoned.size())
                 throw new IllegalStateException("failed virtual actor mailbox accounting changed");
             slot.pending.clear();
-        }
-        for (Envelope envelope : abandoned) {
-            envelope.receipt.settle(VirtualActorActivationRegistry.Disposition.FAILED_CONTROL_NOTIFIED);
-            envelope.result.complete(Outcome.FAILED_CONTROL_NOTIFIED);
         }
         Turn retired;
         synchronized (slot) {
@@ -350,19 +363,22 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                         if (slot.initializing || slot.processing || slot.failed || slot.retiring
                                 || !slot.pending.isEmpty())
                             throw new IllegalStateException("virtual actor directory has outstanding work or disposal");
+                        // Stage all retirement records before marking the
+                        // directory closed. Array growth or allocation failure
+                        // must never strand a closed directory with undisposed
+                        // resource-owning handlers.
+                        if (slot.handler != null)
+                            retired.add(new RetiredTurn(slot, slot.handler));
                     }
                 }
                 registry.close();
                 closed = true;
                 shutdownDisposing = true;
-                for (Slot slot : slots.values()) {
-                    synchronized (slot) {
-                        if (slot.handler != null) {
-                            retired.add(new RetiredTurn(slot, slot.handler));
-                            slot.handler = null;
-                            slot.activation = null;
-                            slot.retiring = true;
-                        }
+                for (RetiredTurn item : retired) {
+                    synchronized (item.slot()) {
+                        item.slot().handler = null;
+                        item.slot().activation = null;
+                        item.slot().retiring = true;
                     }
                 }
             } finally {
