@@ -20,6 +20,17 @@ final class AttoSourceAdmissionTest {
     @TempDir Path temp;
 
     @Test
+    void exactSharedAttoScalarCorpusExecutesAndReturnsFortyTwo() throws Exception {
+        Path corpus = Path.of("contracts", "atto-parity-v1", "add.atto").toAbsolutePath();
+        assertTrue(Files.isRegularFile(corpus), "shared cross-backend .atto corpus must be present");
+        assertEquals("pub fnc main(): int { return 40 + 2; }\n", Files.readString(corpus));
+        var result = LinkedProgramRunner.runWithExitStatus(
+                corpus, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(42, result.exitStatus(), "Java/Graal guest must execute the unmodified shared .atto source");
+    }
+
+    @Test
     void attoIsNativeGuestSourceNotJavaHostSource() {
         MixedSourceUnit unit = MixedSourceUnit.parse(
                 temp.resolve("cache.atto"),
