@@ -54,6 +54,15 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         public Outcome join() { return promise.join(); }
         public boolean isDone() { return promise.isDone(); }
 
+        /**
+         * Nonblocking composition surface for host runtime integration.
+         * A caller converting this minimal stage to CompletableFuture gets
+         * only an independent copy, never the mutable mailbox promise.
+         */
+        public CompletionStage<Outcome> stage() {
+            return promise.minimalCompletionStage();
+        }
+
         /** Caller may observe completion, never complete the original. */
         public CompletionStage<Void> thenRun(Runnable callback) {
             return promise.thenRun(Objects.requireNonNull(callback)).minimalCompletionStage();
