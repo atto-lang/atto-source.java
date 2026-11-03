@@ -61,9 +61,12 @@ final class AotV2ManifestPolicyTest {
         if(accepted!=41||rejected!=103)throw new AssertionError("wrong admission counts "+accepted+"/"+rejected);
     }
     @Test void rejectsUnsafeNumbersUnknownFieldsAndUnsafeRuntimePolicy(){
-        for(Object size:List.of(new BigDecimal("128.0000000000000001"),new BigDecimal("9007199254740992"),new BigDecimal("0"),"128",128)){
+        for(Object size:List.of(new BigDecimal("128.0000000000000001"),new BigDecimal("9007199254740992"),new BigDecimal("0"),
+                             new BigDecimal("1e100000000"),new BigDecimal("1e-100000000"),"128",128)){
             var m=base();child(m,"artifact").put("size_bytes",size);reject(()->AotV2ManifestPolicy.validateTree(m));
         }
+        var precise=base();child(precise,"artifact").put("size_bytes",new BigDecimal("128.000000000000000000000000000"));
+        if(AotV2ManifestPolicy.validateTree(precise).artifactSize()!=128)throw new AssertionError("integer spelling changed value");
         for(String f:List.of("guest_jit","interpreter_fallback","runtime_guest_compilation")){
             var m=base();child(m,"runtime").put(f,true);reject(()->AotV2ManifestPolicy.validateTree(m));
         }
