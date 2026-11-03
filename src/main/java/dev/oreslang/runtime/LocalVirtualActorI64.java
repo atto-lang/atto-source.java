@@ -171,9 +171,16 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         if (closed || closing) return new SendResult(AdmissionKind.CLOSED, null);
         if (!activate(reference)) {
             synchronized (slot) {
-                return new SendResult(
-                        slot.initializing ? AdmissionKind.ACTIVATING : AdmissionKind.UNAVAILABLE,
-                        null);
+                if (closed || closing) return new SendResult(AdmissionKind.CLOSED, null);
+                if (slot.initializing)
+                    return new SendResult(AdmissionKind.ACTIVATING, null);
+                // Publication may have finished between the failed activate
+                // attempt and acquiring this slot monitor. Do not falsely
+                // classify an already-published incarnation as unavailable:
+                // let the ordinary bounded admission path handle it below.
+                if (slot.failed || slot.retiring || slot.activation == null
+                        || !slot.activation.active())
+                    return new SendResult(AdmissionKind.UNAVAILABLE, null);
             }
         }
         synchronized (slot) {
