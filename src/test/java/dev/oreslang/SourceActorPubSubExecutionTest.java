@@ -4,6 +4,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -74,6 +75,7 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    @Timeout(30)
     void legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors() throws Exception {
         // This executes compiled guest actor receive handlers, unlike a
         // host-only EventBus unit test. It does not certify portable v1
