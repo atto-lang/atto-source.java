@@ -16,6 +16,15 @@ final class AttoCliSourceExtensionTest {
     @TempDir Path temp;
 
     @Test
+    void checkOnlyRecognizesCanonicalAttoSourceWithoutExecutingGuestCode() throws Exception {
+        Path path = temp.resolve("entry.atto");
+        Files.writeString(path, "pub routine main(): void { return; }");
+        assertEquals(0, OresMain.exitStatusForArgs(new String[] {
+                "--check", path.toString()
+        }), ".atto must enter the real linked compiler's check-only path");
+    }
+
+    @Test
     void buildAnalysisRecognizesAttoThenRejectsUnloweredDurableWorkflow() throws Exception {
         Path path = temp.resolve("durable.atto");
         Files.writeString(path, "define workflow Checkout as run(int id) -> int { return id; } end");
