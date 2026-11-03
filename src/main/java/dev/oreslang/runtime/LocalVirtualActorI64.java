@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -39,11 +40,36 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                          long incarnation, int failedAcceptedCount,
                          String errorClass) { }
 
-    public record SendResult(AdmissionKind kind, CompletableFuture<Outcome> completion) {
+    /**
+     * Externally read-only completion handle. Returning a mutable
+     * CompletableFuture would let senders forge success (or cancellation)
+     * before the mailbox receipt has been settled. Do not expose the backing
+     * promise or a writable view of the same promise.
+     */
+    public static final class Completion {
+        private final CompletableFuture<Outcome> promise = new CompletableFuture<>();
+
+        private Completion() { }
+
+        public Outcome join() { return promise.join(); }
+        public boolean isDone() { return promise.isDone(); }
+
+        /** Caller may observe completion, never complete the original. */
+        public CompletionStage<Void> thenRun(Runnable callback) {
+            return promise.thenRun(Objects.requireNonNull(callback)).minimalCompletionStage();
+        }
+
+        private void completeInternal(Outcome outcome) {
+            if (!promise.complete(Objects.requireNonNull(outcome)))
+                throw new IllegalStateException("virtual actor completion already settled");
+        }
+    }
+
+    public record SendResult(AdmissionKind kind, Completion completion) {
         public SendResult {
             Objects.requireNonNull(kind);
             if ((kind == AdmissionKind.ADMITTED) != (completion != null))
-                throw new IllegalArgumentException("only admitted turns have completion futures");
+                throw new IllegalArgumentException("only admitted turns have completion handles");
         }
         public boolean admitted() { return kind == AdmissionKind.ADMITTED; }
     }
@@ -58,7 +84,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     private static final class Envelope {
         final long value;
         VirtualActorActivationRegistry.Admission receipt;
-        final CompletableFuture<Outcome> result = new CompletableFuture<>();
+        final Completion result = new Completion();
         Envelope(long value) {
             this.value = value;
         }
@@ -271,7 +297,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
                     }
                     slot.pending.removeFirst();
                 }
-                next.result.complete(Outcome.PROCESSED);
+                next.result.completeInternal(Outcome.PROCESSED);
                 return true;
             } finally {
                 synchronized (slot) { slot.processing = false; }
@@ -302,7 +328,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         // retains the original queued message for explicit investigation.
         for (Envelope envelope : abandoned) {
             envelope.receipt.settle(VirtualActorActivationRegistry.Disposition.FAILED_CONTROL_NOTIFIED);
-            envelope.result.complete(Outcome.FAILED_CONTROL_NOTIFIED);
+            envelope.result.completeInternal(Outcome.FAILED_CONTROL_NOTIFIED);
         }
         synchronized (slot) {
             if (slot.pending.size() != abandoned.size())
