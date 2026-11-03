@@ -131,6 +131,24 @@ final class AttoSourceAdmissionTest {
     }
 
     @Test
+    void extensionlessAttoImportFailsClosedWhenOnlyLegacyTwinExists() throws Exception {
+        Path legacy = temp.resolve("answer.ores");
+        Path entry = temp.resolve("missing-canonical.atto");
+        Files.writeString(legacy, "pub fnc answer(): int { return 17; }");
+        Files.writeString(entry, """
+                import fnc answer from "./answer";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        var rejected = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+        assertTrue(rejected.getMessage().contains("does not resolve"));
+    }
+
+    @Test
     void attoPublicClassConstructorAndMutableReceiverLinkAcrossFiles() throws Exception {
         Path library = temp.resolve("column.atto");
         Path entry = temp.resolve("main-column.atto");
