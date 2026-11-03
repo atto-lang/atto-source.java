@@ -216,6 +216,19 @@ public final class SupervisorStopOnlyControlProof {
         check(denied, "STOP before asserted physical finalization admitted");
         registry.finalized(child, failedActor, 1);
         var permit = registry.beginStop(child, failedActor, 1, 1);
+        var secret = permit.nonce().toString();
+        check(!permit.toString().contains(secret),
+                "STOP ticket nonce leaked into diagnostic output");
+        check(!registry.stopReceipt(child).toString().contains(secret),
+                "containing STOP receipt leaked ticket nonce");
+        var restartNonce = java.util.UUID.randomUUID();
+        var restart = new SupervisorChildRegistry.RestartReservation(
+                child, failedActor, 1, restartNonce);
+        check(!restart.toString().contains(restartNonce.toString()),
+                "RESTART ticket nonce leaked into diagnostic output");
+        check(registry.committedTransitions().stream()
+                        .noneMatch(t -> t.toString().contains(secret)),
+                "STOP audit transition exposed its permit nonce");
         check(registry.snapshot(child).phase() == SupervisorChildRegistry.Phase.STOPPING,
                 "STOP did not quarantine generation");
         check(registry.stopReceipt(child).status()
@@ -251,6 +264,9 @@ public final class SupervisorStopOnlyControlProof {
         check(registry.stopReceipt(child).status()
                         == SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
                 "STOP lacked authoritative acknowledgment receipt");
+        check(registry.committedTransitions().stream()
+                        .noneMatch(t -> t.toString().contains(secret)),
+                "ACK transition leaked STOP secret nonce");
         denied = false;
         try { registry.beginStop(child, failedActor, 1, 2); }
         catch (IllegalStateException expected) { denied = true; }
