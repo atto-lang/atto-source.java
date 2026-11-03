@@ -6,6 +6,8 @@ on:
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/compiler/Durable*.java"
+      - "src/main/java/dev/oreslang/compiler/IncrementalCompiler.java"
+      - "src/main/java/dev/oreslang/compiler/ImportGraph.java"
       - "src/test/java/dev/oreslang/Durable*.java"
       - "src/test/java/dev/oreslang/AttoSourceExtensionTest.java"
       - "src/test/java/dev/oreslang/launcher/AttoCliSourceExtensionTest.java"
@@ -105,7 +107,7 @@ jobs:
             done
           done
           echo "DURABLE_M0_JUNIT|tests=$total|failures=$failed|errors=$errors|skipped=$skipped"
-          if (( total < 33 || failed != 0 || errors != 0 || skipped != 0 )); then
+          if (( total < 34 || failed != 0 || errors != 0 || skipped != 0 )); then
             echo "Durable M0 JUnit not fully executed/passing" >&2
             exit 1
           fi
