@@ -24,4 +24,31 @@ final class AttoMainAdmissionTest {
         assertEquals(0, OresMain.exitStatusForArgs(
                 new String[] {"--build-analysis", entry.toString()}));
     }
+    @Test
+    void checkUsesCanonicalAttoPackageManifest() throws Exception {
+        Path project = temp.resolve("attolang-project");
+        Path source = project.resolve("src");
+        Files.createDirectories(source);
+        Path entry = source.resolve("main.atto");
+        Files.writeString(source.resolve("answer.atto"), "pub fnc answer(): int { return 42; }");
+        Files.writeString(entry, """
+                import fnc answer from "./answer";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        Files.writeString(project.resolve(".atto.pkg.toml"), """
+                schema_version = "1"
+                [project]
+                name = "attolang-test"
+                [source]
+                roots = ["src"]
+                [entrypoints]
+                main = "src/main.atto"
+                """);
+        assertEquals(0, OresMain.exitStatusForArgs(
+                new String[] {"--check", entry.toString()}));
+    }
+
 }
