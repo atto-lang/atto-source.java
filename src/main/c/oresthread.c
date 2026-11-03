@@ -34,6 +34,7 @@ struct ores_carrier_pool {
     JavaVM *jvm;
     jobject executor;
     jmethodID carrier_loop;
+    jmethodID carriers_joined;
     pthread_t *threads;
     ores_carrier_arg *args;
     int max_threads;
@@ -167,10 +168,18 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         return 0;
     }
     pool->carrier_loop = (*env)->GetMethodID(env, executor_class, "nativeCarrierLoop", "(I)V");
-    (*env)->DeleteLocalRef(env, executor_class);
     if (pool->carrier_loop == NULL) {
+        (*env)->DeleteLocalRef(env, executor_class);
         free_pool(env, pool);
         throw_illegal_state(env, "nativeCarrierLoop(int) JNI callback is missing");
+        return 0;
+    }
+    /* Physical retirement is published only after the pthread reaper joins. */
+    pool->carriers_joined = (*env)->GetMethodID(env, executor_class, "nativeCarriersJoined", "()V");
+    (*env)->DeleteLocalRef(env, executor_class);
+    if (pool->carriers_joined == NULL) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "nativeCarriersJoined() JNI callback is missing");
         return 0;
     }
 
@@ -301,6 +310,14 @@ static void *carrier_reaper_main(void *raw) {
     jint status = (*jvm)->AttachCurrentThreadAsDaemon(
             jvm, (void **)&env, &attach);
     if (status == JNI_OK && env != NULL) {
+        /* All actor pthreads have been joined above. The executor may now
+         * report physical retirement, but not before this callback. Keep its
+         * JNI global reference rooted until the notification has returned. */
+        (*env)->CallVoidMethod(env, pool->executor, pool->carriers_joined);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
         free_pool(env, pool);
         (*jvm)->DetachCurrentThread(jvm);
     }
