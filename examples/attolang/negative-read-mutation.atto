@@ -1,0 +1,10 @@
+// EXPECT_COMPILE_ERROR: E_CRITICAL_READ_MUTATION (opt-in scalar MIR)
+define state container UnsafeCounter as
+  state { let int count: 41; }
+  corrupt(int amount) -> int ::
+    return handle_state(critical-read |snapshot| -> {
+      snapshot.count = snapshot.count + amount;
+      snapshot.count;
+    });
+  end
+end
