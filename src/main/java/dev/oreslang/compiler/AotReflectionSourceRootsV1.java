@@ -34,6 +34,23 @@ final class AotReflectionSourceRootsV1 {
                 || explicitRoots.size() > MAX_ROOTS) {
             throw new IllegalArgumentException("bounded package identity and explicit reflection roots required");
         }
+        // V1 deliberately has no namespace/import dependency identity field.
+        // Never hash two distinct namespaced or imported symbols as the same
+        // apparently closed "__root__.Type" descriptor.
+        if (checked.namespace() != null || !checked.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "AOT reflection v1 requires an import-free, namespace-free checked program");
+        }
+
+        // Validate and bound the explicit root set *before* scanning declarations.
+        // Only retained roots are indexed: unrelated classes must not grow the
+        // compiler metadata map, and unrooted declarations cannot leak.
+        Set<String> rootsSeen = new HashSet<>(explicitRoots.size());
+        for (String root : explicitRoots) {
+            if (root == null || root.isBlank() || root.length() > 512 || !rootsSeen.add(root)) {
+                throw new IllegalArgumentException("missing or duplicate reflection root");
+            }
+        }
         Map<String, Ast.ClassDecl> declarations = new HashMap<>();
         for (Ast.ModuleDecl module : checked.modules()) {
             if (module == null || module.name() == null || module.name().isBlank()) {
@@ -42,6 +59,11 @@ final class AotReflectionSourceRootsV1 {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ClassDecl klass) {
                     String qualified = module.name() + "." + klass.name();
+                    if (!rootsSeen.contains(qualified)) continue;
+                    if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "module annotations/contracts require resolved AOT metadata identity: " + qualified);
+                    }
                     if (declarations.putIfAbsent(qualified, klass) != null) {
                         throw new IllegalArgumentException("ambiguous reflection class symbol: " + qualified);
                     }
@@ -49,12 +71,8 @@ final class AotReflectionSourceRootsV1 {
             }
         }
 
-        Set<String> rootsSeen = new HashSet<>();
         List<AotReflectionTableV1.ResolvedType> entries = new ArrayList<>(explicitRoots.size());
         for (String root : explicitRoots) {
-            if (root == null || root.isBlank() || root.length() > 512 || !rootsSeen.add(root)) {
-                throw new IllegalArgumentException("missing or duplicate reflection root");
-            }
             Ast.ClassDecl klass = declarations.get(root);
             if (klass == null || klass.visibility() != Ast.Visibility.PUBLIC
                     || klass.actorKind() != Ast.ActorKind.NONE
