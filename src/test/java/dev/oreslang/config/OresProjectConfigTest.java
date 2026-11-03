@@ -107,6 +107,27 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void attoImportsResolveAndLegacyShadowingMustBeExplicit() throws Exception {
+        Path importer=temp.resolve("main.atto");
+        Path atto=temp.resolve("module.atto");
+        Path ores=temp.resolve("module.ores");
+        Files.writeString(importer,"pub routine main(): void { return; }");
+        Files.writeString(atto,"pub fnc value(): int { return 2; }");
+        OresProjectConfig config=OresProjectConfig.discover(importer,Map.of());
+
+        assertEquals(atto.toAbsolutePath().normalize(),
+                     config.resolveImport(importer,"./module").orElseThrow());
+        Files.writeString(ores,"pub fnc value(): int { return 1; }");
+        IllegalArgumentException error=assertThrows(IllegalArgumentException.class,
+            ()->config.resolveImport(importer,"./module"));
+        assertTrue(error.getMessage().contains("ambiguous AttoLang import"));
+        assertEquals(atto.toAbsolutePath().normalize(),
+                     config.resolveImport(importer,"./module.atto").orElseThrow());
+        assertEquals(ores.toAbsolutePath().normalize(),
+                     config.resolveImport(importer,"./module.ores").orElseThrow());
+    }
+
+    @Test
     void rejectsUnsupportedSchemaVersion() throws Exception {
         Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
         Files.writeString(manifest, "schema_version = \"999\"\n");
