@@ -74,6 +74,10 @@ public final class MacroSourceUnitIdentity {
         if (unitId.equals(MEMORY_UNIT)) return MEMORY_UNIT;
 
         String logical = unitId.replace('\\', '/');
+        if (logical.startsWith("/") || logical.matches("^[A-Za-z]:/.*")) {
+            throw new IllegalArgumentException(
+                    "macro source-unit identity must be a logical relative path");
+        }
         // Validate the entire original spelling, including segments later
         // eliminated by dot-normalization. Source IDs are provenance keys and
         // must never contain control, spoofing or malformed Unicode payloads.
@@ -96,12 +100,6 @@ public final class MacroSourceUnitIdentity {
                         "macro source-unit identity contains malformed UTF-16");
             }
         }
-        if (logical.startsWith("/")
-                || logical.matches("^[A-Za-z]:/.*")) {
-            throw new IllegalArgumentException(
-                    "macro source-unit identity must be a logical relative path");
-        }
-
         ArrayDeque<String> segments = new ArrayDeque<>();
         for (String segment : logical.split("/+")) {
             if (segment.isEmpty() || segment.equals(".")) continue;
