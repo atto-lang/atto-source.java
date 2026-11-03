@@ -38,5 +38,5 @@ The standalone CLI prints the final scalar for the state container and admitted/
 ## Tests and promotion gate
 
 - `ScalarDeclarationI64CompilerTest` and `ExecutableVirtualActorStateContainerTest` cover source execution, checked scalar state, key reactivation, failures and fail-closed negative cases.
-- Exact-blob private-runner receipts exercise the executable VM classes and the lexer-backed source compiler under JDK 21; these are narrow proof only.
+- [Private exact-blob Actions run 41586353997](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/41586353997) passed on JDK 21 and JDK 25: 12 source/fixture SHA matches, 322 harness checks per JDK, 3,200 concurrent gate grants, 8 concurrent actor admissions, and 120 close-race trials. The isolated carrier uses minimal AST/parser stubs only for unused general template-interpolation paths; this is **not** a full Java Maven/JUnit or GraalVM Native Image build.
 - Before general language promotion: add first-class AST/HIR/MIR declaration nodes, type checker/borrow-checker guarded heap access, actor scheduling and priority CONTROL integration, a source-module callable binder, and executable conformance evidence on Java, LLVM, Wasm, Forge and .NET. The existing compiler `Parser.parse` admission rejection must remain in place until those gates pass.
