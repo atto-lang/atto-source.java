@@ -67,33 +67,30 @@ final class AotReflectionTypedMirV1Test {
     }
 
     @Test
-    void planRejectsForgedDescriptorIdAndReorderedInstructions() {
-        var original = AotReflectionTypedMirV1.lowerSource(
-                source("  return type_of<Person>();"), "pkg@revision1");
-        var wrong = new AotReflectionTypedMirV1.TypeDescriptorType(
-                original.resultType().qualifiedNominal(), "a".repeat(64));
+    void planIsCompilerIssuedAndInstructionRecordsAreBounded() {
+        assertEquals(0, AotReflectionTypedMirV1.Plan.class.getConstructors().length,
+                "no public constructor may allow a caller to forge a checked typed MIR plan");
         assertThrows(IllegalArgumentException.class, () ->
-                new AotReflectionTypedMirV1.Plan(
-                        original.entryPoint(), wrong, original.descriptorTable(),
-                        List.of(new AotReflectionTypedMirV1.LoadTypeDescriptor(0, wrong.typeIdHex()),
-                                new AotReflectionTypedMirV1.ReturnDescriptor(0))));
+                new AotReflectionTypedMirV1.LoadTypeDescriptor(1, "a".repeat(64)));
         assertThrows(IllegalArgumentException.class, () ->
-                new AotReflectionTypedMirV1.Plan(
-                        original.entryPoint(), original.resultType(), original.descriptorTable(),
-                        List.of(new AotReflectionTypedMirV1.ReturnDescriptor(0),
-                                new AotReflectionTypedMirV1.LoadTypeDescriptor(
-                                        0, original.resultType().typeIdHex()))));
+                new AotReflectionTypedMirV1.LoadTypeDescriptor(0, "bad-id"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new AotReflectionTypedMirV1.ReturnDescriptor(1));
+        assertThrows(IllegalArgumentException.class, () ->
+                new AotReflectionTypedMirV1.TypeDescriptorType("Fake", "bad-id"));
     }
 
     @Test
-    void corruptedMetadataCannotBeMadeIntoTypedMir() {
+    void corruptedCallerCopyCannotModifyIssuedTypedMir() {
         var original = AotReflectionTypedMirV1.lowerSource(
                 source("  return type_of<Person>();"), "pkg@revision1");
-        byte[] corruption = original.descriptorTable();
-        corruption[corruption.length - 1] ^= 1;
-        assertThrows(IllegalArgumentException.class, () ->
-                new AotReflectionTypedMirV1.Plan(
-                        "main", original.resultType(), corruption, original.instructions()));
+        byte[] corrupt = original.descriptorTable();
+        corrupt[corrupt.length - 1] ^= 1;
+        assertArrayEquals(AotReflectionTypedMirV1.lowerSource(
+                source("  return type_of<Person>();"), "pkg@revision1").descriptorTable(),
+                original.descriptorTable());
+        assertNotEquals(corrupt[corrupt.length - 1],
+                original.descriptorTable()[corrupt.length - 1]);
     }
 
     @Test
