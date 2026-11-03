@@ -708,7 +708,7 @@ public final class Parser {
             }
             if (isBindingKind(peek().type())) {
                 if (injectedMutableState) {
-                    throw error(peek(), "injected state fields must be inside state {}");
+                    throw error(peek(), "@Inject(MutableStateContainer()) requires all owned fields inside state {}");
                 }
                 validateClassFieldModifiers(mods);
                 Ast.FieldDecl field = parseField(annotations, mods.visibility);
@@ -722,7 +722,7 @@ public final class Parser {
             }
             if (check(IDENT) && checkNext(COLON)) {
                 if (injectedMutableState) {
-                    throw error(peek(), "injected state fields must be inside state {}");
+                    throw error(peek(), "@Inject(MutableStateContainer()) requires all owned fields inside state {}");
                 }
                 validateClassFieldModifiers(mods);
                 fields.add(parseColonField(annotations, mods.visibility));
@@ -733,7 +733,7 @@ public final class Parser {
             if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
                     || looksLikeTypeFirstClassField()) {
                 if (injectedMutableState) {
-                    throw error(peek(), "injected state fields must be inside state {}");
+                    throw error(peek(), "@Inject(MutableStateContainer()) requires all owned fields inside state {}");
                 }
                 validateClassFieldModifiers(mods);
                 fields.add(parseTypeFirstClassField(annotations, mods.visibility));
