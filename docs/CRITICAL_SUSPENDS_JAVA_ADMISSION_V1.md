@@ -229,3 +229,31 @@ the rejected publication. This regression is **authored only** until exact-head
 Java 21 JUnit execution demonstrates it. It does not prove all out-of-memory,
 VM termination, or foreign host reflection cases safe.
 
+## Stable negative declaration diagnostic (2026-11-03)
+
+The parser now rejects both `critical suspends fnc` and
+`suspends critical fnc` (and `routine` counterparts) with the stable
+compiler diagnostic token `E_CRITICAL_SUSPENDS_DECL`. This matches the
+critical/suspends negative-input contract in the native AttoLang LRU
+acceptance driver. The original prohibition remains; no `critical`
+callable declaration or effectful critical body has been enabled.
+`CriticalSuspendsV1SyntaxTest` now asserts the token on both modifier
+orders and both callable kinds.
+
+**Evidence boundary:** this is an authored Java parser source change
+with an authored JUnit regression. It does NOT prove the Java compiler
+has executed, that the LRU `.atto` negative fixture is supported by this
+independent branch, or that ownership, critical-read or protected-state
+diagnostics exist. Remaining target codes
+`E_MUTABLE_SHARED_CACHE`, `E_CRITICAL_READ_MUTATION`, and
+`E_STATE_BORROW_ESCAPE` are currently *proposed* LRU adapter contracts:
+their compiler implementations have **not** been verified. The state
+container/critical-read guest lowering stays fail-closed
+(`STATE_CONTAINER_MIR_UNSUPPORTED`) pending checked protected-state
+ownership, read/write permits, and MIR/runtime integration.
+
+No private LRU source files were copied into this Java repository.
+The `critical/suspends` branch must be reconciled with the separate
+Java `.atto` extension-admission branch before combined compiler guest
+parity can be claimed. Keep both PRs draft until source-authorized,
+stepful JDK/Maven/JUnit and actual guest execution proofs exist.
