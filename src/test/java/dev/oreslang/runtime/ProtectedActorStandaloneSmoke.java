@@ -284,8 +284,8 @@ public final class ProtectedActorStandaloneSmoke {
             var accepted = runtime.try_send(ref, 7);
             check(accepted.admitted(), "forgery test must admit work");
             var receipt = accepted.completion();
-            check(!(receipt instanceof java.util.concurrent.CompletableFuture),
-                    "sender must never receive a writable CompletableFuture");
+            check(!java.util.concurrent.CompletableFuture.class.isAssignableFrom(
+                    receipt.getClass()), "sender must never receive a writable CompletableFuture");
             var downstream = receipt.thenRun(() -> { });
             downstream.toCompletableFuture().complete(null);
             check(!receipt.isDone(), "child completion cannot forge parent receipt");
