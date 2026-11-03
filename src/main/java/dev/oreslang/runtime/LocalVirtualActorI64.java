@@ -20,8 +20,15 @@ import java.util.function.Function;
  * No user factory, actor turn, or supervisor callback runs under a VM monitor.
  */
 public final class LocalVirtualActorI64 implements AutoCloseable {
-    @FunctionalInterface public interface Turn {
+    /**
+     * A handler may own a guest state region. Its close hook is invoked once,
+     * after every admitted turn settles and its activation is fenced.
+     * No host disposal callback runs while a VM monitor is held.
+     * Existing stateless handlers remain valid functional implementations.
+     */
+    @FunctionalInterface public interface Turn extends AutoCloseable {
         void on_message(long message) throws Exception;
+        @Override default void close() { }
     }
 
     public enum AdmissionKind { ADMITTED, BACKPRESSURE, ACTIVATING, CLOSED, UNAVAILABLE }
@@ -59,8 +66,11 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         boolean initializing;
         boolean processing;
         boolean failed;
+        boolean retiring;
         Slot(VirtualActorActivationRegistry.LogicalRef logical) { this.logical = logical; }
     }
+
+    private record RetiredTurn(Slot slot, Turn handler) { }
 
     public final class Ref {
         private final Slot slot;
@@ -75,6 +85,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
     private final Consumer<Notice> control;
     private final Map<VirtualActorActivationRegistry.Identity, Slot> slots = new HashMap<>();
     private volatile boolean closed;
+    private volatile boolean closing;
 
     public LocalVirtualActorI64(String domain, String declaration,
                                int maxIdentities, int mailboxCapacity,
@@ -115,7 +126,7 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
         Slot slot = requireLocal(reference);
         VirtualActorActivationRegistry.Activation incarnation;
         synchronized (slot) {
-            if (closed || slot.failed) return false;
+            if (closed || closing || slot.failed || slot.retiring) return false;
             if (slot.activation != null) return slot.activation.active();
             if (slot.initializing) return false;
             slot.initializing = true;
@@ -151,11 +162,12 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
 
     public SendResult try_send(Ref reference, long value) {
         Slot slot = requireLocal(reference);
-        if (closed) return new SendResult(AdmissionKind.CLOSED, null);
+        if (closed || closing) return new SendResult(AdmissionKind.CLOSED, null);
         if (!activate(reference)) return new SendResult(
                 slot.initializing ? AdmissionKind.ACTIVATING : AdmissionKind.UNAVAILABLE, null);
         synchronized (slot) {
-            if (closed || slot.failed || slot.activation == null || !slot.activation.active())
+            if (closed || closing || slot.failed || slot.retiring
+                    || slot.activation == null || !slot.activation.active())
                 return new SendResult(AdmissionKind.UNAVAILABLE, null);
             var ticket = registry.tryAdmit(slot.activation);
             if (ticket == null) return new SendResult(AdmissionKind.BACKPRESSURE, null);
@@ -233,41 +245,106 @@ public final class LocalVirtualActorI64 implements AutoCloseable {
             envelope.receipt.settle(VirtualActorActivationRegistry.Disposition.FAILED_CONTROL_NOTIFIED);
             envelope.result.complete(Outcome.FAILED_CONTROL_NOTIFIED);
         }
+        Turn retired;
         synchronized (slot) {
             registry.deactivate(slot.activation);
+            retired = slot.handler;
             slot.activation = null;
             slot.handler = null;
             slot.failed = false;
             slot.processing = false;
+            slot.retiring = true;
         }
+        dispose(slot, retired);
         return true;
     }
 
-    /** Ephemeral deactivation is forbidden while a turn is pending or active. */
-    public void deactivate(Ref reference) {
-        Slot slot = requireLocal(reference);
-        synchronized (slot) {
-            if (slot.initializing || slot.processing || slot.failed || !slot.pending.isEmpty())
-                throw new IllegalStateException("virtual actor has outstanding work");
-            if (slot.activation != null) {
-                registry.deactivate(slot.activation);
-                slot.activation = null;
-                slot.handler = null;
+    /**
+     * Never run guest-owned state disposal under directory or slot monitors.
+     * A failed disposer quarantines the slot: reactivation and silent shutdown
+     * are forbidden until a higher-level runtime supplies explicit recovery.
+     */
+    private static void dispose(Slot slot, Turn handler) {
+        try {
+            handler.close();
+        } catch (Throwable failure) {
+            synchronized (slot) {
+                slot.failed = true;
+                slot.retiring = false;
             }
+            if (failure instanceof Error fatal) throw fatal;
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            throw new IllegalStateException("virtual actor state disposal failed", failure);
         }
+        synchronized (slot) { slot.retiring = false; }
     }
 
+    /** Ephemeral deactivation is forbidden until all accepted work retires. */
+    public void deactivate(Ref reference) {
+        Slot slot = requireLocal(reference);
+        Turn retired = null;
+        synchronized (slot) {
+            if (closed || closing || slot.initializing || slot.processing
+                    || slot.failed || slot.retiring || !slot.pending.isEmpty())
+                throw new IllegalStateException("virtual actor has outstanding work or is shutting down");
+            if (slot.activation != null) {
+                registry.deactivate(slot.activation);
+                retired = slot.handler;
+                slot.activation = null;
+                slot.handler = null;
+                slot.retiring = true;
+            }
+        }
+        if (retired != null) dispose(slot, retired);
+    }
+
+    /**
+     * Shutdown first fences all directory admission and accepted turns.
+     * Only after successful registry closure are handler resources detached
+     * and disposed outside every monitor. All disposers are attempted.
+     */
     @Override public void close() {
+        List<RetiredTurn> retired = new ArrayList<>();
         synchronized (directoryLock) {
             if (closed) return;
-            for (Slot slot : slots.values()) {
-                synchronized (slot) {
-                    if (slot.initializing || slot.processing || slot.failed || !slot.pending.isEmpty())
-                        throw new IllegalStateException("virtual actor directory has accepted work");
+            if (closing) throw new IllegalStateException("virtual actor directory already closing");
+            closing = true;
+            try {
+                for (Slot slot : slots.values()) {
+                    synchronized (slot) {
+                        if (slot.initializing || slot.processing || slot.failed || slot.retiring
+                                || !slot.pending.isEmpty())
+                            throw new IllegalStateException("virtual actor directory has outstanding work or disposal");
+                    }
                 }
+                registry.close();
+                closed = true;
+                for (Slot slot : slots.values()) {
+                    synchronized (slot) {
+                        if (slot.handler != null) {
+                            retired.add(new RetiredTurn(slot, slot.handler));
+                            slot.handler = null;
+                            slot.activation = null;
+                            slot.retiring = true;
+                        }
+                    }
+                }
+            } finally {
+                closing = false;
             }
-            registry.close();
-            closed = true;
         }
+        Throwable firstFailure = null;
+        for (RetiredTurn item : retired) {
+            try {
+                dispose(item.slot(), item.handler());
+            } catch (Throwable failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure instanceof Error fatal) throw fatal;
+        if (firstFailure instanceof RuntimeException runtime) throw runtime;
+        if (firstFailure != null)
+            throw new IllegalStateException("virtual actor directory disposal failed", firstFailure);
     }
 }
