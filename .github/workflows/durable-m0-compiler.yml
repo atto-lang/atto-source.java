@@ -107,7 +107,7 @@ jobs:
             done
           done
           echo "DURABLE_M0_JUNIT|tests=$total|failures=$failed|errors=$errors|skipped=$skipped"
-          if (( total < 34 || failed != 0 || errors != 0 || skipped != 0 )); then
+          if (( total < 35 || failed != 0 || errors != 0 || skipped != 0 )); then
             echo "Durable M0 JUnit not fully executed/passing" >&2
             exit 1
           fi
