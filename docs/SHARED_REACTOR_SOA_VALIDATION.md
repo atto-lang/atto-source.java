@@ -8,6 +8,14 @@ Host components remain opt-in. Existing runtime/CLI defaults and guest feature a
 
 ## Exact component Git blobs
 
-- `src/main/java/dev/oreslang/runtime/SharedReactorPool.java`: `000663b4d85fe41d6790b3b88c4a723f8d82afd9`
-- `src/test/java/dev/oreslang/runtime/SharedReactorPoolCheck.java`: `8e084393ca4dbcd029320bfd054f66f5dac520e4`
+- `src/main/java/dev/oreslang/runtime/SharedReactorPool.java`: `cc164ce9685aed80aaf039e9fc12181ab5dd93fd`
+- `src/test/java/dev/oreslang/runtime/SharedReactorPoolCheck.java`: `7db22667fe58861db8fba59ca1513cb2dc28e2d9`
 - `src/test/java/dev/oreslang/runtime/SharedReactorPoolTest.java`: `8c3ead8b34f9bad414ec97188caf3f19d94e1653`
+
+## Incremental wake-gating hardening — 2026-11-03
+
+Hot-queue submissions avoid calling the reactor wake function when the single polling lease is absent. The polling lease is acquired before the poller's ready-queue check; active-lease submissions still wake it after publication. Added a deterministic saturation regression: while the only executor is blocked in user work, 1024 accepted queue entries do not trigger reactor wakeups. An ordinary shutdown continues to wake an active reactor.
+
+Local exact-file verification on JDK 21.0.12.1: `javac -Xlint:all -Werror` and five host-check executions PASS. Test identity tracking uses `Thread` objects instead of deprecated `Thread.getId()`. JDK 25, full Maven, Native Image, and compiled guest execution are not established.
+
+These results are standalone host-substrate evidence only. The PR remains draft and opt-in; runtime wiring, actor authority, CONTROL priority, cancellation generation fencing, and total-process thread measurements are still required. Remote zero-step workflow failures are not execution evidence.
