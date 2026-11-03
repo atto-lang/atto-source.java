@@ -44,9 +44,15 @@ final class ActorSyncStdlibTest {
 
     @Test
     void nativeSyncIsRegisteredInCompilerOwnedHostedStd() throws Exception {
-        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("actor_sync.ores"));
-        assertEquals(Files.readString(Path.of("stdlib/actor_sync.ores")),
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("actor_sync.atto"));
+        assertEquals(Files.readString(Path.of("stdlib/actor_sync.atto")),
                      CoreLibrarySources.source("std/actor_sync"));
+        assertEquals(CoreLibrarySources.unitId("std/actor_sync"),
+                     CoreLibrarySources.unitId("std/actor_sync.atto"));
+        assertEquals(CoreLibrarySources.unitId("std/actor_sync"),
+                     CoreLibrarySources.unitId("ores.std/actor_sync.ores"));
+        assertEquals(CoreLibrarySources.source("std/actor_sync"),
+                     CoreLibrarySources.source("std/actor_sync.atto"));
     }
 
     @Test
