@@ -57,8 +57,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
     private final String threadPrefix;
-    /** 0 until the native pool is created; written once under nativeLifecycleLock. */
+    /** 0 until the native pool is created; published before JNI workers enter. */
     private volatile long nativeHandle;
+    /** Published only after every JNI carrier attachment has completed successfully. */
+    private volatile boolean startedSuccessfully;
 
     public NativeCarrierExecutor(
             int corePoolSize,
@@ -83,16 +85,17 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.threadPrefix = threadPrefix;
     }
 
-    /** True once the native pool (and its pthreads) exists. */
+    /** True only once native startup/attachment has completed successfully. */
     public boolean isStarted() {
-        return nativeHandle != 0L;
+        return startedSuccessfully;
     }
 
     /**
      * Create and start this pool's pthreads if that has not happened yet.
-     * Idempotent and safe under concurrent callers: exactly one native pool is
-     * ever created. A failed {@code pthread_create} leaves the executor
-     * unstarted, so a later call may retry.
+     * Idempotent and safe under concurrent callers: exactly one successful
+     * native pool may be created. A fully rolled-back pthread_create failure
+     * may be retried; a partial JNI attach/start failure poisons the executor
+     * and must never leave zombie JVM-attached carriers eligible for reuse.
      *
      * @return true if this call created the pool, false if it already existed
      * @throws RejectedExecutionException if the executor is shut down
@@ -120,11 +123,16 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 started = true;
             } finally {
                 if (!started) {
+                    // A subset of carriers may already have attached. Make
+                    // their Java loops observe shutdown before native reaping;
+                    // retrying this same executor could overlap dead handles.
+                    shutdown.set(true);
                     nativeShutdown(handle);
                     nativeHandle = 0L;
                 }
             }
             largestPoolSize.accumulateAndGet(desired, Math::max);
+            startedSuccessfully = true;
             return true;
         }
     }
@@ -254,20 +262,22 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        if (nativeHandle == 0L && !shutdown.get()) {
-            try {
-                ensureStarted();
-            } catch (IllegalStateException startFailure) {
-                RejectedExecutionException rejected = new RejectedExecutionException(
-                        "native carrier executor could not start its carriers");
-                rejected.initCause(startFailure);
-                throw rejected;
-            }
-        }
-        // Admission and shutdownNow's queue drain are one linearizable
-        // boundary. Otherwise a producer can offer after shutdown's drain,
-        // losing an accepted Runnable with no carrier left to execute it.
+        // A published nativeHandle is not proof that JNI attachment finished.
+        // Hold the lifecycle lock across first start, admission and shutdown's
+        // drain so a partly started pool can never accept work.
         synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) throw new RejectedExecutionException(
+                    "native carrier executor is shut down");
+            if (!startedSuccessfully) {
+                try {
+                    ensureStarted();
+                } catch (IllegalStateException startFailure) {
+                    RejectedExecutionException rejected = new RejectedExecutionException(
+                            "native carrier executor could not start its carriers");
+                    rejected.initCause(startFailure);
+                    throw rejected;
+                }
+            }
             if (shutdown.get() || !queue.offer(task)) {
                 throw new RejectedExecutionException(
                         shutdown.get() ? "native carrier executor is shut down"
