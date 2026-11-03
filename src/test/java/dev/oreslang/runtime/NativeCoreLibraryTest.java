@@ -71,7 +71,14 @@ final class NativeCoreLibraryTest {
         try (var stream = Files.walk(root)) {
             List<Path> modules = stream
                     .filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(".ores"))
+                    .filter(path -> path.toString().endsWith(".ores")
+                            || path.toString().endsWith(".atto"))
+                    // Once a module migrates, its .ores sibling is a retained
+                    // compatibility copy, not another canonical unit.
+                    .filter(path -> !path.toString().endsWith(".ores")
+                            || !Files.isRegularFile(Path.of(
+                                path.toString().substring(0, path.toString().length() - 5)
+                                + ".atto")))
                     .sorted()
                     .toList();
             assertFalse(modules.isEmpty(), "native-first stdlib must contain Oreslang modules");
@@ -79,10 +86,19 @@ final class NativeCoreLibraryTest {
                     .map(path -> root.relativize(path).toString().replace((char) 92, '/'))
                     .collect(Collectors.toSet());
             assertEquals(actual, CoreLibrarySources.packagedSourcePaths(),
-                    "every packaged .ores file must be explicitly registered and vice versa");
+                    "every canonical .atto/.ores hosted module must be registered exactly once");
 
             for (Path module : modules) {
                 String source = Files.readString(module);
+                if (module.toString().endsWith(".atto")) {
+                    // A transitional .ores sibling must not drift from the
+                    // canonical AttoLang module or become a second identity.
+                    Path legacy=Path.of(module.toString().substring(
+                        0, module.toString().length()-5) + ".ores");
+                    if (Files.isRegularFile(legacy))
+                        assertEquals(source, Files.readString(legacy),
+                            "legacy .ores compatibility copy must match canonical .atto");
+                }
                 String relative = root.relativize(module).toString().replace('\\', '/');
                 String importPath = "std/" + relative.substring(0, relative.length() - ".ores".length());
                 MixedSourceUnit unit = MixedSourceUnit.parse(
