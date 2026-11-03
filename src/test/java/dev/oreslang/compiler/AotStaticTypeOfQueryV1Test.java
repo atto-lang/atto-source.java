@@ -116,13 +116,13 @@ final class AotStaticTypeOfQueryV1Test {
     }
 
     @Test
-    void guestCallMustRejectUntilNativeLoweringExists() {
-        String guestSource = SOURCE + """
-                pub fnc main(): int {
-                  val descriptor = type_of<Person>();
-                  return 0;
-                }
-                """;
+    void guestCallMustRejectUntilNativeLoweringExists() throws Exception {
+        final String guestSource;
+        try (var stream = AotStaticTypeOfQueryV1Test.class.getResourceAsStream(
+                "/aot-reflection/type_of_unlowered_reject.atto")) {
+            assertNotNull(stream, "missing committed .atto guest rejection fixture");
+            guestSource = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(guestSource));
         assertTrue(error.getMessage().contains(
