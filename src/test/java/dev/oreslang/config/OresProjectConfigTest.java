@@ -107,7 +107,7 @@ final class OresProjectConfigTest {
     }
 
     @Test
-    void attoOnlyImportsResolveAndLegacyResolutionIsStable() throws Exception {
+    void canonicalAttoWinsCollidingLegacyImports() throws Exception {
         Path importer = temp.resolve("entry.atto");
         Files.writeString(importer, "pub routine main(): void { return; }");
         Path attoOnly = temp.resolve("cache.atto");
@@ -120,11 +120,125 @@ final class OresProjectConfigTest {
 
         Path legacy = temp.resolve("cache.ores");
         Files.writeString(legacy, "pub fnc cache(): int { return 17; }");
-        assertEquals(legacy.toAbsolutePath().normalize(),
+        assertEquals(attoOnly.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./cache").orElseThrow());
         assertEquals(attoOnly.toAbsolutePath().normalize(),
                 config.resolveImport(importer, "./cache.atto").orElseThrow());
+        // Legacy sources must be named explicitly when a canonical twin exists.
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache.ores").orElseThrow());
+        Path javaTwin = temp.resolve("cache.java");
+        Files.writeString(javaTwin, "final class Cache {}");
+        assertEquals(attoOnly.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache").orElseThrow());
+        assertEquals(javaTwin.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./cache.java").orElseThrow());
         assertTrue(config.resolveImport(importer, "./missing.atto").isEmpty());
+    }
+
+    @Test
+    void canonicalAttoManifestBeatsLegacyTwinInSameDirectory() throws Exception {
+        Path project = temp.resolve("new-project");
+        Path src = project.resolve("src");
+        Files.createDirectories(src);
+        Path atto = src.resolve("main.atto");
+        Files.writeString(atto, "pub fnc main(): void { return; }");
+        Files.writeString(project.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "legacy"
+                [entrypoints]
+                main = "src/old.ores"
+                """);
+        Path canonical = project.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.writeString(canonical, """
+                schema_version = "1"
+                [project]
+                name = "attolang"
+                [entrypoints]
+                main = "src/main.atto"
+                """);
+
+        OresProjectConfig cfg = OresProjectConfig.discover(atto, Map.of());
+        assertEquals(canonical.toAbsolutePath().normalize(), cfg.manifestPath().orElseThrow());
+        assertEquals("attolang", cfg.projectName().orElseThrow());
+        assertEquals(atto.toAbsolutePath().normalize(), cfg.mainEntrypoint().orElseThrow());
+    }
+
+    @Test
+    void oldManifestIsAnExplicitMigrationFallbackNotAReplacement() throws Exception {
+        Path entry = temp.resolve("old.ores");
+        Files.writeString(entry, "pub fnc main(): void { return; }");
+        Path legacy = temp.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME);
+        Files.writeString(legacy, """
+                schema_version = "1"
+                [project]
+                name = "legacy-only"
+                """);
+        OresProjectConfig cfg = OresProjectConfig.discover(entry, Map.of());
+        assertEquals(legacy.toAbsolutePath().normalize(), cfg.manifestPath().orElseThrow());
+        assertEquals("legacy-only", cfg.projectName().orElseThrow());
+    }
+
+    @Test
+    void attolangPathOverridesLegacyEnvironmentWithoutCombiningRoots() throws Exception {
+        Path canonical = temp.resolve("canonical");
+        Path legacy = temp.resolve("legacy");
+        Files.createDirectories(canonical);
+        Files.createDirectories(legacy);
+        Path expected = canonical.resolve("lib.atto");
+        Files.writeString(expected, "pub fnc identity(): int { return 42; }");
+        Files.writeString(legacy.resolve("lib.ores"), "pub fnc identity(): int { return 17; }");
+        Path importer = temp.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main(): void { return; }");
+
+        OresProjectConfig cfg = OresProjectConfig.discover(importer, Map.of(
+                OresProjectConfig.ENV_ATTOLANG_PATH, canonical.toString(),
+                OresProjectConfig.ENV_ORESLANG_PATH, legacy.toString()));
+        assertEquals(java.util.List.of(canonical.toAbsolutePath().normalize()),
+                cfg.environmentPaths());
+        assertEquals(expected.toAbsolutePath().normalize(),
+                cfg.resolveImport(importer, "lib").orElseThrow());
+
+        // An explicitly empty canonical setting cannot silently activate a
+        // potentially attacker-controlled legacy ambient import directory.
+        OresProjectConfig empty = OresProjectConfig.discover(importer, Map.of(
+                OresProjectConfig.ENV_ATTOLANG_PATH, "",
+                OresProjectConfig.ENV_ORESLANG_PATH, legacy.toString()));
+        assertTrue(empty.environmentPaths().isEmpty());
+        assertTrue(empty.resolveImport(importer, "lib").isEmpty());
+    }
+
+    @Test
+    void canonicalAttoUsesSearchRootPrecedenceWithoutEscapingRoot() throws Exception {
+        Path source = temp.resolve("source");
+        Path ambient = temp.resolve("ambient");
+        Files.createDirectories(source.resolve("pkg"));
+        Files.createDirectories(ambient.resolve("pkg"));
+        Path importer = source.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main(): void { return; }");
+        Path localLegacy = source.resolve("pkg/value.ores");
+        Path ambientAtto = ambient.resolve("pkg/value.atto");
+        Files.writeString(localLegacy, "pub fnc value(): int { return 17; }");
+        Files.writeString(ambientAtto, "pub fnc value(): int { return 42; }");
+        Path cfgPath = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.writeString(cfgPath, """
+                schema_version = "1"
+                [source]
+                roots = ["source"]
+                """);
+
+        OresProjectConfig cfg = OresProjectConfig.discover(importer,
+                Map.of(OresProjectConfig.ENV_ATTOLANG_PATH, ambient.toString()));
+        // Root locality is stronger than extension priority across roots.
+        assertEquals(localLegacy.toAbsolutePath().normalize(),
+                cfg.resolveImport(importer, "pkg/value").orElseThrow());
+        Path localAtto = source.resolve("pkg/value.atto");
+        Files.writeString(localAtto, "pub fnc value(): int { return 1; }");
+        assertEquals(localAtto.toAbsolutePath().normalize(),
+                cfg.resolveImport(importer, "pkg/value").orElseThrow());
+        assertThrows(IllegalArgumentException.class,
+                () -> cfg.resolveImport(importer, "pkg/../../outside"));
     }
 
     @Test
