@@ -14,7 +14,7 @@ final class TaskCaptureAdmissionIdentityTest {
     @Test
     void completeOwnershipPassPublishesExactTaskCaptureProof() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int value = 41;
                   let Future<int> child = task {
                     return value + 1;
@@ -52,7 +52,7 @@ final class TaskCaptureAdmissionIdentityTest {
     @Test
     void writableCopyCaptureCarriesMoveMode() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   let int counter = 1;
                   let Future<int> child = task {
                     counter = counter + 1;
@@ -76,7 +76,7 @@ final class TaskCaptureAdmissionIdentityTest {
     @Test
     void explicitTakeOfCopyCaptureCarriesMoveMode() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int token = 41;
                   let Future<int> child = task {
                     return rt take token;
@@ -101,7 +101,7 @@ final class TaskCaptureAdmissionIdentityTest {
         var failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
-                        pub async fnc main(): void {
+                        pub suspends fnc main(): void {
                           const int token = 41;
                           let Future<int> child = task {
                             return rt take token;
@@ -120,7 +120,7 @@ final class TaskCaptureAdmissionIdentityTest {
                 define class Box as
                   pub let int value = 1;
                 end
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   let Box owner = new Box();
                   let Future<int> child = task {
                     return owner.value;
@@ -147,7 +147,7 @@ final class TaskCaptureAdmissionIdentityTest {
                         define class Box as
                           pub let int value = 1;
                         end
-                        pub async fnc main(): void {
+                        pub suspends fnc main(): void {
                           const int value = 7;
                           let Future<int> child = task {
                             return value;
@@ -173,7 +173,7 @@ final class TaskCaptureAdmissionIdentityTest {
     @Test
     void successfulRecheckSupersedesEarlierProgramEpoch() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int value = 41;
                   let Future<int> child = task {
                     return value + 1;
@@ -207,7 +207,7 @@ final class TaskCaptureAdmissionIdentityTest {
     @Test
     void unsuccessfulRecheckCannotRetainPreviouslyValidTaskAuthority() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int value = 41;
                   let Future<int> child = task { return value + 1; };
                   stdio.stdout.write(await child);
@@ -236,7 +236,7 @@ final class TaskCaptureAdmissionIdentityTest {
                 define class Box as
                   pub let int value = 1;
                 end
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int value = 41;
                   let Future<int> child = task { return value + 1; };
                   stdio.stdout.write(await child);
@@ -274,9 +274,9 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
-    void unreferencedStagedCaptureCannotMintTaskTransferAuthority() {
+    void publicStagedCapturePublisherCannotMintTaskTransferAuthority() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int value = 41;
                   const int unrelated = 9;
                   let Future<int> child = task { return value + 1; };
@@ -294,32 +294,39 @@ final class TaskCaptureAdmissionIdentityTest {
                 java.util.Map.of(task, java.util.Map.of(
                         "value", Ast.TaskCaptureTransfer.COPY,
                         "unrelated", Ast.TaskCaptureTransfer.MOVE));
-        var failure = assertThrows(IllegalArgumentException.class,
+        var denied = assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedTaskCaptures.publish(
                         checked, attempt, overbroad));
-        assertTrue(failure.getMessage().contains("unreferenced"),
-                failure::getMessage);
-        // Rejection is transactional: no staged authority or old epoch
-        // becomes executable after the failed publication.
+        assertTrue(denied.getMessage().contains("compiler-owned"),
+                denied::getMessage);
+        // Even an exact, already-vetted map supplied by the host may not
+        // mint ownership permissions. The checker must re-run itself.
+        var exact = java.util.Map.of(task, java.util.Map.of(
+                "value", Ast.TaskCaptureTransfer.COPY));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(checked, attempt, exact));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(
+                        checked, attempt, exact, null));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedTaskCaptures.require(checked, task, revoked));
 
-        var exact = java.util.Map.of(task, java.util.Map.of(
-                "value", Ast.TaskCaptureTransfer.COPY));
-        Ast.CheckedTaskCaptures.publish(checked, attempt, exact);
-        assertEquals(attempt,
-                Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        // A new full checker pass is the only authorizing path. The epoch
+        // is newer than the test-only synthetic attempt.
+        OwnershipChecker.check(checked);
+        long authorized = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertTrue(authorized > attempt);
         assertEquals(exact.get(task),
                 Ast.CheckedTaskCaptures.require(
-                        checked, task, attempt).captureTransfers());
+                        checked, task, authorized).captureTransfers());
     }
 
     @Test
     void supersededConcurrentCheckerCannotRepublishStaleTaskAuthority() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
-                pub async fnc main(): void {
+                pub suspends fnc main(): void {
                   const int value = 41;
                   let Future<int> child = task { return value; };
                   stdio.stdout.write(await child);
@@ -339,12 +346,47 @@ final class TaskCaptureAdmissionIdentityTest {
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedTaskCaptures.publish(
                         checked, first, captures));
-        Ast.CheckedTaskCaptures.publish(checked, replacement, captures);
-        assertEquals(replacement,
-                Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(
+                        checked, replacement, captures));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+
+        // Later full ownership analysis supersedes both synthetic attempts
+        // without permitting public callers to mint an arbitrary transfer.
+        OwnershipChecker.check(checked);
+        long authorized = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertTrue(authorized > replacement);
         assertEquals(captures.get(task),
                 Ast.CheckedTaskCaptures.require(
-                        checked, task, replacement).captureTransfers());
+                        checked, task, authorized).captureTransfers());
+    }
+
+    @Test
+    void rawHostAstAndForgedEpochCannotPublishTaskCaptures() {
+        Ast.Program raw = Parser.parse("""
+                pub suspends fnc main(): void {
+                  const int value = 9;
+                  let Future<int> child = task { return value; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(raw);
+        long forged = Ast.CheckedTaskCaptures.newCheckEpoch();
+        Ast.CheckedTaskCaptures.beginCheck(raw, forged);
+        var claimed = java.util.Map.of(task,
+                java.util.Map.of("value", Ast.TaskCaptureTransfer.MOVE));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(raw, forged, claimed));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(raw, forged, claimed, null));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(raw));
+        for (var constructor : OwnershipChecker.TaskPublishAuthority.class
+                .getDeclaredConstructors()) {
+            assertTrue(java.lang.reflect.Modifier.isPrivate(
+                    constructor.getModifiers()));
+        }
     }
 
     private static Ast.TaskExpr firstTask(Ast.Program program) {
