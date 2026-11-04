@@ -26,6 +26,33 @@ final class ExecutableVirtualActorStateContainerTest {
     }
 
     @Test
+    void closeRacingScalarReadersAndWritersReturnsUnavailableWithoutLeakingLeases() throws Exception {
+        for (int cycle = 0; cycle < 120; cycle++) {
+            var container = new ScalarStateContainer(0, 3);
+            var started = new java.util.concurrent.CountDownLatch(1);
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var worker = new Thread(() -> {
+                try {
+                    started.await();
+                    for (int i = 0; i < 200; i++) {
+                        container.tryRead();
+                        container.tryAddChecked(1);
+                    }
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            worker.start();
+            started.countDown();
+            container.close();
+            worker.join(5_000);
+            assertFalse(worker.isAlive(), "scalar worker must not park at close");
+            assertNull(failure.get(), () -> "close race raised: " + failure.get());
+            assertTrue(container.readyForReclamation(), "leased state must quiesce after close");
+        }
+    }
+
+    @Test
     void localVirtualActorSerializesAndReactivatesWithoutPersistentState() {
         var instances = new AtomicInteger();
         var total = new ArrayList<Long>();

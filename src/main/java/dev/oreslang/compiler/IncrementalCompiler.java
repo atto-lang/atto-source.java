@@ -119,7 +119,7 @@ public final class IncrementalCompiler {
                                 linked.classes(), linked.aliases(), contracts);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.classes(), analysis.shortInferredAliases());
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
                 throw new IllegalArgumentException(
                         "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
@@ -148,7 +148,8 @@ public final class IncrementalCompiler {
 
     private record LinkedClasses(
             Map<String, Ast.ClassDecl> classes,
-            Map<String, Map<String, Ast.TypeAliasDecl>> aliases) { }
+            Map<String, Map<String, Ast.TypeAliasDecl>> aliases,
+            Map<String, Ast.ClassDecl> ownershipClasses) { }
 
     private static LinkedClasses linkedPublicClasses(
             String unitId,
@@ -157,12 +158,10 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
+        LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
-            if (imported.wildcard()
-                    || (imported.kind() != Ast.ImportKind.CLASS
-                            && imported.kind() != Ast.ImportKind.MODULE)) {
-                continue;
-            }
+            if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
             if (sourceId == null) continue; // external resolution remains opaque
@@ -170,42 +169,39 @@ public final class IncrementalCompiler {
             if (source == null) {
                 throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
             }
-
             if (imported.kind() == Ast.ImportKind.MODULE) {
-                for (String sourceModuleName : imported.names()) {
-                    String localModuleName = ImportRules.localName(imported, sourceModuleName);
-                    Ast.ModuleDecl selected = source.modules().stream()
-                            .filter(module -> module.name().equals(sourceModuleName))
-                            .findFirst()
-                            .orElseThrow(() -> new IllegalArgumentException(
-                                    "missing linked module '" + sourceModuleName
-                                            + "' in source unit '" + sourceId + "'"));
-                    LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
-                    for (Ast.Decl companion : selected.declarations()) {
-                        if (companion instanceof Ast.TypeAliasDecl alias
-                                && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
+                // The validated import graph establishes source-unit identity.
+                // Link public non-actor layouts only under the explicit module
+                // qualifier; never expose a short class name or a sibling module.
+                for (String moduleName : imported.names()) {
+                    Ast.ModuleDecl selected = null;
+                    for (Ast.ModuleDecl module : source.modules()) {
+                        if (!module.name().equals(moduleName)) continue;
+                        if (selected != null) {
                             throw new IllegalArgumentException(
-                                    "duplicate type alias in linked module: " + alias.name());
+                                    "ambiguous linked module '" + moduleName + "'");
                         }
+                        selected = module;
                     }
-                    Map<String, Ast.TypeAliasDecl> classAliases = Map.copyOf(moduleAliases);
+                    if (selected == null) {
+                        throw new IllegalArgumentException(
+                                "missing linked module '" + moduleName + "'");
+                    }
+                    String prefix = ImportRules.localName(imported, moduleName) + ".";
                     for (Ast.Decl declaration : selected.declarations()) {
-                        if (!(declaration instanceof Ast.ClassDecl klass)
-                                || klass.visibility() != Ast.Visibility.PUBLIC
-                                || klass.actorKind() != Ast.ActorKind.NONE) {
-                            continue;
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.visibility() == Ast.Visibility.PUBLIC
+                                && klass.actorKind() == Ast.ActorKind.NONE) {
+                            String qualified = prefix + klass.name();
+                            if (ownershipClasses.putIfAbsent(qualified, klass) != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked public module class '" + qualified + "'");
+                            }
                         }
-                        String qualifiedName = localModuleName + "." + klass.name();
-                        if (linked.putIfAbsent(qualifiedName, klass) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate linked public class namespace '" + qualifiedName + "'");
-                        }
-                        aliases.put(qualifiedName, classAliases);
                     }
                 }
                 continue;
             }
-
             for (String name : imported.names()) {
                 Ast.ClassDecl resolved = null;
                 Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
@@ -213,8 +209,7 @@ public final class IncrementalCompiler {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
                                 && klass.name().equals(name)
-                                && klass.visibility() == Ast.Visibility.PUBLIC
-                                && klass.actorKind() == Ast.ActorKind.NONE) {
+                                && klass.visibility() == Ast.Visibility.PUBLIC) {
                             if (resolved != null) {
                                 throw new IllegalArgumentException(
                                         "ambiguous linked public class '" + name + "'");
@@ -232,16 +227,20 @@ public final class IncrementalCompiler {
                         }
                     }
                 }
-                String localName = ImportRules.localName(imported, name);
-                if (resolved == null || linked.putIfAbsent(localName, resolved) != null) {
+                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
                     throw new IllegalArgumentException(
                             "missing or duplicate public linked class '" + name
                                     + "' in source unit '" + unitId + "'");
                 }
-                aliases.put(localName, classAliases);
+                aliases.put(name, classAliases);
+                if (ownershipClasses.putIfAbsent(name, resolved) != null) {
+                    throw new IllegalArgumentException(
+                            "ambiguous linked ownership class '" + name + "'");
+                }
             }
         }
-        return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+        return new LinkedClasses(
+                Map.copyOf(linked), Map.copyOf(aliases), Map.copyOf(ownershipClasses));
     }
 
     public synchronized void clear() {

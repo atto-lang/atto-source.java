@@ -53,10 +53,11 @@ Resolution order is:
 4. Each `source.import_paths` entry in order.
 5. Each `ORESLANG_PATH` entry in order.
 
-For a path without an extension, the current compatibility resolver tries the
-exact file and then `.ores`, `.java`, and `.atto`. Use explicit `.atto` imports
-when a legacy same-named source might coexist; a future migration must not
-silently change legacy import selection.
+For a path without an extension, the current canonical resolver tries the
+exact file and then `.atto`, `.ores`, and `.java`. Canonical `.atto` entries
+win suffix-shadowing conflicts even if they are nonregular or symlinked;
+the bounded reader must reject invalid files rather than selecting a legacy
+sibling. Explicit `.ores` paths remain supported.
 
 Project-local roots intentionally precede ambient `ORESLANG_PATH` entries so
 a developer machine cannot silently shadow a dependency pinned by the project.

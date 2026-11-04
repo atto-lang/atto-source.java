@@ -20,6 +20,17 @@ final class AttoSourceAdmissionTest {
     @TempDir Path temp;
 
     @Test
+    void exactSharedAttoScalarCorpusExecutesAndReturnsFortyTwo() throws Exception {
+        Path corpus = Path.of("contracts", "atto-parity-v1", "add.atto").toAbsolutePath();
+        assertTrue(Files.isRegularFile(corpus), "shared cross-backend .atto corpus must be present");
+        assertEquals("pub fnc main(): int { return 40 + 2; }\n", Files.readString(corpus));
+        var result = LinkedProgramRunner.runWithExitStatus(
+                corpus, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(42, result.exitStatus(), "Java/Graal guest must execute the unmodified shared .atto source");
+    }
+
+    @Test
     void attoIsNativeGuestSourceNotJavaHostSource() {
         MixedSourceUnit unit = MixedSourceUnit.parse(
                 temp.resolve("cache.atto"),
@@ -109,6 +120,50 @@ final class AttoSourceAdmissionTest {
         assertEquals("42", out.toString(StandardCharsets.UTF_8));
     }
     @Test
+    void extensionlessAttoImportWinsOverLegacySiblingInGuestExecution() throws Exception {
+        Path modern = temp.resolve("value.atto");
+        Path legacy = temp.resolve("value.ores");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(modern, "pub fnc answer(): int { return 42; }");
+        Files.writeString(legacy, "pub fnc answer(): int { return 7; }");
+        Files.writeString(entry, """
+                import fnc answer from "./value";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var executed = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals(2, executed.units().size(), "legacy shadow must not enter linked graph");
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void explicitLegacyImportRemainsOptInEvenWhenCanonicalAttoExists() throws Exception {
+        Path modern = temp.resolve("value.atto");
+        Path legacy = temp.resolve("value.ores");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(modern, "pub fnc answer(): int { return 7; }");
+        Files.writeString(legacy, "pub fnc answer(): int { return 42; }");
+        Files.writeString(entry, """
+                import fnc answer from "./value.ores";
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var executed = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals(2, executed.units().size());
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void attoPublicClassConstructorAndMutableReceiverLinkAcrossFiles() throws Exception {
         Path library = temp.resolve("column.atto");
         Path entry = temp.resolve("main-column.atto");
@@ -127,7 +182,7 @@ final class AttoSourceAdmissionTest {
         Files.writeString(entry, """
                 import class Column from "./column.atto";
                 pub fnc main(): void {
-                  let Column column = new Column(40);
+                  let mut Column column = new Column(40);
                   stdio.stdout.write(column.advance(2));
                   return;
                 }
@@ -163,7 +218,7 @@ final class AttoSourceAdmissionTest {
         Files.writeString(entry, """
                 import class TinyColumn from "./tiny-column.atto";
                 pub fnc main(): void {
-                  let TinyColumn column = new TinyColumn();
+                  let mut TinyColumn column = new TinyColumn();
                   column.add(42);
                   stdio.stdout.write(column.peek().unwrap());
                   return;
@@ -254,34 +309,6 @@ final class AttoSourceAdmissionTest {
                 SecurityException.class,
                 () -> LinkedProgramRunner.validate(entry, Map.of()));
         assertTrue(denied.getMessage().contains("symlinked .atto"));
-    }
-
-    @Test
-    void attoSourceOnUnsupportedFilesystemFailsClosed() throws Exception {
-        // ZipFS provides ordinary DirectoryStream, not provider-pinned
-        // SecureDirectoryStream; a path preflight is insufficient.
-        Path archive = temp.resolve("source.zip");
-        java.net.URI uri = java.net.URI.create("jar:" + archive.toUri());
-        try (java.nio.file.FileSystem zip = java.nio.file.FileSystems.newFileSystem(
-                uri, Map.of("create", "true"))) {
-            Path entry = zip.getPath("/main.atto");
-            Files.writeString(entry, "pub fnc main(): void { return; }");
-            org.junit.jupiter.api.Assertions.assertThrows(
-                    SecurityException.class,
-                    () -> dev.oreslang.runtime.BoundedSourceReader.readUtf8(entry));
-        } catch (java.nio.file.ProviderNotFoundException unavailable) {
-            org.junit.jupiter.api.Assumptions.assumeTrue(false, "ZipFS provider unavailable");
-        }
-    }
-
-    @Test
-    void regularAttoFileStillAdmitsStrictUtf8ThroughPinnedDirectory() throws Exception {
-        Path entry = temp.resolve("utf8.atto");
-        String source = "pub fnc main(): void { return; } // café";
-        Files.writeString(entry, source, StandardCharsets.UTF_8);
-        var decoded = dev.oreslang.runtime.BoundedSourceReader.readWithByteCount(entry);
-        assertEquals(source, decoded.text());
-        assertEquals(source.getBytes(StandardCharsets.UTF_8).length, decoded.byteCount());
     }
 
 }

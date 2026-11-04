@@ -5,7 +5,7 @@ This change supports `.atto` as a second native guest source extension, preservi
 ## Scope and safety
 
 - CLI `--check`, `--build-analysis` and direct execution now recognize `.atto` and retain `.ores` compatibility.
-- Both explicit `./file.atto` and extensionless imports work. Existing `.ores` and `.java` extensionless resolution retains priority to avoid silent import retargeting; write an explicit `.atto` suffix if sibling files share a basename.
+- Both explicit `./file.atto` and extensionless imports work. Extensionless imports deterministically prefer `.atto`, then legacy `.ores`, then `.java`. Explicit suffixes remain authoritative: `./helper.atto` always selects the canonical AttoLang file and `./helper.ores` continues to select the legacy file.
 - `.atto` is not Java source and does not grant mixed-Java interop capabilities. Native Truffle MIME/language identity remains unchanged for compatibility.
 - Invalid UTF-8, oversized inputs, transitive import budgets, dependency capabilities, and owner paths must obey the same checks as legacy guest source.
 - JUnit `AttoSourceAdmissionTest` constructs actual `.atto` entry/helper files and runs an `answer() == 42` import through the linked Java/Graal guest pipeline, plus a colliding legacy-name control.
@@ -42,14 +42,22 @@ The common `BoundedSourceReader` now performs Atto-only, component-by-component 
 
 Three JUnit regressions were added: symlinked parent entrypoint, symlinked imported directory, and direct CLI `--check` denial. A JDK 21 isolated compilation of the reader logic passed 7/7 checks (normal input; symlinked file and parent; invalid UTF-8; NUL; >16 MiB; legacy `.ores` behavior). **This is a source-reader isolation check, not the Maven project suite, a native compiler receipt, or guest execution.**
 
-### Pinned directory-handle admission (source candidate)
+### Known remaining boundary
 
-`BoundedSourceReader` now opens `.atto` files by traversing from the absolute filesystem root with `SecureDirectoryStream` and `NOFOLLOW_LINKS` at **every directory component and the leaf**. All nested directory streams remain open during the final bounded read. This prevents an ancestor symlink from being substituted between a path check and file open. If the filesystem provider cannot offer secure pinned directory handles (for example ZipFS), `.atto` reading **fails closed** with `SecurityException`; legacy `.ores` and `.java` admission is unchanged. On unsupported platforms/filesystems, this intentionally means `.atto` cannot yet compile until a security-equivalent provider implementation is available.
-
-Two additional JUnit source-reader checks cover ordinary multibyte UTF-8 plus a synthetic ZipFS provider rejection; both remain **NOT_EXECUTED by Maven** until source-org runner admission or an independently authorized compiler-source carrier is available. A standalone source-free JDK 21 secure-handle probe completed **6/6 synthetic path tests** (ordinary, leaf-link, parent-link, empty, oversize, missing) and a separate ZipFS unsupported-provider probe passed locally. Neither is Java compiler or private-source test evidence.
-
-The existing symlink preflight is a diagnostic guard, not relied upon for race-proof authorization; pinned handle traversal is the enforcement path. Filesystems providing weaker semantics, reparse points, and multi-platform AOT behavior remain explicit backend conformance obligations.
-
-Keep the source-export security review gate open; this source fix does not authorize private compiler mirroring.
+Checking ancestor path components before opening a file is *not an atomic resolution guarantee*: an adversary with write permission to parent directories can race directory changes after the check. The leaf open uses `NOFOLLOW_LINKS`, but race-proof ancestor admission still requires an approved secure directory-relative source-root walker (for example a provider supporting `SecureDirectoryStream`) and a fallback policy. Legitimate system-level symlink aliases may also require callers to use their canonical physical path. Keep the security review gate open rather than claiming full race-free traversal.
 
 At exact PR head `2897d19750b6bfffc865b7db9a6ca669a0512af6`, Java Actions `fast-ci` run 41490485954, synthetic CI runner smoke 41490486044, and project manifest run 41490486334 each have a failed job with zero recorded steps. These are **runner-admission failures**, not a JUnit/parser/compiler verdict. Do not bypass private source-transfer holds to use a different organization's Actions minutes.
+
+
+## Canonical suffix selection hardening (2026-11-02)
+
+`OresProjectConfig` now checks canonical `.atto` entries with `BasicFileAttributes` and `NOFOLLOW_LINKS`. A regular file, directory, symlink (including a dangling symlink), or other existing entry occupies the canonical name. Only `NoSuchFileException` means absence; other metadata errors fail closed. The selected path is handed to the bounded source reader, which rejects non-regular/symlink input. `.ores` and `.java` explicit-path behavior remains unchanged.
+
+Regressions cover both a dangling `.atto` symlink and a directory named `.atto` beside a valid `.ores` sibling. The directory/symlink must be selected as canonical rather than triggering legacy fallback. An isolated JDK 21 resolver harness compiled and passed six cases: canonical precedence, explicit legacy, legacy fallback, directory shadow, dangling-link shadow, and foreign-extension rejection. This is isolated resolver evidence only; it does not substitute for the exact-head Maven/JUnit or compiler guest suite.
+
+
+## Reconciled canonical AttoLang manifest admission
+
+The nearest `.atto.pkg.toml` or legacy `.oreslangc.cfg.toml` controls the source project; two manifests in the same directory are ambiguous and are rejected. Unreadable manifest metadata cannot silently fall through to a different project. This merge preserves current main's canonical `.atto` suffix precedence, mixed-source interop gates, stronger imported-class ownership resolution, and null-safe pattern/condition evaluation.
+
+The older pinned `SecureDirectoryStream` source-reader experiment is NOT silently substituted for current main's root-owned alias portability policy. Its stronger race-fencing claim needs distinct portability/security review and executed native tests before promotion. Java full-source tests are not executed while private Actions runner admission is blocked.
