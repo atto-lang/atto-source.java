@@ -72,7 +72,7 @@ final class CompilerEffectAnalysisV0Test {
         assertTrue(empty.records().stream().anyMatch(
                 record -> record.contains("reason=no-callables")));
         var unsupported = CompilerEffectAnalysisV0.analyze(Parser.parse(
-                "define class Box as pub int value; end "
+                "define class Box as pub let int value = 0; end "
                     + "pub fnc main(): int { return 42; }"));
         assertEquals(2, unsupported.exitStatus());
     }
