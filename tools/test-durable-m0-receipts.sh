@@ -70,3 +70,11 @@ should_reject forged-manifest-digest 'canonical manifest receipt digest mismatch
 write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
 sed -i 's@DURABLE_M0_MANIFEST_HEX=@INVALID_MANIFEST_HEX=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
 should_reject absent-manifest-hex 'missing or noncanonical DURABLE_M0_MANIFEST_HEX'
+
+# Both malformed and valid instances of the same receipt key must fail closed.
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+sed -i 's@DURABLE_M0_MANIFEST_SHA256=@DURABLE_M0_MANIFEST_SHA256=invalid\&#10;DURABLE_M0_MANIFEST_SHA256=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
+should_reject shadow-invalid-manifest-digest 'duplicate DURABLE_M0_MANIFEST_SHA256'
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+sed -i 's@DURABLE_M0_MANIFEST_HEX=@DURABLE_M0_MANIFEST_HEX=invalid\&#10;DURABLE_M0_MANIFEST_HEX=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
+should_reject shadow-invalid-manifest-hex 'duplicate DURABLE_M0_MANIFEST_HEX'
