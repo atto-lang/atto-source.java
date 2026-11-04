@@ -164,6 +164,60 @@ final class ClassCallableProductBindingTest {
     }
 
     @Test
+    void tripleNamedConstructorPreservesAllThreeFormalSlots()
+            throws Exception {
+        // Java guest counterpart of LLVM's native Triple named-ABI fixtures.
+        String code = """
+                define class Trio as
+                    constructor(int first, int second, int third) {
+                        stdio.stdout.write(first + second + third);
+                    }
+                end
+                pub routine main(): void {
+                    new Trio(third: 3, first: 19, second: 20);
+                    new Trio(19, third: 3, second: 20);
+                    return;
+                }
+                """;
+        assertEquals("4242", checkedExecution(code));
+    }
+
+    @Test
+    void namedConstructorArithmeticBindsBeforeGuestExecution()
+            throws Exception {
+        // Match the LLVM native field-initializer arithmetic fixture's
+        // source expressions while testing Java's explicit constructor ABI.
+        String code = """
+                define class Pair as
+                    constructor(int first, int second) {
+                        stdio.stdout.write((first + 1) + (second * 2));
+                    }
+                end
+                pub routine main(): void {
+                    new Pair(second: 7 * 2, first: 10 + 3);
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void namedTripleConstructorRejectsPositionalSlotCollision() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Trio as
+                            constructor(int first, int second, int third) {
+                                return;
+                            }
+                        end
+                        pub routine main(): void {
+                            new Trio(19, third: 3, first: 20);
+                            return;
+                        }
+                        """)));
+    }
+
+    @Test
     void explicitConstructorRecordSpreadUsesTheSameCheckedBinder()
             throws Exception {
         String code = """
@@ -357,7 +411,7 @@ final class ClassCallableProductBindingTest {
                     Source.newBuilder(
                                     OresLanguage.ID,
                                     code,
-                                    "class-callable-product-binding.ores")
+                                    "class-callable-product-binding.atto")
                             .mimeType(OresLanguage.MIME_TYPE)
                             .build());
         }
