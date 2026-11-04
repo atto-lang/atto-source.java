@@ -21,7 +21,7 @@ import org.w3c.dom.NodeList;
 public final class DurableM0ReceiptVerifier {
     private static final Map<String, Integer> EXPECTED = Map.of(
             "dev.oreslang.DurableActivityWorkflowDeclarationTest", 9,
-            "dev.oreslang.DurableWorkflowSemanticAnalysisTest", 19,
+            "dev.oreslang.DurableWorkflowSemanticAnalysisTest", 20,
             "dev.oreslang.AttoSourceExtensionTest", 5,
             "dev.oreslang.launcher.AttoCliSourceExtensionTest", 2);
 
