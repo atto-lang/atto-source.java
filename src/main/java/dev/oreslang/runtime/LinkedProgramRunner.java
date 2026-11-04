@@ -32,8 +32,8 @@ import java.util.Set;
 /**
  * Host-side multi-file loader.
  *
- * Oreslang code-unit identity comes exclusively from the canonical Unix-style
- * filesystem path. Mixed .ores/.java files are split before parsing; no
+ * Oreslang source-unit identity is derived by a bounded, project-root-scoped
+ * host-to-logical adapter. Absolute host paths never enter compiler source IDs. Mixed .ores/.java files are split before parsing; no
  * source-level module declaration is synthesized.
  */
 public final class LinkedProgramRunner {
@@ -66,8 +66,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
-        ensureJavaEntryContainsOres(entry, units);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
+        ensureJavaEntryContainsOres(entry, units, projectConfig);
 
         if (policy != null) {
             boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
@@ -179,8 +179,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
-        ensureJavaEntryContainsOres(entry, units);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
+        ensureJavaEntryContainsOres(entry, units, projectConfig);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
             policy.require(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP, "mixed Java/Ores source islands");
@@ -197,7 +197,7 @@ public final class LinkedProgramRunner {
         checkCompiledCapabilities(build, policy, permissionCheckMode);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         int exitStatus = 0;
-        String entryId = unitId(entry);
+        String entryId = HostSourceUnitIds.of(entry, projectConfig);
         MixedSourceUnit entryUnit = units.get(entryId);
         if (entryUnit == null) throw new IllegalStateException("entry source unit was not collected: " + entryId);
 
@@ -348,8 +348,10 @@ public final class LinkedProgramRunner {
         }
     }
 
-    private static void ensureJavaEntryContainsOres(Path entry, Map<String, MixedSourceUnit> units) {
-        MixedSourceUnit unit = units.get(unitId(entry));
+    private static void ensureJavaEntryContainsOres(
+            Path entry, Map<String, MixedSourceUnit> units,
+            OresProjectConfig projectConfig) throws IOException {
+        MixedSourceUnit unit = units.get(HostSourceUnitIds.of(entry, projectConfig));
         if (unit != null && unit.primaryLanguage() == MixedSourceUnit.PrimaryLanguage.JAVA && unit.foreignIslands().isEmpty()) {
             throw new IllegalArgumentException("a .java Oreslang entry must contain at least one ores { ... } island");
         }
@@ -384,17 +386,22 @@ public final class LinkedProgramRunner {
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions,
+            HostSourceUnitIds.Admission admission,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
+        // Check depth before identity/realpath I/O, including already visited imports.
+        budget.checkDepth(depth);
         Path normalized = unit.toAbsolutePath().normalize();
-        String id = unitId(normalized);
+        String id = admission.id(normalized, projectConfig);
         if (units.containsKey(id)) return;
         // Fail before any file I/O or parsing when import recursion is too deep.
         budget.checkCanAdmitUnit(depth);
 
         BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        admission.verifyRead(normalized, projectConfig, id);
         budget.admit(source.byteCount(), depth);
-        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, source.text());
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id, normalized.getFileName().toString(), source.text());
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
@@ -443,10 +450,10 @@ public final class LinkedProgramRunner {
                         "source unit '" + id + "' cannot import itself via '" + imported.path() + "'");
             }
 
-            String targetId = unitId(resolvedTarget);
+            String targetId = HostSourceUnitIds.of(resolvedTarget, projectConfig);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
-                    budget, depth + 1);
+                    admission, budget, depth + 1);
         }
     }
 
@@ -584,7 +591,4 @@ public final class LinkedProgramRunner {
         }
     }
 
-    private static String unitId(Path path) {
-        return path.toAbsolutePath().normalize().toString().replace('\\', '/');
-    }
 }
