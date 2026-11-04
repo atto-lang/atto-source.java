@@ -178,6 +178,48 @@ final class ActorPubSubAdversarialAdmissionTest {
     }
 
     @Test
+    void typedTryReliableRefusesMissingActorAuthorityAndAdmitsAfterJoin() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability grant = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "try-authority", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            CountDownLatch denied = new CountDownLatch(1);
+            CountDownLatch admitted = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<Long> sequence = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    if ("denied".equals(message)) {
+                        assertThrows(SecurityException.class,
+                                () -> topic.tryPublishReliable("not-authorized"));
+                        denied.countDown();
+                    } else if ("admit".equals(message)) {
+                        grant.join();
+                        sequence.set(topic.tryPublishReliable("authorized")
+                                .orElseThrow().sequence());
+                        admitted.countDown();
+                    }
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                    denied.countDown();
+                    admitted.countDown();
+                }
+            });
+            actor.send("denied");
+            assertTrue(denied.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            actor.send("admit");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(1L, sequence.get().longValue(),
+                    "unauthorized try admission must not create a sequence");
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void latestCoalescesWhileLossyDropsAtOneSlot() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
