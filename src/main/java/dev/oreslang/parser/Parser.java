@@ -1932,6 +1932,11 @@ public final class Parser {
         java.util.Set<String> seen = new java.util.HashSet<>();
         do {
             String name = consume(IDENT, "expected generic parameter name").lexeme();
+            // All declaration families must reserve inference-only '_' consistently.
+            // Functions already enforce this through parseGenericParameterSpecs.
+            if (name.equals("_") || name.startsWith("$")) {
+                throw error(previous(), "invalid generic parameter name '" + name + "'");
+            }
             if (!seen.add(name)) {
                 throw error(previous(), "duplicate generic parameter name '" + name + "'");
             }
