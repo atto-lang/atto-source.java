@@ -1,0 +1,35 @@
+// Canonical AttoLang source: portable integer interval policy.
+// No host interop, OS access, scheduler operations, or implicit conversions.
+// Comparisons avoid endpoint arithmetic and remain safe at signed i64 extremes.
+define module bounds as
+  pub fnc valid_int_bounds(int lower, int upper): bool {
+    return lower <= upper;
+  }
+
+  pub fnc contains_int(int value, int lower, int upper): bool {
+    if lower > upper; do
+      return false;
+    fi
+    return value >= lower && value <= upper;
+  }
+
+  pub fnc clamp_int(int value, int lower, int upper): Result<int, String> {
+    if lower > upper; do
+      return Err("inverted integer bounds");
+    fi
+    if value < lower; do
+      return Ok(lower);
+    fi
+    if value > upper; do
+      return Ok(upper);
+    fi
+    return Ok(value);
+  }
+
+  pub fnc overlaps_int(int first_low, int first_high, int second_low, int second_high): bool {
+    if first_low > first_high || second_low > second_high; do
+      return false;
+    fi
+    return first_low <= second_high && second_low <= first_high;
+  }
+end

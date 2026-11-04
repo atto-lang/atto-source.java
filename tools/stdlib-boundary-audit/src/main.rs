@@ -234,6 +234,25 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
+    fn scan_includes_atto_and_rejects_host_interop_and_legacy_collision() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-stdlib-audit-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let source = "define module bounds as pub fnc valid(): bool { return true; } end";
+        fs::write(root.join("bounds.atto"), source).unwrap();
+        assert_eq!(scan(&root).unwrap(), 1);
+
+        fs::write(root.join("host.atto"), "do java { System.exit(0); }").unwrap();
+        assert!(scan(&root).is_err(), ".atto modules must not bypass host-interop gate");
+        fs::remove_file(root.join("host.atto")).unwrap();
+
+        fs::write(root.join("bounds.ores"), source).unwrap();
+        assert!(scan(&root).is_err(), "parallel .atto/.ores sources must be denied");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn normal_module() {
         assert!(
             inspect("define module testing\npub fnc f(): String { return \"java:foo\"; } end")
