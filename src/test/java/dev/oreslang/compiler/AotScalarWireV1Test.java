@@ -355,4 +355,39 @@ final class AotScalarWireV1Test {
             }
         }
     }
+
+    @Test void messagePackAdmitsBoundedStr8AndMap16Forms() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0xde); out.write(0); out.write(3); // map16, three exact fields
+        append(out, "count"); out.write(0x01);
+        append(out, "title"); out.write(0xd9); out.write(80);
+        out.writeBytes("x".repeat(80).getBytes(StandardCharsets.UTF_8));
+        append(out, "enabled"); out.write(0xc3);
+        assertEquals(List.of(1L, "x".repeat(80), true),
+                schema().decodeMessagePack(out.toByteArray()).slots());
+    }
+
+    @Test void messagePackAdmitsBoundedStr16AndRejectsOversizedLength() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0x83);
+        append(out, "count"); out.write(0x01);
+        append(out, "title"); out.write(0xda); out.write(0x01); out.write(0x2c);
+        out.writeBytes("z".repeat(300).getBytes(StandardCharsets.UTF_8));
+        append(out, "enabled"); out.write(0xc2);
+        assertEquals("z".repeat(300), schema().decodeMessagePack(out.toByteArray()).at(1));
+        out.reset();
+        out.write(0x83); append(out, "count"); out.write(0x01);
+        append(out, "title"); out.write(0xda); out.write(0x10); out.write(0x01);
+        out.writeBytes("z".repeat(4097).getBytes(StandardCharsets.UTF_8));
+        append(out, "enabled"); out.write(0xc2);
+        rejectsPack(out.toByteArray());
+    }
+
+    @Test void utf8BudgetsCountBytesRatherThanUnicodeCodePoints() {
+        String rocket = "🚀".repeat(1024);
+        assertEquals(4096, rocket.getBytes(StandardCharsets.UTF_8).length);
+        assertEquals(rocket, schema().decodeJson(
+                "{\"count\":1,\"title\":\"" + rocket + "\",\"enabled\":true}").at(1));
+        rejectsJson("{\"count\":1,\"title\":\"" + rocket + "🚀\",\"enabled\":true}");
+    }
 }
