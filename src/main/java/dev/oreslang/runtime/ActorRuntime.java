@@ -2606,6 +2606,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final long generation;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        /** Host-owned, detached causal value; never a child arena reference. */
+        private final AtomicReference<ActorFailureTrace.Snapshot> failureTrace =
+                new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -2640,6 +2643,13 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /** Only host/CONTROL may inspect this detached, non-authoritative trace. */
+        public Optional<ActorFailureTrace.Snapshot> failureTrace() {
+            requireSupervisorContext("inspect actor failure causality");
+            requireCallerRuntimeAffinity("inspect actor failure causality");
+            return Optional.ofNullable(failureTrace.get());
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -2834,7 +2844,15 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId id() { return ref.id(); }
         public ActorKind kind() { return ref.kind(); }
         public boolean isAlive() { return ref.isAlive(); }
-        public Optional<Throwable> failure() { return ref.failure(); }
+        /** Compatibility-only raw Throwable: must never cross an actor heap. */
+        public Optional<Throwable> failure() {
+            requireSupervisorContext("inspect raw child cause");
+            requireCallerRuntimeAffinity("inspect raw child cause");
+            return ref.failure();
+        }
+        public Optional<ActorFailureTrace.Snapshot> failureTrace() {
+            return ref.failureTrace();
+        }
 
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(ref.id());
