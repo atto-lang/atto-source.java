@@ -54,7 +54,59 @@ final class AttoFileImportResolutionTest {
 
         OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
         assertTrue(config.resolveImport(consumer, "./producer.atto").isEmpty());
+        assertTrue(config.resolveImport(consumer, "./producer").isEmpty(),
+                "canonical .atto importers must not implicitly downgrade to .ores");
         assertEquals(legacy.toAbsolutePath().normalize(),
-                config.resolveImport(consumer, "./producer").orElseThrow());
+                config.resolveImport(consumer, "./producer.ores").orElseThrow());
+    }
+
+    @Test
+    void legacyImporterRequiresExplicitExtensionForAmbiguousAttoOresTwins()
+            throws Exception {
+        Path consumer = workspace.resolve("consumer.ores");
+        Path atto = workspace.resolve("producer.atto");
+        Path legacy = workspace.resolve("producer.ores");
+        Files.writeString(consumer, "pub fnc answer() -> int { return 42; }");
+        Files.writeString(atto, "pub fnc value() -> int { return 42; }");
+        Files.writeString(legacy, "pub fnc value() -> int { return 7; }");
+
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(consumer, "./producer"));
+        assertTrue(denied.getMessage().contains("ambiguous legacy source import"));
+        assertEquals(atto.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./producer.atto").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./producer.ores").orElseThrow());
+    }
+
+    @Test
+    void legacyImporterMayResolveUnambiguousModernOrLegacySource()
+            throws Exception {
+        Path consumer = workspace.resolve("consumer.ores");
+        Path modern = workspace.resolve("modern.atto");
+        Path legacy = workspace.resolve("legacy.ores");
+        Files.writeString(consumer, "pub fnc answer() -> int { return 42; }");
+        Files.writeString(modern, "pub fnc value() -> int { return 42; }");
+        Files.writeString(legacy, "pub fnc value() -> int { return 7; }");
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+
+        assertEquals(modern.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./modern").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./legacy").orElseThrow());
+    }
+
+    @Test
+    void canonicalAttoImporterDoesNotImplicitlyLoadJavaSource() throws Exception {
+        Path consumer = workspace.resolve("consumer.atto");
+        Path java = workspace.resolve("producer.java");
+        Files.writeString(consumer, "pub fnc answer() -> int { return 42; }");
+        Files.writeString(java, "public class Producer {}");
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+
+        assertTrue(config.resolveImport(consumer, "./producer").isEmpty());
+        assertEquals(java.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./producer.java").orElseThrow());
     }
 }
