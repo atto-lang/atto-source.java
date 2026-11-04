@@ -75,3 +75,26 @@ This rule applies across all repositories, including compiler backends, examples
 **Implementation policy (agents and contributors):** Put guest-visible features and library logic in `.atto` by default; reserve `.java` for justified compiler, runtime, host-interop, security and bootstrap code. See [the AttoLang-first agent directive](AGENTS.md) and [Copilot instructions](.github/copilot-instructions.md). This is a source-of-implementation rule, not just an extension rule.
 
 New AttoLang modules, tests and examples use the `.atto` extension. The Java frontend accepts `.atto` as native Ores-language source while retaining `.ores` as a legacy compatibility extension. Extensionless imports prefer `.atto` before `.ores`. See [the source-extension contract](docs/ATTO_SOURCE_EXTENSION.md).
+
+## Experimental `--analyze` frontend integration
+
+`oreslang-compiler --analyze example.atto` (legacy `.ores`) invokes
+the existing linked source-admission frontend, performs the production
+type/ownership analysis, and emits conservative
+`ORES-ANALYZE-V0` name/arity records without executing the guest.
+
+This is the first Java/GraalVM adapter for
+[platform-conformance compiler-analysis v0](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/348)
+and native LLVM [PR #1375](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1375).
+It **does not** certify arbitrary transitive `throws`/`raises`/`panics`,
+actor supervisor routing, imports, dynamic invocation, checked arithmetic,
+or full source parity. Exit 0 is restricted to source-admitted closed
+scalar literal/parameter/direct-call expressions; unsupported or unknown
+effects are inconclusive (2) and invalid source is a failure (1).
+The independent `atto test --effects` tool remains advisory.
+
+**Evidence pending:** new implementation and JUnit fixtures have not
+been executed against Maven, Native Image, or LLVM's real binary at this
+exact head. Run `mvn test -Dtest=CompilerEffectAnalysisV0Test`, the
+real cross-backend conformance fixtures, and pinned-binary
+no-guest-execution/no-artifact checks before promoting this mode.
