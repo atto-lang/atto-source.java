@@ -2174,12 +2174,18 @@ public final class Parser {
                 while (match(COMMA)) args.add(parseTypeRef());
                 consume(GT, "expected '>' after type arguments");
             } else {
+                boolean seenNamedTypeArgument = false;
                 do {
                     if (check(IDENT) && checkNext(EQUAL)) {
+                        seenNamedTypeArgument = true;
                         String parameterName = advance().lexeme();
                         consume(EQUAL, "expected '=' after named type parameter");
                         args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
                     } else {
+                        if (seenNamedTypeArgument) {
+                            throw error(peek(),
+                                    "positional type arguments cannot follow named type arguments");
+                        }
                         args.add(parseTypeRef());
                     }
                 } while (match(COMMA));
