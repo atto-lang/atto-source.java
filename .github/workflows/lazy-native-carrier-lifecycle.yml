@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: lazy-native-carrier-${{ github.ref }}-${{ matrix.cc }}
+  group: lazy-native-carrier-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
