@@ -35,6 +35,24 @@ final class HostSourceUnitIds {
         Objects.requireNonNull(sourceFile, "source file");
         Objects.requireNonNull(project, "project config");
         Path source = sourceFile.toAbsolutePath().normalize();
+        // Deny out-of-root paths before any filesystem I/O (realpath/stat).
+        // Otherwise an untrusted import can probe the presence or permissions
+        // of unrelated absolute host files through the error category.
+        List<Path> roots = project.searchRoots();
+        boolean inRoot = source.startsWith(project.projectRoot().toAbsolutePath().normalize());
+        if (!inRoot) {
+            for (Path root : roots) {
+                if (source.startsWith(root.toAbsolutePath().normalize())) {
+                    inRoot = true;
+                    break;
+                }
+            }
+        }
+        if (!inRoot) {
+            throw new IllegalArgumentException(
+                    "source file is outside the project root and configured import roots; "
+                            + "no ambient absolute path can become a macro source identity");
+        }
         Path actual = source.toRealPath();
         // Where the filesystem exposes a hardlink count, reject non-unique
         // host file identities even when the other link is outside the import
@@ -44,9 +62,8 @@ final class HostSourceUnitIds {
         String inProject = underRoot(source, actual, project.projectRoot(), "project");
         if (inProject != null) return inProject;
 
-        List<Path> searchRoots = project.searchRoots();
-        for (int i = 0; i < searchRoots.size(); i++) {
-            String name = underRoot(source, actual, searchRoots.get(i), "external/" + i);
+        for (int i = 0; i < roots.size(); i++) {
+            String name = underRoot(source, actual, roots.get(i), "external/" + i);
             if (name != null) return name;
         }
         throw new IllegalArgumentException(
