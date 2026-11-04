@@ -139,7 +139,7 @@ final class AsyncFilesystemAtomicLanguageTest {
             int depth = 0;
             while (cursor != null && depth++ < 12) {
                 diagnostics.append(cursor.getClass().getName()).append(": ")
-                        .append(cursor.getMessage()).append('\\n');
+                        .append(cursor.getMessage()).append('\n');
                 cursor = cursor.getCause();
             }
             assertTrue(diagnostics.toString().contains("Oreslang permission denied"),
