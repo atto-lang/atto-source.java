@@ -4167,10 +4167,12 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
+                rejectUnsupportedActorFactory(expr);
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
+                rejectUnsupportedActorFactory(expr);
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
@@ -4186,6 +4188,24 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    /**
+     * These reserved Actor namespace operations are compiler intrinsics, not
+     * dynamically dispatched user methods. Until typed actor graph IR and
+     * transactional graph admission exist, reject the call at the parser gate.
+     * Otherwise an unknown method or host interop fallback could bypass
+     * staged actor ownership, CONTROL exclusion or generation fencing.
+     */
+    private void rejectUnsupportedActorFactory(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Actor")) return;
+        if (!member.member().equals("pipe") && !member.member().equals("connect")) return;
+        throw error(previous(), "Actor." + member.member()
+                + "(...) requires compiler-owned actor factory graph IR, "
+                + "typed port and ActorRef admission, and atomic supervised publication; "
+                + "not yet enabled on the Java backend");
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {
