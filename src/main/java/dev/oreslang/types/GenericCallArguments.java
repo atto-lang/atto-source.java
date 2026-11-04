@@ -82,6 +82,14 @@ final class GenericCallArguments {
     }
 
     private static void requireConcreteExplicitType(Ast.TypeRef value, String label) {
+        // A named generic formal binds a TYPE, not the value-metadata syntax
+        // accepted by collection/layout annotations (rank=1, size=4, etc.).
+        // Check the whole explicit type argument only: nested metadata such
+        // as Vector<rank=1> must keep its own checked metadata channel.
+        if (value.isIntLiteral() || value.isBoolLiteral() || value.isStringLiteral()) {
+            throw new IllegalArgumentException(label
+                    + " requires a type generic argument, not a compile-time literal value");
+        }
         Deque<Ast.TypeRef> pending = new ArrayDeque<>();
         pending.add(value);
         while (!pending.isEmpty()) {
