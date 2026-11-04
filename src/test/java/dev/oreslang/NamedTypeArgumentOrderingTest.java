@@ -72,15 +72,10 @@ final class NamedTypeArgumentOrderingTest {
     }
 
     private static String withGenericCall(String typeArguments) {
-        return """
-                fnc identity<T, U>(T value, U ignored): T {
-                    return value;
-                }
-                pub routine main(): void {
-                    identity<""" + typeArguments + """>(ignored: "x", value: 42);
-                    return;
-                }
-                """;
+        return "fnc identity<T, U>(T value, U ignored): T { return value; }\\n"
+                + "pub routine main(): void { identity<"
+                + typeArguments
+                + ">(ignored: \\"x\\", value: 42); return; }\\n";
     }
 
     @Test
