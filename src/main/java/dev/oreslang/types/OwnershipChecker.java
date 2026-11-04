@@ -150,10 +150,21 @@ public final class OwnershipChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
+                if (decl instanceof Ast.MacroDecl macro) {
+                    throw residualMacro("declaration", macro.name());
+                } else if (decl instanceof Ast.MacroInvocationDecl invocation) {
+                    throw residualMacro("declaration invocation", invocation.name());
+                } else if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
             }
         }
+    }
+
+    private static IllegalArgumentException residualMacro(String kind, String name) {
+        return new IllegalArgumentException(
+                "unexpanded macro " + kind + " '" + name
+                        + "' reached ownership analysis; compile-time expansion must eliminate "
+                        + "all macro nodes before executable analysis; runtime fallback is forbidden");
     }
 
     private void indexFunction(String module, Ast.FunctionDecl fn) {
@@ -968,6 +979,9 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.MacroInvocationExpr invocation) {
+            throw residualMacro("expression invocation", invocation.name());
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
