@@ -2,7 +2,6 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
-import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -75,11 +74,16 @@ final class MacroScalarSharedFixturesTest {
     }
 
     @Test
-    void sharedOverflowFixtureIsParserInputNotYetNativeExecutionEvidence() {
-        // Parsing the same source bytes is NOT proof that checked overflow is
-        // rejected by this Java compiler or GraalVM guest. That behavioral
-        // parity remains a separate executable gate.
-        assertDoesNotThrow(() -> Parser.parse(
-                fixture("template-twice-overflow-reject.atto")));
+    void sharedOverflowFixtureRejectsBeforeExecutableLowering() {
+        // The compiler must reject duplicate-literal overflow before type
+        // checking, Graal Native Image or generated runtime arithmetic.
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        fixture("template-twice-overflow-reject.atto")));
+        assertTrue(error.getMessage().contains("MACRO_CONST_OVERFLOW"),
+                error::toString);
+        assertTrue(error.getMessage().contains("runtime fallback is forbidden"),
+                error::toString);
     }
 }
