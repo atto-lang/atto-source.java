@@ -157,3 +157,49 @@ The next executable merge gate is a supported private runner for the
 source repository or a properly reviewed V3 carrier authorization;
 then execute the focused JDK25 JNI/GCC/Clang tests, JUnit, full source
 checks and GraalVM Native Image verification at the exact PR head.
+
+
+## November 3 additional native self-shutdown and synchronization hardening
+
+Further source review found two definite correctness gaps:
+
+1. `ActorAffinityDispatcher.shutdownNow()` called from a native lane's own
+   executing command previously invoked `NativeCarrierExecutor.shutdownNow()`,
+   which deliberately throws to prevent self-interruption. The dispatcher had
+   already set `closed=true`, and could exit without draining pending lane
+   commands or returning their admission slots. The dispatcher now detects a
+   caller executing on its own native lane and uses the cooperative
+   `requestShutdownFromCarrier()` path, which returns unstarted queued tasks.
+   The dispatcher calls `rejectAdmission()` on each and returns the original
+   commands to its caller, preserving one terminal outcome per admission.
+2. Native `pthread_mutex_init` / `pthread_cond_init` return values were
+   ignored in `oresthread.c`; failures could propagate uninitialized
+   synchronization primitives to worker code or invoke unconditional
+   `pthread_cond_destroy` on uninitialized storage. Native pool construction
+   now checks both results, fails closed, and records initialized flags so
+   `free_pool()` destroys only primitives actually created.
+
+Added actual in-repository tests:
+`ActorAffinityDispatcherTest.nativeLaneMayRequestOwnDispatcherShutdownWithoutLosingQueuedWork`
+and `NativeCarrierExecutorTest.nativeCarrierSelfShutdownReturnsPendingWithoutSelfInterrupt`.
+Both require running the actual JNI carrier and asserting the native reaper
+receipt. These test methods have been **authored, not executed**.
+
+Additional independent source-free model verification:
+- JDK 21 `javac -Xlint:all -Werror`: 600 carrier self-shutdown rounds,
+  1,200 admitted tasks accounted for, 600 unstarted queued tasks returned,
+  every modeled worker exited.
+- GCC and Clang `-std=c11 -Wall -Wextra -Werror
+  -fsanitize=address,undefined`: each passed 5,000 repeats of each
+  initialization outcome (mutex failure, condition failure, success),
+  validating conditional cleanup behavior under instrumentation.
+
+**Evidence limit:** These standalone models do not compile or execute
+`NativeCarrierExecutor.java`, `ActorAffinityDispatcher.java` or
+`oresthread.c` from the exact PR source tree. The latest focused
+[run #41751650278](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41751650278)
+failed before runner allocation (GCC and Clang: `runner_id=0`, `steps=[]`).
+The next gate is real JDK25/GraalVM JNI/JUnit compilation and executable
+`.atto` actor tests on an authorized runner. Do not merge the draft based
+on these local source-free protocol models.
+
