@@ -49,18 +49,33 @@ authenticate the source/package, tenant, or actor generation.
 ## Tests
 
 ```bash
-mvn -q -Dtest=AotScalarWireV1Test test
+mvn -q -Dtest=AotScalarWireV1Test,AotScalarWireV1MatrixTest test
 bash scripts/verify-aot-scalar-wire-host-linkage.sh target/classes
 bash scripts/run-aot-scalar-wire-native-image-smoke.sh
 ```
 
-The JUnit test class includes 28 tests and a deterministic 12,000-input
-malformed JSON/MessagePack fuzz pass. A **local JDK 21** isolated harness
+The two scalar-wire JUnit test classes now contain **49 authored tests**
+(28 original + 21 matrix), including a deterministic 12,000-input
+malformed JSON/MessagePack fuzz pass, complete 6-way field-order permutations,
+signed i64 boundaries, UTF-8 and MessagePack framing mutations, schema
+fingerprint fences, and concurrent readers. A **local JDK 21** isolated harness
 compiled the exact committed `AotScalarWireV1.java` source (verified by its
 Git SHA-1 blob) with stand-in compiler-query/descriptor-reader inputs:
 12,143 assertions passed; seven compiled codec class files passed a
 host-level forbidden-runtime-reflection linkage audit. **Neither proves
 production Maven/JUnit, full descriptor integration, or native execution.**
+
+The matrix additions were also exercised against the exact latest
+committed codec source with stand-in schema inputs: **5,376 additional
+isolated checks PASS**. Including the rerun original **12,143**, there are
+**17,519 isolated codec checks PASS**. These are not Maven/JUnit runs of
+the complete production repository; host/native/guest parity still needs
+separate executed receipts. The source's rejected null scalar collection
+now yields `IllegalArgumentException` rather than raw `NullPointerException`.
+
+The platform conformance PR includes **23 portable golden wire vectors**
+(8 positive and 15 negative) and 30 structural contract/fixture tests.
+None of those fixtures is itself a cross-backend execution receipt.
 
 The native-image script is intentionally **fail closed** when Maven or GraalVM
 Native Image are missing, insists on `--no-fallback`, records Git head/tree
