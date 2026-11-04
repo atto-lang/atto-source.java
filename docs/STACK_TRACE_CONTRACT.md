@@ -163,3 +163,69 @@ Before shipping common guest stack traces on both backends:
 
 The current tests only prove the limited marker contract; none of these
 unimplemented gates should be reported as passing.
+
+
+## Actor/supervisor and heap/arena detachment — 2026-11-04 candidate
+
+Draft Java host integration: `ActorFailureTrace` records bounded immutable causal
+**association**, distinct from a synchronous call stack and from an actually
+delivered supervisor CONTROL failure receipt. The public marker
+`atto.actor-failure-causality.v1` is an internal host value contract, **not**
+an approved replacement for the cross-backend error wire schema.
+
+A failed actor now captures the first terminal cause's **trusted runtime
+identities** before normal actor-memory retirement wherever possible:
+- actor identity + incarnation generation (from ActorRef, never guest fields);
+- nearest-first parent-actor lineage, up to 8 entries;
+- nearest-first bound supervisor lineage, up to 8 entries;
+- explicit `truncated` flag when either lineage exceeds the cap;
+- cancellation vs unclassified failure. No claimed throw/raise/panic kind is
+  manufactured by host Throwable heuristics.
+
+Every snapshot is plain detached UUID string/scalar/immutable-list data. It
+contains no original `Throwable`, guest message, arbitrary `toString()`,
+`getMessage()`, stack array, guest `Error`, actor capability, pointer, native
+region handle, arena loan, task callback, Java carrier stack or closure.
+Capturing makes **no** guest call, and the snapshot remains valid after
+child actor finalization and arena reclamation. The host-only accessor is
+`ActorRef.failureTrace()` or `ActorControlHandle.failureTrace()`; actor code
+does not gain supervisor authority by acquiring a ref. A missing supervisor
+association is represented explicitly rather than guessed.
+
+**Not covered by this PR:** source-level call/await stacks, actual supervisor
+CONTROL delivery and acknowledgement, full cross-heap error transport, or
+portable `throw`/`raise`/`panic` effect identity. A `SUPERVISOR_ASSOCIATION`
+boundary is **not** an on-raise/on-panic callback. Existing host-compatible
+`ActorRef.failure()`/exceptional Futures may still hold a raw Throwable.
+They **must not** be serialized, published to other actors, stored in
+independent supervisor arenas or treated as a safe cross-tenant error wire.
+Future backend integration must replace those paths with authenticated
+CONTROL events carrying a detached, descriptor-validated
+`GuestErrorWireCodec` compact snapshot plus an immutable causal sidecar,
+while keeping the original Throwable inside its owning execution domain.
+
+The trace is deliberately not attempted after fatal JVM
+`VirtualMachineError`, `ThreadDeath` or `LinkageError`; no host stack
+overflow is an actor-recoverable event. Snapshot allocation is still best effort
+under memory pressure and does not alter terminal failure semantics.
+
+### Exact-head admission gates
+
+1. JDK/GraalVM `ActorFailureTraceTest` (host integration), existing
+   `ActorTraceContractIntegrationTest`, `ActorGroupSupervisorBindingTest`,
+   `SourceBoundaryTruncationTest`, `TrapFailurePolicyTest`. Prove first-winner
+   origin and cleanup/suppressed failure precedence.
+2. Native/LLVM, .NET NativeAOT, Wasm, Forge: emit the same detached field
+   structure without retaining an actor-heap reference or allocator-owned
+   string, then independently test retirement and stale-generation rejection.
+3. Source-compiled `.atto` multi-actor failure fixture:
+   `A -> B -> C -> supervisor S -> parent S0`, asynchronous suspension
+   and carrier migration, restart, hot-upgrade, failure during arena drop,
+   cancellation vs panic, and supervisor CONTROL receipt **exactly once**.
+4. Adversarial cases: fake supervisor IDs, forged source spans, arbitrary guest
+   error getters, cyclic causes, large source/trace, control characters,
+   failed serialization, actor/tenant swap, old-generation replay, concurrent
+   failure versus shutdown, and OOM/stack-overflow emergency paths.
+5. Capture exact head commit/tree/blob hashes, stepful workflow jobs, real
+   compiler/guest execution and independent review. Zero-step CI is runner
+   admission failure; `ATTO_GUEST_COMPILER_EXECUTION=NOT_EXECUTED` is not parity.
