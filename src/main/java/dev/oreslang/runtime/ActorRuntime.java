@@ -940,6 +940,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        private final Set<PrivateLinearArena> linearArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -976,6 +977,30 @@ public final class ActorRuntime implements AutoCloseable {
                 PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
                 blocks.add(block);
                 return block;
+            } catch (RuntimeException | Error failure) {
+                reservation.close();
+                throw failure;
+            }
+        }
+
+        /**
+         * Allocate one persistent direct arena for compiler-lowered guest
+         * objects. Per-object handles are primitive longs and reuse this
+         * backing instead of allocating one ByteBuffer per guest object.
+         */
+        public PrivateLinearArena allocateLinearArena(int bytes, int slots) {
+            requireCurrentOwner();
+            if (bytes <= 0) throw new IllegalArgumentException("linear arena byte capacity must be positive");
+            if (slots <= 0) throw new IllegalArgumentException("linear arena slot capacity must be positive");
+            // Charge the slot metadata too: it is JVM heap this actor caused, and
+            // uncharged it lets a one-byte arena hold megabytes of metadata.
+            long charged = Math.addExact((long) bytes,
+                    Math.multiplyExact((long) slots, (long) ActorLinearArena.METADATA_BYTES_PER_SLOT));
+            MemoryReservation reservation = reserve(charged, "private actor linear arena");
+            try {
+                PrivateLinearArena arena = new PrivateLinearArena(this, reservation, bytes, slots);
+                linearArenas.add(arena);
+                return arena;
             } catch (RuntimeException | Error failure) {
                 reservation.close();
                 throw failure;
@@ -1036,12 +1061,18 @@ public final class ActorRuntime implements AutoCloseable {
             if (!sliceClosed.compareAndSet(false, true)) return;
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
+            for (PrivateLinearArena arena : List.copyOf(linearArenas)) arena.invalidateFromSlice();
+            linearArenas.clear();
             long bytes = usedBytes.getAndSet(0);
             if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
         }
 
         private void unregister(PrivateMemoryBlock block) {
             blocks.remove(block);
+        }
+
+        private void unregister(PrivateLinearArena arena) {
+            linearArenas.remove(arena);
         }
     }
 
@@ -1155,6 +1186,119 @@ public final class ActorRuntime implements AutoCloseable {
             openMemory(); // owner + liveness check before invalidation
             if (!blockClosed.compareAndSet(false, true)) return;
             zeroAndDetachMemory();
+            slice.unregister(this);
+            reservation.close();
+        }
+    }
+
+    /**
+     * Actor-owner-checked facade over a persistent low-GC linear arena.
+     * Retaining this facade after actor finalization cannot retain its direct
+     * ByteBuffer: close/invalidation severs the underlying arena reference.
+     */
+    public final class PrivateLinearArena implements AutoCloseable {
+        private final ActorMemorySlice slice;
+        private final MemoryReservation reservation;
+        private final AtomicBoolean arenaClosed = new AtomicBoolean();
+        private volatile ActorLinearArena arena;
+
+        private PrivateLinearArena(
+                ActorMemorySlice slice,
+                MemoryReservation reservation,
+                int bytes,
+                int slots) {
+            this.slice = Objects.requireNonNull(slice);
+            this.reservation = Objects.requireNonNull(reservation);
+            this.arena = new ActorLinearArena(bytes, slots);
+        }
+
+        public ActorId owner() { return slice.owner(); }
+        public boolean closed() { return arenaClosed.get(); }
+        public int capacityBytes() { return openArena().capacityBytes(); }
+        public int usedBytes() { return openArena().usedBytes(); }
+        public int liveAllocations() { return openArena().liveAllocations(); }
+
+        public long allocate(int bytes, int alignment) {
+            return openArena().allocate(bytes, alignment);
+        }
+
+        public long allocate(int bytes) {
+            return openArena().allocate(bytes);
+        }
+
+        public long cleanupMark() {
+            return openArena().cleanupMark();
+        }
+
+        public long allocateOwned(int bytes, int alignment) {
+            return openArena().allocateOwned(bytes, alignment);
+        }
+
+        public long allocateOwned(int bytes) {
+            return openArena().allocateOwned(bytes);
+        }
+
+        public boolean releaseOwned(long handle) {
+            return openArena().releaseOwned(handle);
+        }
+
+        public boolean adoptOwned(long handle) {
+            return openArena().adoptOwned(handle);
+        }
+
+        public boolean dropOwned(long handle) {
+            return openArena().dropOwned(handle);
+        }
+
+        public boolean cleanupTo(long mark) {
+            return openArena().cleanupTo(mark);
+        }
+
+        public boolean remove(long handle) {
+            return openArena().remove(handle);
+        }
+
+        public boolean putLong(long handle, int offset, long value) {
+            return openArena().putLong(handle, offset, value);
+        }
+
+        public long getLong(long handle, int offset) {
+            return openArena().getLong(handle, offset);
+        }
+
+        public boolean putByte(long handle, int offset, byte value) {
+            return openArena().putByte(handle, offset, value);
+        }
+
+        public byte getByte(long handle, int offset) {
+            return openArena().getByte(handle, offset);
+        }
+
+        private ActorLinearArena openArena() {
+            if (arenaClosed.get() || slice.closed()) {
+                throw new IllegalStateException("private actor linear arena is closed");
+            }
+            slice.requireCurrentOwner();
+            ActorLinearArena live = arena;
+            if (live == null) throw new IllegalStateException("private actor linear arena is closed");
+            return live;
+        }
+
+        private void invalidateFromSlice() {
+            if (!arenaClosed.compareAndSet(false, true)) return;
+            ActorLinearArena live = arena;
+            arena = null;
+            if (live != null) live.close();
+        }
+
+        @Override
+        public void close() {
+            if (arenaClosed.get()) return;
+            slice.requireCurrentOwner();
+            if (!arenaClosed.compareAndSet(false, true)) return;
+            ActorLinearArena live = arena;
+            arena = null;
+            if (live != null) live.close();
             slice.unregister(this);
             reservation.close();
         }
