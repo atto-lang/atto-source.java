@@ -201,6 +201,40 @@ final class NamedTypeSpecializationTest {
     }
 
     @Test
+    void genericTypeFormalsRejectIntegerBooleanAndStringMetadataValues() {
+        String prelude = """
+                define class Box<T> as
+                  pub val T value;
+                end
+                """;
+        for (String literal : java.util.List.of("42", "true", "false", "\"not-a-type\"")) {
+            rejects(prelude + "fnc invalid(Box<T=" + literal
+                    + "> item): void { return; }",
+                    "requires a type generic argument");
+        }
+    }
+
+    @Test
+    void genericCallFormalsRejectMetadataValuesButNestedCollectionMetadataSurvives() {
+        for (String literal : java.util.List.of("42", "true", "\"not-a-type\"")) {
+            rejects("""
+                    fnc identity<T>(T value): T { return value; }
+                    fnc invalid(): void {
+                      identity<T=%s>(42);
+                      return;
+                    }
+                    """.formatted(literal), "requires a type generic argument");
+        }
+
+        accepts("""
+                define class Box<T> as
+                  pub val T item;
+                end
+                fnc takes(Box<T=Vector<rank=1>[int]> value): void { return; }
+                """);
+    }
+
+    @Test
     void nestedNamedTypesAreCheckedRecursively() {
         accepts("""
                 define class Box<T> as
