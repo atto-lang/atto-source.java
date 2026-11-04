@@ -77,7 +77,7 @@ public final class Parser {
         for (int i = 0; i < tokens.size(); i++) {
             Token token = tokens.get(i);
             if (token.type() == QUANTUM) {
-                throw error(token, "quantum execution requires explicit backend lowering; no implicit CPU fallback");
+                throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
             }
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
@@ -1622,6 +1622,16 @@ public final class Parser {
                     "PipelineStage", "RequiresState").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
+            }
+            // A mutable-state injection is a compiler effect, never inert
+            // annotation metadata. Reserve only this requested intrinsic;
+            // other annotation names keep their existing source behavior.
+            if (name.equals("Inject") && (check(LPAREN) || check(LT))
+                    && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 1).lexeme().equals("MutableStateContainer")) {
+                throw error(previous(), "@Inject(MutableStateContainer(...)) requires "
+                        + "compiler-checked private state-region lowering; not implemented");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
