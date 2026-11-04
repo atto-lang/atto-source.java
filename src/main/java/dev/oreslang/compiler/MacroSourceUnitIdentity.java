@@ -73,11 +73,40 @@ public final class MacroSourceUnitIdentity {
         }
         if (unitId.equals(MEMORY_UNIT)) return MEMORY_UNIT;
 
+        // A path with many x/../ segments must not exhaust CPU or memory
+        // while collapsing to an apparently short logical identifier.
+        if (unitId.length() > MAX_UNIT_ID_CHARS * 4) {
+            throw new IllegalArgumentException(
+                    "macro source-unit identity input exceeds budget");
+        }
         String logical = unitId.replace('\\', '/');
         if (logical.startsWith("/")
                 || logical.matches("^[A-Za-z]:/.*")) {
             throw new IllegalArgumentException(
                     "macro source-unit identity must be a logical relative path");
+        }
+
+        // Reject Windows drive-relative C:foo, NTFS alternate-stream syntax,
+        // control characters and malformed UTF-16 before computing hygiene IDs.
+        for (int i = 0; i < logical.length(); i++) {
+            char current = logical.charAt(i);
+            if (current == ':' || Character.isISOControl(current)
+                    || Character.getType(current) == Character.LINE_SEPARATOR
+                    || Character.getType(current) == Character.PARAGRAPH_SEPARATOR) {
+                throw new IllegalArgumentException(
+                        "invalid character in logical macro source-unit identity");
+            }
+            if (Character.isHighSurrogate(current)) {
+                if (i + 1 >= logical.length()
+                        || !Character.isLowSurrogate(logical.charAt(i + 1))) {
+                    throw new IllegalArgumentException(
+                            "invalid UTF-16 in logical macro source-unit identity");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(current)) {
+                throw new IllegalArgumentException(
+                        "invalid UTF-16 in logical macro source-unit identity");
+            }
         }
 
         ArrayDeque<String> segments = new ArrayDeque<>();
