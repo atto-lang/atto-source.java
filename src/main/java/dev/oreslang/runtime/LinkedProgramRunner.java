@@ -65,7 +65,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0,
+                policy != null && policy.adversarial());
         ensureJavaEntryContainsOres(entry, units, projectConfig);
 
         if (policy != null) {
@@ -177,7 +178,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0,
+                policy != null && policy.adversarial());
         ensureJavaEntryContainsOres(entry, units, projectConfig);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
