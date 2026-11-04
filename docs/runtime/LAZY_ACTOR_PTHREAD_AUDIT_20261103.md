@@ -113,3 +113,47 @@ JVM attachment, and reaper creation; demonstrate shutdown/physical
 retirement under JDK25/GraalVM Native Image. The source-org Actions
 runner-admission failure remains distinct from test failures.
 
+## November 3/4 JVM fallback first-worker admission and CI governance
+
+A further source audit of `ActorRuntime.startCarrierForAdmission` found
+that the `ores.actor.affinity=none` JVM ThreadPoolExecutor fallback
+previously ignored `prestartCoreThread() == false`. A failed first
+worker creation could allow actor construction to proceed without a live
+carrier. The branch now invokes `startUnlanedJvmCarrier(pool)` and
+fails closed when the pool is shut down, no worker is present after
+prestart, or shutdown wins before admission returns.
+
+`ActorJvmFirstCarrierAdmissionTest` adds four focused regression
+tests: false prestart, closed pool, repeated prestart reusing one worker,
+and 32 idle SHARED actors with one JVM fallback worker. The
+`lazy-native-carrier-lifecycle.yml` source-org GCC/Clang matrix now
+selects this class alongside the JNI and affinity classes.
+
+**Independent isolated local verification (not actual source-tree
+compilation):** the extracted first-carrier gate behavior compiled on
+OpenJDK 21.0.12.1 with `javac -Xlint:all -Werror` and passed
+worker-start failure, already-closed rejection, worker reuse and 400
+first-admission-versus-shutdown rounds (all outcomes accounted for).
+The in-repository JUnit test class has not executed on this exact head.
+
+**Source-org CI still blocked before execution:** focused workflow run
+[41750097771](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41750097771)
+failed with `runner_id=0` and `steps=[]` in both GCC and Clang
+jobs; ordinary `ci` and `fast-ci` did likewise. These are
+infrastructure/no-run findings, not source test failures.
+
+**Cross-organization private-source export is still prohibited:**
+`.github/private-ci-approved-repositories.txt` has zero positive
+destination entries, source `main` currently reports
+`protected=false`, and V3 requires independently reviewed
+source/destination governance and exact-head authorization.
+`opto-sync-test/go-java-validation` (numeric repository ID 1323598177,
+private at last inspection) recently completed source-free Actions
+capacity and security-verifier jobs, but those successes **do not**
+authorize moving the private Java tree. No cross-organization Git
+blob/tree/branch containing source was created in this audit.
+
+The next executable merge gate is a supported private runner for the
+source repository or a properly reviewed V3 carrier authorization;
+then execute the focused JDK25 JNI/GCC/Clang tests, JUnit, full source
+checks and GraalVM Native Image verification at the exact PR head.
