@@ -59,6 +59,23 @@ final class CompilerEffectAnalysisV0Test {
     }
 
     @Test
+    void longCallableIdentitiesCannotBeCertifiedByTruncatedReports() {
+        String longName = "n".repeat(260);
+        String source = "fnc " + longName + "(): int { return 42; } "
+                + "pub fnc main(): int { return " + longName + "(); }";
+        // Rejection at lexical admission is acceptable; if parsed, the
+        // effect receipt itself must remain explicitly inconclusive.
+        try {
+            var report = CompilerEffectAnalysisV0.analyze(Parser.parse(source));
+            assertEquals(2, report.exitStatus());
+            assertFalse(report.records().stream().anyMatch(
+                    record -> record.contains("status=known")));
+        } catch (IllegalArgumentException unsupportedName) {
+            assertNotNull(unsupportedName.getMessage());
+        }
+    }
+
+    @Test
     void invalidGuestSourceCannotBeAdmittedByRealTypechecker() {
         assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(
