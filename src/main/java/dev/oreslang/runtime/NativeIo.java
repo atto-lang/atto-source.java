@@ -154,6 +154,11 @@ public final class NativeIo {
      */
     public static void writeTextAtomic(OresContext context, String rawPath, String value) {
         Path lexical = lexicalPath(rawPath);
+        // Reject out-of-scope destinations before any existence, symlink, or
+        // parent-resolution probe. This must hold even when the parent path
+        // does not exist or its metadata would otherwise reveal its state.
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                lexical.toString(), "fs.write_text_atomic");
         if (Files.isSymbolicLink(lexical)) {
             throw new SecurityException("fs.write_text_atomic refuses symlink: " + lexical);
         }
@@ -161,8 +166,10 @@ public final class NativeIo {
         if (parent == null) throw new IllegalArgumentException("atomic write path has no parent");
         Path canonicalParent = realPath(parent);
         Path target = canonicalParent.resolve(lexical.getFileName());
-        context.requirePermission(RuntimePermissions.Permission.WRITE, lexical.toString(), "fs.write_text_atomic");
-        context.requirePermission(RuntimePermissions.Permission.WRITE, target.toString(), "fs.write_text_atomic");
+        // Reauthorize the resolved parent when a symlinked ancestor could
+        // route an in-scope lexical path to an out-of-scope directory.
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                target.toString(), "fs.write_text_atomic");
         if (!Files.isDirectory(canonicalParent, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("atomic write parent is not a directory: " + parent);
         }
