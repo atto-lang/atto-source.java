@@ -48,6 +48,19 @@ final class HostSourceUnitIdsTest {
     }
 
     @Test
+    void outOfRootPathIsRejectedBeforeCheckingWhetherItExists() throws Exception {
+        Path project = Files.createDirectory(temp.resolve("project"));
+        Path entry = project.resolve("main.atto");
+        Files.writeString(entry, "pub fnc answer() -> int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(entry, Map.of());
+        Path absentOutside = temp.resolve("not-present.atto");
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> HostSourceUnitIds.of(absentOutside, config));
+        assertTrue(denied.getMessage().contains("outside the project root"),
+                denied::toString);
+    }
+
+    @Test
     void explicitlyConfiguredExternalRootsHaveDeterministicDisjointPrefix() throws Exception {
         Path project = temp.resolve("project");
         Path external = temp.resolve("externals");
