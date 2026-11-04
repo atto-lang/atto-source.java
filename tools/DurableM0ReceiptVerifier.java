@@ -131,11 +131,12 @@ public final class DurableM0ReceiptVerifier {
     }
 
     private static String uniqueReceipt(String output, String key, String valueRegex) {
-        Pattern pattern = Pattern.compile("(?m)^" + key + "=(" + valueRegex + ")\\r?$");
+        Pattern pattern = Pattern.compile("(?m)^" + Pattern.quote(key) + "=([^\\r\\n]*)\\r?$");
         Matcher match = pattern.matcher(output);
         if (!match.find()) throw new IllegalArgumentException("missing or noncanonical " + key);
         String value = match.group(1);
         if (match.find()) throw new IllegalArgumentException("duplicate " + key);
+        if (!value.matches(valueRegex)) throw new IllegalArgumentException("missing or noncanonical " + key);
         return value;
     }
 
