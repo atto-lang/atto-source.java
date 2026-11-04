@@ -30,6 +30,70 @@ import java.util.List;
 public final class NativeIo {
     private NativeIo() { }
 
+    /**
+     * Byte-bounded UTF-8 read from one opened descriptor, not a separate
+     * stat() followed by Files.readString(). A concurrent appender may grow
+     * the file, but cannot make this operation buffer more than maxBytes.
+     *
+     * This checks both lexical and canonical READ scopes and rejects a final
+     * symlink. Parent-directory replacement by a hostile concurrent writer
+     * still requires a platform dirfd/sandbox boundary; this is not a
+     * general-purpose race-free path authority primitive.
+     */
+    public static String readTextBounded(
+            OresContext context, String rawPath, long maxBytes) {
+        if (maxBytes < 0 || maxBytes > 16L * 1024L * 1024L) {
+            throw new IllegalArgumentException(
+                    "fs.read_text_bounded_async max_bytes must be in 0..16777216");
+        }
+        Path lexical = lexicalPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                lexical.toString(), "fs.read_text_bounded_async");
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(
+                    "fs.read_text_bounded_async refuses symlink: " + lexical);
+        }
+        Path path = canonicalExistingPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                path.toString(), "fs.read_text_bounded_async");
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(
+                    "fs.read_text_bounded_async requires regular file: " + path);
+        }
+        try (var channel = Files.newByteChannel(
+                path, java.util.Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            if (channel.size() > maxBytes) {
+                throw new IllegalArgumentException(
+                        "fs.read_text_bounded_async byte budget exceeded");
+            }
+            java.io.ByteArrayOutputStream bytes =
+                    new java.io.ByteArrayOutputStream((int) Math.min(maxBytes, 8192L));
+            java.nio.ByteBuffer chunk = java.nio.ByteBuffer.allocate(8192);
+            long received = 0;
+            while (true) {
+                chunk.clear();
+                int count = channel.read(chunk);
+                if (count < 0) break;
+                if (count == 0) {
+                    throw new IllegalStateException(
+                            "fs.read_text_bounded_async read made no progress");
+                }
+                if (count > maxBytes - received) {
+                    throw new IllegalArgumentException(
+                            "fs.read_text_bounded_async byte budget exceeded");
+                }
+                bytes.write(chunk.array(), 0, count);
+                received += count;
+            }
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString();
+        } catch (IOException failure) {
+            throw ioFailure("bounded read", path, failure);
+        }
+    }
+
     public static String readText(OresContext context, String rawPath) {
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.read_text");

@@ -5606,6 +5606,10 @@ public final class TypeChecker {
                     case "read_text", "read_text_blocking" -> {
                         result = Primitive.STRING; parameters = List.of(Primitive.STRING);
                     }
+                    case "read_text_bounded_async" -> {
+                        result = Primitive.STRING;
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
                     case "exists", "exists_blocking", "is_dir", "is_dir_blocking",
                             "is_symlink", "is_symlink_blocking" -> {
                         result = Primitive.BOOL; parameters = List.of(Primitive.STRING);
