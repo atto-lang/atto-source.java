@@ -109,6 +109,12 @@ public final class MacroExpander {
         if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
         if (declaration instanceof Ast.FieldDecl field) return field.name();
         if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+        // Current main also admits protected state and virtual actor names as
+        // compile-time declarations. They are not executable macro bodies,
+        // but a macro must not synthesize a same-named runtime declaration and
+        // bypass the protected ownership/activation namespace boundary.
+        if (declaration instanceof Ast.StateContainerDecl state) return state.name();
+        if (declaration instanceof Ast.VirtualActorDecl actor) return actor.name();
         return null;
     }
 
