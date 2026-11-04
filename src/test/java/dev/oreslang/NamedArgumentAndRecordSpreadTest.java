@@ -526,7 +526,7 @@ final class NamedArgumentAndRecordSpreadTest {
                     Source.newBuilder(
                                     OresLanguage.ID,
                                     code,
-                                    "named-argument-record-spread.ores")
+                                    "named-argument-record-spread.atto")
                             .mimeType(OresLanguage.MIME_TYPE)
                             .build());
         }
