@@ -4,6 +4,42 @@
 destination allowlist and carrier-contract policy remain unchanged and empty
 for this candidate. This packet cannot be used as an authorization token.
 
+## Authoritative review pin — November 3, 2026 (supersedes historical pins)
+
+**Review-only, never authorization.** The only source identity currently
+eligible for a fresh independent review is Java draft PR #2422 head
+`6d83f54736c6c45b891132b2575bdff7a470781f`, full Git tree
+`d0d974e91984ce25bac1a68087c7e1a07414e323`. Every other source
+head/tree pair later in this packet is a historical receipt, **not** the
+current candidate or an approval. Any new source commit invalidates this
+pin and requires another independent review.
+
+The audit found that the legacy host-callable three-argument Task
+capture publisher could mint a positive ownership epoch after a
+manually started attempt. Java PR #2422 now preserves that entry point
+as an unconditional rejection and adds a constructor-private, exact
+Program/epoch `OwnershipChecker.TaskPublishAuthority` used solely by
+the checked ownership pass. The four-argument publisher also requires
+the coordinated Critical -> Task -> Type monitors. A new negative
+raw-AST/forged-epoch test and revised direct-publication/superseded-check
+tests are authored. Legacy `async fnc` fixture declarations in the
+target Task-capture suite were migrated to `suspends fnc`. Focused
+CI requires **seven nonempty Surefire suites**, including
+`TaskCaptureAdmissionIdentityTest`, and corrects its evidence label:
+JVM-hosted Graal/Truffle is **not** GraalVM Native Image or AOT.
+
+At this immutable source head the focused Java [Actions run 41745711398]
+(https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41745711398),
+synthetic smoke run 41745711459 and fast CI run 41745711393
+all failed before runner admission (`steps=null`); no production
+Maven, JUnit, guest, AOT or parity execution is established.
+
+**Non-authorizing holds remain:** source `main.protected=false`,
+strict status check enforcement off, zero active destination allowlist
+entries, independent `@ORESoftware` reviews unsubmitted. Existing
+source-free Java 21 alternate carrier receipt does not grant private
+source access. Do not transfer code across GitHub organizations or merge.
+
 ## Candidate identities and source-free executed evidence
 
 - Private source: `ores-truffle-oreslang/oreslang-source.java`, repository ID
