@@ -15,6 +15,7 @@ import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.AggregateKind;
 import dev.oreslang.types.Types.SelfType;
+import dev.oreslang.types.Types.BoolLiteral;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.TupleKind;
