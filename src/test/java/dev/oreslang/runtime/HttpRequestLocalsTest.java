@@ -52,6 +52,31 @@ final class HttpRequestLocalsTest {
         assertEquals(9, locals.size());
     }
 
+    @Test void malformedUtf16AndExactUtf8BoundaryAreRejectedWithoutMutation() {
+        var locals = new HttpRequestLocals();
+        locals.set("unicode", "prior");
+        String[] invalid = {
+            String.valueOf((char) 0xD800),
+            String.valueOf((char) 0xDC00),
+            "a" + (char) 0xD800 + "b",
+            String.valueOf((char) 0xD800) + (char) 0xD800
+        };
+        for (String bad : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> locals.set("unicode", bad));
+            assertEquals("prior", locals.get("unicode"));
+            assertEquals(1, locals.size());
+        }
+        // One supplementary scalar is four UTF-8 bytes, even though it is
+        // represented as a pair of Java UTF-16 code units.
+        String supplementary = new String(Character.toChars(0x1F600));
+        locals.set("unicode", supplementary.repeat(256));
+        assertEquals(supplementary.repeat(256), locals.get("unicode"));
+        assertThrows(IllegalArgumentException.class,
+                () -> locals.set("unicode", supplementary.repeat(257)));
+        assertEquals(supplementary.repeat(256), locals.get("unicode"));
+    }
+
     @Test void retirementClearsSensitiveDataAndRevokesEveryOperation() {
         var locals = new HttpRequestLocals();
         locals.set("auth", "do-not-retain");
