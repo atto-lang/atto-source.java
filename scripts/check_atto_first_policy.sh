@@ -29,7 +29,8 @@ fi
 
 changed="$(mktemp)"
 trap 'rm -f "$changed"' EXIT
-git diff --name-only --diff-filter=ACMR -z "$base" "$head" > "$changed"
+git merge-base "$base" "$head" > /dev/null || { echo "atto-first: PR head and base have no common ancestor" >&2; exit 2; }
+git diff --name-only --diff-filter=ACMR -z "$base...$head" > "$changed"
 java_paths=()
 while IFS= read -r -d '' path; do
   [[ "$path" == *.java ]] && java_paths+=("$path")
