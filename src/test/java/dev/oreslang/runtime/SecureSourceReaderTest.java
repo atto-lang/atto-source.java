@@ -16,7 +16,17 @@ final class SecureSourceReaderTest {
         Path file = dir.resolve("entry.atto");
         String source = "pub fnc value() -> int { return 42; }";
         Files.writeString(file, source);
-        var read = SecureSourceReader.read(file, OresProjectConfig.discover(file, Map.of()));
+        // A manifest pins project.root above src/pkg so that the test
+        // actually exercises secure directory traversal through two levels.
+        Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                root = "."
+                [source]
+                roots = ["src"]
+                """);
+        var read = SecureSourceReader.read(file,
+                OresProjectConfig.discover(file, Map.of()), true);
         assertEquals(source, read.text());
         assertEquals(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
                 read.byteCount());
