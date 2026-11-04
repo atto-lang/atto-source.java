@@ -3925,6 +3925,10 @@ public final class OresEvalRootNode extends RootNode {
                     new java.util.concurrent.atomic.AtomicBoolean();
             SourceValueCont continuation = (resumedTask, value, failure) -> {
                 if (!delivered.compareAndSet(false, true)) {
+                    // A failure raised by the first delivery reaches here through a nested
+                    // catch. Rethrow it: the downstream already owns it, and an ISE would mask it.
+                    if (failure instanceof RuntimeException runtime) throw runtime;
+                    if (failure instanceof Error error) throw error;
                     throw new IllegalStateException(
                             "suspendable expression completed more than once");
                 }
