@@ -2184,7 +2184,7 @@ public final class Parser {
                     } else {
                         if (seenNamedTypeArgument) {
                             throw error(peek(),
-                                    "positional type arguments cannot follow named type arguments");
+                                    "positional type argument cannot follow a named type argument");
                         }
                         args.add(parseTypeRef());
                     }
