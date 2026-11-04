@@ -88,6 +88,19 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
+    void optionNarrowingRequiresCheckedOwnershipLowering() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                fnc choose(Option<string> username): int {
+                  guard username is Some { return 0; }
+                  return 42;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("ownership-checked Option narrowing"),
+                failure::getMessage);
+    }
+
+    @Test
     void requiresBothBranchesOfNestedConditionalToExit() {
         reject("""
                 fnc choose(int x): int {
