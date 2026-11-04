@@ -30,6 +30,16 @@ final class CriticalActorGuestExecutionTest {
         assertEquals("returned", runGuest("critical-actor-early-return-v1.ores"));
     }
 
+    @Test void canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput()
+            throws Exception {
+        assertEquals("42", runGuest("critical-actor-checked-v1.atto"));
+    }
+
+    @Test void canonicalAttoEarlyReturnGuestReleasesBeforeStop()
+            throws Exception {
+        assertEquals("returned", runGuest("critical-actor-early-return-v1.atto"));
+    }
+
     private static String runGuest(String file) throws Exception {
         String source = Files.readString(Path.of("examples", file));
         OresCompiler.parseAndTypeCheck(source);
