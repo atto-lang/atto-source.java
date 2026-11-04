@@ -48,6 +48,18 @@ final class MacroProtectedStateIsolationTest {
     }
 
     @Test
+    void specializedProtectedScalarMirNeverDiscardsCompilerMacroDeclarations() {
+        // This entry point intentionally bypasses general TypeChecker only for
+        // one exact protected-state MIR slice. It must still reject a source
+        // with additional compile-time macro declarations rather than silently
+        // discarding them and claiming successful protected lowering.
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compileProtectedScalarI64(SOURCE));
+        assertTrue(failure.getMessage().contains("PROTECTED_MIR_UNSUPPORTED"),
+                failure::toString);
+    }
+
+    @Test
     void expandedMacroDoesNotBypassProtectedStateMirAdmission() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(SOURCE));
