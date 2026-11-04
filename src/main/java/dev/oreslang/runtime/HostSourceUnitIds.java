@@ -72,17 +72,20 @@ final class HostSourceUnitIds {
     }
 
     private static void rejectKnownHardlinks(Path actual) throws IOException {
+        final Object links;
         try {
-            Object links = Files.getAttribute(actual, "unix:nlink", LinkOption.NOFOLLOW_LINKS);
-            if (links instanceof Number count && count.longValue() > 1) {
-                throw new IllegalArgumentException(
-                        "hardlinked source file has more than one filesystem name; "
-                                + "macro source identity must be unique");
-            }
-        } catch (UnsupportedOperationException unsupported) {
-            // Windows and other providers may not expose unix:nlink. The
-            // per-compilation admission registry still rejects encountered
-            // aliases using fileKey/isSameFile, without silently merging IDs.
+            links = Files.getAttribute(actual, "unix:nlink", LinkOption.NOFOLLOW_LINKS);
+        } catch (UnsupportedOperationException | IllegalArgumentException unsupported) {
+            // Some providers throw IllegalArgumentException for an unknown
+            // attribute view, not UnsupportedOperationException. Only the
+            // optional attribute query is suppressed: a positive link count
+            // must remain an independently enforced rejection.
+            return;
+        }
+        if (links instanceof Number count && count.longValue() > 1) {
+            throw new IllegalArgumentException(
+                    "hardlinked source file has more than one filesystem name; "
+                            + "macro source identity must be unique");
         }
     }
 
