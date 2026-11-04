@@ -246,16 +246,42 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL) return;
+
+    /*
+     * This is the first JNI startup barrier, preceding Java's bounded
+     * carrierLoopsEntered.await(). An unbounded pthread_cond_wait here would
+     * defeat Java's timeout if AttachCurrentThreadAsDaemon stalled. Use an
+     * absolute CLOCK_REALTIME deadline as required by the default pthread
+     * condition variable clock. A failed or timed-out attachment is retired
+     * by Java's ensureStarted() finally via nativeShutdown(), never admitted.
+     */
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        throw_illegal_state(env, "failed to read native carrier startup clock");
+        return;
+    }
+    deadline.tv_sec += 30;
     pthread_mutex_lock(&pool->mutex);
     pool->started = 1;
     pthread_cond_broadcast(&pool->condition);
+    int wait_status = 0;
     while (!pool->shutdown && pool->attach_ready_count < pool->max_threads) {
-        pthread_cond_wait(&pool->condition, &pool->mutex);
+        int rc = pthread_cond_timedwait(&pool->condition, &pool->mutex, &deadline);
+        if (rc != 0) {
+            wait_status = rc;
+            break;
+        }
     }
     int failures = pool->attach_failures;
+    int attached = pool->attach_ready_count;
+    int stopped = pool->shutdown;
     pthread_mutex_unlock(&pool->mutex);
-    if (failures != 0) {
-        throw_illegal_state(env, "one or more native carrier pthreads failed to attach to the JVM");
+    if (wait_status == ETIMEDOUT) {
+        throw_illegal_state(env, "native carrier JNI attachment timed out");
+    } else if (wait_status != 0) {
+        throw_illegal_state(env, "native carrier JNI attachment wait failed");
+    } else if (stopped || attached != pool->max_threads || failures != 0) {
+        throw_illegal_state(env, "native carrier pthread attachment incomplete or failed");
     }
 }
 
