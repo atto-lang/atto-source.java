@@ -410,7 +410,8 @@ final class TaskCaptureAdmissionIdentityTest {
         OwnershipChecker.check(typed);
         long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(typed);
         assertEquals(java.util.Map.of("value", Ast.TaskCaptureTransfer.COPY),
-                Ast.CheckedTaskCaptures.require(typed, task, epoch).captureTransfers());
+                Ast.CheckedTaskCaptures.require(
+                        typed, firstTask(typed), epoch).captureTransfers());
     }
 
     @Test
