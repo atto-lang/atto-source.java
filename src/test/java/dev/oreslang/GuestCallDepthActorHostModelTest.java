@@ -48,8 +48,10 @@ final class GuestCallDepthActorHostModelTest {
                     });
 
             exhausted.send("overrun");
-            sibling.send("alive");
             assertTrue(exhausted.awaitTermination(3, TimeUnit.SECONDS));
+            // Force the same single-worker SHARED pool to accept a new turn
+            // after the failed actor has retired and released its carrier.
+            sibling.send("alive");
             assertTrue(sibling.awaitTermination(3, TimeUnit.SECONDS));
             assertInstanceOf(GuestCallDepthExceededException.class,
                     exhausted.failure().orElseThrow());
