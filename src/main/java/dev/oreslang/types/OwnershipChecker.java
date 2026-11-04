@@ -79,14 +79,20 @@ public final class OwnershipChecker {
     public static final class TaskPublishAuthority {
         private final Ast.Program program;
         private final long epoch;
+        private final long typingGeneration;
 
-        private TaskPublishAuthority(Ast.Program program, long epoch) {
+        private TaskPublishAuthority(
+                Ast.Program program, long epoch, long typingGeneration) {
             this.program = program;
             this.epoch = epoch;
+            this.typingGeneration = typingGeneration;
         }
 
-        public boolean permits(Ast.Program expectedProgram, long expectedEpoch) {
-            return program == expectedProgram && epoch > 0 && epoch == expectedEpoch;
+        public boolean permits(Ast.Program expectedProgram, long expectedEpoch,
+                long expectedTypingGeneration) {
+            return program == expectedProgram && epoch > 0
+                    && epoch == expectedEpoch
+                    && typingGeneration == expectedTypingGeneration;
         }
     }
 
@@ -206,9 +212,14 @@ public final class OwnershipChecker {
         synchronized (Ast.CheckedCriticalBlocks.class) {
             synchronized (Ast.CheckedTaskCaptures.class) {
                 synchronized (TypeChecker.class) {
-                    long typingGeneration = pendingCriticalAdmissions.isEmpty()
-                            ? 0L : TypeChecker.requireCriticalTypeProof(checkedProgram);
-                    if (!pendingCriticalAdmissions.isEmpty()
+                    // Any Task boundary, even without critical statements,
+                    // needs independent successful typing. Ownership-only
+                    // programs without Tasks or critical blocks stay supported.
+                    boolean needsTyping = !pendingCriticalAdmissions.isEmpty()
+                            || !pendingTaskCaptures.isEmpty();
+                    long typingGeneration = needsTyping
+                            ? TypeChecker.requireCriticalTypeProof(checkedProgram) : 0L;
+                    if (needsTyping
                             && (criticalTypingGenerationAtStart <= 0L
                                 || typingGeneration != criticalTypingGenerationAtStart)) {
                         throw new IllegalStateException(
@@ -229,7 +240,8 @@ public final class OwnershipChecker {
                     // monitors remain held.
                     Ast.CheckedTaskCaptures.publish(
                             checkedProgram, taskCheckEpoch, pendingTaskCaptures,
-                            new TaskPublishAuthority(checkedProgram, taskCheckEpoch));
+                            new TaskPublishAuthority(
+                                    checkedProgram, taskCheckEpoch, typingGeneration));
                     Ast.CheckedCriticalBlocks.publish(
                             checkedProgram, taskCheckEpoch,
                             pendingCriticalAdmissions, authority);
