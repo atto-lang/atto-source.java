@@ -94,6 +94,46 @@ final class HostSourceUnitIdsTest {
     }
 
     @Test
+    void realLinkedAttoImportCannotImplicitlyDowngradeToLegacyOres() throws Exception {
+        Path consumer = temp.resolve("consumer.atto");
+        Path legacy = temp.resolve("producer.ores");
+        Files.writeString(legacy, "pub fnc helper() -> int { return 7; }");
+        Files.writeString(consumer, """
+                import * as lib from "./producer";
+                pub fnc main() -> int { return 42; }
+                """);
+
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(consumer, Map.of()));
+        assertTrue(denied.getMessage().contains("does not resolve"));
+
+        Files.writeString(consumer, """
+                import * as lib from "./producer.ores";
+                pub fnc main() -> int { return 42; }
+                """);
+        IncrementalCompiler.BuildResult explicit =
+                assertDoesNotThrow(() -> LinkedProgramRunner.validate(consumer, Map.of()));
+        assertTrue(explicit.units().containsKey("project/producer.ores"));
+    }
+
+    @Test
+    void realLinkedLegacyImporterRejectsAmbiguousTwinDeclarations() throws Exception {
+        Path consumer = temp.resolve("consumer.ores");
+        Files.writeString(temp.resolve("producer.atto"),
+                "pub fnc helper() -> int { return 42; }");
+        Files.writeString(temp.resolve("producer.ores"),
+                "pub fnc helper() -> int { return 7; }");
+        Files.writeString(consumer, """
+                import * as lib from "./producer";
+                pub fnc main() -> int { return 42; }
+                """);
+
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(consumer, Map.of()));
+        assertTrue(denied.getMessage().contains("ambiguous legacy source import"));
+    }
+
+    @Test
     void legacyOresEntryHasDistinctCanonicalFileIdentity() throws Exception {
         Path source = temp.resolve("legacy.ores");
         Files.writeString(source, "pub fnc main() -> int { return 42; }");
