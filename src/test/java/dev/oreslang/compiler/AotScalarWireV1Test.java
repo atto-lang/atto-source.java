@@ -296,4 +296,39 @@ final class AotScalarWireV1Test {
     @Test void rejectsNonAsciiUnicodeEscapeDigits() {
         rejectsJson("{\"count\":1,\"title\":\"\\u１２ＡＦ\",\"enabled\":true}");
     }
+
+    @Test void wireSchemaFingerprintIsDistinctFromNominalTypeIdentity() {
+        var first = schema();
+        var identical = schema();
+        assertEquals(64, first.schemaSha256Hex().length());
+        assertEquals(first.schemaSha256Hex(), identical.schemaSha256Hex());
+        String updated = SOURCE.replace(
+                "  pub bool enabled: false",
+                "  pub bool enabled: false\n  pub int revision: 1");
+        var changed = OresCompiler.compileAotScalarWireSchemaV1(
+                updated, "pkg@revision1", "type_of<WirePayload>()");
+        // V1 nominal type IDs bind the package/name, not the field layout.
+        assertEquals(first.typeIdHex(), changed.typeIdHex());
+        assertNotEquals(first.schemaSha256Hex(), changed.schemaSha256Hex());
+        assertThrows(IllegalArgumentException.class,
+                () -> changed.requireSchemaFingerprint(first.schemaSha256Hex()));
+    }
+
+    @Test void fingerprintIsCheckedBeforeDecodingAnyUntrustedPayload() {
+        var compiled = schema();
+        var fingerprint = compiled.schemaSha256Hex();
+        var json = "{\"count\":3,\"title\":\"hi\",\"enabled\":true}";
+        assertEquals(List.of(3L, "hi", true),
+                compiled.decodeJsonWithFingerprint(json, fingerprint).slots());
+        assertEquals(List.of(3L, "hi", true),
+                compiled.decodeMessagePackWithFingerprint(
+                        pack(false, 3, "hi", true), fingerprint).slots());
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeJsonWithFingerprint(json, "0".repeat(64)));
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeMessagePackWithFingerprint(
+                        pack(false, 3, "hi", true), "0".repeat(64)));
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeJsonWithFingerprint("malformed", null));
+    }
 }
