@@ -457,6 +457,61 @@ final class NamedArgumentAndRecordSpreadTest {
                 () -> TypeChecker.check(Parser.parse(code)));
     }
 
+    /**
+     * The scalar entry paths below mirror the LLVM native named-generic
+     * compiler-to-executable corpus, but are run through the Java/Graal guest.
+     * The LLVM harness returns an OS exit status; this suite captures stdout.
+     * Neither suite is a substitute for comparing exact recorded receipts.
+     */
+    @Test
+    void scalarNamedGenericAndValueCallsMatchNativeAbiExamples()
+            throws Exception {
+        String source = """
+                fnc combine<A=int, B=A>(A first, B second): int {
+                    return first * 10 + second;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(
+                            combine<B=int, A=int>(second: 2, first: 4));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(source));
+    }
+
+    @Test
+    void scalarMixedPositionalAndNamedValueCallMatchesNativeExample()
+            throws Exception {
+        String source = """
+                fnc add<T=int>(T first, T second): int {
+                    return first + second;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(add<int>(19, second: 23));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(source));
+    }
+
+    @Test
+    void scalarInferredGenericAndReorderedValuesMatchNativeExample()
+            throws Exception {
+        String source = """
+                fnc add<T>(T first, T second): int {
+                    return first + second;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(add(second: 23, first: 19));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(source));
+    }
+
     private static String checkedExecution(String code) throws Exception {
         var parsed = Parser.parse(code);
         var typed = TypeChecker.check(parsed);
