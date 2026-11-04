@@ -6071,6 +6071,13 @@ public final class ActorRuntime implements AutoCloseable {
                                     || httpDelivery.incarnation() != ref.generation())) {
                         httpDelivery = null;
                     }
+                    if (httpDelivery != null && ActorRuntime.currentActorId().isPresent()) {
+                        // NativeHttp.moveTo() is supervisor-only. A guest
+                        // actor that learned a token cannot preempt its FIRST
+                        // delivery by forwarding the string to the destination.
+                        throw new SecurityException(
+                                "HTTP transfer delivery must originate from its supervisor");
+                    }
                     if (httpDelivery != null
                             && !httpDelivery.firstMailSequence()
                                     .compareAndSet(-1L, sequence)) {
