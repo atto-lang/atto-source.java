@@ -11,6 +11,9 @@ on:
       - 'src/test/java/dev/oreslang/NamedArgumentAndRecordSpreadTest.java'
       - 'src/test/java/dev/oreslang/ClassCallableProductBindingTest.java'
       - 'src/test/java/dev/oreslang/GenericNamedOptionalCallTest.java'
+      - 'src/test/java/dev/oreslang/NamedJavaLlvmScalarParityTest.java'
+      - 'src/test/java/dev/oreslang/NamedTypeSpecializationTest.java'
+      - 'src/test/java/dev/oreslang/NamedPartialGenericCallsTest.java'
       - 'pom.xml'
       - '.github/workflows/named-call-java-exact-head.yml'
   workflow_dispatch:
@@ -57,10 +60,10 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp \
-            -Dtest=NamedArgumentAndRecordSpreadTest,ClassCallableProductBindingTest,GenericNamedOptionalCallTest \
+            -Dtest=NamedArgumentAndRecordSpreadTest,ClassCallableProductBindingTest,GenericNamedOptionalCallTest,NamedJavaLlvmScalarParityTest,NamedTypeSpecializationTest,NamedPartialGenericCallsTest \
             -DfailIfNoTests=true \
             test
-          for suite in NamedArgumentAndRecordSpreadTest ClassCallableProductBindingTest GenericNamedOptionalCallTest; do
+          for suite in NamedArgumentAndRecordSpreadTest ClassCallableProductBindingTest GenericNamedOptionalCallTest NamedJavaLlvmScalarParityTest NamedTypeSpecializationTest NamedPartialGenericCallsTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             test -s "$report"
             grep -q '<testcase ' "$report"
