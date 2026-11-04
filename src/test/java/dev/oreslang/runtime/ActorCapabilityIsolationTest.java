@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +14,40 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorCapabilityIsolationTest {
+
+    @Test
+    void capabilityScanTraversesPostTestLoopBodies() {
+        Ast.Program program = Parser.parse("""
+                fnc blocked(): void {
+                    do {
+                        stdio.println("blocked");
+                    } while (false);
+                    return;
+                }
+                """);
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.untrustedActor()));
+        assertTrue(denied.getMessage().contains("STDOUT"), denied.getMessage());
+    }
+
+    @Test
+    void capabilityScanTraversesUsingBorrowScopes() {
+        Ast.Program program = Parser.parse("""
+                fnc blocked(): void {
+                    using request.borrow() as view {
+                        stdio.println("blocked");
+                    }
+                    return;
+                }
+                """);
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.untrustedActor()));
+        assertTrue(denied.getMessage().contains("STDOUT"), denied.getMessage());
+    }
 
     @Test
     void processExitAuthorityIsDeniedForEveryActorKindEvenWhenParentIsPrivileged() {
@@ -332,6 +367,35 @@ final class ActorCapabilityIsolationTest {
         assertTrue(error.getMessage().contains("ACTOR_SHARE_READONLY"));
     }
 
+
+    @Test
+    void privateActorCannotLaunderSharedMemoryThroughCheckedMacroCapture() {
+        Ast.Program expanded = MacroExpander.expand(Parser.parse("""
+                pub fnc build_shared(): void {
+                  val shared = SharedMutex.new(1);
+                  stdio.println(shared);
+                  return;
+                }
+
+                define macro reference(Identifier target) -> Syntax<Expr> {
+                  return capture_fnc(target);
+                }
+
+                isoactor PrivateWorker {
+                  pub fnc run(): void {
+                    val callback = reference!(ident build_shared);
+                    callback();
+                    return;
+                  }
+                }
+                """));
+
+        SecurityException error = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(expanded, IsolatePolicy.developer()));
+
+        assertTrue(error.getMessage().contains("SHARED_MEMORY"), error.getMessage());
+    }
 
     @Test
     void privateActorCannotLaunderSharedMemoryThroughStaticMethodValue() {
