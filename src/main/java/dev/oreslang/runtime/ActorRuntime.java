@@ -2380,6 +2380,12 @@ public final class ActorRuntime implements AutoCloseable {
     private boolean enqueueSourceTaskContinuation(
             ActorCell<?> cell, Runnable continuation) {
         Objects.requireNonNull(continuation, "continuation");
+        // A Future completion callback may run on a foreign carrier, but its
+        // Runnable MUST have been minted by this cell's source scheduler at
+        // original Task admission. Neither callback input nor physical TLS
+        // may select the mailbox/request being resumed.
+        if (!(continuation instanceof OresScheduler.RuntimeTaskTurn sourceTurn)
+                || !sourceTurn.issuedBy(cell.sourceScheduler)) return false;
         if (actors.get(cell.ref.id()) != cell || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
@@ -2395,8 +2401,22 @@ public final class ActorRuntime implements AutoCloseable {
                         || (cell.stopped.get()
                                 && !cell.sourceStopCleanupPending
                                 && !cell.sourceStopCleanupActive)) return false;
+                long originalMailSequence = sourceTurn.admittedMailSequence();
+                if (originalMailSequence >= 0 && !cell.stopped.get()) {
+                    // A pooled actor can serve another request later. Never
+                    // convert a stale task into authority for the new mail.
+                    ActorInboxMail<?> originalMail = cell.activeMail;
+                    if (originalMail == null
+                            || originalMail.sequence() != originalMailSequence) {
+                        return false;
+                    }
+                }
+                // STOP may still schedule compiler-generated cleanup turns,
+                // but revokes request access even if the old mail remains.
+                if (cell.stopped.get()) originalMailSequence = -1L;
                 if (!cell.sourceTaskMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                        MessageEnvelope.continuation(
+                                continuation, originalMailSequence))) {
                     throw new IllegalStateException(
                             "actor source continuation mailbox capacity invariant violated for "
                                     + cell.ref.id());
@@ -7930,6 +7950,22 @@ public final class ActorRuntime implements AutoCloseable {
                             || (!sourceReceiveSuspended && !mailbox.isEmpty())));
         }
 
+        /**
+         * Runs ONLY while a new source Task is admitted, not when a producer
+         * completes its Future. A Task nested in an existing Task turn is
+         * separately unbound by OresScheduler unless explicitly leased.
+         */
+        private long captureSourceTaskMailOrigin() {
+            if (currentActor.get() != this
+                    || ActorRuntime.currentActorRuntime() != ActorRuntime.this
+                    || stopped.get() || finalized) return -1L;
+            Long sequence = CURRENT_HTTP_MAIL_SEQUENCE.get();
+            ActorInboxMail<M> mail = activeMail;
+            return sequence != null && mail != null
+                    && mail.sequence() == sequence.longValue()
+                    ? sequence.longValue() : -1L;
+        }
+
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
@@ -7952,7 +7988,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "ores-actor-" + ref.id(),
                         1,
                         mailboxExecutor,
-                        Runnable::run);
+                        Runnable::run,
+                        this::captureSourceTaskMailOrigin);
                 return sourceScheduler;
             }
         }
