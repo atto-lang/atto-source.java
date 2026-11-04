@@ -128,18 +128,8 @@ final class DurableWorkflowSemanticAnalysisTest {
     void portableManifestV1MatchesFiveBackendGoldenBytesAndSha() throws Exception {
         // This is compiler-side metadata parity only. It does not execute
         // recorded commands, persist history or prove native guest replay.
-        Ast.Program source = Parser.parse("""
-                define module Billing as
-                    define activity PaymentProvider as
-                        charge(int cents) -> int { return cents; }
-                        refund(int cents) -> bool { return cents > 0; }
-                    end
-                    define workflow Checkout as
-                        run(int order_id) -> int { return order_id; }
-                        status(int order_id) -> int { return order_id; }
-                    end
-                end
-                """);
+        Ast.Program source = Parser.parse(java.nio.file.Files.readString(
+                java.nio.file.Path.of("contracts/durable-m0/v1/checkout.atto")));
         Ast.WorkflowDecl old = workflow(source);
         Ast.WorkflowDecl withCommands = new Ast.WorkflowDecl(
                 old.body(), old.annotations(), List.of(
