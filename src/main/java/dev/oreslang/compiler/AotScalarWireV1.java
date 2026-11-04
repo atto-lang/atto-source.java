@@ -228,7 +228,10 @@ public final class AotScalarWireV1 {
             if (pos + 4 > input.length()) throw invalid("truncated Unicode escape");
             int result = 0;
             for (int j = 0; j < 4; j++) {
-                int digit = Character.digit(input.charAt(pos++), 16);
+                char h = input.charAt(pos++);
+                int digit = (h >= '0' && h <= '9') ? h - '0'
+                        : (h >= 'a' && h <= 'f') ? h - 'a' + 10
+                        : (h >= 'A' && h <= 'F') ? h - 'A' + 10 : -1;
                 if (digit < 0) throw invalid("invalid Unicode escape");
                 result = (result << 4) | digit;
             }
@@ -265,7 +268,7 @@ public final class AotScalarWireV1 {
             int tag = u8();
             int size;
             if ((tag & 0xf0) == 0x80) size = tag & 0x0f;
-            else if (tag == 0xde) size = unsigned(2);
+            else if (tag == 0xde) size = (int) unsigned(2);
             else throw invalid("MessagePack must be a bounded map");
             if (size > MAX_FIELDS || size != schema.fields.size()) {
                 throw invalid("MessagePack field count mismatch");
