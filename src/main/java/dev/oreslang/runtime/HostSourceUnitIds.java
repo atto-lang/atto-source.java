@@ -53,6 +53,16 @@ final class HostSourceUnitIds {
                     "source file is outside the project root and configured import roots; "
                             + "no ambient absolute path can become a macro source identity");
         }
+        // Reject directories, FIFOs, sockets and devices before any opened
+        // source read. Java NIO has no portable O_NONBLOCK leaf-open option:
+        // NOFOLLOW alone cannot prevent a blocking FIFO open. This is a
+        // preflight, not protection from adversarial stat/open substitution.
+        BasicFileAttributes leaf = Files.readAttributes(
+                source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!leaf.isRegularFile()) {
+            throw new IllegalArgumentException(
+                    "linked source must be a regular file under an approved root");
+        }
         Path actual = source.toRealPath();
         // Where the filesystem exposes a hardlink count, reject non-unique
         // host file identities even when the other link is outside the import
