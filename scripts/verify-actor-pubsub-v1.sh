@@ -78,6 +78,7 @@ expected = {
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
         "zeroRecipientPublicationsAllocateSequenceButDoNotReplay",
         "reliableRejectionRollsBackEverySubscriberReservation",
+        "tryReliableRejectsExtensionPoliciesAndInvalidPayloadWithoutCreatingReceipts",
     },
 }
 for suite, required_methods in expected.items():
