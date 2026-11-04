@@ -89,6 +89,41 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
+    void enclosingKeywordIfCanOwnElseAndFiAfterGuard() throws Exception {
+        assertEquals("4279", run("""
+                fnc choose(bool ready, int x): int {
+                  if ready then
+                    guard x > 0 { return 7; }
+                  else
+                    return 9;
+                  fi
+                  return 42;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(true, 1));
+                  stdio.stdout.write(choose(true, 0));
+                  stdio.stdout.write(choose(false, 1));
+                }
+                """));
+    }
+
+    @Test
+    void guardFailureCanPerformActionsBeforeTerminalReturn() throws Exception {
+        assertEquals("failed42", run("""
+                fnc choose(int x): int {
+                  guard x > 0 {
+                    stdio.stdout.write("failed");
+                    return 42;
+                  }
+                  return x;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(0));
+                }
+                """));
+    }
+
+    @Test
     void rejectsNonTerminalOrEmptyFailureBody() {
         reject("""
                 fnc choose(int x): int {
