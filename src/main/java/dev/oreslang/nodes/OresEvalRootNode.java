@@ -7285,6 +7285,18 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                String resolvedModule =
+                        Ast.internalModuleReferenceTarget(name.name());
+                if (resolvedModule != null) {
+                    Ast.ModuleDecl module = modules.get(resolvedModule);
+                    if (module == null) {
+                        throw new IllegalArgumentException(
+                                "resolved internal module reference targets unknown module '"
+                                        + resolvedModule + "'");
+                    }
+                    requireLexicalNamespaceAccess(env, resolvedModule, "module");
+                    return new ModuleFacade(this, module);
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
