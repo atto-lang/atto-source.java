@@ -30,7 +30,11 @@ import java.util.Set;
  * invocations in the returned Program.</p>
  */
 public final class MacroExpander {
-    static final int MAX_EXPANSIONS = 1_024;
+    // Stage-0 portable admission budget: Java, LLVM and .NET use the same
+    // translation-unit declaration and expansion limits. Broader syntax
+    // support does not grant a backend an implicit larger resource budget.
+    static final int MAX_DECLARATIONS = 8;
+    static final int MAX_EXPANSIONS = 128;
     static final int MAX_EXPANSION_DEPTH = 64;
     static final int MAX_TEMPLATE_DEPTH = 64;
     static final int MAX_TEMPLATE_NODES = 2_048;
@@ -51,6 +55,19 @@ public final class MacroExpander {
     }
 
     public static Ast.Program expand(Ast.Program program) {
+        // Bound declarations *before* planning, indexing or rewriting macro
+        // bodies. The limit is global to this translation unit, not per module.
+        int declarationCount = 0;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl
+                        && ++declarationCount > MAX_DECLARATIONS) {
+                    throw new IllegalArgumentException(
+                            "macro declaration count exceeds " + MAX_DECLARATIONS
+                                    + "; runtime fallback is forbidden");
+                }
+            }
+        }
         MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program);
         boolean hasMacroDeclarations = program.modules().stream()
                 .flatMap(module -> module.declarations().stream())
