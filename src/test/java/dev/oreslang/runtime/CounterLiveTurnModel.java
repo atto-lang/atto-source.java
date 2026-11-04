@@ -22,7 +22,11 @@ final class CounterLiveTurnModel {
     private long count;
     private long revision;
     private boolean receiving;
-    private boolean retired;
+    // Event-turn serialization is separate from retirement linearization.
+    // A supervisor must not wait for a guest reducer/renderer callback to return
+    // before revoking an uncommitted actor generation.
+    private final Object commitLock = new Object();
+    private volatile boolean retired;
 
     record Outcome(List<String> frames, boolean applied, long revision) {}
     private record Seen(String fingerprint, long acceptedRevision) {}
@@ -30,7 +34,9 @@ final class CounterLiveTurnModel {
     synchronized long count() { return count; }
     synchronized long revision() { return revision; }
 
-    synchronized void retire() { retired = true; }
+    void retire() {
+        synchronized (commitLock) { retired = true; }
+    }
 
     synchronized Outcome increment(String user, String eventId, long baseRev) {
         return increment(user, eventId, baseRev, null);
@@ -63,19 +69,28 @@ final class CounterLiveTurnModel {
             if (revision == MAX_REV || count == MAX_REV)
                 throw new IllegalStateException("counter or revision exhausted");
             if (beforeCommit != null) beforeCommit.run();
-            // The host can retire during a callback; no state or output may
-            // be published after losing ownership.
-            if (retired) throw new IllegalStateException("actor retired during turn");
+            // Prepare bounded deterministic frames without committing state.
+            // All concurrent event turns still serialize on the actor monitor.
             long previous = revision;
-            revision++;
-            count++;
-            seen.put(eventId, new Seen(fingerprint, revision));
-            if (seen.size() > MAX_DEDUP) seen.remove(seen.keySet().iterator().next());
+            long nextRevision = revision + 1;
+            long nextCount = count + 1;
             String patch = "{\"v\":1,\"type\":\"patch\",\"prev\":" + previous
-                    + ",\"rev\":" + revision
+                    + ",\"rev\":" + nextRevision
                     + ",\"ops\":[{\"op\":\"set_text\",\"id\":\"count_value\",\"text\":"
-                    + jsonString(Long.toString(count)) + "}]}";
-            return new Outcome(List.of(patch, ack(eventId, revision)), true, revision);
+                    + jsonString(Long.toString(nextCount)) + "}]}";
+            String acknowledgment = ack(eventId, nextRevision);
+            // The short commit and independent retire() both acquire this lock.
+            // If retirement won while a callback was stalled, no event can
+            // publish state, dedup, patches or ACKs afterward. If commit won,
+            // the subsequent retirement is ordered after that state revision.
+            synchronized (commitLock) {
+                if (retired) throw new IllegalStateException("actor retired during turn");
+                revision = nextRevision;
+                count = nextCount;
+                seen.put(eventId, new Seen(fingerprint, nextRevision));
+                if (seen.size() > MAX_DEDUP) seen.remove(seen.keySet().iterator().next());
+            }
+            return new Outcome(List.of(patch, acknowledgment), true, nextRevision);
         } finally {
             receiving = false;
         }
