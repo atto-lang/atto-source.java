@@ -74,8 +74,27 @@ separate executed receipts. The source's rejected null scalar collection
 now yields `IllegalArgumentException` rather than raw `NullPointerException`.
 
 The platform conformance PR includes **23 portable golden wire vectors**
-(8 positive and 15 negative) and 30 structural contract/fixture tests.
+(8 positive and 15 negative) and 36 structural contract/fixture/text tests.
 None of those fixtures is itself a cross-backend execution receipt.
+
+A third JUnit class, `AotScalarWireV1GoldenVectorsTest`, adds
+**12 authored methods**, bringing the focused scalar-wire suite to
+**61 JUnit methods**. Its source-local text fixture has exactly the same
+Git blob (`f8cbaa59d1095da52918c06c8acf520bd7202708`) as the
+conformance repository's portable fixture. A dedicated
+`.github/workflows/aot-scalar-wire-qualification.yml` executes all three
+classes, the host linkage audit and a `--no-fallback` GraalVM Native Image
+smoke once GitHub admits a runner. Its first checked runs
+[41766398794](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41766398794)
+and [41766390865](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41766390865)
+failed with **zero executed steps**, so the 61 JUnit tests and native
+build are **NOT_EXECUTED**, not failed tests.
+
+The conformance draft now has **36 structural tests** (22 contract,
+8 JSON fixtures, 6 portable text parity tests); these passed with a
+V8 assertion shim, not hosted Node. The source organization has not
+executed the production Maven or native build, and cross-organization
+private source mirroring remains unapproved.
 
 The native-image script is intentionally **fail closed** when Maven or GraalVM
 Native Image are missing, insists on `--no-fallback`, records Git head/tree
