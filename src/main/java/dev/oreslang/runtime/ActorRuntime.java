@@ -2642,7 +2642,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
-        public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+        /**
+         * Legacy host-only raw cause. An actor must use detached failureTrace
+         * through its authenticated child handle, never a child's Throwable.
+         */
+        public Optional<Throwable> failure() {
+            requireSupervisorContext("inspect raw actor Throwable across heaps");
+            requireCallerRuntimeAffinity("inspect raw actor Throwable across heaps");
+            return Optional.ofNullable(terminationCause.get());
+        }
 
         /** Only host/CONTROL may inspect this detached, non-authoritative trace. */
         public Optional<ActorFailureTrace.Snapshot> failureTrace() {
@@ -2799,7 +2807,18 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId id() { return ref.id(); }
         public ActorKind kind() { return ref.kind(); }
         public boolean isAlive() { return ref.isAlive(); }
+        /** Host-only compatibility; never a safe cross-actor error wire. */
         public Optional<Throwable> failure() { return ref.failure(); }
+        /** Data-only child failure observation, restricted to its actual parent. */
+        public Optional<ActorFailureTrace.Snapshot> failureTrace() {
+            if (inActorExecution()) {
+                requireOwnedChildHandle(this, "inspect child causal trace");
+            } else {
+                requireSupervisorContext("inspect child causal trace");
+                requireCallerRuntimeAffinity("inspect child causal trace");
+            }
+            return Optional.ofNullable(ref.failureTrace.get());
+        }
 
         public boolean awaitTermination(long timeout, TimeUnit unit)
                 throws InterruptedException {
