@@ -6,6 +6,7 @@ import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.CheckedCallPlan;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -658,6 +659,47 @@ final class TreeShakerTest {
                 plan.sourceOrder().stream()
                         .map(CheckedCallPlan.BoundSlot::parameterIndex)
                         .toList());
+    }
+
+    @Test
+    void treeShakerKeepsExactAdmittedNamedCallAndArgumentIdentities() {
+        Ast.Program checked = TypeChecker.check(Parser.parse("""
+                fnc identity(int x): int { return x; }
+                pub routine main(): void {
+                    identity(x: 42);
+                    return;
+                }
+                """));
+
+        Ast.FunctionDecl inputMain = checked.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(f -> f.name().equals("main"))
+                .findFirst().orElseThrow();
+        Ast.ExprStmt beforeStatement =
+                assertInstanceOf(Ast.ExprStmt.class, inputMain.body().getFirst());
+        Ast.CallExpr before =
+                assertInstanceOf(Ast.CallExpr.class, beforeStatement.expression());
+        CheckedCallPlan originalPlan = CheckedCallPlan.require(before);
+        assertEquals(List.of(0), originalPlan.abiToSource());
+
+        Ast.Program optimized = TreeShaker.shake(
+                checked, BuildOptions.executable(Map.of())).program();
+        Ast.FunctionDecl outputMain = optimized.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(f -> f.name().equals("main"))
+                .findFirst().orElseThrow();
+        Ast.ExprStmt afterStatement =
+                assertInstanceOf(Ast.ExprStmt.class, outputMain.body().getFirst());
+        Ast.CallExpr after =
+                assertInstanceOf(Ast.CallExpr.class, afterStatement.expression());
+        assertSame(before, after,
+                "optimizer must retain proof-carrying call identity, not forge a fresh AST");
+        assertSame(before.arguments().getFirst(), after.arguments().getFirst());
+        assertSame(originalPlan, CheckedCallPlan.require(after));
     }
 
     @Test
