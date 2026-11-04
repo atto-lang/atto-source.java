@@ -158,6 +158,24 @@ final class AttoFileImportResolutionTest {
     }
 
     @Test
+    void unextendedPhysicalSourceFileCannotBypassCanonicalSuffixSelection()
+            throws Exception {
+        Path consumer = workspace.resolve("consumer.atto");
+        Path noExtension = workspace.resolve("producer");
+        Path canonical = workspace.resolve("producer.atto");
+        Files.writeString(consumer, "pub fnc main() -> int { return 42; }");
+        Files.writeString(noExtension, "pub fnc answer() -> int { return 7; }");
+        Files.writeString(canonical, "pub fnc answer() -> int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+
+        assertEquals(canonical.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./producer").orElseThrow());
+        Files.delete(canonical);
+        assertTrue(config.resolveImport(consumer, "./producer").isEmpty(),
+                "no-extension file must never be admitted as a native source");
+    }
+
+    @Test
     void canonicalAttoImporterDoesNotImplicitlyLoadJavaSource() throws Exception {
         Path consumer = workspace.resolve("consumer.atto");
         Path java = workspace.resolve("producer.java");
