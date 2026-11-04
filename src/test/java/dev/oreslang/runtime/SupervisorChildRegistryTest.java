@@ -815,6 +815,83 @@ final class SupervisorChildRegistryTest {
                 registry.abortRestart(permit).phase());
     }
 
+    @org.junit.jupiter.api.RepeatedTest(40)
+    void cleanupAbortAndSupervisorCloseRaceRemainsLinearizable() throws Exception {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var staged = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, staged);
+
+        var ready = new java.util.concurrent.CountDownLatch(3);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var cleanupFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var abortFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        Thread cleanup = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                registry.acknowledgeCleanupIfStaged(permit, staged, () -> true);
+            } catch (Throwable failure) {
+                cleanupFailure.set(failure);
+            }
+        }, "restart-cleanup");
+        Thread abort = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                registry.abortRestart(permit);
+            } catch (Throwable failure) {
+                abortFailure.set(failure);
+            }
+        }, "restart-abort");
+        Thread close = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                registry.closeRestartAdmission();
+            } catch (Throwable failure) {
+                closeFailure.set(failure);
+            }
+        }, "restart-close");
+
+        cleanup.start();
+        abort.start();
+        close.start();
+        assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        start.countDown();
+        cleanup.join(5000);
+        abort.join(5000);
+        close.join(5000);
+
+        assertFalse(cleanup.isAlive() || abort.isAlive() || close.isAlive(),
+                "cleanup/abort/close race must not deadlock");
+        assertNull(cleanupFailure.get(),
+                "closing restart admission must never block physical cleanup");
+        assertNull(closeFailure.get());
+        if (abortFailure.get() != null) {
+            assertInstanceOf(IllegalStateException.class, abortFailure.get(),
+                    "abort may only lose because cleanup had not committed yet");
+            assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                    registry.abortRestart(permit).phase(),
+                    "retry after committed cleanup must restore the failed child");
+        }
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.snapshot(child.child()).phase());
+        assertEquals(1L, registry.committedTransitions().stream()
+                .filter(transition -> transition.operation().equals("restart.cleanup-verified"))
+                .count(),
+                "exactly one physical cleanup observation may commit");
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(permit, staged, () -> true),
+                "retired restart reservation must never revive after the race");
+    }
+
     @Test
     void cleanupProbeCannotRevalidateAReservationAbortedDuringTheCallback()
             throws Exception {
