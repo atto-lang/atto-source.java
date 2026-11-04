@@ -115,7 +115,8 @@ public final class IncrementalCompiler {
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
-                                Parser.parse(normalized.get(id)),
+                                MacroSourceUnitIdentity.attach(
+                                        Parser.parse(normalized.get(id)), id),
                                 linked.classes(), linked.aliases(), contracts);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
@@ -350,6 +351,20 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.MacroDecl macro) {
+            if (macro.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub macro ").append(macro.name()).append('(');
+            for (Ast.MacroParam parameter : macro.parameters()) {
+                abi.append(macroParamAbi(parameter.type()))
+                        .append(':').append(parameter.name()).append(',');
+            }
+            abi.append(")=>").append(macroResultAbi(macro.resultKind()))
+                    .append(" content-format=").append(MacroCanonicalIdentity.FORMAT)
+                    .append(" content=")
+                    .append(digest(MacroCanonicalIdentity.encode(macro)))
+                    .append('\n');
+            return;
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
@@ -457,6 +472,20 @@ public final class IncrementalCompiler {
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
         }
+    }
+
+    private static String macroParamAbi(Ast.MacroParamType type) {
+        return switch (type.kind()) {
+            case TYPE -> "Type";
+            case IDENTIFIER -> "Identifier";
+            case CONST -> "Const<" + typeRef(type.constType()) + ">";
+            case SYNTAX -> "Syntax<" + type.syntaxKind().name() + ">";
+        };
+    }
+
+    private static String macroResultAbi(Ast.MacroResultKind result) {
+        if (result.list()) return "SyntaxList<DECL>";
+        return "Syntax<" + result.syntaxKind().name() + ">";
     }
 
     private static String classMethodAbi(Ast.MethodDecl method) {
@@ -595,8 +624,7 @@ public final class IncrementalCompiler {
     }
 
     private static String normalizeUnitId(String id) {
-        if (id == null || id.isBlank()) throw new IllegalArgumentException("source unit id cannot be blank");
-        return Path.of(id).normalize().toString().replace('\\', '/');
+        return MacroSourceUnitIdentity.normalizeUnitId(id);
     }
 
     private static String digest(String source) {
