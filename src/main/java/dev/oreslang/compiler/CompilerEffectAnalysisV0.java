@@ -128,6 +128,7 @@ public final class CompilerEffectAnalysisV0 {
             return parameters.contains(name.name());
         if (!(expr instanceof Ast.CallExpr call)
                 || !(call.callee() instanceof Ast.NameExpr name)
+                || call.origin() != Ast.CallOrigin.DIRECT
                 || call.typeArgumentsPresent() || !call.typeArguments().isEmpty())
             return false;
         for (Ast.Expr argument : call.arguments()) {
