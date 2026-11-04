@@ -126,8 +126,8 @@ Local, JDK 21 (Homebrew OpenJDK 21), `mvn -o test`, macOS arm64.
 
 - Focused task, cancellation, mutex, scheduler, actor-STOP, structured-scope,
   source cleanup and formal model suites: **533 tests, 0 failures**.
-- Full suite, 3,926 tests: this branch 92 failures + 71 errors; untouched
-  `main` 105 failures + 77 errors. **No test fails on this branch that passes
+- Full suite after merging `main` at `009e922826`, 4,122 tests: this branch
+  74 failures + 20 errors; untouched `main` 87 failures + 26 errors. **No test fails on this branch that passes
   on `main`**; 19 task/lock/cancellation tests move from failing to passing.
   The remaining failures are pre-existing and outside this area (outbound HTTP
   guest tests, type-checker drift).
