@@ -108,6 +108,38 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
+    void semicolonFreeGuardReturnMatchesCanonicalAttoSyntax() throws Exception {
+        assertEquals("427", run("""
+                fnc choose(int x): int {
+                  guard x > 0 {
+                    return 7
+                  }
+                  return 42;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(1));
+                  stdio.stdout.write(choose(0));
+                }
+                """));
+    }
+
+    @Test
+    void failurePathDeferRunsBeforeGuardReturn() throws Exception {
+        assertEquals("cleanup7", run("""
+                fnc choose(int x): int {
+                  guard x > 0 {
+                    defer stdio.stdout.write("cleanup");
+                    return 7;
+                  }
+                  return 42;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(0));
+                }
+                """));
+    }
+
+    @Test
     void guardFailureCanPerformActionsBeforeTerminalReturn() throws Exception {
         assertEquals("failed42", run("""
                 fnc choose(int x): int {
