@@ -25,7 +25,8 @@ public final class ActorFailureTrace {
         public Boundary {
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(identity, "identity");
-            if (!identity.matches("[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")) {
+            if (identity.length() != 36
+                    || !identity.matches("[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")) {
                 throw new IllegalArgumentException("boundary identity must be a trusted UUID");
             }
             if (actorGeneration < 0) throw new IllegalArgumentException("negative generation");
@@ -48,6 +49,13 @@ public final class ActorFailureTrace {
         public Snapshot {
             Objects.requireNonNull(failureKind, "failureKind");
             Objects.requireNonNull(boundaries, "boundaries");
+            // Do not call size/get/iterator on a guest-defined List while
+            // constructing privileged supervisor diagnostic evidence.
+            Class<?> sourceClass = boundaries.getClass();
+            if (sourceClass != ArrayList.class
+                    && !sourceClass.getName().startsWith("java.util.ImmutableCollections$")) {
+                throw new IllegalArgumentException("diagnostic boundaries require a host-owned list");
+            }
             if (boundaries.isEmpty() || boundaries.size() > MAX_BOUNDARIES
                     || boundaries.get(0).kind() != BoundaryKind.ACTOR_TERMINAL) {
                 throw new IllegalArgumentException("invalid causal boundary snapshot");
