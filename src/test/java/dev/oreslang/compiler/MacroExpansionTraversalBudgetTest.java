@@ -54,6 +54,39 @@ final class MacroExpansionTraversalBudgetTest {
                 failure::toString);
     }
 
+    private static Ast.Program exactlyNCalls(int count) {
+        StringBuilder source = new StringBuilder("""
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                fnc answer() -> int {
+                """);
+        for (int i = 0; i < count; i++) {
+            source.append("val v").append(i)
+                    .append(":int=identity!(syntax expr 1);");
+        }
+        source.append("return 42;}");
+        return MacroSourceUnitIdentity.attach(
+                Parser.parse(source.toString()), "tests/expansion-quota.atto");
+    }
+
+    @Test
+    void portableMacroExpansionBudgetAdmitsExactly128() {
+        assertEquals(128, MacroExpander.MAX_EXPANSIONS);
+        assertDoesNotThrow(() -> MacroExpander.expand(exactlyNCalls(128)));
+    }
+
+    @Test
+    void portableMacroExpansionBudgetDenies129WithoutRuntimeFallback() {
+        assertEquals(128, MacroExpander.MAX_EXPANSIONS);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(exactlyNCalls(129)));
+        assertTrue(denied.getMessage().contains("macro expansion count exceeds 128"),
+                denied::toString);
+        assertTrue(denied.getMessage().contains("runtime fallback is forbidden"),
+                denied::toString);
+    }
+
     @Test
     void boundedRuntimeAstStillRewritesNormally() {
         Ast.Program program = MacroSourceUnitIdentity.attach(
