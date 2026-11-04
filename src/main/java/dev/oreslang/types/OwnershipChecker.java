@@ -3859,6 +3859,14 @@ public final class OwnershipChecker {
         // Ownership analysis must never accidentally bind raw named AST wrappers
         // positionally, or it would check the wrong field / inherited owner.
         if (names.size() != arguments.size()) return Map.of();
+        if (arguments.stream().noneMatch(Ast.TypeRef::isNamedParameter)) {
+            // Preserve existing positional / inferred ownership representations.
+            Map<String, Ast.TypeRef> positional = new HashMap<>();
+            for (int i = 0; i < names.size(); i++) {
+                positional.put(names.get(i), arguments.get(i));
+            }
+            return positional;
+        }
         GenericCallArguments.Bound bound =
                 GenericCallArguments.bind(names, arguments, "owned nominal type");
         if (!bound.inferenceHoles().isEmpty()
