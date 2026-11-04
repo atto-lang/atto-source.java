@@ -290,3 +290,37 @@ Maven/JUnit/Graal/Native Image parity result**. The focused guest fixtures
 still use `.ores` compatibility paths. Neither `.atto` guest admission,
 AOT Native Image, LLVM, Wasm, .NET nor Cranelift parity is established here.
 
+
+## 2026-11-03 Java noncritical Task typing-generation fence and LLVM parity
+
+A complete ownership pass is **not** a substitute for successful independent
+type checking of a source Task, even when the Program has no `critical`
+block. `OwnershipChecker` now requires the exact Program typing generation
+at the beginning and end of each Task-bearing ownership pass, before publishing
+any positive Task epoch. `CheckedTaskCaptures` retains that generation in
+its weak Program-identity ledger and revalidates it whenever a caller requests
+an executable Task capture admission. A new successful **or failed** type
+recheck revokes older Task transfer permissions. Ownership-only programs
+without critical statements **and without Task captures** remain supported.
+
+The critical-only actor path remains supported: the Task ledger does not
+require a nonzero Task typing-generation receipt when no Task capture
+candidates exist; the critical ledger independently checks the successful
+typing generation. This prevents the noncritical-Task hardening from
+accidentally rejecting previously admitted critical-only actors.
+
+`TaskCaptureAdmissionIdentityTest` now adds three focused regression cases:
+untyped noncritical Task rejection, successful type recheck revocation, and
+failed linked-metadata type recheck revocation. The exact-head CI verifier
+requires these named cases in the seventh nonempty Surefire suite. The Java
+implementation is not an executable compiler proof until Maven/JUnit run.
+
+LLVM draft `oreslang-source.llvm#1277` now includes `.atto` and `.ores`
+native-compiler admission fixtures, a fail-closed no-IR rejection suite, FIFO
+retirement cancellation receipts and 256 host-only handoff/retirement races.
+See `oreslang-source.llvm/docs/CRITICAL_SUSPENDS_JAVA_LLVM_PARITY_M0.md`.
+LLVM native critical guest execution remains **NOT IMPLEMENTED**; source
+admission and C++ ticket tests do not establish LLVM guest parity.
+No private Git tree may be copied across organizations without the required
+independent protected-policy approval.
+
