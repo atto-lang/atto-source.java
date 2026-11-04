@@ -1,5 +1,7 @@
 # Manual, source-local private filesystem execution gate.
 # The source repository is private. Never checkout or upload it to a carrier org.
+# An admin must attest true runner ephemerality out-of-band; a label alone
+# does not prove destruction of workspaces, caches, credentials or artifacts.
 name: Private source-local filesystem guest execution
 on:
   workflow_dispatch:
@@ -52,6 +54,17 @@ jobs:
     runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 45
     steps:
+      - name: Validate approved immutable refs before any source checkout
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.source_commit }}
+          EXPECTED_TREE: ${{ inputs.source_tree }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          echo "APPROVED_SOURCE_REFS_FORMAT_OK"
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.source_commit }}
@@ -76,7 +89,7 @@ jobs:
           java-version: '25'
           version: '25.3'
           distribution: graalvm
-          cache: maven
+          # Keep private source build output off shared/reusable action caches.
       - name: Verify GraalVM JDK 25 installed
         shell: bash
         run: |
