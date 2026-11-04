@@ -196,9 +196,14 @@ association is represented explicitly rather than guessed.
 CONTROL delivery and acknowledgement, full cross-heap error transport, or
 portable `throw`/`raise`/`panic` effect identity. A `SUPERVISOR_ASSOCIATION`
 boundary is **not** an on-raise/on-panic callback. Existing host-compatible
-`ActorRef.failure()`/exceptional Futures may still hold a raw Throwable.
-They **must not** be serialized, published to other actors, stored in
-independent supervisor arenas or treated as a safe cross-tenant error wire.
+`ActorRef.failure()`/`ActorHandle.failure()` raw-Throwable reads now reject
+ordinary actor execution. `ActorHandle.failureTrace()` instead admits
+only its parent actor's authenticated child handle and returns the detached
+value snapshot. Host access to the legacy raw cause, and exceptional
+`done()`/`ready()` Futures, **still retain the raw Throwable**; these paths
+must not be serialized, published to other actors, stored in independent
+supervisor arenas or treated as a safe cross-tenant error wire. Exceptional
+Future delivery remains an explicit P0 transport audit gate.
 Future backend integration must replace those paths with authenticated
 CONTROL events carrying a detached, descriptor-validated
 `GuestErrorWireCodec` compact snapshot plus an immutable causal sidecar,
