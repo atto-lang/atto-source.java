@@ -97,6 +97,46 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void attoMultiGroupGuestPreservesOtherGroupAfterLeave() throws Exception {
+        // Independent output check: do not silently treat an identical
+        // .ores text fixture as proof that the .atto guest was executed.
+        assertEquals(
+                fixture("actor-pubsub-multigroup-v1.ores"),
+                fixture("actor-pubsub-multigroup-v1.atto"));
+        assertEquals(
+                "ready-b|b-still-live",
+                run(
+                        fixture("actor-pubsub-multigroup-v1.atto"),
+                        "actor-pubsub-multigroup-v1.atto"));
+    }
+
+    @Test
+    void attoPubSubTypeAndAuthorityNegativesStayFailClosed() throws Exception {
+        // Keep the established legacy rejection diagnostic on exactly the
+        // same bytes with a new .atto filename. This does not imply that
+        // portable try_publish or native AOT lowering is implemented.
+        String[][] rejected = {
+                {"actor-pubsub-reject-payload-type", "Topic.publish value"},
+                {"actor-pubsub-reject-private-subscribe",
+                        "Topic.subscribe currently requires a shared actor"},
+                {"actor-pubsub-reject-mailbox-capability",
+                        "cannot use Topic across an actor boundary"},
+                {"actor-pubsub-reject-async-capability",
+                        "must be concrete owned task-safe data"}
+        };
+        for (String[] vector : rejected) {
+            String stem = vector[0];
+            assertEquals(fixture(stem + ".ores"), fixture(stem + ".atto"),
+                    "fixture extension migration altered guest source: " + stem);
+            PolyglotException error = assertThrows(PolyglotException.class,
+                    () -> run(fixture(stem + ".atto"), stem + ".atto"),
+                    "compiler unexpectedly accepted rejected .atto source: " + stem);
+            assertTrue(error.getMessage().contains(vector[1]),
+                    stem + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void topicPayloadTypeMismatchFailsBeforeExecution() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
