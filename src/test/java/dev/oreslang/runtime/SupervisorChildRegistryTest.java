@@ -780,6 +780,42 @@ final class SupervisorChildRegistryTest {
     }
 
     @Test
+    void cleanupProbeFailureCannotMutateReplacementStateOrJournal() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var staged = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, staged);
+        long cleanupTransitionsBefore = registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count();
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(
+                        permit, staged,
+                        () -> { throw new IllegalStateException("scheduler probe failed"); }));
+        assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
+                registry.snapshot(child.child()).phase());
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit),
+                "a failed probe must not authorize restart abort");
+        assertEquals(cleanupTransitionsBefore, registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count());
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(permit, staged, () -> false));
+        assertEquals(cleanupTransitionsBefore, registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count());
+
+        registry.acknowledgeCleanupIfStaged(permit, staged, () -> true);
+        assertEquals(cleanupTransitionsBefore + 1, registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count());
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.abortRestart(permit).phase());
+    }
+
+    @Test
     void cleanupProbeCannotRevalidateAReservationAbortedDuringTheCallback()
             throws Exception {
         var registry = new SupervisorChildRegistry(
