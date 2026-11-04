@@ -7,7 +7,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/reports"
 expected=(
   'dev.oreslang.DurableActivityWorkflowDeclarationTest:9'
-  'dev.oreslang.DurableWorkflowSemanticAnalysisTest:19'
+  'dev.oreslang.DurableWorkflowSemanticAnalysisTest:20'
   'dev.oreslang.AttoSourceExtensionTest:5'
   'dev.oreslang.launcher.AttoCliSourceExtensionTest:2'
 )
@@ -64,17 +64,17 @@ should_reject symlink-report 'missing or linked test report'
 rm "$work/reports/TEST-dev.oreslang.AttoSourceExtensionTest.xml"
 write_suite dev.oreslang.AttoSourceExtensionTest 5
 java "$script_dir/DurableM0ReceiptVerifier.java" "$work/reports" >/dev/null
-write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 20
 sed -i 's/DURABLE_M0_MANIFEST_SHA256=./DURABLE_M0_MANIFEST_SHA256=f/' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
 should_reject forged-manifest-digest 'canonical manifest receipt digest mismatch'
-write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 20
 sed -i 's@DURABLE_M0_MANIFEST_HEX=@INVALID_MANIFEST_HEX=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
 should_reject absent-manifest-hex 'missing or noncanonical DURABLE_M0_MANIFEST_HEX'
 
 # Both malformed and valid instances of the same receipt key must fail closed.
-write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 20
 sed -i 's@DURABLE_M0_MANIFEST_SHA256=@DURABLE_M0_MANIFEST_SHA256=invalid\&#10;DURABLE_M0_MANIFEST_SHA256=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
 should_reject shadow-invalid-manifest-digest 'duplicate DURABLE_M0_MANIFEST_SHA256'
-write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 19
+write_suite dev.oreslang.DurableWorkflowSemanticAnalysisTest 20
 sed -i 's@DURABLE_M0_MANIFEST_HEX=@DURABLE_M0_MANIFEST_HEX=invalid\&#10;DURABLE_M0_MANIFEST_HEX=@' "$work/reports/TEST-dev.oreslang.DurableWorkflowSemanticAnalysisTest.xml"
 should_reject shadow-invalid-manifest-hex 'duplicate DURABLE_M0_MANIFEST_HEX'
