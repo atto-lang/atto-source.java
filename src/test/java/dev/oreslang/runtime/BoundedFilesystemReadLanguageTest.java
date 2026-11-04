@@ -23,7 +23,7 @@ final class BoundedFilesystemReadLanguageTest {
             RuntimePermissions permissions, ByteArrayOutputStream output) throws Exception {
         String escaped = resource.toString().replace("\\", "\\\\").replace("\"", "\\\"");
         String source = """
-                pub async fnc main(): void {
+                pub routine main(): void {
                   stdio.println(await fs.read_text_bounded_async("%s", %d));
                   return;
                 }
