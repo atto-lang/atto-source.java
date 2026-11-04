@@ -7480,8 +7480,27 @@ public final class ActorRuntime implements AutoCloseable {
             lanes.ensureLaneStarted(lane);
         } else if (dispatcher instanceof NativeCarrierExecutor carriers) {
             carriers.ensureStarted();
-        } else if (dispatcher instanceof ThreadPoolExecutor pool && pool.getPoolSize() == 0) {
-            pool.prestartCoreThread();
+        } else if (dispatcher instanceof ThreadPoolExecutor pool) {
+            startUnlanedJvmCarrier(pool);
+        }
+    }
+
+    /** Require a live JVM carrier before publishing a non-affinity actor. */
+    static void startUnlanedJvmCarrier(ThreadPoolExecutor pool) {
+        Objects.requireNonNull(pool, "pool");
+        if (pool.isShutdown()) {
+            throw new RejectedExecutionException("actor pool already shut down");
+        }
+        if (pool.getPoolSize() == 0) {
+            boolean created = pool.prestartCoreThread();
+            if (!created && pool.getPoolSize() == 0) {
+                throw new RejectedExecutionException(
+                        "actor pool could not start its first JVM carrier");
+            }
+        }
+        if (pool.isShutdown() || pool.getPoolSize() == 0) {
+            throw new RejectedExecutionException(
+                    "actor pool unavailable for first-actor admission");
         }
     }
 
