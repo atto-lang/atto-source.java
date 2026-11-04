@@ -345,12 +345,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      * active turn; once that turn unwinds, the carrier observes the shutdown
      * flag and exits through the native reaper path.
      */
-    void requestShutdownFromCarrier() {
+    List<Runnable> requestShutdownFromCarrier() {
         if (!isCurrentCarrierThread()) {
             throw new IllegalStateException(
                     "requestShutdownFromCarrier must run on this executor's native carrier");
         }
-        beginShutdown(false);
+        // Return never-started turns so a parent lane dispatcher can release
+        // their admission permits and account for every abandoned command.
+        return beginShutdown(false);
     }
 
     boolean isCurrentCarrierThread() {
