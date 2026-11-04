@@ -71,6 +71,25 @@ public final class OwnershipChecker {
         }
     }
 
+    /**
+     * Compiler-owned Task publication authority. Public ledger state and
+     * epoch numbers are observations, never sufficient privileges to mint
+     * capture-transfer ownership from a host-supplied AST.
+     */
+    public static final class TaskPublishAuthority {
+        private final Ast.Program program;
+        private final long epoch;
+
+        private TaskPublishAuthority(Ast.Program program, long epoch) {
+            this.program = program;
+            this.epoch = epoch;
+        }
+
+        public boolean permits(Ast.Program expectedProgram, long expectedEpoch) {
+            return program == expectedProgram && epoch > 0 && epoch == expectedEpoch;
+        }
+    }
+
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
@@ -209,7 +228,8 @@ public final class OwnershipChecker {
                     // admission between these two commits while all three
                     // monitors remain held.
                     Ast.CheckedTaskCaptures.publish(
-                            checkedProgram, taskCheckEpoch, pendingTaskCaptures);
+                            checkedProgram, taskCheckEpoch, pendingTaskCaptures,
+                            new TaskPublishAuthority(checkedProgram, taskCheckEpoch));
                     Ast.CheckedCriticalBlocks.publish(
                             checkedProgram, taskCheckEpoch,
                             pendingCriticalAdmissions, authority);
