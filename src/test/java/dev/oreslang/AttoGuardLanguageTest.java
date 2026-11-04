@@ -42,6 +42,39 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
+    void guardConditionsEvaluateOnceAndStopBeforeTheNextCheck() throws Exception {
+        assertEquals("cc3c7", run("""
+                fnc check(int x): bool {
+                  stdio.stdout.write("c");
+                  return x > 0;
+                }
+                fnc choose(int x): int {
+                  guard check(x), check(x) { return 7; }
+                  return 3;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(choose(1));
+                  stdio.stdout.write(choose(0));
+                }
+                """));
+    }
+
+    @Test
+    void continueGuardTargetsEnclosingLoop() throws Exception {
+        assertEquals("3", run("""
+                pub routine main(): void {
+                  let i = 0;
+                  loop {
+                    i = i + 1;
+                    guard i >= 3 { continue; }
+                    stdio.stdout.write(i);
+                    break;
+                  }
+                }
+                """));
+    }
+
+    @Test
     void guardAcceptsExplicitVoidReturnAndKeepsFollowingStatements() throws Exception {
         assertEquals("yes", run("""
                 fnc emit(bool ready): void {
