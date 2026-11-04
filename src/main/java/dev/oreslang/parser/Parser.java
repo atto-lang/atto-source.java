@@ -77,7 +77,7 @@ public final class Parser {
         for (int i = 0; i < tokens.size(); i++) {
             Token token = tokens.get(i);
             if (token.type() == QUANTUM) {
-                throw error(token, "quantum execution requires explicit backend lowering; no implicit CPU fallback");
+                throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
             }
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
@@ -1622,6 +1622,16 @@ public final class Parser {
                     "PipelineStage", "RequiresState").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
+            }
+            // A mutable-state injection is a compiler effect, never inert
+            // annotation metadata. Reserve only this requested intrinsic;
+            // other annotation names keep their existing source behavior.
+            if (name.equals("Inject") && (check(LPAREN) || check(LT))
+                    && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 1).lexeme().equals("MutableStateContainer")) {
+                throw error(previous(), "@Inject(MutableStateContainer(...)) requires "
+                        + "compiler-checked private state-region lowering; not implemented");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
@@ -4157,10 +4167,12 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
+                rejectUnsupportedActorFactory(expr);
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
+                rejectUnsupportedActorFactory(expr);
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
@@ -4176,6 +4188,24 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    /**
+     * These reserved Actor namespace operations are compiler intrinsics, not
+     * dynamically dispatched user methods. Until typed actor graph IR and
+     * transactional graph admission exist, reject the call at the parser gate.
+     * Otherwise an unknown method or host interop fallback could bypass
+     * staged actor ownership, CONTROL exclusion or generation fencing.
+     */
+    private void rejectUnsupportedActorFactory(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Actor")) return;
+        if (!member.member().equals("pipe") && !member.member().equals("connect")) return;
+        throw error(previous(), "Actor." + member.member()
+                + "(...) requires compiler-owned actor factory graph IR, "
+                + "typed port and ActorRef admission, and atomic supervised publication; "
+                + "not yet enabled on the Java backend");
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {

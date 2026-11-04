@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -162,6 +163,39 @@ final class SourceActorEndCleanupExecutionTest {
         assertTrue(
                 failure.getMessage().contains("closure cannot capture borrowed value 'view'"),
                 failure.getMessage());
+    }
+
+    @Test
+    void actorOutputFormattingTemporarilyLoansEnvelopeWithoutCertifyingUnknownPayload() {
+        String positive = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send("ready");
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  for await const output of worker.outputs {
+                    stdio.stdout.write(output.value);
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() ->
+                dev.oreslang.types.OwnershipChecker.check(Parser.parse(positive)),
+                "temporary formatting may read the VM-owned output envelope");
+
+        String negative = positive.replace(
+                "stdio.stdout.write(output.value);",
+                "val unsafe_view = rt borrow output.value;");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(negative)));
+        assertTrue(failure.getMessage().contains(
+                        "projected borrow requires a known owned field type for 'value'"),
+                "unknown payloads must not gain persistent projected-borrow authority: "
+                        + failure.getMessage());
     }
 
     private static String run(String program, String name) throws Exception {
