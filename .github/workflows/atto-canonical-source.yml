@@ -31,6 +31,11 @@ jobs:
           test -f examples/atto-canonical/.atto.pkg.toml
           test -f examples/atto-canonical/src/main.atto
           test -f examples/atto-canonical/src/value.atto
+          # Immutable source-byte parity with the native LLVM test fixture.
+          test "$(git hash-object --no-filters examples/atto-native-parity/main.atto)" =             '5ffe955025a664d5f069e441a9cbcaa9227d06a8'
+          test "$(git hash-object --no-filters examples/atto-native-parity/lib.atto)" =             '62ddcdb8c1cfe60da8aca47734c46bca7bc9ae56'
+          test "$(git hash-object --no-filters examples/atto-native-parity/.atto.pkg.toml)" =             '66aa65f18ffcdbb743f9793249b146da083542ce'
+          echo 'ATTO_JAVA_SHARED_LLVM_FIXTURE_BLOBS=3/3 PASS'
           test -f scripts/verify-atto-exact-head-source.sh
           bash scripts/verify-atto-exact-head-source.sh
       - name: Set up GraalVM JDK 25
