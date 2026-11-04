@@ -118,6 +118,25 @@ final class PipeEndpointContracts {
         requireExecutable(connect(authenticatedActor(from), authenticatedActor(to)));
     }
 
+    /**
+     * Fail closed even for deeply nested capability types: an otherwise
+     * structurally valid packet may not smuggle a live Topic/Subscription,
+     * channel direction view, or pipe routing handle into actor DATA.
+     * ActorRef is deliberately not listed: independently granted actor
+     * references have their own Sendable/Serializable rules.
+     */
+    private static boolean isNonTransportableCapability(String name) {
+        return switch (name) {
+            case "ActorGroup", "ActorStream",
+                    "Topic", "Subscription", "TopicPublisher", "TopicSubscriber",
+                    "Channel", "ReadChannel", "WriteChannel",
+                    "HasInputChannel", "HasOutputChannel",
+                    "SelectCase", "SelectSet", "SelectResult",
+                    "MutexGuard", "Future", "Iterator", "AsyncIterator" -> true;
+            default -> false;
+        };
+    }
+
     private static void requireConcretePayload(Type root) {
         Objects.requireNonNull(root, "pipe payload type");
         ArrayDeque<Type> pending = new ArrayDeque<>();
@@ -133,6 +152,17 @@ final class PipeEndpointContracts {
             if (seen.put(type, Boolean.TRUE) != null) continue;
             if (++examined > 1024) {
                 throw new IllegalArgumentException("pipe payload type exceeds complexity budget");
+            }
+            // A capability handle is not Sendable pipeline DATA. In particular,
+            // a Topic or Subscription must never be implicitly lowered into
+            // the authenticated ActorStream mail domain or mistaken for a
+            // Channel/stream bridge. Capability transport requires a separate,
+            // compiler-owned grant and may not be inferred from a nominal name.
+            if (type instanceof Named named
+                    && isNonTransportableCapability(named.name())) {
+                throw new IllegalArgumentException(
+                        "pipe payload cannot carry an endpoint or pub-sub capability: "
+                                + named.name());
             }
             if (type == Unknown.INSTANCE || type instanceof Generic
                     || type instanceof Borrow || type instanceof Function
