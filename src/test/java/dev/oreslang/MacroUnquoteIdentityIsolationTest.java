@@ -1,0 +1,194 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.MacroExpander;
+import dev.oreslang.compiler.MacroSyntaxProvenance;
+import dev.oreslang.parser.Parser;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class MacroUnquoteIdentityIsolationTest {
+    private static Ast.Program parse(String value) {
+        return Parser.parse("""
+                define macro add_one(Syntax<Expr> value) -> Syntax<Expr> {
+                    return quote(unquote(value) + 1);
+                }
+
+                fnc answer() -> int {
+                    return add_one!(syntax expr %s);
+                }
+                """.formatted(value));
+    }
+
+    private static Ast.MacroSyntaxExprArgument input(Ast.Program program) {
+        Ast.FunctionDecl function = program.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.MacroInvocationExpr invocation =
+                assertInstanceOf(Ast.MacroInvocationExpr.class, returned.value());
+        return assertInstanceOf(
+                Ast.MacroSyntaxExprArgument.class, invocation.arguments().getFirst());
+    }
+
+    private static Ast.Expr expandedValue(Ast.Program program) {
+        Ast.FunctionDecl function = program.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.ReturnStmt returned = assertInstanceOf(Ast.ReturnStmt.class, function.body().getFirst());
+        return returned.value();
+    }
+
+    @Test
+    void compositeCallerSyntaxIsDeepCopiedWithPriorProvenance() {
+        Ast.Program program = parse("40 + 2");
+        Ast.Expr original = input(program).expression();
+        Ast.BinaryExpr originalBinary = assertInstanceOf(Ast.BinaryExpr.class, original);
+        Ast.Expr originalLeft = originalBinary.left();
+        MacroSyntaxProvenance.Origin priorRoot = new MacroSyntaxProvenance.Origin(
+                new MacroSyntaxProvenance.HygieneIdentity(
+                        "test-unit", "Main", "Main", "prior_root",
+                        new Ast.SourceSite(1, 1), 0),
+                new Ast.SourceSite(1, 1),
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE);
+        MacroSyntaxProvenance.Origin priorLeaf = new MacroSyntaxProvenance.Origin(
+                new MacroSyntaxProvenance.HygieneIdentity(
+                        "test-unit", "Main", "Main", "prior_leaf",
+                        new Ast.SourceSite(1, 2), 1),
+                new Ast.SourceSite(1, 2),
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE);
+        MacroSyntaxProvenance.record(original, priorRoot);
+        MacroSyntaxProvenance.record(originalLeft, priorLeaf);
+
+        Ast.Program expanded = assertDoesNotThrow(() -> MacroExpander.expand(program));
+        Ast.BinaryExpr outer = assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded));
+        Ast.BinaryExpr emitted = assertInstanceOf(Ast.BinaryExpr.class, outer.left());
+
+        assertNotSame(original, emitted,
+                "unquote must not retain the caller-owned composite root");
+        assertNotSame(originalLeft, emitted.left(),
+                "unquote must recursively copy the composite child");
+        assertEquals(original, emitted);
+        assertTrue(MacroSyntaxProvenance.lookup(emitted).contains(priorRoot),
+                "root provenance must follow the copied root identity");
+        assertTrue(MacroSyntaxProvenance.lookup(emitted.left()).contains(priorLeaf),
+                "nested provenance must follow the copied child identity");
+        assertEquals(java.util.List.of(priorRoot), MacroSyntaxProvenance.lookup(original),
+                "the original root must retain only its prior provenance");
+        assertEquals(java.util.List.of(priorLeaf), MacroSyntaxProvenance.lookup(originalLeft),
+                "the original child must retain only its prior provenance");
+    }
+
+    @Test
+    void unsupportedCallerSyntaxFailsClosedWithoutAliasing() {
+        Ast.Program program = parse("await pending");
+        Ast.Expr original = input(program).expression();
+        assertInstanceOf(Ast.AwaitExpr.class, original);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> MacroExpander.expand(program));
+
+        assertTrue(failure.getMessage().contains("outside the bounded deep-copy allowlist"),
+                failure::toString);
+        assertTrue(MacroSyntaxProvenance.lookup(original).isEmpty(),
+                "unsupported caller syntax must not be returned by reference");
+    }
+
+    @Test
+    void supportedScalarSpliceUsesFreshIdentityAndPreservesPriorProvenance() {
+        Ast.Program program = parse("2");
+        Ast.Expr original = input(program).expression();
+        assertInstanceOf(Ast.LiteralExpr.class, original);
+        MacroSyntaxProvenance.Origin prior = new MacroSyntaxProvenance.Origin(
+                new MacroSyntaxProvenance.HygieneIdentity(
+                        "test-unit", "Main", "Main", "prior",
+                        new Ast.SourceSite(1, 1), 0),
+                new Ast.SourceSite(1, 1),
+                MacroSyntaxProvenance.EmissionKind.CONST_QUOTE);
+        MacroSyntaxProvenance.record(original, prior);
+
+        Ast.Program expanded = assertDoesNotThrow(() -> MacroExpander.expand(program));
+        Ast.BinaryExpr result = assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded));
+        Ast.Expr emitted = result.left();
+
+        assertNotSame(original, emitted,
+                "each emitted splice occurrence must have a distinct AST identity");
+        assertEquals(original, emitted);
+        assertTrue(MacroSyntaxProvenance.lookup(emitted).contains(prior),
+                "existing compiler-issued provenance must follow the copied syntax identity");
+        assertTrue(MacroSyntaxProvenance.lookup(emitted).size() > 1,
+                "the emitted leaf must also receive the current expansion provenance");
+        assertEquals(java.util.List.of(prior), MacroSyntaxProvenance.lookup(original),
+                "the original caller-owned leaf must retain only its preexisting provenance");
+    }
+
+    @Test
+    void independentExpansionsDoNotShareCallerOrEmittedAstIdentity() {
+        Ast.Program first = parse("7");
+        Ast.Program second = parse("7");
+        Ast.Expr firstInput = input(first).expression();
+        Ast.Expr secondInput = input(second).expression();
+
+        Ast.Program firstExpanded = MacroExpander.expand(first);
+        Ast.Program secondExpanded = MacroExpander.expand(second);
+        Ast.Expr firstOutput = assertInstanceOf(
+                Ast.BinaryExpr.class, expandedValue(firstExpanded)).left();
+        Ast.Expr secondOutput = assertInstanceOf(
+                Ast.BinaryExpr.class, expandedValue(secondExpanded)).left();
+
+        assertNotSame(firstInput, secondInput);
+        assertNotSame(firstOutput, secondOutput);
+        assertNotSame(firstInput, firstOutput);
+        assertNotSame(secondInput, secondOutput);
+        assertTrue(MacroSyntaxProvenance.lookup(firstInput).isEmpty());
+        assertTrue(MacroSyntaxProvenance.lookup(secondInput).isEmpty());
+        assertFalse(MacroSyntaxProvenance.lookup(firstOutput).isEmpty());
+        assertFalse(MacroSyntaxProvenance.lookup(secondOutput).isEmpty());
+    }
+
+    @Test
+    void checkedClassAndStructuralFieldMetadataFollowCopiedReceiver() {
+        Ast.Program program = parse("holder[slot]");
+        Ast.IndexExpr original = assertInstanceOf(
+                Ast.IndexExpr.class, input(program).expression());
+        Ast.Expr originalReceiver = original.receiver();
+        Ast.CheckedClassView.record(originalReceiver, "Container");
+        Ast.CheckedStructuralFieldDomain.record(
+                originalReceiver, java.util.Set.of("items"));
+
+        Ast.Program expanded = MacroExpander.expand(program);
+        Ast.IndexExpr emitted = assertInstanceOf(
+                Ast.IndexExpr.class,
+                assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded)).left());
+
+        assertNotSame(originalReceiver, emitted.receiver());
+        assertEquals("Container", Ast.CheckedClassView.lookup(emitted.receiver()));
+        assertEquals(java.util.Set.of("items"),
+                Ast.CheckedStructuralFieldDomain.lookup(emitted.receiver()));
+        assertEquals("Container", Ast.CheckedClassView.lookup(originalReceiver));
+        assertEquals(java.util.Set.of("items"),
+                Ast.CheckedStructuralFieldDomain.lookup(originalReceiver));
+    }
+
+    @Test
+    void checkedOptionDepthFollowsCopiedCallIdentity() {
+        Ast.Program program = parse("compute(2)");
+        Ast.CallExpr original = assertInstanceOf(
+                Ast.CallExpr.class, input(program).expression());
+        Ast.CheckedOptionDepth.record(original, 2);
+
+        Ast.Program expanded = MacroExpander.expand(program);
+        Ast.CallExpr emitted = assertInstanceOf(
+                Ast.CallExpr.class,
+                assertInstanceOf(Ast.BinaryExpr.class, expandedValue(expanded)).left());
+
+        assertNotSame(original, emitted);
+        assertEquals(2, Ast.CheckedOptionDepth.require(emitted));
+        assertEquals(2, Ast.CheckedOptionDepth.require(original));
+    }
+}
