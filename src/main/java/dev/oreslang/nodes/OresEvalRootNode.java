@@ -7821,7 +7821,7 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
                                 "fs." + name, () -> fs.writeText(values));
                     };
-                    case "write_text_atomic", "write_text_atomic_blocking" -> (Invokable) args -> {
+                    case "write_text_atomic", "write_text_atomic_blocking", "write_text_atomic_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
                                 "fs." + name, () -> fs.writeTextAtomic(values));
@@ -7850,6 +7850,11 @@ public final class OresEvalRootNode extends RootNode {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
                                 "fs." + name, () -> fs.exists(values));
+                    };
+                    case "file_size", "file_size_blocking", "file_size_async" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.fileSize(values));
                     };
                     case "remove", "remove_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
@@ -11348,6 +11353,9 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object exists(List<Object> args) {
             return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+        }
+        private Object fileSize(List<Object> args) {
+            return NativeIo.fileSize(context, requireStringArg(args, "fs.file_size"));
         }
         private Object listDir(List<Object> args) {
             return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));
