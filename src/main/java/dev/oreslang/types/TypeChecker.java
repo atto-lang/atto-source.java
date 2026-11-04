@@ -2,6 +2,9 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.MacroExpander;
+import dev.oreslang.compiler.MacroExpansionPlanner;
+import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -152,6 +155,36 @@ public final class TypeChecker {
      * these rows, reject *before* annotation expansion or linked-type shape
      * projection could silently discard the metadata.
      */
+    private static void rejectPendingMacroInvocations(Ast.Program program) {
+        MacroExpansionPlanner.Plan plan = MacroExpansionPlanner.plan(program);
+        if (!plan.hasInvocations()) return;
+        MacroExpansionPlanner.WorkItem first = plan.workItems().getFirst();
+        throw new IllegalArgumentException(
+                "macro invocation '" + first.macro().name()
+                        + "' at " + first.site().line() + ":" + first.site().column()
+                        + " is bound as compile-time syntax, but the deterministic macro evaluator/expander "
+                        + "is not enabled on this compiler head; runtime fallback is forbidden");
+    }
+
+    private static void rejectUnexpandedMacros(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl macro) {
+                    throw new IllegalArgumentException(
+                            "define macro '" + macro.name()
+                                    + "' is compile-time-only and must be expanded before executable semantic analysis; "
+                                    + "runtime fallback is forbidden");
+                }
+                if (declaration instanceof Ast.MacroInvocationDecl invocation) {
+                    throw new IllegalArgumentException(
+                            "macro invocation '" + invocation.name()
+                                    + "' remains in declaration position; compile-time expansion must eliminate "
+                                    + "all macro invocations before executable semantic analysis; runtime fallback is forbidden");
+                }
+            }
+        }
+    }
+
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -205,10 +238,19 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        program = MacroExpander.expand(program);
+        rejectPendingMacroInvocations(program);
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
-        program = AnnotationExpander.expand(program);
+        // Annotation expansion rebuilds Program; retain the canonical file ID
+        // so subsequent compile-time passes cannot fall back to <memory>.
+        program = MacroSourceUnitIdentity.attach(
+                AnnotationExpander.expand(program),
+                MacroSourceUnitIdentity.unitId(program));
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectPendingMacroInvocations(program);
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -250,6 +292,9 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        program = MacroExpander.expand(program);
+        rejectPendingMacroInvocations(program);
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
             rejectUnloweredCheckedClassEffects(linked);
@@ -257,9 +302,15 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
-        program = AnnotationExpander.expand(program);
+        // Annotation expansion rebuilds Program; retain the canonical file ID
+        // so subsequent compile-time passes cannot fall back to <memory>.
+        program = MacroSourceUnitIdentity.attach(
+                AnnotationExpander.expand(program),
+                MacroSourceUnitIdentity.unitId(program));
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectPendingMacroInvocations(program);
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -2403,6 +2454,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.MacroInvocationExpr invocation) {
+            throw new IllegalArgumentException(
+                    "macro invocation '" + invocation.name()
+                            + "' remains in expression position; compile-time expansion must eliminate "
+                            + "all macro invocations before executable semantic analysis; runtime fallback is forbidden");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
@@ -2423,6 +2480,18 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            String resolvedModule =
+                    dev.oreslang.compiler.MacroIdentifierHygiene.authorizedInternalModuleReferenceTarget(name);
+            if (resolvedModule != null) {
+                Ast.ModuleDecl moduleNamespace = modules.get(resolvedModule);
+                if (moduleNamespace == null) {
+                    throw new IllegalArgumentException(
+                            "resolved internal module reference targets unknown module '"
+                                    + resolvedModule + "'");
+                }
+                rejectUnimportedModuleNamespace(resolvedModule);
+                return moduleShape(moduleNamespace);
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
@@ -3779,6 +3848,8 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            dev.oreslang.compiler.MacroIdentifierHygiene
+                    .authorizedCapturedFunction(member);
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
@@ -9439,6 +9510,12 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (Set.of("Type", "Const", "Identifier", "Syntax", "SyntaxList").contains(ref.name())) {
+            throw new IllegalArgumentException(
+                    "compiler-only macro meta type '" + ref.name()
+                            + "' cannot appear in executable type position; "
+                            + "compile-time introspection must be eliminated before AOT code generation");
+        }
         if (ref.name().equals("_")) {
             // '_' has meaning only as an entire generic *call* argument.
             // In ordinary type positions it is neither a type variable nor
