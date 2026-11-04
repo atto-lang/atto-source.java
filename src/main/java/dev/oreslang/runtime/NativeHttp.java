@@ -500,18 +500,48 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
-                state.movedNanos = System.nanoTime();
-                state.generation++; state.owner = destination.id(); state.actor = destination;
-                String token = UUID.randomUUID().toString(); state.ticket = token;
-                Exchange moved = new Exchange(state, destination.id(), state.generation);
-                // Lock-free per-runtime registration: sending this token later
-                // binds the FIRST actually admitted actor-mail sequence. This
-                // is deliberately done without taking ActorCell.lifecycleLock
-                // while holding the exchange state monitor.
+                // Prepare the next incarnation before mutating the exchange.
+                // Registering the one-shot mail origin can reject a runtime
+                // that closed between isAlive() and this transfer. Such a
+                // failure must NOT strand State with a moved owner/ticket.
+                if (state.generation == Long.MAX_VALUE)
+                    throw new IllegalStateException("HTTP exchange generation exhausted");
+                final long previousMovedNanos = state.movedNanos;
+                final long previousGeneration = state.generation;
+                final Object previousOwner = state.owner;
+                final ActorRuntime.ActorRef<?> previousActor = state.actor;
+                final String previousTicket = state.ticket;
+                final long nextGeneration = previousGeneration + 1;
+                final String token = UUID.randomUUID().toString();
+                final Exchange moved = new Exchange(state, destination.id(), nextGeneration);
+                // This registration uses no ActorCell lifecycle monitor while
+                // holding State. The ticket is not known to any sender yet.
                 context.actors().registerPendingHttpTransfer(token, destination);
-                transfers.put(token, moved);
-                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
-                return token;
+                boolean published = false;
+                try {
+                    state.movedNanos = System.nanoTime();
+                    state.generation = nextGeneration;
+                    state.owner = destination.id();
+                    state.actor = destination;
+                    state.ticket = token;
+                    if (transfers.putIfAbsent(token, moved) != null)
+                        throw new IllegalStateException("HTTP transfer ticket collision");
+                    if (state.poolWorker == null)
+                        destination.done().whenCompleteRuntime(
+                            (ignored, failure) -> state.abort(500));
+                    published = true;
+                    return token;
+                } finally {
+                    if (!published) {
+                        transfers.remove(token, moved);
+                        context.actors().retirePendingHttpTransfer(token);
+                        state.movedNanos = previousMovedNanos;
+                        state.generation = previousGeneration;
+                        state.owner = previousOwner;
+                        state.actor = previousActor;
+                        state.ticket = previousTicket;
+                    }
+                }
             }
         }
         private void supervisorMetadata() {
