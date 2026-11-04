@@ -41,6 +41,22 @@
     {
       "module": "dev.oreslang",
       "glob": "dev/oreslang/std/**/*.atto"
+    },
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/core/*.atto"
+    },
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/core/**/*.atto"
+    },
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/core/*.ores"
+    },
+    {
+      "module": "dev.oreslang",
+      "glob": "dev/oreslang/core/**/*.ores"
     }
   ]
 }
