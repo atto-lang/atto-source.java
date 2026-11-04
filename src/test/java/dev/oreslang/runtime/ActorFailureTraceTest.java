@@ -42,6 +42,13 @@ final class ActorFailureTraceTest {
         assertFalse(snapshot.sourceFramesAvailable());
         assertFalse(snapshot.supervisorControlDelivered());
         assertThrows(UnsupportedOperationException.class, snapshot.boundaries()::clear);
+        // Custom guest-facing collections are rejected before any accessor is invoked.
+        var forged = new java.util.LinkedList<ActorFailureTrace.Boundary>();
+        forged.add(snapshot.boundaries().get(0));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        forged, false, false));
         assertThrows(IllegalArgumentException.class, () -> ActorFailureTrace.capture(
                 ActorFailureTrace.FailureKind.CANCELLED, actor, 1,
                 java.util.Collections.nCopies(ActorFailureTrace.MAX_PARENT_ACTORS + 1, parent),
