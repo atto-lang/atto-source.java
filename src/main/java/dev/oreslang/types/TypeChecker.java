@@ -641,9 +641,10 @@ public final class TypeChecker {
     }
 
     private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract, Set<String> generics) {
-        validateGenericArity(ref, contract.genericParameters(), "contract " + contract.name());
+        List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                ref, contract.genericParameters(), "contract " + contract.name());
         return new Named(qualifiedInterfaceName(contract),
-                ref.arguments().stream().map(arg -> resolve(arg, generics, null)).toList());
+                ordered.stream().map(arg -> resolve(arg, generics, null)).toList());
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
@@ -8763,14 +8764,41 @@ public final class TypeChecker {
         }
     }
 
-    private void validateGenericArity(Ast.TypeRef ref, List<String> parameters, String owner) {
+    /**
+     * Bind nominal type arguments by declared generic slot, never source order.
+     * This shares the checked binder used by function type applications.
+     */
+    private List<Ast.TypeRef> orderedNominalTypeArguments(
+            Ast.TypeRef ref, List<String> parameters, String owner) {
         if (ref.inferArguments()) {
-            throw new IllegalArgumentException(owner + " does not permit unresolved <> here; provide explicit type arguments");
+            throw new IllegalArgumentException(owner
+                    + " does not permit unresolved <> here; provide explicit type arguments");
         }
-        if (ref.arguments().size() != parameters.size()) {
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(parameters, ref.arguments(), owner);
+        if (!bound.inferenceHoles().isEmpty()) {
+            throw new IllegalArgumentException(owner
+                    + " cannot use '_' inference holes in a declared type");
+        }
+        // Literal metadata (rank=1, text="x", flags=true) is not a
+        // generic *type*. The collection metadata namespace deliberately
+        // retains those values, but a nominal formal requires a real type.
+        for (Ast.TypeRef value : bound.explicitTypes().values()) {
+            if (value.isIntLiteral() || value.isBoolLiteral()
+                    || value.isStringLiteral()) {
+                throw new IllegalArgumentException(owner
+                        + " requires a type generic argument, not literal metadata");
+            }
+        }
+        if (bound.explicitTypes().size() != parameters.size()) {
             throw new IllegalArgumentException(owner + " expects " + parameters.size()
-                    + " type argument(s), got " + ref.arguments().size());
+                    + " type argument(s), got " + bound.explicitTypes().size());
         }
+        return parameters.stream().map(bound.explicitTypes()::get).toList();
+    }
+
+    private void validateGenericArity(Ast.TypeRef ref, List<String> parameters, String owner) {
+        orderedNominalTypeArguments(ref, parameters, owner);
     }
 
     private Map<String, Type> classGenericBindings(Ast.ClassDecl klass, Named actual) {
@@ -9532,15 +9560,13 @@ public final class TypeChecker {
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
-            if (alias.genericParameters().size() != ref.arguments().size()) {
-                throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
-                        + " type argument(s), got " + ref.arguments().size());
-            }
+            List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                    ref, alias.genericParameters(), "type alias '" + alias.name() + "'");
             if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
-                    substitutions.put(alias.genericParameters().get(i), ref.arguments().get(i));
+                    substitutions.put(alias.genericParameters().get(i), ordered.get(i));
                 }
                 return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
             } finally {
@@ -9580,12 +9606,25 @@ public final class TypeChecker {
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
+                boolean hasShape = ref.arguments().stream().anyMatch(Ast.TypeRef::isSequenceShape);
+                boolean hasCollectionMetadata = ref.arguments().stream()
+                        .filter(Ast.TypeRef::isNamedParameter)
+                        .map(Ast.TypeRef::namedParameterName)
+                        .anyMatch(name -> !name.equals("T"));
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
-                        && ref.arguments().stream().noneMatch(argument ->
-                                argument.isSequenceShape() || argument.isNamedParameter())) {
-                    validateGenericArity(ref, declared.genericParameters(), "class " + declared.name());
+                        && !hasShape && !hasCollectionMetadata) {
+                    List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                            ref, declared.genericParameters(), "class " + declared.name());
                     yield new Named(qualifiedClassName(declared),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                            ordered.stream().map(arg -> resolve(arg, generics, self)).toList());
+                }
+                if (!hasShape && !hasCollectionMetadata
+                        && ref.arguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) {
+                    List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                            ref, List.of("T"), "collection " + ref.name());
+                    yield resolveCollectionType(
+                            new Ast.TypeRef(ref.name(), ordered, false),
+                            generics, self, allowNullMarker);
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
             }
@@ -9652,15 +9691,10 @@ public final class TypeChecker {
             case "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (declared != null) {
-                    validateGenericArity(
-                            ref,
-                            declared.genericParameters(),
-                            "class " + declared.name());
-                    yield new Named(
-                            qualifiedClassName(declared),
-                            ref.arguments().stream()
-                                    .map(arg -> resolve(arg, generics, self))
-                                    .toList());
+                    List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                            ref, declared.genericParameters(), "class " + declared.name());
+                    yield new Named(qualifiedClassName(declared),
+                            ordered.stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
@@ -9721,16 +9755,18 @@ public final class TypeChecker {
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
-                    validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
+                    List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                            ref, knownClass.genericParameters(), "class " + knownClass.name());
                     yield new Named(qualifiedClassName(knownClass),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                            ordered.stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
                     if (knownInterface.moduleContract()) throw new IllegalArgumentException("module contract '" + knownInterface.name() + "' is only valid in module 'conforms' clauses");
-                    validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
+                    List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
+                            ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
                     yield new Named(qualifiedInterfaceName(knownInterface),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                            ordered.stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 if (ref.inferArguments()) {
                     throw new IllegalArgumentException("cannot infer type arguments for unknown type '" + ref.name() + "<>'");

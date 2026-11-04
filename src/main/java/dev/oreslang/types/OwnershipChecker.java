@@ -3591,10 +3591,24 @@ public final class OwnershipChecker {
     }
 
     private Map<String, Ast.TypeRef> genericBindings(List<String> names, List<Ast.TypeRef> arguments) {
-        Map<String, Ast.TypeRef> result = new HashMap<>();
-        if (names.size() != arguments.size()) return result;
-        for (int i = 0; i < names.size(); i++) result.put(names.get(i), arguments.get(i));
-        return result;
+        if (names.size() != arguments.size()) return Map.of();
+        if (arguments.stream().noneMatch(Ast.TypeRef::isNamedParameter)) {
+            // Preserve the ownership representation for ordinary positional types.
+            Map<String, Ast.TypeRef> positional = new HashMap<>();
+            for (int i = 0; i < names.size(); i++)
+                positional.put(names.get(i), arguments.get(i));
+            return positional;
+        }
+        // Do not let raw named wrappers silently bind to the wrong inherited
+        // field/owner in a different source order from the type checker.
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(names, arguments, "owned nominal type");
+        if (!bound.inferenceHoles().isEmpty()
+                || bound.explicitTypes().size() != names.size()) {
+            throw new IllegalArgumentException(
+                    "owned nominal type requires concrete generic arguments");
+        }
+        return bound.explicitTypes();
     }
 
     private Ast.TypeRef substituteType(Ast.TypeRef type, Map<String, Ast.TypeRef> bindings) {
