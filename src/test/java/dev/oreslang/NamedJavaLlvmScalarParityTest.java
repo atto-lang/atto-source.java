@@ -109,6 +109,74 @@ final class NamedJavaLlvmScalarParityTest {
     }
 
     @Test
+    void explicitScalarGenericMatchesLlvmNativeIdentity() throws Exception {
+        assertEquals("42", execute("""
+                fnc identity<T>(T value): T { return value; }
+                pub routine main(): void {
+                    stdio.stdout.write(identity<int>(42));
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void dependentDefaultAndNamedOverrideMatchLlvm() throws Exception {
+        assertEquals("4242", execute("""
+                fnc add<A, B=int, C=B>(A first, B second): int {
+                    return first + second;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(add<int>(19, 23));
+                    stdio.stdout.write(add<C=int, A=int>(19, 23));
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void genericDefaultOmissionAndExplicitHoleInferenceMatchLlvm() throws Exception {
+        assertEquals("4242", execute("""
+                fnc fixed<T=int>(): int { return 42; }
+                fnc identity<T=int>(T value): T { return value; }
+                pub routine main(): void {
+                    stdio.stdout.write(fixed());
+                    stdio.stdout.write(identity<T=_>(42));
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void dependentGenericChainAndPositionalPrefixMatchLlvm() throws Exception {
+        assertEquals("4242", execute("""
+                fnc sum<A, B=A, C=B, D=C>(A first, B second): int {
+                    return first + second;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(sum<A=int, D=int>(19, 23));
+                    stdio.stdout.write(sum<int, C=int>(19, 23));
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void nestedReorderedNamedActualsMatchLlvm() throws Exception {
+        assertEquals("42", execute("""
+                fnc four(): int { return 4; }
+                fnc two(): int { return 2; }
+                fnc combine<A=int, B=A>(A first, B second): int {
+                    return first * 10 + second;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(combine<B=int, A=int>(
+                            second: two(), first: four()));
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void unknownLateNamedValueFailsWithoutGuestExecution() {
         String code = """
                 fnc add<T>(T first, T second): int { return first + second; }
