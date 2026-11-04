@@ -41,7 +41,8 @@ final class AotScalarWireV1GoldenVectorsTest {
         assertEquals("__root__.MatrixPayload", schema.qualifiedType());
         assertEquals(List.of("number", "text", "active"),
                 schema.fields().stream().map(AotScalarWireV1.Field::name).toList());
-        assertEquals("matrix-fixture@1", "matrix-fixture@1"); // package claim is not attestation
+        assertEquals(64, schema.typeIdHex().length());
+        assertEquals(64, schema.schemaSha256Hex().length());
         var result = verify(schema, corpus());
         assertEquals(8, result.positivePairs());
         assertEquals(15, result.rejectedVectors());
