@@ -15,6 +15,11 @@ final class MacroSharedScalarBudgetsTest {
                 return value;
             }
             """;
+    private static final String LITERAL = """
+            define macro literal(Const<int> value) -> Syntax<Expr> {
+                return quote(value);
+            }
+            """;
 
     private static String main(String expression) {
         return "fnc main() -> int { return " + expression + "; }";
@@ -56,6 +61,34 @@ final class MacroSharedScalarBudgetsTest {
         assertTrue(denial.getMessage().contains("macro expansion count exceeds 128"),
                 denial::toString);
         assertTrue(denial.getMessage().contains("runtime fallback is forbidden"),
+                denial::toString);
+    }
+
+    @Test
+    void constAstStepLimitAdmits511NodesAndRejects1023Nodes() {
+        // 256 leaves + 255 Add nodes = 511 closed AST visits.
+        String tree = "1";
+        for (int i = 0; i < 8; ++i) tree = "(" + tree + " + " + tree + ")";
+        String accepted = tree;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                LITERAL + main("literal!(const " + accepted + ")")));
+        String rejected = "(" + tree + " + " + tree + ")";
+        IllegalArgumentException denial = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        LITERAL + main("literal!(const " + rejected + ")")));
+        assertTrue(denial.getMessage().contains("step budget exceeds 512"),
+                denial::toString);
+    }
+
+    @Test
+    void constDepth64AdmittedAnd65Rejected() {
+        String sixtyFourNegations = "- ".repeat(64) + "1";
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                LITERAL + main("literal!(const " + sixtyFourNegations + ")")));
+        IllegalArgumentException denial = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        LITERAL + main("literal!(const - " + sixtyFourNegations + ")")));
+        assertTrue(denial.getMessage().contains("depth exceeds 64"),
                 denial::toString);
     }
 }
