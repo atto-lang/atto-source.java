@@ -47,6 +47,29 @@ final class MacroSourceUnitIdentityTest {
     }
 
     @Test
+    void rejectsDriveRelativeAlternateStreamsControlsAndMalformedUnicode() {
+        for (String invalid : new String[] {
+                "C:relative\\unit.atto",
+                "pkg/name.atto:stream",
+                "pkg/name.atto" + (char) 0 + "hidden",
+                "pkg/name.atto\nother",
+                "pkg/name.atto\tother",
+                "pkg/name.atto" + (char) 0x2028 + "other",
+                "pkg/broken" + (char) 0xD800 + ".atto",
+                "pkg/broken" + (char) 0xDC00 + ".atto",
+                "a/".repeat(MacroSourceUnitIdentity.MAX_UNIT_ID_CHARS * 3)
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroSourceUnitIdentity.normalizeUnitId(invalid),
+                    "unsafe macro logical unit ID must fail closed");
+        }
+        assertEquals("pkg/value.atto",
+                MacroSourceUnitIdentity.normalizeUnitId("pkg/parts/../value.atto"));
+        String utf16 = "pkg/" + new String(Character.toChars(0x1F680)) + ".atto";
+        assertEquals(utf16, MacroSourceUnitIdentity.normalizeUnitId(utf16));
+    }
+
+    @Test
     void oneProgramCannotBeReboundToDifferentCanonicalUnit() {
         Ast.Program program = Parser.parse("fnc main() -> void { return; }");
         MacroSourceUnitIdentity.attach(program, "pkg/unit.ores");
