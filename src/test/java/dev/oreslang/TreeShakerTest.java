@@ -3,6 +3,8 @@ package dev.oreslang;
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
+import dev.oreslang.compiler.MacroIdentifierHygiene;
+import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
@@ -14,6 +16,115 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class TreeShakerTest {
+    @Test
+    void treeShakingKeepsExactMacroCaptureAuthorityAndReferencedFunction() {
+        Ast.Program source = MacroSourceUnitIdentity.attach(
+                Parser.parse("""
+                        pub fnc helper() -> int {
+                            return 42;
+                        }
+                        define macro reference(Identifier target) -> Syntax<Expr> {
+                            return capture_fnc(target);
+                        }
+                        pub fnc main() -> int {
+                            return reference!(ident helper)();
+                        }
+                        """), "pkg/src/main.ores");
+        Ast.Program checked = OresCompiler.analyze(source);
+        TreeShaker.Result optimized =
+                TreeShaker.shake(checked, BuildOptions.executable(Map.of()));
+
+        assertTrue(optimized.retained(Parser.ROOT_MODULE + ".helper"),
+                "checked macro function capture must retain its static callee");
+        assertEquals("pkg/src/main.ores",
+                MacroSourceUnitIdentity.unitId(optimized.program()),
+                "tree shaking must preserve the canonical compiler source identity");
+
+        Ast.FunctionDecl main = optimized.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("main"))
+                .findFirst().orElseThrow();
+        Ast.CallExpr call = assertInstanceOf(
+                Ast.CallExpr.class,
+                assertInstanceOf(Ast.ReturnStmt.class, main.body().getFirst()).value());
+        Ast.MemberExpr captured = assertInstanceOf(Ast.MemberExpr.class, call.callee());
+        MacroIdentifierHygiene.CapturedFunction admitted =
+                MacroIdentifierHygiene.authorizedCapturedFunction(captured);
+        assertNotNull(admitted);
+        assertEquals("helper", admitted.name());
+        assertEquals(Parser.ROOT_MODULE, admitted.hygiene().callerModule());
+    }
+
+    @Test
+    void optimizerCannotEraseUnexpandedMacroDeclarationsAsDeadCode() {
+        Ast.Program unchecked = Parser.parse("""
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                pub fnc main() -> int {
+                    return identity!(syntax expr 42);
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TreeShaker.shake(unchecked, BuildOptions.executable(Map.of())));
+        assertTrue(failure.getMessage().contains("erased compile-time macro"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void optimizerRetainsEffectsSuspensionAndActorAdmissionMetadata() {
+        // This is a synthetic AST rewrite contract test, not semantic admission:
+        // checked effects remain closed in TypeChecker until their full lowering.
+        Ast.Program parsed = Parser.parse(
+                "pub fnc meaning() -> int { return 42; }");
+        Ast.FunctionDecl original = assertInstanceOf(Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        Ast.TypeRef error = new Ast.TypeRef("Error", List.of(), false);
+        Ast.EffectSpec effects = new Ast.EffectSpec(List.of(error), List.of(), List.of());
+
+        Ast.FunctionDecl function = new Ast.FunctionDecl(
+                original.name(), original.kind(), original.visibility(),
+                original.async(), original.suspends(), original.generator(),
+                original.structural(), original.nonLexical(), original.trapped(),
+                original.actorKind(), original.genericParameters(),
+                original.parameters(), original.returnType(),
+                original.annotations(), original.body(), original.genericSpecs(), effects);
+        Ast.MethodDecl method = new Ast.MethodDecl(
+                "handle", Ast.Visibility.PUBLIC, false, false,
+                false, true, false, null,
+                List.of(), List.of(), original.returnType(),
+                List.of(), original.body(), effects);
+        Ast.ActorConcurrency concurrency =
+                new Ast.ActorConcurrency(Ast.ActorTransport.HTTP, 3, 2);
+        Ast.ClassDecl actor = new Ast.ClassDecl(
+                "Worker", Ast.Visibility.PUBLIC, false,
+                Ast.ActorKind.PRIVATE, List.of(), List.of(), List.of(),
+                List.of(), null, List.of(method), concurrency);
+        Ast.Program synthetic = new Ast.Program(List.of(
+                new Ast.ModuleDecl(Parser.ROOT_MODULE, List.of(function, actor))));
+
+        TreeShaker.Result optimized =
+                TreeShaker.shake(synthetic, BuildOptions.library(Map.of()));
+        Ast.ModuleDecl root = optimized.program().modules().getFirst();
+        Ast.FunctionDecl outputFunction = root.declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast).findFirst().orElseThrow();
+        Ast.ClassDecl outputActor = root.declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+
+        assertEquals(effects, outputFunction.effects());
+        assertEquals(concurrency, outputActor.actorConcurrency());
+        assertTrue(outputActor.methods().getFirst().suspends());
+        assertEquals(effects, outputActor.methods().getFirst().effects());
+    }
+
     @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
