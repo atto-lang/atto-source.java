@@ -89,4 +89,20 @@ final class SecureSourceReaderTest {
                 () -> SecureSourceReader.read(file, project));
         assertTrue(ex.getMessage().contains("NUL"));
     }
+
+    @Test void linkedAdversarialCompilerRequiresPinnedDirectories() throws Exception {
+        Path file = root.resolve("guest.atto");
+        Files.writeString(file, "pub fnc answer() -> int { return 42; }");
+        try (var directory = Files.newDirectoryStream(root)) {
+            if (directory instanceof java.nio.file.SecureDirectoryStream<?>) {
+                assertDoesNotThrow(() -> LinkedProgramRunner.validate(
+                        file, Map.of(), IsolatePolicy.untrustedActor(),
+                        PermissionCheckMode.COMPILE));
+            } else {
+                assertThrows(SecurityException.class, () -> LinkedProgramRunner.validate(
+                        file, Map.of(), IsolatePolicy.untrustedActor(),
+                        PermissionCheckMode.COMPILE));
+            }
+        }
+    }
 }
