@@ -68,7 +68,7 @@ This increment hardens the source-local semantic and metadata boundary without e
 
 ## M0 receipt integrity and cross-organization runner gate
 
-The M0 CI job does **not** claim guest workflow execution. It runs four focused JUnit classes totaling 35 authored test methods, and a standalone Java Surefire receipt verifier before accepting the result. The verifier rejects missing/extra or linked XML reports, wrong suite and test identities, inflated summary totals, hidden failed/skipped cases, and external-entity XML. Its source-free mutation harness exercises eight negative cases and an accepted 35-case synthetic control.
+The M0 CI job does **not** claim guest workflow execution. It runs four focused JUnit classes totaling 36 authored test methods, and a standalone Java Surefire receipt verifier before accepting the result. The verifier rejects missing/extra or linked XML reports, wrong suite and test identities, inflated summary totals, hidden failed/skipped cases, and external-entity XML. Its source-free mutation harness exercises eight negative cases and an accepted 36-case synthetic control.
 
 The `DurableWorkflowSemanticAnalysisTest` compiler test prints both the SHA-256 digest and hexadecimal bytes of a deterministic canonical manifest. The independent receipt verifier requires exactly one of each marker, decodes the bytes as strict UTF-8, checks the `atto.durable.manifest.v1` prefix, and recomputes the SHA-256 rather than trusting either marker. The test also checks that modifying a returned `canonicalBytes()` array does not mutate the underlying manifest.
 
