@@ -59,6 +59,28 @@ admission succeeds, no implicit loss/coalescing/retry, and a nonblocking
 and its completion future are implementation substrate, not proof that the
 source-level portable `try_publish` contract has executed.
 
+### Current nonblocking host substrate (NOT guest lowering)
+
+`ActorEventBus.tryPublishReliable(name, value)` and the typed
+`Topic<T>.tryPublishReliable(value)` use the runtime's existing authenticated
+publisher admission. They return `Optional<PublishReceipt>`: present only
+after full RELIABLE reservation preflight, empty only on bounded `Full`.
+`tryPublishReliableSystem` is an explicitly supervisor-checked host path.
+Non-RELIABLE policies, invalid/non-Sendable payloads, revoked memberships and
+closed topics do **not** become silent empty results: they fail distinctly.
+A successful receipt's `sequenceUnsignedString()` remains the lossless
+unsigned sequence representation. Its `completion()` may still be pending;
+admission is not handler acknowledgement.
+
+These Java methods are **host/runtime groundwork only**. The source compiler
+still rejects `Topic<T>.try_publish`, and no portable source
+`Result<PublishReceipt, PublishError>` ABI or unforgeable source-level
+membership capability has been implemented or verified by this patch. The
+equivalent LLVM native substrate returns a receipt with `backpressured`
+and sequence zero on failed RELIABLE admission; neither backend is certified
+for guest portable v1 until compiler lowering, exact-head execution and
+differential guest traces pass.
+
 `LATEST` and `LOSSY` remain useful Java runtime policies, but they are
 **explicit backend extensions** outside portable-v1. They may not be used to
 claim portable-core parity and must be negotiated/versioned separately.
