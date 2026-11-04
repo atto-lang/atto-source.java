@@ -1,0 +1,67 @@
+name: AttoLang AOT scalar wire qualification (host-only)
+on:
+  push:
+    branches:
+      - feat/aot-reflection-compiler-table-v1-20261102
+    paths:
+      - '.github/workflows/aot-scalar-wire-qualification.yml'
+      - 'src/main/java/dev/oreslang/compiler/**'
+      - 'src/test/java/dev/oreslang/compiler/AotScalarWireV1*'
+      - 'src/test/resources/aot-reflection/**'
+      - 'scripts/run-aot-scalar-wire-native-image-smoke.sh'
+      - 'scripts/verify-aot-scalar-wire-host-linkage.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/aot-scalar-wire-qualification.yml'
+      - 'src/main/java/dev/oreslang/compiler/**'
+      - 'src/test/java/dev/oreslang/compiler/AotScalarWireV1*'
+      - 'src/test/resources/aot-reflection/**'
+      - 'scripts/run-aot-scalar-wire-native-image-smoke.sh'
+      - 'scripts/verify-aot-scalar-wire-host-linkage.sh'
+permissions:
+  contents: read
+concurrency:
+  group: atto-aot-wire-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  host-native-codec:
+    name: Host JUnit and native-image (NOT guest parity)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact GitHub source head/tree before testing
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          actual="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$actual" = "$EXPECTED_SHA"
+          test "${#tree}" -eq 40
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "HOST_SOURCE_COMMIT=$actual"
+          echo "HOST_SOURCE_TREE=$tree"
+      - name: Install pinned GraalVM and Maven toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          components: 'native-image'
+          cache: 'maven'
+      - name: Run full scalar wire JUnit, linkage audit and no-fallback Native Image
+        shell: bash
+        env:
+          ATTO_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/run-aot-scalar-wire-native-image-smoke.sh
+          echo 'HOST_NATIVE_WIRE_QUALIFICATION_EXECUTED'
+          echo 'GUEST_NATIVE_AOT_NOT_EXECUTED'
