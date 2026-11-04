@@ -5610,12 +5610,15 @@ public final class TypeChecker {
                             "is_symlink", "is_symlink_blocking" -> {
                         result = Primitive.BOOL; parameters = List.of(Primitive.STRING);
                     }
+                    case "file_size", "file_size_blocking", "file_size_async" -> {
+                        result = Primitive.INT; parameters = List.of(Primitive.STRING);
+                    }
                     case "list_dir", "list_dir_blocking" -> {
                         result = new ListType(Primitive.STRING);
                         parameters = List.of(Primitive.STRING);
                     }
                     case "write_text", "write_text_blocking",
-                            "write_text_atomic", "write_text_atomic_blocking",
+                            "write_text_atomic", "write_text_atomic_blocking", "write_text_atomic_async",
                             "append_text", "append_text_blocking" -> {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING, Primitive.STRING);

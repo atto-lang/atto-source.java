@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.List;
@@ -43,6 +44,33 @@ public final class NativeIo {
         Path path = canonicalIfExisting(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.exists");
         return Files.exists(path);
+    }
+
+    /**
+     * Measure UTF-8 storage bytes without reading file contents into an actor.
+     * Require scoped READ on the lexical and resolved paths; reject the leaf
+     * symlink and use a nofollow attribute read for the final size witness.
+     */
+    public static long fileSize(OresContext context, String rawPath) {
+        Path lexical = lexicalPath(rawPath);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException("fs.file_size refuses symlink: " + lexical);
+        }
+        Path path = canonicalExistingPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                lexical.toString(), "fs.file_size");
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                path.toString(), "fs.file_size");
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile()) {
+                throw new IllegalArgumentException("fs.file_size requires regular file: " + path);
+            }
+            return attributes.size();
+        } catch (IOException failure) {
+            throw ioFailure("file size", path, failure);
+        }
     }
 
     /**
