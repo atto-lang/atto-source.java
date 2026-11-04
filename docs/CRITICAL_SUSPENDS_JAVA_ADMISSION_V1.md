@@ -257,3 +257,36 @@ The `critical/suspends` branch must be reconciled with the separate
 Java `.atto` extension-admission branch before combined compiler guest
 parity can be claimed. Keep both PRs draft until source-authorized,
 stepful JDK/Maven/JUnit and actual guest execution proofs exist.
+
+## 2026-11-03 Task-capture publication trust-boundary audit
+
+Security review found that the legacy three-argument
+`Ast.CheckedTaskCaptures.publish(program, epoch, transfers)` interface
+allowed a host caller to construct a positive Task ownership epoch after
+calling public `newCheckEpoch`/`beginCheck`, without completing the
+`OwnershipChecker` pass. Identity keys and staged-transfer shape checks
+do **not** themselves prove ownership semantics.
+
+The legacy entry point is now retained for compatibility but always fails
+closed. The new Task publication entry point requires a
+`OwnershipChecker.TaskPublishAuthority` constructed privately by the
+completed ownership checker, bound to the exact Program and epoch. It also
+requires the critical, Task and typing monitors held by the compiler's
+ordered publication transaction. This blocks public host code from minting
+Task transfers merely with a map and a numeric epoch. As with the critical
+authority, a privileged JVM host with arbitrary deep reflection is outside
+this token's threat boundary; it is **not** a process sandbox.
+
+The `TaskCaptureAdmissionIdentityTest` regression suite now includes
+raw host AST/forged-epoch rejection, unauthenticated direct publisher
+rejection, positive reauthorization through a full ownership pass and
+supersession of synthetic stale attempts. Its legacy `async fnc`
+fixtures were migrated to canonical `suspends fnc`. Focused CI now
+requires this seventh nonempty Surefire suite, the specifically named
+negative cases, and the existing Truffle guest and cleanup receipts.
+
+This is an **authored compiler and test change, not an executed
+Maven/JUnit/Graal/Native Image parity result**. The focused guest fixtures
+still use `.ores` compatibility paths. Neither `.atto` guest admission,
+AOT Native Image, LLVM, Wasm, .NET nor Cranelift parity is established here.
+
