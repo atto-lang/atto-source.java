@@ -152,6 +152,83 @@ final class AsyncFilesystemAtomicLanguageTest {
     }
 
     @Test
+    void outOfScopeAtomicWriteDeniesBeforeProbingExistingOrMissingParent() throws Exception {
+        Path permitted = Files.createDirectory(temp.resolve("write-permitted")).toRealPath();
+        Path outside = Files.createDirectory(temp.resolve("write-denied")).toRealPath();
+        Path existing = outside.resolve("existing.txt");
+        Files.writeString(existing, "untouched", StandardCharsets.UTF_8);
+        Path missingParent = outside.resolve("missing-dir").resolve("target.txt");
+        Path sourceFile = permitted.resolve("main.atto");
+
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.WRITE, permitted.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_WRITE);
+
+        for (Path forbidden : java.util.List.of(existing, missingParent)) {
+            String source = """
+                    pub async fnc main(): void {
+                      await fs.write_text_atomic_async("%s", "forbidden");
+                      return;
+                    }
+                    """.formatted(forbidden);
+            OresCompiler.parseAndTypeCheck(source);
+            Files.writeString(sourceFile, source);
+            RuntimeException thrown = assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(
+                            sourceFile, policy, permissions, PermissionCheckMode.RUNTIME,
+                            ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(denialChain(thrown).contains("Oreslang permission denied"),
+                    "atomic write must deny out-of-scope path before filesystem lookup: " + thrown);
+        }
+        assertEquals("untouched", Files.readString(existing, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(missingParent.getParent()));
+    }
+
+    @Test
+    void atomicWriteCannotEscapeThroughSymlinkedParent() throws Exception {
+        Path permitted = Files.createDirectory(temp.resolve("write-link-allowed")).toRealPath();
+        Path outside = Files.createDirectory(temp.resolve("write-link-outside")).toRealPath();
+        Path sentinel = outside.resolve("resource.txt");
+        Files.writeString(sentinel, "preserved", StandardCharsets.UTF_8);
+        Path link = permitted.resolve("redirect");
+        Files.createSymbolicLink(link, outside);
+        Path sourceFile = permitted.resolve("main.atto");
+        String source = """
+                pub async fnc main(): void {
+                  await fs.write_text_atomic_async("%s", "forbidden");
+                  return;
+                }
+                """.formatted(link.resolve("resource.txt"));
+        OresCompiler.parseAndTypeCheck(source);
+        Files.writeString(sourceFile, source);
+
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.WRITE, permitted.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_WRITE);
+
+        RuntimeException thrown = assertThrows(RuntimeException.class, () ->
+                LinkedProgramRunner.run(
+                        sourceFile, policy, permissions, PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(denialChain(thrown).contains("Oreslang permission denied"),
+                "resolved write target must receive an independent WRITE check: " + thrown);
+        assertEquals("preserved", Files.readString(sentinel, StandardCharsets.UTF_8));
+    }
+
+    private static String denialChain(Throwable failure) {
+        StringBuilder rendered = new StringBuilder();
+        for (int depth = 0; failure != null && depth < 12; depth++, failure = failure.getCause()) {
+            rendered.append(failure.getClass().getName()).append(": ")
+                    .append(failure.getMessage()).append('\n');
+        }
+        return rendered.toString();
+    }
+
+    @Test
     void asyncFileSizeCannotEscapeReadScopeOrSizeDirectory() throws Exception {
         Path root = Files.createDirectory(temp.resolve("size-root")).toRealPath();
         Path outside = Files.createDirectory(temp.resolve("size-outside")).toRealPath();
