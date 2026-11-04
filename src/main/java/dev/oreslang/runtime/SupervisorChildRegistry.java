@@ -372,8 +372,26 @@ public final class SupervisorChildRegistry {
             java.util.function.BooleanSupplier physicallyDone) {
         Objects.requireNonNull(candidate);
         Objects.requireNonNull(physicallyDone);
+        // Never run an external scheduler callback on behalf of a stale,
+        // foreign, or wrong-incarnation claim. Probe outside the monitor only
+        // after validating the exact reservation and staged candidate.
+        synchronized (this) {
+            checkReservation(permit);
+            ReplacementState current = replacements.get(permit.child().logicalId());
+            if (current != null) {
+                if (!current.actor().equals(candidate)
+                        || current.generation() != permit.incarnation() + 1)
+                    throw new IllegalStateException("foreign or stale cleanup candidate");
+                if (current.phase() == ReplacementPhase.CLEANED) return;
+                if (current.phase() != ReplacementPhase.SPAWNED
+                        && current.phase() != ReplacementPhase.ADMITTED)
+                    throw new IllegalStateException("invalid replacement cleanup state");
+            }
+        }
         if (!physicallyDone.getAsBoolean())
             throw new IllegalStateException("restart candidate has not physically terminated");
+        // A concurrent abort/close or publication must not validate a probe
+        // made for the previous reservation. Recheck after callback return.
         synchronized (this) {
             checkReservation(permit);
             ReplacementState current = replacements.get(permit.child().logicalId());
