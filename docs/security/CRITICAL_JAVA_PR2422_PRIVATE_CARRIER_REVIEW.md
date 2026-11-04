@@ -8,8 +8,8 @@ for this candidate. This packet cannot be used as an authorization token.
 
 **Review-only, never authorization.** The only source identity currently
 eligible for a fresh independent review is Java draft PR #2422 head
-`38b77a2d86490671c81ef3ca080c13a697d47702`, full Git tree
-`49dbc5ff0d3613b65f0a13fc974c8479119de5cd`. Every other source
+`892c3220dbc22ae7138d3141e13ea46404430db4`, full Git tree
+`01644d97450817417569cdc359826f9cc04b09ee`. Every other source
 head/tree pair later in this packet is a historical receipt, **not** the
 current candidate or an approval. Any new source commit invalidates this
 pin and requires another independent review.
@@ -56,8 +56,14 @@ critical execution and does not authorize any private-source transfer.
 The conformance evidence record is
 `oreslang-platform-conformance/evidence/critical-java-llvm-m0-20261103.md`.
 
-Latest source Java critical run `41754438780` failed before runner
+Latest source Java critical run `41755226023` failed before runner
 admission (`steps=null`); no Maven, JUnit, guest or Graal AOT result.
+
+The Java candidate now includes two canonical `.atto` guest source files
+alongside its `.ores` compatibility fixtures, and two authored JUnit cases
+requiring exact outputs `42` and `returned`. This is not yet proof of
+`.atto` CLI/import migration or executed guest parity. The latest source
+workflow `41755226023` had zero executed steps; hold remains unchanged.
 
 ## Candidate identities and source-free executed evidence
 
