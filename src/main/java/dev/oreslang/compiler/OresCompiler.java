@@ -157,6 +157,23 @@ public final class OresCompiler {
     }
 
     /**
+     * Compile a bounded JSON/MessagePack scalar decoding schema from the same
+     * explicit, source-checked nominal descriptor used by static type_of.
+     *
+     * Decoding returns immutable scalar slots only: it does NOT construct
+     * guest objects, reflect on host classes, or prove Native Image execution.
+     * Field aliases/defaults/nested values are rejected until a versioned
+     * compiler-generated schema and constructor ABI exist.
+     */
+    public static AotScalarWireV1.Schema compileAotScalarWireSchemaV1(
+            String sourceDeclarations, String packageIdentityClaim,
+            String staticTypeQuery) {
+        return AotScalarWireV1.fromCheckedQuery(
+                compileStaticTypeOfQueryV1(
+                        sourceDeclarations, packageIdentityClaim, staticTypeQuery));
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
