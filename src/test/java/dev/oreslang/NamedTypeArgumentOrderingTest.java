@@ -70,4 +70,36 @@ final class NamedTypeArgumentOrderingTest {
         assertDoesNotThrow(() -> Parser.parse(
                 withType("Pair<Box<int>, Second=Vector<string>>")));
     }
+
+    private static String withGenericCall(String typeArguments) {
+        return """
+                fnc identity<T, U>(T value, U ignored): T {
+                    return value;
+                }
+                pub routine main(): void {
+                    identity<""" + typeArguments + """>(ignored: "x", value: 42);
+                    return;
+                }
+                """;
+    }
+
+    @Test
+    void explicitGenericFunctionCallsPreserveLegalNamedPermutations() {
+        assertDoesNotThrow(() -> Parser.parse(
+                withGenericCall("T=int, U=string")));
+        assertDoesNotThrow(() -> Parser.parse(
+                withGenericCall("U=string, T=int")));
+        assertDoesNotThrow(() -> Parser.parse(
+                withGenericCall("int, U=string")));
+    }
+
+    @Test
+    void explicitGenericFunctionCallsRejectLatePositionalArguments() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(withGenericCall("U=string, int")));
+        assertTrue(error.getMessage().contains(
+                        "positional generic arguments must precede named arguments"),
+                error.getMessage());
+    }
 }
