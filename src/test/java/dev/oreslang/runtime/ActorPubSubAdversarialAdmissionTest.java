@@ -51,10 +51,15 @@ final class ActorPubSubAdversarialAdmissionTest {
                     group.events().publishSystem("empty", "first");
             ActorEventBus.PublishReceipt second =
                     group.events().publishSystem("empty", "second");
+            ActorEventBus.PublishReceipt third = group.events()
+                    .tryPublishReliableSystem("empty", "third").orElseThrow();
             assertEquals(0, first.accepted());
             assertEquals(0, second.accepted());
             assertEquals(1L, first.sequence());
             assertEquals(2L, second.sequence());
+            assertEquals(3L, third.sequence());
+            assertTrue(third.completion().isDone(),
+                    "no-recipient try admission returns an already completed receipt");
             assertEquals("1", first.sequenceUnsignedString());
             assertEquals("2", second.sequenceUnsignedString());
         }
@@ -124,6 +129,8 @@ final class ActorPubSubAdversarialAdmissionTest {
             assertNull(failure.get());
             assertThrows(ActorEventBus.EventBackpressureException.class,
                     () -> group.events().publishSystem("atomic", "rejected"));
+            assertTrue(group.events().tryPublishReliableSystem("atomic", "also-rejected").isEmpty(),
+                    "Full must return an explicit, nonblocking empty result");
 
             b.send("check");
             assertTrue(bChecked.await(5, TimeUnit.SECONDS));
@@ -134,8 +141,8 @@ final class ActorPubSubAdversarialAdmissionTest {
             assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
             // No subscriber receives the rejected publication, and its
             // attempt must not burn a topic-local sequence number.
-            ActorEventBus.PublishReceipt acceptedReceipt =
-                    group.events().publishSystem("atomic", "accepted");
+            ActorEventBus.PublishReceipt acceptedReceipt = group.events()
+                    .tryPublishReliableSystem("atomic", "accepted").orElseThrow();
             assertTrue(acceptedReceipt.completion().isDone());
             assertEquals(3L, acceptedReceipt.sequence(),
                     "admission receipt must report contiguous sequence after rejection");
@@ -149,6 +156,24 @@ final class ActorPubSubAdversarialAdmissionTest {
             assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0L, runtime.sharedMemoryBytes(),
                     "failed admission, cancellation, and retirement must release frozen events");
+        }
+    }
+
+    @Test
+    void tryReliableRejectsExtensionPoliciesAndInvalidPayloadWithoutCreatingReceipts() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            group.events().topic("latest-only", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            group.events().topic("reliable-only", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            assertThrows(IllegalArgumentException.class,
+                    () -> group.events().tryPublishReliableSystem("latest-only", "never"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> group.events().tryPublishReliableSystem(
+                            "reliable-only", (Runnable) () -> { }));
+            ActorEventBus.PublishReceipt success = group.events()
+                    .tryPublishReliableSystem("reliable-only", "accepted").orElseThrow();
+            assertEquals(1L, success.sequence(),
+                    "invalid payload and extension-policy attempts must not consume a sequence");
         }
     }
 
