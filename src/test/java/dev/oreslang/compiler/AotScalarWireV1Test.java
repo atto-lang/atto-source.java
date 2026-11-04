@@ -276,4 +276,24 @@ final class AotScalarWireV1Test {
         rejectsJson("{\"count\":1,\"title\":{},\"enabled\":true}");
         rejectsJson("{\"count\":1,\"title\":[],\"enabled\":true}");
     }
+
+    @Test void committedAttoSchemaIsUsedForBothWireFormats() throws Exception {
+        String atto;
+        try (var in = AotScalarWireV1Test.class.getResourceAsStream(
+                "/aot-reflection/scalar_wire_json_msgpack.atto")) {
+            assertNotNull(in, "missing .atto scalar-wire fixture");
+            atto = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        var checked = OresCompiler.compileAotScalarWireSchemaV1(
+                atto, "pkg@revision1", "type_of<WirePayload>()");
+        assertEquals(schema().typeIdHex(), checked.typeIdHex());
+        assertEquals(List.of(1L, "ok", true), checked.decodeJson(
+                "{\"count\":1,\"title\":\"ok\",\"enabled\":true}").slots());
+        assertEquals(List.of(1L, "ok", true), checked.decodeMessagePack(
+                pack(false, 1, "ok", true)).slots());
+    }
+
+    @Test void rejectsNonAsciiUnicodeEscapeDigits() {
+        rejectsJson("{\"count\":1,\"title\":\"\\u１２ＡＦ\",\"enabled\":true}");
+    }
 }
