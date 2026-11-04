@@ -448,12 +448,14 @@ public final class LinkedProgramRunner {
             }
 
             Path resolvedTarget = target.get().toAbsolutePath().normalize();
+            // Enforce root ownership before Files.isSameFile probes the candidate.
+            // An untrusted import cannot force this loader to stat an
+            // out-of-root target merely to distinguish self-import errors.
+            String targetId = HostSourceUnitIds.of(resolvedTarget, projectConfig);
             if (Files.isSameFile(normalized, resolvedTarget)) {
                 throw new IllegalArgumentException(
                         "source unit '" + id + "' cannot import itself via '" + imported.path() + "'");
             }
-
-            String targetId = HostSourceUnitIds.of(resolvedTarget, projectConfig);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
                     admission, budget, depth + 1, requireSecure);
