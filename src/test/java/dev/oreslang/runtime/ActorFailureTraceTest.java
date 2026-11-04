@@ -124,6 +124,15 @@ final class ActorFailureTraceTest {
                             // No inheritance of CONTROL authority across actor heaps.
                         } catch (Throwable unexpected) {
                             denied.set(unexpected);
+                        }
+                        try {
+                            failed.failure();
+                            denied.set(new AssertionError("actor received raw child Throwable"));
+                        } catch (SecurityException expected) {
+                            // A child Throwable and its suppressed frames must
+                            // never escape its actor's ownership boundary.
+                        } catch (Throwable unexpected) {
+                            denied.set(unexpected);
                         } finally {
                             done.countDown();
                         }
