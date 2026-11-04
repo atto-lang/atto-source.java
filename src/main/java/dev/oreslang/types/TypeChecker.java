@@ -8773,6 +8773,16 @@ public final class TypeChecker {
             throw new IllegalArgumentException(owner
                     + " cannot use '_' inference holes in a declared type");
         }
+        // Literal metadata (rank=1, text="x", flags=true) is not a
+        // generic *type*. The collection metadata namespace deliberately
+        // retains those values, but a nominal formal requires a real type.
+        for (Ast.TypeRef value : bound.explicitTypes().values()) {
+            if (value.isIntLiteral() || value.isBoolLiteral()
+                    || value.isStringLiteral()) {
+                throw new IllegalArgumentException(owner
+                        + " requires a type generic argument, not literal metadata");
+            }
+        }
         if (bound.explicitTypes().size() != parameters.size()) {
             throw new IllegalArgumentException(owner + " expects " + parameters.size()
                     + " type argument(s), got " + bound.explicitTypes().size());

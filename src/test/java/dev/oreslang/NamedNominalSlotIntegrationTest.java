@@ -119,6 +119,41 @@ final class NamedNominalSlotIntegrationTest {
     }
 
     @Test
+    void nominalTypeFormalsCannotAcceptLiteralMetadata() {
+        String prelude = """
+                define class Box<T> as
+                  pub val T value;
+                end
+                """;
+        for (String value : java.util.List.of("42", "true", "false",
+                "\"not-a-type\"")) {
+            rejects(prelude + "fnc invalid(Box<T=" + value
+                    + "> item): void { return; }",
+                    "requires a type generic argument");
+        }
+    }
+
+    @Test
+    void nominalInferenceHolesCannotMasqueradeAsTypes() {
+        rejects("""
+                define class Box<T> as
+                  pub val T value;
+                end
+                fnc invalid(Box<T=_> item): void { return; }
+                """, "inference holes");
+    }
+
+    @Test
+    void nestedMetadataMayAppearInsideAnActualType() {
+        accepts("""
+                define class Box<T> as
+                  pub val T value;
+                end
+                fnc takes(Box<T=Vector<rank=1>[int]> value): void { return; }
+                """);
+    }
+
+    @Test
     void builtInCollectionLabelHasSeparateMetadataNamespace() {
         accepts("""
                 fnc array(Array<T=int> xs): void { return; }
