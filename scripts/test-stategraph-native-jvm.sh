@@ -57,6 +57,33 @@ fi
 rm -f "$common_out" "$common_err"
 printf 'SG_JAVA_GENERIC_NATIVE_GUEST_PASS blob=%s result=42\n' "$(git rev-parse "HEAD:$generic")"
 
+
+# Exact same portable scalar-superstep guest as native LLVM backend.
+superstep=contracts/stategraph-portability/shared-superstep-scalar.ores
+expected_superstep_blob=0c1213cbedaf439e8f554627cf2174f4f2684d94
+[[ -f "$superstep" && ! -L "$superstep" ]]
+git ls-files --error-unmatch -- "$superstep" >/dev/null
+[[ "$(git hash-object "$superstep")" = "$expected_superstep_blob" ]] ||
+  { echo 'SG_JAVA_SHARED_SUPERSTEP_SOURCE_DRIFT' >&2; exit 1; }
+[[ "$(git rev-parse "HEAD:$superstep")" = "$expected_superstep_blob" ]] ||
+  { echo 'SG_JAVA_SHARED_SUPERSTEP_HEAD_DRIFT' >&2; exit 1; }
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$superstep" ||
+  { echo 'SG_JAVA_SHARED_SUPERSTEP_CHECK_NOT_ACCEPTED' >&2; exit 1; }
+guest_out="$(mktemp)"
+guest_err="$(mktemp)"
+set +e
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$superstep" --execute > "$guest_out" 2> "$guest_err"
+superstep_status=$?
+set -e
+if [[ "$superstep_status" -ne 42 || -s "$guest_out" || -s "$guest_err" ]]; then
+  cat "$guest_err" >&2
+  rm -f "$guest_out" "$guest_err"
+  echo "SG_JAVA_SHARED_SUPERSTEP_GUEST_NOT_ACCEPTED status=$superstep_status" >&2
+  exit 1
+fi
+rm -f "$guest_out" "$guest_err"
+printf 'SG_JAVA_SHARED_SUPERSTEP_NATIVE_PASS blob=%s guest_exit=42\n' "$expected_superstep_blob"
+
 for name in scalar branch nominal; do
   file="tests/stategraph-portability/$name.ores"
   git ls-files --error-unmatch -- "$file" >/dev/null
