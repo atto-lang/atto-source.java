@@ -69,6 +69,8 @@ expected = {
     "dev.oreslang.SourceActorPubSubExecutionTest": {
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
         "portableTryPublishRejectedUntilNativeLowering",
+        "attoMultiGroupGuestPreservesOtherGroupAfterLeave",
+        "attoPubSubTypeAndAuthorityNegativesStayFailClosed",
     },
     "dev.oreslang.runtime.ActorPubSubV1ContractTest": {
         "admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText",
