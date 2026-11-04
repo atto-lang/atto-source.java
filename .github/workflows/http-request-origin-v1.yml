@@ -59,20 +59,25 @@ jobs:
           assert files, "no Surefire XML evidence was emitted"
           wanted = {'SourceTaskRequestOriginTest', 'NativeHttpTest',
                     'HttpRequestLocalsTest', 'ActorCarrierIdentityCleanupTest'}
-          suites = set()
+          suites = {}
           cases = failures = errors = skips = 0
           for file in files:
               root = ET.parse(file).getroot()
               suite_name = root.attrib.get('name', '').split('.')[-1]
               if suite_name not in wanted:
                   continue
-              suites.add(suite_name)
-              cases += int(root.attrib.get('tests', 0))
+              assert suite_name not in suites, (
+                  f"duplicate target suite {suite_name}: {suites.get(suite_name)} and {file}")
+              suite_cases = int(root.attrib.get('tests', 0))
+              assert suite_cases > 0, f"target suite {suite_name} did not execute tests"
+              suites[suite_name] = file
+              cases += suite_cases
               failures += int(root.attrib.get('failures', 0))
               errors += int(root.attrib.get('errors', 0))
               skips += int(root.attrib.get('skipped', 0))
-          assert suites == wanted, f"missing target test suites: {sorted(wanted - suites)}"
-          assert cases > 0 and not (failures or errors or skips), (
+          assert set(suites) == wanted, (
+              f"missing target test suites: {sorted(wanted - set(suites))}")
+          assert not (failures or errors or skips), (
               f"cases={cases} failed={failures} errors={errors} skipped={skips}")
           print(f"HTTP_ORIGIN_JDK25_GUEST_TESTS_EXECUTED suites={len(suites)} "
                 f"cases={cases} failed={failures} errors={errors} skipped={skips}")
