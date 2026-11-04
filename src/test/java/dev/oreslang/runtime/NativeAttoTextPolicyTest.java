@@ -1,6 +1,11 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.OresLanguage;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import dev.oreslang.stdlib.CoreLibrarySources;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -40,4 +45,36 @@ final class NativeAttoTextPolicyTest {
                 output.toString(StandardCharsets.UTF_8).replace("\r", "").trim(),
                 () -> errors.toString(StandardCharsets.UTF_8));
     }
+    @Test
+    void unicodeScalarSnapshotHasExactQuotaNotSilentTruncation() {
+        assertEquals("65536", directGuestScalarCount("a".repeat(65_536)));
+        PolyglotException over = assertThrows(PolyglotException.class,
+                () -> directGuestScalarCount("a".repeat(65_537)));
+        assertTrue(over.getMessage().contains("codepoints exceeds 65536 scalar limit"),
+                over::getMessage);
+    }
+
+    @Test
+    void wrongScalarPrimitiveArityAndTypeFailAtCompileTime() {
+        for (String program : new String[] {
+                "pub routine main(): void { val points = \"abc\".codepoints(1); return; }",
+                "pub routine main(): void { val points = \"abc\".codepoints(\"bad\"); return; }"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(program)), program);
+        }
+    }
+
+    private static String directGuestScalarCount(String value) {
+        String program = "pub routine main(): void { "
+                + "val points = \"" + value + "\".codepoints(); "
+                + "stdio.println(points.size); return; }";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(OresLanguage.ID, program);
+        }
+        return output.toString(StandardCharsets.UTF_8).trim();
+    }
+
 }
