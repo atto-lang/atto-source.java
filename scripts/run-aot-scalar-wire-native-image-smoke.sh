@@ -15,7 +15,7 @@ if [[ "${#head_sha}" -ne 40 || "${#tree_sha}" -ne 40 ]]; then
   echo 'AOT_SCALAR_WIRE_INVALID_GIT_IDENTITY' >&2
   exit 5
 fi
-mvn -q -Dtest=AotScalarWireV1Test,AotScalarWireV1MatrixTest test
+mvn -q -Dtest=AotScalarWireV1Test,AotScalarWireV1MatrixTest,AotScalarWireV1GoldenVectorsTest test
 bash scripts/verify-aot-scalar-wire-host-linkage.sh target/classes
 mvn -q dependency:build-classpath -Dmdep.outputFile=target/aot-scalar-wire-dependencies.txt
 classpath="target/classes:target/test-classes:$(cat target/aot-scalar-wire-dependencies.txt)"
