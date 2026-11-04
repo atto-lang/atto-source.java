@@ -1,6 +1,9 @@
 package dev.oreslang.compiler;
 
 import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -53,15 +56,35 @@ public final class AotScalarWireV1 {
     public static final class Schema {
         private final String typeIdHex;
         private final String qualifiedType;
+        private final String schemaSha256Hex;
         private final List<Field> fields;
 
-        private Schema(String typeIdHex, String qualifiedType, List<Field> fields) {
+        private Schema(String typeIdHex, String qualifiedType,
+                       String schemaSha256Hex, List<Field> fields) {
             this.typeIdHex = typeIdHex;
             this.qualifiedType = qualifiedType;
+            this.schemaSha256Hex = schemaSha256Hex;
             this.fields = List.copyOf(fields);
         }
         public String typeIdHex() { return typeIdHex; }
         public String qualifiedType() { return qualifiedType; }
+        /** Field-layout identity, distinct from nominal type ID. Not an attestation. */
+        public String schemaSha256Hex() { return schemaSha256Hex; }
+        public void requireSchemaFingerprint(String expectedFingerprint) {
+            if (expectedFingerprint == null ||
+                    !schemaSha256Hex.equals(expectedFingerprint)) {
+                throw invalid("AOT wire schema fingerprint mismatch");
+            }
+        }
+        public Decoded decodeJsonWithFingerprint(String json, String expectedFingerprint) {
+            requireSchemaFingerprint(expectedFingerprint);
+            return decodeJson(json);
+        }
+        public Decoded decodeMessagePackWithFingerprint(
+                byte[] messagePack, String expectedFingerprint) {
+            requireSchemaFingerprint(expectedFingerprint);
+            return decodeMessagePack(messagePack);
+        }
         public List<Field> fields() { return fields; }
         public Decoded decodeJson(String json) { return new Json(this, json).decode(); }
         /** Strict UTF-8 entrypoint: no replacement-character coercion. */
@@ -120,7 +143,19 @@ public final class AotScalarWireV1 {
             };
             fields.add(new Field(field.name(), kind));
         }
-        return new Schema(type.typeIdHex(), type.resolvedSymbol(), fields);
+        return new Schema(type.typeIdHex(), type.resolvedSymbol(),
+                schemaDigest(query.descriptorTable()), fields);
+    }
+
+    private static String schemaDigest(byte[] table) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update("attolang.scalar-wire-schema/1\0".getBytes(StandardCharsets.UTF_8));
+            digest.update(table);
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private static final class Json {
