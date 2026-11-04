@@ -9,6 +9,8 @@ git init -q -b main
 git config user.name 'Atto policy test'
 git config user.email 'atto-policy@example.invalid'
 printf 'initial\n' > README.md
+mkdir -p src
+printf 'class Shared {}\n' > src/Shared.java
 git add . && git commit -qm baseline
 base="$(git rev-parse HEAD)"
 printf 'documentation\n' >> README.md
@@ -69,5 +71,14 @@ printf 'val x: int = 42\n' > guest.atto
 git add . && git commit -qm guest
 atto_head="$(git rev-parse HEAD)"
 expect_pass atto_only "$spaced_head" "$atto_head" "$work/empty" "$now"
-[[ "$pass" -eq 10 ]] || exit 1
-echo "ATTO_FIRST_POLICY_SELFTEST=10/10"
+git checkout -q -b isolated_guest "$base"
+printf 'val x: int = 7\n' > independent.atto
+git add . && git commit -qm isolated_guest
+isolated_head="$(git rev-parse HEAD)"
+git checkout -q main
+printf 'class Shared { int version; }\n' > src/Shared.java
+git commit -qam unrelated_host_change_on_base
+advanced_base="$(git rev-parse HEAD)"
+expect_pass diverged_base_ignores_unrelated_java "$advanced_base" "$isolated_head" "$work/empty" "$now"
+[[ "$pass" -eq 11 ]] || exit 1
+echo "ATTO_FIRST_POLICY_SELFTEST=11/11"
