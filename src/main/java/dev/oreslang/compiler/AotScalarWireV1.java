@@ -41,7 +41,11 @@ public final class AotScalarWireV1 {
     /** Immutable, slot-ordered scalar data for compiler-generated constructors. */
     public record Decoded(List<Object> slots) {
         public Decoded {
-            slots = List.copyOf(slots);
+            try {
+                slots = List.copyOf(slots);
+            } catch (NullPointerException malformed) {
+                throw invalid("null decoded scalar slot or collection");
+            }
             for (Object value : slots) {
                 if (!(value instanceof Long) &&
                     !(value instanceof Boolean) &&
