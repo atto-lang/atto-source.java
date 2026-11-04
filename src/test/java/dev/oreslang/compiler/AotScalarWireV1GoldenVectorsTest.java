@@ -83,7 +83,7 @@ final class AotScalarWireV1GoldenVectorsTest {
         String altered = original.lines()
                 .filter(line -> !line.startsWith("P|utf8_rocket|"))
                 .reduce("", (a, b) -> a + b + "\n");
-        assertThrows(AssertionError.class, () -> verify(checkedSchema(), altered));
+        assertThrows(IllegalArgumentException.class, () -> verify(checkedSchema(), altered));
     }
 
     @Test void malformedBase64IsNeverReplacementDecoded() throws Exception {
