@@ -962,8 +962,8 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl checked = findClass(checkedClassName);
             Evaluator checkedOwner = this;
             if (checked == null) {
-                Object imported = importedValue(checkedClassName);
-                if (imported instanceof ClassFacade facade) {
+                ClassFacade facade = importedConstructibleClass(checkedClassName);
+                if (facade != null) {
                     checkedOwner = facade.owner();
                     checked = facade.klass();
                 }
@@ -3775,10 +3775,15 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, left);
                                 return;
                             }
+                            // The right operand sees bindings established by the
+                            // left operand, as in the synchronous condition path.
+                            Env rightEnv = new Env(env);
+                            left.bindings().forEach((name, value) ->
+                                    rightEnv.define(name, value, Ast.BindingKind.VAL));
                             evalSuspendableCondition(
                                     t,
                                     binary.right(),
-                                    env,
+                                    rightEnv,
                                     (t2, right) ->
                                             continuation.accept(
                                                     t2,
@@ -3807,9 +3812,7 @@ public final class OresEvalRootNode extends RootNode {
                                         t,
                                         new ConditionResult(
                                                 true,
-                                                Map.of(
-                                                        test.binding(),
-                                                        value)));
+                                                java.util.Collections.singletonMap(test.binding(), value)));
                             } else {
                                 continuation.accept(
                                         t,
@@ -3842,7 +3845,7 @@ public final class OresEvalRootNode extends RootNode {
                                     matched
                                             ? new ConditionResult(
                                                     true,
-                                                    Map.copyOf(bindings))
+                                                    immutableBindings(bindings))
                                             : ConditionResult.noMatch());
                         });
                 return;
@@ -3864,6 +3867,14 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        // Snapshot source-order bindings without discarding null guest values.
+        // Map.copyOf/Map.of reject null and could fail after a pattern matched.
+        private static Map<String, Object> immutableBindings(
+                Map<String, Object> values) {
+            return java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(values));
+        }
+
         private ConditionResult mergeConditionBindings(
                 ConditionResult left,
                 ConditionResult right) {
@@ -3872,10 +3883,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             LinkedHashMap<String, Object> bindings =
                     new LinkedHashMap<>(left.bindings());
-            bindings.putAll(right.bindings());
-            return new ConditionResult(
-                    true,
-                    Map.copyOf(bindings));
+            for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
+                if (bindings.containsKey(entry.getKey())) {
+                    throw new IllegalStateException(
+                            "condition pattern binds '" + entry.getKey() + "' more than once");
+                }
+                bindings.put(entry.getKey(), entry.getValue());
+            }
+            return new ConditionResult(true, immutableBindings(bindings));
         }
 
         private void evalSuspendableExpr(
@@ -5693,59 +5708,23 @@ public final class OresEvalRootNode extends RootNode {
                         "Java host constructor " + hostClass.className());
                 return instantiateHost(hostClass, args);
             }
-            return instantiateConstructedClass(created.type().name(), args, env);
-        }
-
-        /**
-         * Resolve a constructor through either a direct class import or a
-         * compiler-visible module namespace. TypeChecker already records the
-         * qualified nominal name (module.Class); runtime construction must use
-         * the same namespace path rather than treating that string as a local
-         * class/import binding.
-         */
-        private Object instantiateConstructedClass(
-                String className,
-                List<Object> args,
-                Env env) {
-            Ast.ClassDecl local = findClass(className);
-            if (local != null) {
-                requireLexicalClassAccess(env, local);
-                return instantiate(local, args, false);
-            }
-
-            Object directImport = importedValue(className);
-            if (directImport instanceof ClassFacade importedClass) {
-                return importedClass.owner().instantiate(
-                        importedClass.klass(), args, true);
-            }
-
-            int separator = className.lastIndexOf('.');
-            if (separator > 0 && separator < className.length() - 1) {
-                String namespaceName = className.substring(0, separator);
-                String memberName = className.substring(separator + 1);
-
-                // Respect a lexical binding first, then a named/wildcard import,
-                // then a module declared in this source unit. This mirrors
-                // ordinary namespace member evaluation and preserves shadowing.
-                Object namespace = env == null ? Env.MISSING : env.lookup(namespaceName);
-                if (namespace == Env.MISSING) namespace = importedValue(namespaceName);
-                if (namespace == Env.MISSING) {
-                    Ast.ModuleDecl module = modules.get(namespaceName);
-                    if (module != null) {
-                        requireLexicalNamespaceAccess(env, namespaceName, "module");
-                        namespace = new ModuleFacade(this, module);
-                    }
-                }
-                if (namespace != Env.MISSING) {
-                    Object exported = member(namespace, memberName, env);
-                    if (exported instanceof ClassFacade importedClass) {
-                        return importedClass.owner().instantiate(
-                                importedClass.klass(), args, true);
-                    }
+            Ast.ClassDecl klass = findClass(created.type().name());
+            if (klass != null) requireLexicalClassAccess(env, klass);
+            Evaluator owner = this;
+            boolean externalConstruction = false;
+            if (klass == null) {
+                ClassFacade externalClass = importedConstructibleClass(created.type().name());
+                if (externalClass != null) {
+                    owner = externalClass.owner();
+                    klass = externalClass.klass();
+                    externalConstruction = true;
                 }
             }
-
-            throw new IllegalArgumentException("unknown class " + className);
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "unknown class " + created.type().name());
+            }
+            return owner.instantiate(klass, args, externalConstruction);
         }
 
         private Object callFunctionRaw(Ast.FunctionDecl fn, List<Object> args) {
@@ -6391,7 +6370,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "the static pattern proof and runtime type metadata disagree");
                     }
                     selected = arm;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = immutableBindings(bindings);
                 }
 
                 if (selected == null && fallback != null) {
@@ -6400,7 +6379,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException("match fallback did not accept the unmatched subject");
                     }
                     selected = fallback;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = immutableBindings(bindings);
                 }
 
                 if (selected == null) {
@@ -7614,8 +7593,20 @@ public final class OresEvalRootNode extends RootNode {
                     return instantiateHost(hostClass, args);
                 }
 
+                Ast.ClassDecl klass = findClass(created.type().name());
+                Evaluator owner = this;
+                boolean externalConstruction = false;
+                if (klass == null) {
+                    ClassFacade externalClass = importedConstructibleClass(created.type().name());
+                    if (externalClass != null) {
+                        owner = externalClass.owner();
+                        klass = externalClass.klass();
+                        externalConstruction = true;
+                    }
+                }
+                if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                return instantiateConstructedClass(created.type().name(), args, env);
+                return owner.instantiate(klass, args, externalConstruction);
             }
             if (expr instanceof Ast.TaskExpr task) {
                 if (task.domain() == Ast.ExecutionDomain.GPU) {
@@ -8942,6 +8933,42 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * Resolve a checked class import by its exact binding, or an explicitly
+         * imported module's public class. A dotted constructor type is NOT a
+         * local class name and must never fall through to an unrelated class
+         * in the current unit or another imported module.
+         *
+         * Qualified resolution deliberately permits one imported module
+         * boundary only: this does not invent new nested namespace aliases,
+         * turn type-only imports into runtime values, or bypass visibility.
+         */
+        private ClassFacade importedConstructibleClass(String name) {
+            Object direct = importedValue(name);
+            if (direct instanceof ClassFacade klass) return klass;
+
+            int separator = name.indexOf('.');
+            if (separator <= 0 || separator != name.lastIndexOf('.')
+                    || separator == name.length() - 1) {
+                return null;
+            }
+            String binding = name.substring(0, separator);
+            String className = name.substring(separator + 1);
+            Object namespace = importedValue(binding);
+            Object exported;
+            if (namespace instanceof ModuleFacade module) {
+                // moduleMember enforces public export visibility by declaration
+                // identity inside the owning (already linked) code unit.
+                exported = module.owner().moduleMember(module.module(), className);
+            } else if (namespace instanceof ImportedNamespace star
+                    && star.kind() == Ast.ImportKind.ALL) {
+                exported = star.owner().exportValue(Ast.ImportKind.ALL, className);
+            } else {
+                return null;
+            }
+            return exported instanceof ClassFacade klass ? klass : null;
+        }
+
         private Object importedValue(String name) {
             ImportedBinding direct = namedImports.get(name);
             if (direct != null) {
@@ -9546,26 +9573,19 @@ public final class OresEvalRootNode extends RootNode {
                         rightEnv.define(name, value, Ast.BindingKind.VAL));
                 ConditionResult right = evalCondition(binary.right(), rightEnv);
                 if (!right.matched()) return ConditionResult.noMatch();
-                LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
-                for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                    Object previous = merged.putIfAbsent(entry.getKey(), entry.getValue());
-                    if (previous != null && previous != entry.getValue()) {
-                        throw new IllegalStateException("condition pattern binds '" + entry.getKey() + "' more than once");
-                    }
-                }
-                return new ConditionResult(true, Map.copyOf(merged));
+                return mergeConditionBindings(left, right);
             }
             if (condition instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
                 if (!oresTypeMatches(value, test.targetType())) return ConditionResult.noMatch();
                 if (test.binding() == null) return ConditionResult.match();
-                return new ConditionResult(true, Map.of(test.binding(), value));
+                return new ConditionResult(true, java.util.Collections.singletonMap(test.binding(), value));
             }
             if (condition instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                 return patternMatches(test.pattern(), value, bindings)
-                        ? new ConditionResult(true, Map.copyOf(bindings))
+                        ? new ConditionResult(true, immutableBindings(bindings))
                         : ConditionResult.noMatch();
             }
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
@@ -9574,9 +9594,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
-                if (bindings.putIfAbsent(binding.name(), value) != null) {
+                if (bindings.containsKey(binding.name())) {
                     throw new IllegalStateException("pattern binds '" + binding.name() + "' more than once");
                 }
+                bindings.put(binding.name(), value);
                 return true;
             }
             if (pattern instanceof Ast.LiteralPattern literal) {
@@ -9584,17 +9605,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
-                if (typed.binding() != null && bindings.putIfAbsent(typed.binding(), value) != null) {
-                    throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                if (typed.binding() != null) {
+                    if (bindings.containsKey(typed.binding())) {
+                        throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                    }
+                    bindings.put(typed.binding(), value);
                 }
                 return true;
             }
             if (pattern instanceof Ast.StructuralPattern structural) {
                 if (!structuralPatternMatches(value, structural.target())) return false;
-                if (structural.binding() != null
-                        && bindings.putIfAbsent(structural.binding(), value) != null) {
-                    throw new IllegalStateException(
-                            "pattern binds '" + structural.binding() + "' more than once");
+                if (structural.binding() != null) {
+                    if (bindings.containsKey(structural.binding())) {
+                        throw new IllegalStateException(
+                                "pattern binds '" + structural.binding() + "' more than once");
+                    }
+                    bindings.put(structural.binding(), value);
                 }
                 return true;
             }

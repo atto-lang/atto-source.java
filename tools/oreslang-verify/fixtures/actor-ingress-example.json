@@ -1,0 +1,12 @@
+{
+  "schema_version":"1.0.0",
+  "complete":true,
+  "events":[
+    {"seq":0,"kind":"spawn","actor":"graal_actor"},
+    {"seq":1,"kind":"admit","actor":"graal_actor","message_id":"m1"},
+    {"seq":2,"kind":"admit","actor":"graal_actor","message_id":"m2"},
+    {"seq":3,"kind":"receive","actor":"graal_actor","message_id":"m1"},
+    {"seq":4,"kind":"receive","actor":"graal_actor","message_id":"m2"},
+    {"seq":5,"kind":"terminate","actor":"graal_actor"}
+  ]
+}
