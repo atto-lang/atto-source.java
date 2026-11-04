@@ -24,7 +24,7 @@ final class AsyncFilesystemAtomicLanguageTest {
         Path sourceFile = root.resolve("main.atto");
 
         String source = """
-                pub async fnc main(): void {
+                pub routine main(): void {
                   await fs.write_text_atomic_async("%s", "é🙂");
                   stdio.println(await fs.file_size_async("%s"));
                   await fs.write_text_atomic_async("%s", "replacement");
@@ -72,7 +72,7 @@ final class AsyncFilesystemAtomicLanguageTest {
         Path sourceFile = root.resolve("main.atto");
 
         String source = """
-                pub async fnc main(): void {
+                pub routine main(): void {
                   await fs.write_text_atomic_async("%s", "forbidden");
                   return;
                 }
@@ -121,7 +121,7 @@ final class AsyncFilesystemAtomicLanguageTest {
         // disclose the distinction through a filesystem exception.
         for (Path forbidden : java.util.List.of(existing, missing)) {
             String source = """
-                    pub async fnc main(): void {
+                    pub routine main(): void {
                       stdio.println(await fs.file_size_async("%s"));
                       return;
                     }
@@ -167,7 +167,7 @@ final class AsyncFilesystemAtomicLanguageTest {
 
         for (Path forbidden : java.util.List.of(existing, missingParent)) {
             String source = """
-                    pub async fnc main(): void {
+                    pub routine main(): void {
                       await fs.write_text_atomic_async("%s", "forbidden");
                       return;
                     }
@@ -196,7 +196,7 @@ final class AsyncFilesystemAtomicLanguageTest {
         Files.createSymbolicLink(link, outside);
         Path sourceFile = permitted.resolve("main.atto");
         String source = """
-                pub async fnc main(): void {
+                pub routine main(): void {
                   await fs.write_text_atomic_async("%s", "forbidden");
                   return;
                 }
@@ -245,7 +245,7 @@ final class AsyncFilesystemAtomicLanguageTest {
 
         for (Path forbidden : java.util.List.of(link, root)) {
             String source = """
-                    pub async fnc main(): void {
+                    pub routine main(): void {
                       stdio.println(await fs.file_size_async("%s"));
                       return;
                     }
