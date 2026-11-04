@@ -253,10 +253,10 @@ final class AotScalarWireV1MatrixTest {
         String spaced = "\n\t  { \r \"number\" : 1 , \"text\" : \"ok\" , \"active\" : true }\t\n";
         assertEquals(List.of(1L, "ok", true), codec.decodeJson(spaced).slots());
         for (String invalid : new String[]{
-                "\uFEFF" + json(1, "ok", true),
-                "\u00A0" + json(1, "ok", true),
-                json(1, "ok", true) + "\u2003",
-                json(1, "ok", true) + "\u000B"
+                String.valueOf((char) 0xFEFF) + json(1, "ok", true),
+                String.valueOf((char) 0x00A0) + json(1, "ok", true),
+                json(1, "ok", true) + (char) 0x2003,
+                json(1, "ok", true) + (char) 0x000B
         }) {
             assertThrows(IllegalArgumentException.class, () -> codec.decodeJson(invalid));
         }
