@@ -3301,6 +3301,14 @@ public final class Parser {
      */
     private Ast.Stmt parseGuard() {
         if (check(LBRACE)) throw error(peek(), "guard requires a boolean condition");
+        // Presence narrowing is a separate ownership-checked language slice.
+        // Reject it before a nominal `is` expression could be misinterpreted.
+        for (int at = current; at + 1 < tokens.size() && tokens.get(at).type() != LBRACE; at++) {
+            if (tokens.get(at).type() == IS
+                    && tokens.get(at + 1).lexeme().equals("Some")) {
+                throw error(tokens.get(at), "guard is Some requires ownership-checked Option narrowing");
+            }
+        }
         Ast.Expr condition = parseCondition();
         List<Ast.Stmt> failureBody = parseBlock();
         if (check(ELSE)) throw error(peek(), "guard has no 'else'; use guard condition { return; }");
