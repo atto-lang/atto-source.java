@@ -2393,7 +2393,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // physical loan receipt merely because cancel() completed.
                     cell.sourceStopCleanupAborted = true;
                     if (cell.stopped.get()) {
-                        cell.ref.terminationCause.compareAndSet(null,
+                        cell.recordTerminationCause(
                                 new OresScheduler.CleanupIncompleteError(
                                         "actor owned Future cancellation hook failed",
                                         physicalFailure));
@@ -2403,7 +2403,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cleanupReceipt) {
                         if (cell.pendingCleanupFutures <= 0) {
                             cell.sourceStopCleanupAborted = true;
-                            cell.ref.terminationCause.compareAndSet(null,
+                            cell.recordTerminationCause(
                                     new OresScheduler.CleanupIncompleteError(
                                             "actor cleanup Future receipt underflow"));
                         } else {
@@ -8890,12 +8890,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /** Central first-winner cause publication for every stop/cleanup path. */
+        private boolean recordTerminationCause(Throwable cause) {
+            if (!ref.terminationCause.compareAndSet(null, cause)) return false;
+            recordDetachedFailureTrace(cause);
+            return true;
+        }
+
         private void recordFinalizationFailure(Throwable failure) {
             Throwable original = ref.terminationCause.get();
-            if (original == null && ref.terminationCause.compareAndSet(null, failure)) {
-                recordDetachedFailureTrace(failure);
-                return;
-            }
+            if (original == null && recordTerminationCause(failure)) return;
             original = ref.terminationCause.get();
             if (original != null && original != failure) original.addSuppressed(failure);
         }
@@ -8980,7 +8984,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void quarantineChildStopFailure(Throwable failure) {
             synchronized (lifecycleLock) {
                 sourceStopCleanupAborted = true;
-                ref.terminationCause.compareAndSet(null,
+                recordTerminationCause(
                         new OresScheduler.CleanupIncompleteError(
                                 "child STOP request failed; quarantine actor state",
                                 failure));
@@ -8992,14 +8996,14 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (failure != null) {
                     sourceStopCleanupAborted = true;
-                    ref.terminationCause.compareAndSet(null,
+                    recordTerminationCause(
                             new OresScheduler.CleanupIncompleteError(
                                     "asynchronous child STOP failed; quarantine actor state",
                                     failure));
                 }
                 if (pendingChildStopDispatches <= 0) {
                     sourceStopCleanupAborted = true;
-                    ref.terminationCause.compareAndSet(null,
+                    recordTerminationCause(
                             new OresScheduler.CleanupIncompleteError(
                                     "asynchronous child STOP dispatch receipt underflow"));
                 } else {
@@ -9019,10 +9023,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean scheduleTeardown;
             synchronized (lifecycleLock) {
                 if (finalized) return;
-                if (recordCause && cause != null
-                        && ref.terminationCause.compareAndSet(null, cause)) {
-                    recordDetachedFailureTrace(cause);
-                }
+                if (recordCause && cause != null) recordTerminationCause(cause);
                 if (cause != null || closed.get() || forceKillFenced) {
                     gracefulTeardownPending = false;
                     gracefulTeardownRevoked = true;
@@ -9169,7 +9170,7 @@ public final class ActorRuntime implements AutoCloseable {
                         synchronized (lifecycleLock) {
                             if (pendingStopFutureNotifications <= 0) {
                                 sourceStopCleanupAborted = true;
-                                ref.terminationCause.compareAndSet(null,
+                                recordTerminationCause(
                                         new OresScheduler.CleanupIncompleteError(
                                                 "actor owned Future notification receipt underflow"));
                                 lifecycleLock.notifyAll();
@@ -9179,7 +9180,7 @@ public final class ActorRuntime implements AutoCloseable {
                             Throwable physicalFailure = future.cancellationHookFailureFromRuntime();
                             if (physicalFailure != null) {
                                 sourceStopCleanupAborted = true;
-                                ref.terminationCause.compareAndSet(null,
+                                recordTerminationCause(
                                         new OresScheduler.CleanupIncompleteError(
                                                 "actor STOP owned Future revocation failed",
                                                 physicalFailure));
@@ -9203,7 +9204,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (notificationRegistrationFailure != null) {
                 synchronized (lifecycleLock) {
                     sourceStopCleanupAborted = true;
-                    ref.terminationCause.compareAndSet(null,
+                    recordTerminationCause(
                             new OresScheduler.CleanupIncompleteError(
                                     "actor owned Future notification registration failed",
                                     notificationRegistrationFailure));
@@ -9232,7 +9233,7 @@ public final class ActorRuntime implements AutoCloseable {
                     pendingOperationRevocationPending = false;
                     if (revocationFailure != null) {
                         sourceStopCleanupAborted = true;
-                        ref.terminationCause.compareAndSet(null,
+                        recordTerminationCause(
                                 new OresScheduler.CleanupIncompleteError(
                                         "actor owned Future revocation failed; quarantine arena",
                                         revocationFailure));
@@ -9262,7 +9263,7 @@ public final class ActorRuntime implements AutoCloseable {
                         sourceStopCleanupActive = admissionFailure == null
                                 && !forceKillFenced && !closed.get();
                         if (admissionFailure != null) {
-                            ref.terminationCause.compareAndSet(null,
+                            recordTerminationCause(
                                     new OresScheduler.CleanupIncompleteError(
                                             "actor source cancellation admission failed",
                                             admissionFailure));
@@ -9288,7 +9289,7 @@ public final class ActorRuntime implements AutoCloseable {
                         synchronized (lifecycleLock) {
                             if (pendingStopDrainNotifications <= 0) {
                                 sourceStopCleanupAborted = true;
-                                ref.terminationCause.compareAndSet(null,
+                                recordTerminationCause(
                                         new OresScheduler.CleanupIncompleteError(
                                                 "actor STOP drain observer receipt underflow"));
                                 lifecycleLock.notifyAll();
@@ -9316,7 +9317,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (drainPublishFailure != null) {
                 synchronized (lifecycleLock) {
                     sourceStopCleanupAborted = true;
-                    ref.terminationCause.compareAndSet(null,
+                    recordTerminationCause(
                             new OresScheduler.CleanupIncompleteError(
                                     "actor STOP drain notification failed; quarantine arena",
                                     drainPublishFailure));
