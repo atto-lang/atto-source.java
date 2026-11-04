@@ -170,6 +170,47 @@ final class SourceTaskRequestOriginTest {
     }
 
     @Test
+    void actorCannotForgeTheFirstSupervisorHttpTransferDelivery() throws Exception {
+        CountDownLatch forgedAttempt = new CountDownLatch(1);
+        CountDownLatch genuineDelivery = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var destination = runtime.<String>spawnShared(() -> (token, ctx) -> {
+                try {
+                    runtime.requireCurrentHttpTransferToken(token);
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    genuineDelivery.countDown();
+                }
+            });
+            var forger = runtime.<String>spawnShared(() -> (token, ctx) -> {
+                try {
+                    assertThrows(SecurityException.class,
+                            () -> destination.send(token),
+                            "only a supervisor may enqueue the first HTTP transfer");
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    forgedAttempt.countDown();
+                }
+            });
+            runtime.registerPendingHttpTransfer("supervisor-token", destination);
+            forger.send("supervisor-token");
+            assertTrue(forgedAttempt.await(5, TimeUnit.SECONDS));
+            // A rejected actor-origin attempt must not consume the admission.
+            destination.send("supervisor-token");
+            assertTrue(genuineDelivery.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            runtime.retirePendingHttpTransfer("supervisor-token");
+            forger.stop();
+            destination.stop();
+            forger.getDone().get(5, TimeUnit.SECONDS);
+            destination.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void genericFutureContinuationNeverReceivesHttpMailDispatchMarker() throws Exception {
         // Package-private host test introspection only. This ThreadLocal is a
         // temporary DISPATCH marker, never request-local authority or a guest
