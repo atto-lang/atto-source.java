@@ -331,4 +331,28 @@ final class AotScalarWireV1Test {
         assertThrows(IllegalArgumentException.class, () ->
                 compiled.decodeJsonWithFingerprint("malformed", null));
     }
+
+    @Test void deterministicMalformedPayloadFuzzDoesNotCrashDecoders() {
+        var compiled = schema();
+        var random = new java.util.Random(20261103L);
+        for (int i = 0; i < 6_000; i++) {
+            byte[] message = new byte[random.nextInt(128)];
+            random.nextBytes(message);
+            if (message.length > 0 && i % 3 == 0) message[0] = (byte) 0x83;
+            try {
+                compiled.decodeMessagePack(message);
+            } catch (IllegalArgumentException expected) {
+                // Bounded malformed input must fail as a wire error, never OOB/OOM/CCE.
+            }
+            StringBuilder json = new StringBuilder();
+            for (int j = 0, n = random.nextInt(100); j < n; j++) {
+                json.append((char) (32 + random.nextInt(95)));
+            }
+            try {
+                compiled.decodeJson(json.toString());
+            } catch (IllegalArgumentException expected) {
+                // Malformed JSON must not become an unchecked runtime crash.
+            }
+        }
+    }
 }
