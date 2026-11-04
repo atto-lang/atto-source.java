@@ -1,0 +1,10 @@
+import * as persistence from "std/actor_persistence.atto";
+pub routine main(): void {
+  let cursor = persistence.cursor(3, 4);
+  stdio.println(cursor.mark_changed());
+  stdio.println(cursor.begin_flush());
+  stdio.println(cursor.ack(2, 5));
+  stdio.println(cursor.ack(3, 5));
+  stdio.println(cursor.durable());
+  return;
+}

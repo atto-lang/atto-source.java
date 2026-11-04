@@ -1,0 +1,7 @@
+import module Trace from "std/trace.atto";
+pub routine main(): void {
+  stdio.println(Trace.start_ns(false));
+  val event = Trace.event(3, 4, 5);
+  stdio.println(event.elapsed_ns);
+  return;
+}

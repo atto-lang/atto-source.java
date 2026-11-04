@@ -39,10 +39,16 @@ public final class CoreLibrarySources {
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
+    // Existing .ores modules migrated byte-for-byte to .atto; only these
+    // names support .ores as a compatibility alias (not a second resource).
+    private static final Set<String> MIGRATED_STD_STEMS = Set.of(
+            "core", "assert", "compute", "trace", "db_pool",
+            "http_wire", "actor_persistence");
+
     private static final Set<String> STD_SOURCES = Set.of(
-            "core.atto", "testing.ores", "assert.atto", "trace.ores",
-            "http_wire.ores", "compute.ores", "db_pool.ores",
-            "actor_persistence.ores", "data_pool.ores", "bounds.atto");
+            "core.atto", "testing.ores", "assert.atto", "trace.atto",
+            "http_wire.atto", "compute.atto", "db_pool.atto",
+            "actor_persistence.atto", "data_pool.ores", "bounds.atto");
 
     private CoreLibrarySources() { }
 
@@ -109,7 +115,8 @@ public final class CoreLibrarySources {
     /** Hosted std identity remains stable while public imports migrate. */
     public static String unitId(String importPath) {
         String relative = canonicalStdRelativePath(importPath);
-        if (relative.equals("core.atto") || relative.equals("assert.atto")) {
+        if (relative.endsWith(".atto") && MIGRATED_STD_STEMS.contains(
+                relative.substring(0, relative.length() - ".atto".length()))) {
             relative = relative.substring(0, relative.length() - ".atto".length()) + ".ores";
         }
         return STD_UNIT_PREFIX + relative;
@@ -159,8 +166,10 @@ public final class CoreLibrarySources {
     private static String canonicalMigratedStdPath(String relative) {
         // Only already-shipped modules have legacy .ores aliases. New .atto
         // modules, such as bounds, must still reject unapproved .ores suffixes.
-        if (relative.equals("core.ores")) return "core.atto";
-        if (relative.equals("assert.ores")) return "assert.atto";
+        if (relative.endsWith(".ores")) {
+            String stem = relative.substring(0, relative.length() - ".ores".length());
+            if (MIGRATED_STD_STEMS.contains(stem)) return stem + ".atto";
+        }
         return relative;
     }
 

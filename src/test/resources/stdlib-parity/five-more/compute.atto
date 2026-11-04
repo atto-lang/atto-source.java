@@ -1,0 +1,6 @@
+// Source import/linked compilation smoke, NOT GPU/device semantic parity.
+import module compute from "std/compute.atto";
+pub routine main(): void {
+  stdio.println(42);
+  return;
+}
