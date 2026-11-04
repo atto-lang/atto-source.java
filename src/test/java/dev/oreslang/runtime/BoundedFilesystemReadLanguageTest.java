@@ -62,6 +62,41 @@ final class BoundedFilesystemReadLanguageTest {
     }
 
     @Test
+    void canonicalInScopePathWorksButSymlinkAliasIsDeniedBeforeResolution() throws Exception {
+        // A symlink that points *inside* the granted scope is still refused
+        // under this strict no-symlink-components policy. Callers may pass
+        // the canonical path instead. This matters on hosts with /var -> /private/var.
+        Path scope = Files.createDirectory(temp.resolve("alias-policy")).toRealPath();
+        Path actual = Files.createDirectory(scope.resolve("actual")).toRealPath();
+        Path resource = actual.resolve("resource.txt");
+        Files.writeString(resource, "canonical-ok", StandardCharsets.UTF_8);
+        Path alias = scope.resolve("alias");
+        Files.createSymbolicLink(alias, actual);
+        Path sourceFile = scope.resolve("main.atto");
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, scope.toString());
+
+        ByteArrayOutputStream accepted = new ByteArrayOutputStream();
+        guest(sourceFile, resource, 8192, permissions, accepted);
+        assertEquals("canonical-ok", accepted.toString(StandardCharsets.UTF_8).trim());
+
+        for (Path aliasTarget : java.util.List.of(
+                alias.resolve("resource.txt"), alias.resolve("missing.txt"))) {
+            RuntimeException denied = assertThrows(RuntimeException.class, () ->
+                    guest(sourceFile, aliasTarget, 8192, permissions,
+                            new ByteArrayOutputStream()));
+            StringBuilder errors = new StringBuilder();
+            for (Throwable cause = denied; cause != null; cause = cause.getCause()) {
+                errors.append(cause.getMessage()).append(' ');
+            }
+            assertTrue(errors.toString().contains("refuses symlink component: " + alias),
+                    "even an in-scope ancestor alias must be rejected before resolution: " + errors);
+        }
+        assertEquals("canonical-ok", Files.readString(resource, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(actual.resolve("missing.txt")));
+    }
+
+    @Test
     void existingMissingAndSymlinkParentCannotEscapeReadScope() throws Exception {
         Path allowed = Files.createDirectory(temp.resolve("allowed")).toRealPath();
         Path outside = Files.createDirectory(temp.resolve("outside")).toRealPath();
