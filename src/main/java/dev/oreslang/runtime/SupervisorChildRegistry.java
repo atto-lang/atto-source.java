@@ -378,6 +378,10 @@ public final class SupervisorChildRegistry {
         synchronized (this) {
             checkReservation(permit);
             ReplacementState current = replacements.get(permit.child().logicalId());
+            // The never-staged case intentionally has no registry-side ActorId
+            // binding yet. Its caller must already own the exact physical
+            // candidate under the reservation; ActorRuntime enforces that via
+            // pendingRestartPermits/pendingRestartCandidates under authorityLock.
             if (current != null) {
                 if (!current.actor().equals(candidate)
                         || current.generation() != permit.incarnation() + 1)
