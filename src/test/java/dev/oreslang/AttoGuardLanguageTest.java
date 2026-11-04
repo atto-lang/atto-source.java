@@ -34,7 +34,7 @@ final class AttoGuardLanguageTest {
                   return x;
                 }
                 pub routine main(): void {
-                  stdio.stdout.write(choose(7));
+                  stdio.stdout.write(choose(3));
                   stdio.stdout.write(choose(0));
                   stdio.stdout.write(choose(8));
                 }
