@@ -107,15 +107,65 @@ final class SourceTaskRequestOriginTest {
                 previous.set(payload);
                 checked.incrementAndGet();
             });
+            runtime.registerPendingHttpTransfer("token-one", actor);
+            runtime.registerPendingHttpTransfer("token-two", actor);
             actor.send("token-one");
             actor.send("token-two");
             actor.drain().get(5, TimeUnit.SECONDS);
             assertEquals(2, checked.get());
+            // A token is irrevocably bound to its original mailbox delivery,
+            // even if its exchange has not yet been claimed/released.
+            assertThrows(SecurityException.class, () -> actor.send("token-one"));
+            runtime.retirePendingHttpTransfer("token-one");
+            runtime.retirePendingHttpTransfer("token-two");
             actor.stop();
             actor.getDone().get(5, TimeUnit.SECONDS);
             assertThrows(SecurityException.class,
                     () -> runtime.requireCurrentHttpTransferToken("token-two"),
                     "callbacks outside an active mailbox do not carry request authority");
+        }
+    }
+
+    @Test
+    void wrongActorDeliveryCannotStealOriginalHttpTransferSequence() throws Exception {
+        CountDownLatch wrongActorMail = new CountDownLatch(1);
+        CountDownLatch intendedMail = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var intended = runtime.<String>spawnShared(() -> (token, ctx) -> {
+                try {
+                    runtime.requireCurrentHttpTransferToken(token);
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    intendedMail.countDown();
+                }
+            });
+            var wrongActor = runtime.<String>spawnShared(() -> (token, ctx) -> {
+                try {
+                    assertThrows(SecurityException.class,
+                            () -> runtime.requireCurrentHttpTransferToken(token));
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    wrongActorMail.countDown();
+                }
+            });
+            runtime.registerPendingHttpTransfer("one-shot", intended);
+            // A token string sent to another actor must NOT consume the
+            // transfer's original destination/sequence admission.
+            wrongActor.send("one-shot");
+            assertTrue(wrongActorMail.await(5, TimeUnit.SECONDS));
+            intended.send("one-shot");
+            assertTrue(intendedMail.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertThrows(SecurityException.class, () -> intended.send("one-shot"),
+                    "a later receive must never reuse the same unclaimed token");
+            runtime.retirePendingHttpTransfer("one-shot");
+            wrongActor.stop();
+            intended.stop();
+            wrongActor.getDone().get(5, TimeUnit.SECONDS);
+            intended.getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
