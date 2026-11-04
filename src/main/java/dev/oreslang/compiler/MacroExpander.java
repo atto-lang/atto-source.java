@@ -863,6 +863,28 @@ public final class MacroExpander {
                                     + "' may duplicate effects or ownership transfers");
                 }
             }
+            // Shared scalar macro profile: Java, LLVM and .NET must reject
+            // provable signed-i64 overflow before emitting the two-splice
+            // template. Ordinary runtime addition can have separate checked
+            // semantics, but macro expansion must not silently amplify a
+            // closed literal into an overflowing expression.
+            if (template instanceof Ast.BinaryExpr addition
+                    && "+".equals(addition.operator())
+                    && addition.left() instanceof Ast.CallExpr left
+                    && addition.right() instanceof Ast.CallExpr right
+                    && isDirectUnquote(left) && isDirectUnquote(right)
+                    && left.arguments().getFirst() instanceof Ast.NameExpr first
+                    && right.arguments().getFirst() instanceof Ast.NameExpr second
+                    && first.name().equals(second.name())
+                    && syntaxBindings.get(first.name()) instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long signedI64) {
+                try {
+                    Math.addExact(signedI64, signedI64);
+                } catch (ArithmeticException overflow) {
+                    throw unsupported(invocation.name(),
+                            "MACRO_CONST_OVERFLOW: repeated signed-i64 literal addition overflows");
+                }
+            }
             emitted = instantiateTemplate(template, syntaxBindings);
         }
 
