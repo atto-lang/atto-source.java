@@ -35,12 +35,12 @@ public final class CoreLibrarySources {
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
 
-    private static final Set<String> CORE_SOURCES = Set.of("numeric.ores");
+    private static final Set<String> CORE_SOURCES = Set.of("numeric.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
     private static final Set<String> STD_SOURCES = Set.of(
-            "core.ores", "testing.ores", "assert.ores", "trace.ores",
+            "core.atto", "testing.ores", "assert.atto", "trace.ores",
             "http_wire.ores", "compute.ores", "db_pool.ores",
             "actor_persistence.ores", "data_pool.ores", "bounds.atto");
 
@@ -84,7 +84,9 @@ public final class CoreLibrarySources {
     }
 
     public static String oresCoreUnitId(String importPath) {
-        return CORE_UNIT_PREFIX + canonicalCoreRelativePath(importPath);
+        String relative = canonicalCoreRelativePath(importPath);
+        // Linked code-unit identity remains stable during the source migration.
+        return CORE_UNIT_PREFIX + (relative.equals("numeric.atto") ? "numeric.ores" : relative);
     }
 
     public static String oresCoreFileName(String importPath) {
@@ -106,7 +108,11 @@ public final class CoreLibrarySources {
 
     /** Hosted std identity remains stable while public imports migrate. */
     public static String unitId(String importPath) {
-        return STD_UNIT_PREFIX + canonicalStdRelativePath(importPath);
+        String relative = canonicalStdRelativePath(importPath);
+        if (relative.equals("core.atto") || relative.equals("assert.atto")) {
+            relative = relative.substring(0, relative.length() - ".atto".length()) + ".ores";
+        }
+        return STD_UNIT_PREFIX + relative;
     }
 
     public static String source(String importPath) throws IOException {
@@ -132,19 +138,30 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException(
                     "canonical core imports must start with 'ores.core/': " + importPath);
         }
-        return canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
+        String relative = canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
+        return relative.equals("numeric.ores") ? "numeric.atto" : relative;
     }
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES);
+            return canonicalMigratedStdPath(
+                    canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES));
         }
         if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX, STD_SOURCES);
+            return canonicalMigratedStdPath(
+                    canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX, STD_SOURCES));
         }
         throw new IllegalArgumentException(
                 "standard-library imports must start with 'ores.std/': " + importPath);
+    }
+
+    private static String canonicalMigratedStdPath(String relative) {
+        // Only already-shipped modules have legacy .ores aliases. New .atto
+        // modules, such as bounds, must still reject unapproved .ores suffixes.
+        if (relative.equals("core.ores")) return "core.atto";
+        if (relative.equals("assert.ores")) return "assert.atto";
+        return relative;
     }
 
     private static String canonicalPathBody(String importPath, String prefix, Set<String> registry) {
