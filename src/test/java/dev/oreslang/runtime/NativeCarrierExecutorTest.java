@@ -174,4 +174,48 @@ final class NativeCarrierExecutorTest {
         assertTrue(executor.isTerminated());
         assertEquals(0, executor.registeredCarrierCount());
     }
+
+    @Test
+    void nativeCarrierSelfShutdownReturnsPendingWithoutSelfInterrupt()
+            throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-self-close-");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch closeAllowed = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(1);
+        var abandoned = new java.util.concurrent.atomic.AtomicReference<java.util.List<Runnable>>();
+        var failed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var pendingRuns = new java.util.concurrent.atomic.AtomicInteger();
+        Runnable pending = pendingRuns::incrementAndGet;
+        try {
+            executor.execute(() -> {
+                entered.countDown();
+                try {
+                    if (!closeAllowed.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("self-close release was not delivered");
+                    }
+                    abandoned.set(executor.requestShutdownFromCarrier());
+                } catch (Throwable failure) {
+                    failed.set(failure);
+                } finally {
+                    done.countDown();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            executor.execute(pending);
+            closeAllowed.countDown();
+            assertTrue(done.await(3, TimeUnit.SECONDS));
+            assertNull(failed.get(), () -> String.valueOf(failed.get()));
+            assertEquals(java.util.List.of(pending), abandoned.get());
+            assertEquals(0, pendingRuns.get());
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(executor.isTerminated());
+        } finally {
+            closeAllowed.countDown();
+            executor.shutdownNow();
+        }
+    }
 }
