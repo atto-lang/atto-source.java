@@ -173,19 +173,34 @@ public final class FutureCombinators {
      * it wins the pending-source notification order. Detach the witness once
      * the dependent result settles, including on admission failure.
      */
+    /**
+     * Notification order alone does not make the witness win: a source's
+     * terminal state is visible (its state CAS) before its waiters run, so a
+     * dependent Task's await fast path can observe the cancellation and fail
+     * itself first. The Task factory therefore receives {@code witnessed},
+     * completed only AFTER the dependent has been cancelled. A Task that sees
+     * its source cancelled awaits it instead of settling itself.
+     */
     private static <U> OresFuture<U> startObservingCancellation(
             OresFuture<?> source,
-            java.util.function.Supplier<OresFuture<U>> taskFactory) {
+            java.util.function.Function<OresFuture<Void>, OresFuture<U>> taskFactory) {
         java.util.concurrent.atomic.AtomicBoolean upstreamCancelled =
                 new java.util.concurrent.atomic.AtomicBoolean();
         java.util.concurrent.atomic.AtomicReference<OresFuture<U>> taskRef =
                 new java.util.concurrent.atomic.AtomicReference<>();
+        OresFuture<Void> witnessed = new OresFuture<>();
         OresFuture.RuntimeWaiterRegistration<?> waiter =
                 source.whenCompleteRuntimeCancellable((value, failure) -> {
                     if (!source.isCancelled()) return;
+                    // Publish before reading taskRef; the admitting thread
+                    // sets taskRef before reading this flag, so at least one
+                    // side always performs the cancel + witnessed completion.
                     upstreamCancelled.set(true);
                     OresFuture<U> active = taskRef.get();
-                    if (active != null) active.cancel(false);
+                    if (active != null) {
+                        active.cancel(false);
+                        witnessed.completeFromRuntime(null);
+                    }
                 });
 
         if (upstreamCancelled.get()) {
@@ -197,7 +212,7 @@ public final class FutureCombinators {
 
         final OresFuture<U> dependent;
         try {
-            dependent = Objects.requireNonNull(taskFactory.get(),
+            dependent = Objects.requireNonNull(taskFactory.apply(witnessed),
                     "task factory returned null Future");
         } catch (RuntimeException | Error failure) {
             waiter.detach();
@@ -206,7 +221,10 @@ public final class FutureCombinators {
 
         taskRef.set(dependent);
         dependent.whenCompleteRuntime((value, failure) -> waiter.detach());
-        if (upstreamCancelled.get()) dependent.cancel(false);
+        if (upstreamCancelled.get()) {
+            dependent.cancel(false);
+            witnessed.completeFromRuntime(null);
+        }
         return dependent;
     }
 
@@ -226,9 +244,10 @@ public final class FutureCombinators {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(mapper, "mapper");
-        return startObservingCancellation(source, () ->
+        return startObservingCancellation(source, witnessed ->
                 scheduler.start(new OresScheduler.Task<>() {
             private boolean started;
+            private Throwable upstreamFailure;
 
             @Override
             public OresScheduler.Step<U> resume(OresScheduler.Resume resume) {
@@ -242,7 +261,16 @@ public final class FutureCombinators {
                 if (resume.initial()) {
                     throw new IllegalStateException("map resumed with duplicate initial event");
                 }
-                if (resume.failure() != null) throw propagate(resume.failure());
+                // Resumed after witnessed without having been cancelled.
+                if (upstreamFailure != null) throw propagate(upstreamFailure);
+                if (resume.failure() != null) {
+                    if (source.isCancelled()) {
+                        // Let the upstream witness settle us as cancelled.
+                        upstreamFailure = resume.failure();
+                        return OresScheduler.await(witnessed);
+                    }
+                    throw propagate(resume.failure());
+                }
                 @SuppressWarnings("unchecked")
                 T value = (T) resume.value();
                 return OresScheduler.done(mapper.apply(value));
@@ -271,9 +299,10 @@ public final class FutureCombinators {
         java.util.concurrent.atomic.AtomicBoolean innerCancelled =
                 new java.util.concurrent.atomic.AtomicBoolean();
 
-        OresFuture<U> dependent = startObservingCancellation(source, () ->
+        OresFuture<U> dependent = startObservingCancellation(source, witnessed ->
                 scheduler.start(new OresScheduler.Task<>() {
             private int phase;
+            private Throwable upstreamFailure;
 
             @Override
             public OresScheduler.Step<U> resume(OresScheduler.Resume resume) {
@@ -288,6 +317,14 @@ public final class FutureCombinators {
                 if (resume.initial()) {
                     throw new IllegalStateException(
                             "flatMap resumed with duplicate initial event");
+                }
+                // Resumed after witnessed without having been cancelled.
+                if (upstreamFailure != null) throw propagate(upstreamFailure);
+                // Only the SOURCE await (phase 1) defers to the upstream
+                // witness; inner-Future failures keep their own semantics.
+                if (phase == 1 && resume.failure() != null && source.isCancelled()) {
+                    upstreamFailure = resume.failure();
+                    return OresScheduler.await(witnessed);
                 }
                 if (resume.failure() != null) throw propagate(resume.failure());
                 if (phase == 1) {
