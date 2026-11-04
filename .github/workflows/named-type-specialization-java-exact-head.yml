@@ -1,0 +1,68 @@
+name: AttoLang named type specialization Java exact-head gate
+
+on:
+  push:
+    branches: [audit/named-type-slot-binding-20261103]
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/types/GenericCallArguments.java'
+      - 'src/test/java/dev/oreslang/NamedTypeSpecializationTest.java'
+      - 'src/test/java/dev/oreslang/NamedPartialGenericCallsTest.java'
+      - 'pom.xml'
+      - '.github/workflows/named-type-specialization-java-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  named-type-java:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable Java source head without stored token
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact commit and tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "ATTO_NAMED_TYPE_HEAD=$EXPECTED_SHA"
+          echo "ATTO_NAMED_TYPE_TREE=$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Setup GraalVM 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Execute real typecheck, parser, and ownership JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp \
+            -Dtest=NamedTypeSpecializationTest,NamedPartialGenericCallsTest,GenericsAndOperatorsHardeningTest,TransparentTypeAliasTest \
+            -DfailIfNoTests=true \
+            test
+          for suite in NamedTypeSpecializationTest NamedPartialGenericCallsTest GenericsAndOperatorsHardeningTest TransparentTypeAliasTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$report"
+            grep -q '<testcase ' "$report"
+            echo "ATTO_NAMED_TYPE_EXECUTED_SUITE=$suite"
+          done
