@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class AsyncFilesystemAtomicLanguageTest {
     @TempDir Path temp;
@@ -99,6 +100,55 @@ final class AsyncFilesystemAtomicLanguageTest {
                         new ByteArrayOutputStream(),
                         new ByteArrayOutputStream()));
         assertEquals("unchanged", Files.readString(outsideTarget));
+    }
+
+    @Test
+    void outOfScopeFileSizeDeniesBeforeCheckingWhetherFileExists() throws Exception {
+        Path allowed = Files.createDirectory(temp.resolve("read-allowed")).toRealPath();
+        Path outside = Files.createDirectory(temp.resolve("read-denied")).toRealPath();
+        Path existing = outside.resolve("present.txt");
+        Path missing = outside.resolve("missing.txt");
+        Files.writeString(existing, "secret bytes", StandardCharsets.UTF_8);
+        Path sourceFile = allowed.resolve("main.atto");
+
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, allowed.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
+
+        // The same READ denial is required whether an unauthorized path
+        // exists or not. Checking existence/canonicalization first would
+        // disclose the distinction through a filesystem exception.
+        for (Path forbidden : java.util.List.of(existing, missing)) {
+            String source = """
+                    pub async fnc main(): void {
+                      stdio.println(await fs.file_size_async("%s"));
+                      return;
+                    }
+                    """.formatted(forbidden);
+            OresCompiler.parseAndTypeCheck(source);
+            Files.writeString(sourceFile, source);
+            RuntimeException thrown = assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(
+                            sourceFile, policy, permissions, PermissionCheckMode.RUNTIME,
+                            ExecutionProfile.serverJit(), Set.of(), System.getenv(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+
+            StringBuilder diagnostics = new StringBuilder();
+            Throwable cursor = thrown;
+            int depth = 0;
+            while (cursor != null && depth++ < 12) {
+                diagnostics.append(cursor.getClass().getName()).append(": ")
+                        .append(cursor.getMessage()).append('\\n');
+                cursor = cursor.getCause();
+            }
+            assertTrue(diagnostics.toString().contains("Oreslang permission denied"),
+                    "out-of-scope file-size operation must fail on READ admission: " + diagnostics);
+            assertTrue(diagnostics.toString().contains("fs.file_size"),
+                    "READ denial must identify the file-size API: " + diagnostics);
+        }
+        assertEquals("secret bytes", Files.readString(existing, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(missing));
     }
 
     @Test
