@@ -387,6 +387,50 @@ public final class ActorEventBus implements AutoCloseable {
     }
 
     /**
+     * Nonblocking, host/runtime admission primitive for RELIABLE topics only.
+     * A present receipt means all current recipients passed the bounded
+     * reservation preflight; it is NOT handler acknowledgment or proof that
+     * the returned completion future has finished. Only a Full refusal maps
+     * to Optional.empty(): revoked authority, closed topics, invalid payloads
+     * and resource errors still fail explicitly and never mint a receipt.
+     *
+     * Guest Topic<T>.try_publish remains intentionally unlowered until the
+     * typed Result<PublishReceipt, PublishError> and membership-grant ABI are
+     * supported. Do not expose this Optional as portable-v1 success evidence.
+     */
+    public Optional<PublishReceipt> tryPublishReliable(String name, Object value) {
+        requireOpen();
+        ActorRuntime.ActorId publisher =
+                group.currentMemberOrSystem("try publish ActorGroup events");
+        return tryPublishReliableFrozen(name, value, publisher);
+    }
+
+    /** Supervisor-authenticated nonblocking RELIABLE admission. */
+    public Optional<PublishReceipt> tryPublishReliableSystem(String name, Object value) {
+        group.requireSupervisor("try publish system ActorGroup events");
+        requireOpen();
+        return tryPublishReliableFrozen(name, value, null);
+    }
+
+    private Optional<PublishReceipt> tryPublishReliableFrozen(
+            String name, Object value, ActorRuntime.ActorId publisher) {
+        TopicState topic = requirePublishableTopic(name);
+        if (topic.policy != DeliveryPolicy.RELIABLE) {
+            throw new IllegalArgumentException(
+                    "tryPublishReliable requires a RELIABLE ActorGroup topic");
+        }
+        try {
+            // Revalidates registered topic and membership at deliveryLock.
+            // On Full, publishFrozen rolls back all staged reservations and
+            // releases the frozen payload before returning to this caller.
+            return Optional.of(publishFrozen(
+                    topic, runtime.freezeActorGroupEventPayload(value), publisher));
+        } catch (EventBackpressureException full) {
+            return Optional.empty();
+        }
+    }
+
+    /**
      * Host/supervisor publication path. Actor code cannot impersonate the
      * runtime/system publisher.
      */
