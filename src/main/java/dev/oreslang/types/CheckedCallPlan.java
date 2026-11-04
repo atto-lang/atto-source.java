@@ -281,21 +281,27 @@ public record CheckedCallPlan(
     private static boolean preservesRawBindingShape(
             Ast.Expr source,
             Ast.Expr target) {
-        // The source-to-formal proof belongs to the selected callable, not
-        // merely to an argument list with matching labels. A rewrite that
-        // retargets the callee, constructor, or explicit generics must be
-        // checked again before it receives execution authority.
+        // This is identity-bound checked authority, not a reusable label map.
+        // Retargeting even a structurally equal callee or replacing an
+        // argument expression can alter lexical resolution, ownership,
+        // effects, generic inference and source execution. Those rewrites
+        // must run a fresh semantic/ownership check before execution.
         if (source instanceof Ast.CallExpr from
                 && target instanceof Ast.CallExpr to) {
             if (from.origin() != to.origin()
-                    || !from.callee().equals(to.callee())
+                    || from.callee() != to.callee()
                     || from.typeArgumentsPresent() != to.typeArgumentsPresent()
-                    || !from.typeArguments().equals(to.typeArguments())) {
+                    || from.typeArguments().size() != to.typeArguments().size()) {
                 return false;
+            }
+            for (int i = 0; i < from.typeArguments().size(); i++) {
+                if (from.typeArguments().get(i) != to.typeArguments().get(i)) {
+                    return false;
+                }
             }
         } else if (source instanceof Ast.NewExpr from
                 && target instanceof Ast.NewExpr to
-                && !from.type().equals(to.type())) {
+                && from.type() != to.type()) {
             return false;
         }
         List<Ast.Expr> sourceArguments =
@@ -309,19 +315,10 @@ public record CheckedCallPlan(
         if (sourceArguments.size() != targetArguments.size()) return false;
 
         for (int i = 0; i < sourceArguments.size(); i++) {
-            Ast.Expr before = sourceArguments.get(i);
-            Ast.Expr after = targetArguments.get(i);
-            if (before instanceof Ast.NamedArgExpr named) {
-                if (!(after instanceof Ast.NamedArgExpr replacement)
-                        || !named.name().equals(replacement.name())) {
-                    return false;
-                }
-            } else if (before instanceof Ast.SpreadExpr) {
-                if (!(after instanceof Ast.SpreadExpr)) return false;
-            } else if (after instanceof Ast.NamedArgExpr
-                    || after instanceof Ast.SpreadExpr) {
-                return false;
-            }
+            // Reusing precisely the already-checked source child is the only
+            // proof-preserving case. Matching labels or AST equality is not a
+            // substitute for checking a new expression's type and effects.
+            if (sourceArguments.get(i) != targetArguments.get(i)) return false;
         }
         return true;
     }
