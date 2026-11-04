@@ -95,6 +95,15 @@ final class AotReflectionSourceRootsV1 {
             for (Ast.FieldDecl field : klass.fields()) {
                 // Private field identities and their types never enter the table.
                 if (field.visibility() != Ast.Visibility.PUBLIC) continue;
+                // V1 carries field name + type only, not wire aliases,
+                // defaults, converter identities or versioned schema rules.
+                // An annotated public field must NOT silently deserialize
+                // using its declaration name instead of a @FromJson key.
+                if (!field.annotations().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "AOT reflection v1 cannot lower annotated public wire fields: "
+                            + root + "." + field.name());
+                }
                 Ast.TypeRef type = field.type();
                 if (type == null || type.inferArguments() || !type.arguments().isEmpty()
                         || !CLOSED_SCALARS.contains(type.name())) {
