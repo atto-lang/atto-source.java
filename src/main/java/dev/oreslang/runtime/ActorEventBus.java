@@ -196,6 +196,11 @@ public final class ActorEventBus implements AutoCloseable {
         public PublishReceipt publish(T value) {
             return ActorEventBus.this.publish(name, value);
         }
+
+        /** Host-only nonblocking RELIABLE attempt; empty means bounded Full. */
+        public Optional<PublishReceipt> tryPublishReliable(T value) {
+            return ActorEventBus.this.tryPublishReliable(name, value);
+        }
     }
 
     private final ActorRuntime runtime;
