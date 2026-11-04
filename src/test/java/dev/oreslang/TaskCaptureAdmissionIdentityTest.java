@@ -389,6 +389,79 @@ final class TaskCaptureAdmissionIdentityTest {
         }
     }
 
+    @Test
+    void untypedNoncriticalTaskCannotAcquireExecutableOwnership() {
+        Ast.Program raw = Parser.parse("""
+                pub suspends fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(raw);
+        IllegalStateException denied = assertThrows(IllegalStateException.class,
+                () -> OwnershipChecker.check(raw));
+        assertTrue(denied.getMessage().contains(
+                "successfully type-checked exact Program"), denied::getMessage);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(raw));
+
+        Ast.Program typed = TypeChecker.checkTypes(raw);
+        OwnershipChecker.check(typed);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(typed);
+        assertEquals(java.util.Map.of("value", Ast.TaskCaptureTransfer.COPY),
+                Ast.CheckedTaskCaptures.require(typed, task, epoch).captureTransfers());
+    }
+
+    @Test
+    void successfulTypeRecheckRevokesPreviouslyExecutableNoncriticalTask() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub suspends fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertDoesNotThrow(() -> Ast.CheckedTaskCaptures.require(checked, task, epoch));
+        long typingBefore = TypeChecker.requireCriticalTypeProof(checked);
+
+        Ast.Program retyped = TypeChecker.checkTypes(checked);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(checked, task, epoch),
+                "successful retyping must not revive the old Task ownership proof");
+        if (retyped == checked) {
+            assertNotEquals(typingBefore, TypeChecker.requireCriticalTypeProof(checked));
+        }
+        OwnershipChecker.check(retyped);
+        long refreshedEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(retyped);
+        assertDoesNotThrow(() -> Ast.CheckedTaskCaptures.require(
+                retyped, firstTask(retyped), refreshedEpoch));
+    }
+
+    @Test
+    void failedTypeRecheckRevokesPreviouslyExecutableNoncriticalTask() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub suspends fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertDoesNotThrow(() -> Ast.CheckedTaskCaptures.require(checked, task, epoch));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        checked, java.util.Map.of(), java.util.Map.of(), null));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(checked, task, epoch));
+        assertThrows(IllegalStateException.class,
+                () -> OwnershipChecker.check(checked));
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
