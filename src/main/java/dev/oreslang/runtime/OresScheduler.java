@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.LongSupplier;
 
 /**
  * Scheduler affinity for ordinary Oreslang tasks.
@@ -93,6 +94,56 @@ public final class OresScheduler implements AutoCloseable {
     @FunctionalInterface
     interface TurnExecutor {
         void execute(Runnable turn);
+    }
+
+    /**
+     * Scheduler-minted dispatch receipt for a runtime-owned actor SourceTask.
+     * Never infer request provenance from the thread executing the Future's
+     * producer callback. Only the TaskRunner can bind its admission-time mail
+     * sequence and stable logical execution identity to this one-shot turn.
+     *
+     * This is NOT a guest bearer capability or proof of access on its own;
+     * ActorRuntime must authenticate the issuing scheduler, actor incarnation,
+     * and still-active original mailbox receive before using its sequence.
+     */
+    static final class RuntimeTaskTurn implements Runnable {
+        private final OresScheduler issuer;
+        private final ExecutionContext execution;
+        private final long admittedMailSequence;
+        private final Runnable turn;
+        private final AtomicBoolean entered = new AtomicBoolean();
+
+        private RuntimeTaskTurn(OresScheduler issuer, ExecutionContext execution,
+                long admittedMailSequence, Runnable turn) {
+            this.issuer = Objects.requireNonNull(issuer, "issuer");
+            this.execution = Objects.requireNonNull(execution, "execution");
+            this.admittedMailSequence = admittedMailSequence;
+            this.turn = Objects.requireNonNull(turn, "turn");
+            if (admittedMailSequence < -1) {
+                throw new IllegalArgumentException("invalid original mailbox sequence");
+            }
+        }
+
+        boolean issuedBy(OresScheduler scheduler) {
+            return issuer == scheduler
+                    && execution.id().runtimeDomain() == scheduler.schedulerDomain;
+        }
+
+        long admittedMailSequence() {
+            return admittedMailSequence;
+        }
+
+        ExecutionContext logicalExecution() {
+            return execution;
+        }
+
+        @Override
+        public void run() {
+            if (!entered.compareAndSet(false, true)) {
+                throw new IllegalStateException("source task turn executed more than once");
+            }
+            turn.run();
+        }
     }
 
     /** One compiler-generated async state-machine turn. */
@@ -200,6 +251,8 @@ public final class OresScheduler implements AutoCloseable {
     private final Executor executor;
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
+    /** Null for user schedulers: only a runtime-owned actor scheduler can mint origins. */
+    private final LongSupplier sourceMailSequenceCapture;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
@@ -240,6 +293,7 @@ public final class OresScheduler implements AutoCloseable {
         this.name = "ores-user-scheduler-" + schedulerDomain;
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.sourceMailSequenceCapture = null;
 
         AtomicInteger carrierId = new AtomicInteger();
         ThreadFactory factory = task -> Thread.ofPlatform()
@@ -271,7 +325,8 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             Executor executor,
             ExecutorService ownedExecutor,
-            TurnExecutor turnExecutor) {
+            TurnExecutor turnExecutor,
+            LongSupplier sourceMailSequenceCapture) {
         this.name = Objects.requireNonNull(name, "name");
         this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
         if (parallelism <= 0) {
@@ -281,6 +336,7 @@ public final class OresScheduler implements AutoCloseable {
         this.executor = Objects.requireNonNull(executor, "executor");
         this.ownedExecutor = ownedExecutor;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.sourceMailSequenceCapture = sourceMailSequenceCapture;
     }
 
     /**
@@ -309,12 +365,28 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             Executor executor,
             TurnExecutor turnExecutor) {
+        return runtimeOwned(name, parallelism, executor, turnExecutor, null);
+    }
+
+    /**
+     * An actor may supply an origin capture that only executes during task
+     * admission on its owning actor turn. A separately started child task does
+     * not inherit a live request implicitly: the TaskRunner checks that it
+     * is not being created inside an existing scheduler Task execution.
+     */
+    static OresScheduler runtimeOwned(
+            String name,
+            int parallelism,
+            Executor executor,
+            TurnExecutor turnExecutor,
+            LongSupplier sourceMailSequenceCapture) {
         return new OresScheduler(
                 name,
                 parallelism,
                 executor,
                 null,
-                turnExecutor);
+                turnExecutor,
+                sourceMailSequenceCapture);
     }
 
     /**
@@ -668,11 +740,12 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            ExecutionContext logicalExecution, long admittedMailSequence) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
+        Runnable physicalTurn = () -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             OresScheduler previousCarrierScheduler = CURRENT_CARRIER_SCHEDULER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
@@ -702,7 +775,12 @@ public final class OresScheduler implements AutoCloseable {
                     }
                 }
             }
-        });
+        };
+        // The producer thread can only enqueue a scheduler-authored receipt;
+        // it cannot choose the original request/mail sequence on resumption.
+        executor.execute(sourceMailSequenceCapture == null ? physicalTurn
+                : new RuntimeTaskTurn(this, logicalExecution, admittedMailSequence,
+                        physicalTurn));
     }
 
     private void ensureTaskAdmissionOpen() {
@@ -778,6 +856,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
+        private final long originalMailSequence;
         private final Runnable onQuiescent;
         // 0=unclaimed, 1=retirement callback executing, 2=retired,
         // 3=callback failed. The publication path cannot overtake state 1.
@@ -819,6 +898,14 @@ public final class OresScheduler implements AutoCloseable {
             this.task = task;
             long execution = allocatePositiveId(nextExecution, "execution");
             this.executionContext = ExecutionContext.task(schedulerDomain, execution);
+            // A separately admitted child Task is NOT automatically allowed
+            // to borrow its caller's live RequestLocal context.
+            this.originalMailSequence = sourceMailSequenceCapture == null
+                    || CURRENT_EXECUTION_CONTEXT.get() != null
+                    ? -1L : sourceMailSequenceCapture.getAsLong();
+            if (originalMailSequence < -1L) {
+                throw new IllegalStateException("invalid source task mail origin");
+            }
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
@@ -914,7 +1001,8 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn(ownsExecution);
                     }
-                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
+                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal,
+                        executionContext, originalMailSequence);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;

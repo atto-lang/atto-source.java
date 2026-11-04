@@ -286,6 +286,34 @@ public final class ActorRuntime implements AutoCloseable {
         return exchange;
     }
 
+    /**
+     * A movable HTTP claim token must be the payload of THIS authenticated
+     * user mail, not an old token cached by the same pooled actor. This check
+     * precedes one-shot token removal so a rejected claim cannot consume a
+     * still-live transfer belonging to a different mailbox delivery.
+     */
+    void requireCurrentHttpTransferToken(String token) {
+        Objects.requireNonNull(token, "token");
+        if (currentActorRuntime() != this) {
+            throw new SecurityException("HTTP claim requires this actor runtime");
+        }
+        ActorCell<?> cell = currentActor.get();
+        Long sequence = CURRENT_HTTP_MAIL_SEQUENCE.get();
+        ActorInboxMail<?> mail = cell == null ? null : cell.activeMail;
+        HttpTokenDelivery origin = pendingHttpTransfers.get(token);
+        if (cell == null || cell.stopped.get() || mail == null
+                || sequence == null || mail.sequence() != sequence.longValue()
+                || !(mail.value() instanceof String deliveredToken)
+                || !deliveredToken.equals(token)
+                || origin == null
+                || !origin.destination().equals(cell.ref.id())
+                || origin.incarnation() != cell.ref.generation()
+                || origin.firstMailSequence().get() != sequence.longValue()) {
+            throw new SecurityException(
+                    "HTTP transfer token does not match the admitted mailbox value");
+        }
+    }
+
     /** An actor's owned exchange is valid only for the same active mail. */
     void requireCurrentHttpExchange(NativeHttp.Exchange exchange) {
         if (currentHttpExchange() != exchange) {
@@ -557,6 +585,39 @@ public final class ActorRuntime implements AutoCloseable {
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    /**
+     * Runtime-local, non-guest HTTP transfer admission table. A token's
+     * destination actor and its FIRST accepted mailbox sequence are bound
+     * before that mail becomes visible. No process-global token registry.
+     *
+     * This table cannot grant request access by itself: NativeHttp separately
+     * checks the matching exchange and one-shot transfer ownership.
+     */
+    private final Map<String, HttpTokenDelivery> pendingHttpTransfers =
+            new ConcurrentHashMap<>();
+
+    private record HttpTokenDelivery(
+            ActorId destination, long incarnation,
+            AtomicLong firstMailSequence) { }
+
+    void registerPendingHttpTransfer(
+            String token, ActorRef<?> destination) {
+        Objects.requireNonNull(token, "token");
+        Objects.requireNonNull(destination, "destination");
+        if (token.isBlank() || !destination.ownedBy(this)
+                || ActorRuntime.inActorExecution() || closed.get()) {
+            throw new SecurityException("HTTP token registration requires its supervisor");
+        }
+        HttpTokenDelivery candidate = new HttpTokenDelivery(
+                destination.id(), destination.generation(), new AtomicLong(-1L));
+        if (pendingHttpTransfers.putIfAbsent(token, candidate) != null) {
+            throw new IllegalStateException("HTTP transfer token already registered");
+        }
+    }
+
+    void retirePendingHttpTransfer(String token) {
+        if (token != null) pendingHttpTransfers.remove(token);
+    }
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
@@ -2380,6 +2441,12 @@ public final class ActorRuntime implements AutoCloseable {
     private boolean enqueueSourceTaskContinuation(
             ActorCell<?> cell, Runnable continuation) {
         Objects.requireNonNull(continuation, "continuation");
+        // A Future completion callback may run on a foreign carrier, but its
+        // Runnable MUST have been minted by this cell's source scheduler at
+        // original Task admission. Neither callback input nor physical TLS
+        // may select the mailbox/request being resumed.
+        if (!(continuation instanceof OresScheduler.RuntimeTaskTurn sourceTurn)
+                || !sourceTurn.issuedBy(cell.sourceScheduler)) return false;
         if (actors.get(cell.ref.id()) != cell || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
@@ -2395,8 +2462,22 @@ public final class ActorRuntime implements AutoCloseable {
                         || (cell.stopped.get()
                                 && !cell.sourceStopCleanupPending
                                 && !cell.sourceStopCleanupActive)) return false;
+                long originalMailSequence = sourceTurn.admittedMailSequence();
+                if (originalMailSequence >= 0 && !cell.stopped.get()) {
+                    // A pooled actor can serve another request later. Never
+                    // convert a stale task into authority for the new mail.
+                    ActorInboxMail<?> originalMail = cell.activeMail;
+                    if (originalMail == null
+                            || originalMail.sequence() != originalMailSequence) {
+                        return false;
+                    }
+                }
+                // STOP may still schedule compiler-generated cleanup turns,
+                // but revokes request access even if the old mail remains.
+                if (cell.stopped.get()) originalMailSequence = -1L;
                 if (!cell.sourceTaskMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                        MessageEnvelope.continuation(
+                                continuation, originalMailSequence))) {
                     throw new IllegalStateException(
                             "actor source continuation mailbox capacity invariant violated for "
                                     + cell.ref.id());
@@ -5977,10 +6058,47 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
-                    envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    // If this is a registered one-shot HTTP transfer, pin
+                    // its FIRST delivered mail sequence, not just token bytes
+                    // or reusable ActorId. Ignore ordinary/wrong-actor strings.
+                    // CAS is lock-free while lifecycleLock is held; do NOT
+                    // acquire NativeHttp.State here (its move path can inspect
+                    // actor lifecycle while holding the state monitor).
+                    HttpTokenDelivery httpDelivery = prepared instanceof String token
+                            ? pendingHttpTransfers.get(token) : null;
+                    if (httpDelivery != null
+                            && (!httpDelivery.destination().equals(ref.id())
+                                    || httpDelivery.incarnation() != ref.generation())) {
+                        httpDelivery = null;
+                    }
+                    if (httpDelivery != null && ActorRuntime.currentActorId().isPresent()) {
+                        // NativeHttp.moveTo() is supervisor-only. A guest
+                        // actor that learned a token cannot preempt its FIRST
+                        // delivery by forwarding the string to the destination.
+                        throw new SecurityException(
+                                "HTTP transfer delivery must originate from its supervisor");
+                    }
+                    if (httpDelivery != null
+                            && !httpDelivery.firstMailSequence()
+                                    .compareAndSet(-1L, sequence)) {
+                        throw new SecurityException(
+                                "HTTP transfer ticket was already delivered to its original mail");
+                    }
+                    boolean mailWritten = false;
+                    try {
+                        envelope = MessageEnvelope.message(
+                                prepared, release, sender, sequence);
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new ActorMailboxFullException(ref.id());
+                        }
+                        mailWritten = true;
+                    } finally {
+                        if (!mailWritten && httpDelivery != null) {
+                            // Failed admission cannot consume the one-shot
+                            // mail binding. No reader can see an unqueued mail.
+                            httpDelivery.firstMailSequence()
+                                    .compareAndSet(sequence, -1L);
+                        }
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -7930,6 +8048,22 @@ public final class ActorRuntime implements AutoCloseable {
                             || (!sourceReceiveSuspended && !mailbox.isEmpty())));
         }
 
+        /**
+         * Runs ONLY while a new source Task is admitted, not when a producer
+         * completes its Future. A Task nested in an existing Task turn is
+         * separately unbound by OresScheduler unless explicitly leased.
+         */
+        private long captureSourceTaskMailOrigin() {
+            if (currentActor.get() != this
+                    || ActorRuntime.currentActorRuntime() != ActorRuntime.this
+                    || stopped.get() || finalized) return -1L;
+            Long sequence = CURRENT_HTTP_MAIL_SEQUENCE.get();
+            ActorInboxMail<M> mail = activeMail;
+            return sequence != null && mail != null
+                    && mail.sequence() == sequence.longValue()
+                    ? sequence.longValue() : -1L;
+        }
+
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
@@ -7952,7 +8086,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "ores-actor-" + ref.id(),
                         1,
                         mailboxExecutor,
-                        Runnable::run);
+                        Runnable::run,
+                        this::captureSourceTaskMailOrigin);
                 return sourceScheduler;
             }
         }
@@ -8635,9 +8770,27 @@ public final class ActorRuntime implements AutoCloseable {
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
                     // close/permit release across every dispatch path.
+                    // Only the real user-mail dispatch and a scheduler-minted
+                    // SourceTask turn for the EXACT still-active original mail
+                    // can carry request context. Generic Future/ContinuationTarget
+                    // callbacks MUST NOT recover HTTP request authority merely
+                    // because they remembered a positive mailbox sequence.
+                    // Recheck at physical dispatch, not only when enqueued:
+                    // a pooled actor may have retired the original receive
+                    // and admitted a different request in the meantime.
+                    long authorizedHttpMailSequence = -1L;
+                    if (!envelope.isContinuation()) {
+                        authorizedHttpMailSequence = envelope.sequence();
+                    } else if (sourceTaskCommand && !stopped.get()) {
+                        ActorInboxMail<M> originalMail = activeMail;
+                        if (originalMail != null
+                                && originalMail.sequence() == envelope.sequence()) {
+                            authorizedHttpMailSequence = envelope.sequence();
+                        }
+                    }
                     try (MessageEnvelope activeEnvelope = envelope;
                          HttpMailDispatchScope requestScope =
-                                 new HttpMailDispatchScope(envelope.sequence())) {
+                                 new HttpMailDispatchScope(authorizedHttpMailSequence)) {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
