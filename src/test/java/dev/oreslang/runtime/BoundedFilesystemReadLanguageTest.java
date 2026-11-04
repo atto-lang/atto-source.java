@@ -74,7 +74,8 @@ final class BoundedFilesystemReadLanguageTest {
         RuntimePermissions permissions = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.READ, allowed.toString());
 
-        for (Path forbidden : java.util.List.of(secret, missing, link.resolve("secret.txt"))) {
+        for (Path forbidden : java.util.List.of(
+                secret, missing, link.resolve("secret.txt"), link.resolve("missing.txt"))) {
             RuntimeException thrown = assertThrows(RuntimeException.class, () ->
                     guest(sourceFile, forbidden, 8192, permissions, new ByteArrayOutputStream()));
             StringBuilder message = new StringBuilder();
@@ -82,8 +83,15 @@ final class BoundedFilesystemReadLanguageTest {
             for (int i = 0; cause != null && i < 12; i++, cause = cause.getCause()) {
                 message.append(cause.getMessage()).append(' ');
             }
-            assertTrue(message.toString().contains("Oreslang permission denied"),
-                    "READ authority must deny both lexical and resolved escapes: " + message);
+            if (forbidden.startsWith(link)) {
+                // The denial must occur at the symlink ancestor, even for a
+                // nonexistent restricted target, before canonical resolution.
+                assertTrue(message.toString().contains("refuses symlink component: " + link),
+                        "READ must not probe behind an out-of-scope parent symlink: " + message);
+            } else {
+                assertTrue(message.toString().contains("Oreslang permission denied"),
+                        "out-of-scope lexical READ must deny before probing: " + message);
+            }
         }
         assertEquals("private", Files.readString(secret, StandardCharsets.UTF_8));
         assertFalse(Files.exists(missing));
