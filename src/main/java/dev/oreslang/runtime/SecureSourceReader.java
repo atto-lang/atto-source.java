@@ -104,25 +104,42 @@ final class SecureSourceReader {
         }
     }
 
+    /** Close every nested directory, preserving suppressed close failures. */
+    private static final class OpenDirectories implements AutoCloseable {
+        private final List<SecureDirectoryStream<Path>> directories = new ArrayList<>();
+
+        void track(SecureDirectoryStream<Path> directory) { directories.add(directory); }
+
+        @Override public void close() throws IOException {
+            IOException first = null;
+            for (int i = directories.size() - 1; i >= 0; i--) {
+                try {
+                    directories.get(i).close();
+                } catch (IOException failure) {
+                    if (first == null) first = failure;
+                    else first.addSuppressed(failure);
+                }
+            }
+            if (first != null) throw first;
+        }
+    }
+
     private static BoundedSourceReader.ReadResult readSecure(
             SecureDirectoryStream<Path> root,
             Path relative) throws IOException {
-        List<SecureDirectoryStream<Path>> opened = new ArrayList<>();
-        SecureDirectoryStream<Path> directory = root;
-        try {
+        try (OpenDirectories opened = new OpenDirectories()) {
+            SecureDirectoryStream<Path> directory = root;
             int last = relative.getNameCount() - 1;
             for (int i = 0; i < last; i++) {
                 SecureDirectoryStream<Path> child = directory.newDirectoryStream(
                         relative.getName(i), LinkOption.NOFOLLOW_LINKS);
-                opened.add(child);
+                opened.track(child);
                 directory = child;
             }
             try (SeekableByteChannel channel = directory.newByteChannel(
                     relative.getName(last), READ_NOFOLLOW)) {
                 return BoundedSourceReader.readWithByteCount(channel);
             }
-        } finally {
-            for (int i = opened.size() - 1; i >= 0; i--) opened.get(i).close();
         }
     }
 }
