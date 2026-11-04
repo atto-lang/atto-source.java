@@ -195,6 +195,25 @@ final class AttoFileImportResolutionTest {
     }
 
     @Test
+    void mixedCaseImporterSuffixCannotChooseCanonicalAttoDialect() throws Exception {
+        Path noncanonical = workspace.resolve("consumer.ATTO");
+        Path producer = workspace.resolve("producer.atto");
+        Files.writeString(noncanonical, "pub fnc main() -> int { return 42; }");
+        Files.writeString(producer, "pub fnc value() -> int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(noncanonical, Map.of());
+
+        for (Path importer : new Path[] {
+                noncanonical, workspace.resolve("missing.OrEs"),
+                workspace.resolve("missing.JAVA")}) {
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> config.resolveImport(importer, "./producer.atto"));
+            assertTrue(denied.getMessage().contains("noncanonical importer source extension"),
+                    denied::toString);
+        }
+    }
+
+    @Test
     void legacyExplicitOresStillWorksButCaseAliasIsRejected() throws Exception {
         Path consumer = workspace.resolve("consumer.ores");
         Path legacy = workspace.resolve("producer.ores");
