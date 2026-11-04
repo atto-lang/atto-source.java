@@ -1,6 +1,6 @@
 # AttoLang Java/GraalVM reference backend
 
-In general, strive to implement language features in .atto files not .java files (more attolang less java). We also need to keep/maintain parity with oreslang-source.llvm and oreslang-source.net and oreslang-source.wasm, etc. The oreslang-source.java is typically the leader.
+In general, strive to implement language features in .atto files not .java files (more attolang less java). In other words, for atto core and atto std lib more .atto files and fewer .java files. We also need to keep/maintain parity with oreslang-source.llvm and oreslang-source.net and oreslang-source.wasm, etc. The oreslang-source.java is typically the leader.
 
 AttoLang is the current public language name (formerly Oreslang). This repository remains the Java/Truffle reference compiler and runtime. Existing Java packages, `oreslang` compiler paths, `.ores` fixtures and external interfaces remain compatible during the rename. New `.atto` acceptance must be demonstrated by real parser/compiler and execution tests, not this README update.
 
