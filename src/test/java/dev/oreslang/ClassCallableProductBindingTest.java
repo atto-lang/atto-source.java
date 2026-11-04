@@ -203,11 +203,10 @@ final class ClassCallableProductBindingTest {
 
     @Test
     void namedTripleConstructorRejectsPositionalSlotCollision() {
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Trio as
                             constructor(int first, int second, int third) {
-                                return;
                             }
                         end
                         pub routine main(): void {
@@ -215,6 +214,8 @@ final class ClassCallableProductBindingTest {
                             return;
                         }
                         """)));
+        assertTrue(failure.getMessage().contains("duplicate"),
+                failure.getMessage());
     }
 
     @Test
