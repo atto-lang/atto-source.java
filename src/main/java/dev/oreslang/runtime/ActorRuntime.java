@@ -286,6 +286,29 @@ public final class ActorRuntime implements AutoCloseable {
         return exchange;
     }
 
+    /**
+     * A movable HTTP claim token must be the payload of THIS authenticated
+     * user mail, not an old token cached by the same pooled actor. This check
+     * precedes one-shot token removal so a rejected claim cannot consume a
+     * still-live transfer belonging to a different mailbox delivery.
+     */
+    void requireCurrentHttpTransferToken(String token) {
+        Objects.requireNonNull(token, "token");
+        if (currentActorRuntime() != this) {
+            throw new SecurityException("HTTP claim requires this actor runtime");
+        }
+        ActorCell<?> cell = currentActor.get();
+        Long sequence = CURRENT_HTTP_MAIL_SEQUENCE.get();
+        ActorInboxMail<?> mail = cell == null ? null : cell.activeMail;
+        if (cell == null || cell.stopped.get() || mail == null
+                || sequence == null || mail.sequence() != sequence.longValue()
+                || !(mail.value() instanceof String deliveredToken)
+                || !deliveredToken.equals(token)) {
+            throw new SecurityException(
+                    "HTTP transfer token does not match the admitted mailbox value");
+        }
+    }
+
     /** An actor's owned exchange is valid only for the same active mail. */
     void requireCurrentHttpExchange(NativeHttp.Exchange exchange) {
         if (currentHttpExchange() != exchange) {
