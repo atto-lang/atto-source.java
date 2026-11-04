@@ -45,6 +45,10 @@ struct ores_carrier_pool {
     int attach_failures;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
+    /* calloc() starts these at zero. Destroy only successfully initialized
+     * synchronization primitives on every pre-pthread error path. */
+    int mutex_initialized;
+    int condition_initialized;
 };
 
 static void throw_illegal_state(JNIEnv *env, const char *message) {
@@ -111,8 +115,8 @@ static void free_pool(JNIEnv *env, ores_carrier_pool *pool) {
     }
     free(pool->args);
     free(pool->threads);
-    pthread_cond_destroy(&pool->condition);
-    pthread_mutex_destroy(&pool->mutex);
+    if (pool->condition_initialized) pthread_cond_destroy(&pool->condition);
+    if (pool->mutex_initialized) pthread_mutex_destroy(&pool->mutex);
     free(pool);
 }
 
@@ -146,8 +150,18 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
-    pthread_mutex_init(&pool->mutex, NULL);
-    pthread_cond_init(&pool->condition, NULL);
+    if (pthread_mutex_init(&pool->mutex, NULL) != 0) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to initialize native carrier mutex");
+        return 0;
+    }
+    pool->mutex_initialized = 1;
+    if (pthread_cond_init(&pool->condition, NULL) != 0) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to initialize native carrier condition");
+        return 0;
+    }
+    pool->condition_initialized = 1;
 
     if ((*env)->GetJavaVM(env, &pool->jvm) != JNI_OK || pool->jvm == NULL) {
         free_pool(env, pool);
