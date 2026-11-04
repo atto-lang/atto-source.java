@@ -9,6 +9,7 @@
 - The original PR's **41 changed paths** are all represented in this new branch.
 - Existing .java/.atto naming compatibility and mainline parser/runtime ownership policy are not intentionally removed.
 - New shared test vectors: all **seven** byte-identical `.atto` files from [common-source PR #218](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/218), stored at `src/test/resources/macro-scalar-aot-v1/`, with its manifest.
+- Native LLVM integration comparator: [LLVM current-main PR #1356](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1356). The old LLVM [#1026](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1026) remains the source-only patch lineage.
 - Extra JUnit checks: `MacroSharedScalarAotVectorsTest`, `MacroSharedScalarBudgetsTest` and `MacroProtectedStateIsolationTest`.
 
 ## Manually resolved integration points
