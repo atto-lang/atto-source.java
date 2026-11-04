@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -91,5 +93,48 @@ final class NativeCarrierExecutorTest {
         assertTrue(executor.isTerminated());
         assertTrue(executor.awaitTermination(0, TimeUnit.SECONDS));
         assertEquals(0, executor.registeredCarrierCount());
+    }
+
+    @Test
+    void concurrentNativeStartAndShutdownAwaitActualPthreadJoins() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        for (int round = 0; round < 12; round++) {
+            NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                    1, 2, 32, "ores-native-start-close-" + round + "-");
+            var callers = Executors.newFixedThreadPool(2);
+            CountDownLatch go = new CountDownLatch(1);
+            try {
+                var bootstrap = callers.submit(() -> {
+                    go.await();
+                    try {
+                        executor.ensureStarted();
+                    } catch (RejectedExecutionException | IllegalStateException closed) {
+                        // Shutdown may win before the first native pool exists.
+                    }
+                    return null;
+                });
+                var close = callers.submit(() -> {
+                    go.await();
+                    executor.shutdownNow();
+                    return null;
+                });
+                go.countDown();
+                bootstrap.get(15, TimeUnit.SECONDS);
+                close.get(15, TimeUnit.SECONDS);
+
+                assertTrue(executor.isShutdown());
+                assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS),
+                        "physical pthreads must be joined before termination is certified");
+                assertTrue(executor.isTerminated());
+                assertEquals(0, executor.registeredCarrierCount());
+                assertThrows(RejectedExecutionException.class, executor::ensureStarted);
+            } finally {
+                go.countDown();
+                callers.shutdownNow();
+                executor.shutdownNow();
+            }
+        }
     }
 }
