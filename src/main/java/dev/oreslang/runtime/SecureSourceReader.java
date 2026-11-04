@@ -38,14 +38,21 @@ final class SecureSourceReader {
 
     static BoundedSourceReader.ReadResult read(
             Path sourceFile, OresProjectConfig project) throws IOException {
+        return read(sourceFile, project, false);
+    }
+
+    /** Adversarial workloads must fail closed if secure directory handles are absent. */
+    static BoundedSourceReader.ReadResult read(
+            Path sourceFile, OresProjectConfig project, boolean requireSecure)
+            throws IOException {
         Objects.requireNonNull(sourceFile, "source file");
         Objects.requireNonNull(project, "project config");
         Path source = sourceFile.toAbsolutePath().normalize();
 
         String admitted = HostSourceUnitIds.of(source, project);
         Path root = rootFor(source, project);
-        BoundedSourceReader.ReadResult first = readOnce(root, source);
-        BoundedSourceReader.ReadResult second = readOnce(root, source);
+        BoundedSourceReader.ReadResult first = readOnce(root, source, requireSecure);
+        BoundedSourceReader.ReadResult second = readOnce(root, source, requireSecure);
         if (!first.equals(second)) {
             throw new IllegalArgumentException(
                     "source changed between independently opened source descriptors");
@@ -67,8 +74,8 @@ final class SecureSourceReader {
                 "source file is not under an approved import root");
     }
 
-    private static BoundedSourceReader.ReadResult readOnce(Path root, Path source)
-            throws IOException {
+    private static BoundedSourceReader.ReadResult readOnce(
+            Path root, Path source, boolean requireSecure) throws IOException {
         Path normalizedRoot = root.toAbsolutePath().normalize();
         Path relative = normalizedRoot.relativize(source);
         if (relative.getNameCount() == 0 || relative.toString().isBlank()) {
@@ -84,9 +91,14 @@ final class SecureSourceReader {
             }
         }
 
-        // Provider fallback: the final component is still opened with
-        // NOFOLLOW_LINKS, with whole-path identity checked before/after by
-        // read(). Do not claim secure intermediate-directory pinning here.
+        if (requireSecure) {
+            throw new SecurityException(
+                    "adversarial source admission requires secure directory handles; "
+                            + "provider cannot pin intermediate path components");
+        }
+        // Trusted-host provider fallback: the final component is still opened
+        // with NOFOLLOW_LINKS and identity is checked before/after by read().
+        // Do not claim secure intermediate-directory pinning here.
         try (SeekableByteChannel channel = Files.newByteChannel(source, READ_NOFOLLOW)) {
             return BoundedSourceReader.readWithByteCount(channel);
         }
