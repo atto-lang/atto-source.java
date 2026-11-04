@@ -259,11 +259,14 @@ public final class OresProjectConfig {
         // Never query existence until the candidate belongs to an authorized
         // root and all lexically named descendants are checked for symlinks.
         Path normalized = requireSafeSourceCandidate(candidate);
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
-
-        String text = normalized.toString().toLowerCase();
+        String text = normalized.toString().toLowerCase(Locale.ROOT);
+        // Explicit source extensions may resolve as spelled; a physical file
+        // without an admitted extension must not bypass .atto/.ores selection.
         if (text.endsWith(".atto") || text.endsWith(".ores")
-                || text.endsWith(".java")) return Optional.empty();
+                || text.endsWith(".java")) {
+            return Files.isRegularFile(normalized)
+                    ? Optional.of(normalized) : Optional.empty();
+        }
 
         // A canonical .atto importer may select only the canonical spelling
         // when extensionless. Do not probe a legacy sibling (or silently
