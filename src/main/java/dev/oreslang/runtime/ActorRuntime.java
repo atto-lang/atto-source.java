@@ -8952,7 +8952,7 @@ public final class ActorRuntime implements AutoCloseable {
             // racing observer must never attribute the failure to a group
             // that no longer owns this actor. Do not acquire authorityLock
             // under lifecycleLock: the reverse lock order exists on spawn.
-            if (groupId != managedByGroup.get()) {
+            if (!Objects.equals(groupId, managedByGroup.get())) {
                 supervisorIds.clear();
                 group = null;
             }
