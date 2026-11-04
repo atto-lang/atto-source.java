@@ -220,4 +220,45 @@ final class HostSourceUnitIdsTest {
         assertEquals("project/main.atto", HostSourceUnitIds.of(source, config));
         assertEquals("external/1/dep.atto", HostSourceUnitIds.of(dependency, config));
     }
+    @Test
+    void directoryCannotBecomeLinkedAttoSourceIdentity() throws Exception {
+        Path normal = temp.resolve("normal.atto");
+        Files.writeString(normal, "pub fnc main() -> int { return 42; }");
+        Path impostor = Files.createDirectory(temp.resolve("directory.atto"));
+        OresProjectConfig project = OresProjectConfig.discover(normal, Map.of());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> HostSourceUnitIds.of(impostor, project));
+        assertTrue(denied.getMessage().contains("regular file"), denied::toString);
+        assertThrows(IllegalArgumentException.class,
+                () -> SecureSourceReader.read(impostor, project, true));
+    }
+
+    @Test
+    void fifoSourceIsDeniedBeforeAnyBlockingDescriptorOpen() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                        .contains("linux"), "mkfifo boundary test requires Linux");
+        Path normal = temp.resolve("normal-fifo.atto");
+        Files.writeString(normal, "pub fnc main() -> int { return 42; }");
+        Path fifo = temp.resolve("fifo-source.atto");
+        Process mkfifo;
+        try {
+            mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).start();
+        } catch (IOException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "mkfifo unavailable");
+            return;
+        }
+        boolean completed = mkfifo.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+        if (!completed) mkfifo.destroyForcibly();
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                completed && mkfifo.exitValue() == 0, "mkfifo creation unsupported");
+        OresProjectConfig project = OresProjectConfig.discover(normal, Map.of());
+        // A FIFO has no writer: opening it for reading could hang indefinitely.
+        // Both admission paths must reject by metadata without opening it.
+        assertThrows(IllegalArgumentException.class,
+                () -> HostSourceUnitIds.of(fifo, project));
+        assertThrows(IllegalArgumentException.class,
+                () -> SecureSourceReader.read(fifo, project, true));
+    }
+
 }
