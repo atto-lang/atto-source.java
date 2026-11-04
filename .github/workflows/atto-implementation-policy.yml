@@ -1,0 +1,47 @@
+name: AttoLang-first implementation review
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  atto-first:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact checked-out PR head and base
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ && "$EXPECTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git cat-file -e "${EXPECTED_BASE}^{commit}"
+          git diff --quiet --exit-code
+          echo "ATTO_POLICY_HEAD=$EXPECTED_HEAD"
+      - name: Check Java implementation justifications
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: |
+          set -euo pipefail
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/atto-pr-body.txt"
+          # Once present on base, run base's reviewed checker, not potentially
+          # attacker-modified checker from the pull-request head.
+          if git cat-file -e "${PR_BASE}:scripts/check_atto_first_policy.sh" 2>/dev/null; then
+            git show "${PR_BASE}:scripts/check_atto_first_policy.sh" > "$RUNNER_TEMP/check_atto_first_policy.sh"
+          else
+            cp scripts/check_atto_first_policy.sh "$RUNNER_TEMP/check_atto_first_policy.sh"
+          fi
+          bash "$RUNNER_TEMP/check_atto_first_policy.sh" "$PR_BASE" "$PR_HEAD" "$RUNNER_TEMP/atto-pr-body.txt" "$PR_CREATED_AT"
+      - name: Source-free policy checker selftests
+        shell: bash
+        run: bash tests/test_atto_first_policy.sh
