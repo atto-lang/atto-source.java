@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Java guest counterparts of LLVM's native_scalar_generic_source_execution.py.
@@ -117,7 +118,58 @@ final class NamedJavaLlvmScalarParityTest {
                     return;
                 }
                 """;
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(code)));
+        // A missing nested callee is an independent failure. A passing negative
+        // must prove the late label was rejected by the actual checked binder.
+        assertTrue(failure.getMessage().contains("unknown named argument 'unknown'"),
+                failure.getMessage());
+    }
+
+    @Test
+    void genericSlotCollisionIsNotAcceptedAsTwoSpecializations() {
+        String code = """
+                fnc choose<T, U>(T first, U second): T { return first; }
+                pub routine main(): void {
+                    stdio.stdout.write(choose<int, T=int>(1, 2));
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(failure.getMessage().contains("duplicate generic argument 'T'"),
+                failure.getMessage());
+    }
+
+    @Test
+    void genericLabelsAreCaseSensitiveBeforeValueInference() {
+        String code = """
+                fnc choose<T, U>(T first, U second): T { return first; }
+                pub routine main(): void {
+                    stdio.stdout.write(choose<t=int, U=int>(1, 2));
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(failure.getMessage().contains("no generic parameter named 't'"),
+                failure.getMessage());
+    }
+
+    @Test
+    void valueLabelsAreCaseSensitiveBeforeEmittingTheGuest() {
+        String code = """
+                fnc combine<T=int>(T first, T second): int {
+                    return first * 10 + second;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(combine<T=int>(First: 4, second: 2));
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(failure.getMessage().contains("unknown named argument 'First'"),
+                failure.getMessage());
     }
 }
