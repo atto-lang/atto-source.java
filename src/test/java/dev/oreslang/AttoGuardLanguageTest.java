@@ -38,7 +38,7 @@ final class AttoGuardLanguageTest {
                   stdio.stdout.write(choose(0));
                   stdio.stdout.write(choose(8));
                 }
-                ""));
+                """));
     }
 
     @Test
