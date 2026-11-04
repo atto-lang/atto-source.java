@@ -1,0 +1,6 @@
+pub define class WirePayload as
+  pub int count: 0
+  pub string title: "before"
+  pub bool enabled: false
+  int private_marker: 9
+end
