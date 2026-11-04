@@ -38,7 +38,7 @@ final class NamedGenericDeclarationAdmissionTest {
                 "define class Box<_> as end",
                 "define interface Box<_> as end",
                 "define type Box<_> = int;",
-                "define class Box as pub method<_>(int value): int { return value; } end",
+                "define class Box as pub get<_>(int value): int { return value; } end",
                 "define actor Worker<_> as end")) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse(source), source);
