@@ -113,4 +113,46 @@ final class PipeEndpointContractsTest {
                         Primitive.INT, Primitive.STRING,
                         PipeEndpointContracts.Role.AUTHENTICATED_ACTOR));
     }
+    @Test
+    void pubSubAndDirectionalCapabilitiesCannotTravelAsPipeData() {
+        for (String name : List.of(
+                "Topic", "Subscription", "TopicPublisher", "TopicSubscriber",
+                "ActorGroup", "ActorStream", "Channel", "ReadChannel",
+                "WriteChannel", "HasInputChannel", "HasOutputChannel")) {
+            var capability = new Named(name, List.of(Primitive.INT));
+            var rejected = assertThrows(IllegalArgumentException.class,
+                    () -> PipeEndpointContracts.authenticatedActor(capability),
+                    "actor DATA must not implicitly transport capability " + name);
+            assertTrue(rejected.getMessage().contains("capability"), rejected.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> PipeEndpointContracts.transform(Primitive.INT, capability));
+        }
+    }
+
+    @Test
+    void nestedPubSubCapabilitiesAreRejectedBeforeGraphPublication() {
+        var topic = new Named("Topic", List.of(Primitive.STRING));
+        var nested = new Named("Envelope", List.of(
+                new Record(Map.of("meta", Primitive.INT, "topic", topic), false)));
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> PipeEndpointContracts.authenticatedActor(nested));
+        assertTrue(rejected.getMessage().contains("capability"));
+
+        var ordinary = new Named("Envelope", List.of(
+                new Record(Map.of("meta", Primitive.INT,
+                        "payload", Primitive.STRING), false)));
+        assertDoesNotThrow(() -> PipeEndpointContracts.requireAuthenticatedActorConnection(
+                ordinary, ordinary),
+                "data-only immutable payloads remain valid actor mail domains");
+    }
+
+    @Test
+    void existingAuthenticatedActorRefDataIsNotBannedByNameHeuristic() {
+        // ActorRef is independently governed by Sendable rules. This
+        // endpoint-only guard must not accidentally revoke it.
+        var actorRef = new Named("ActorRef", List.of(
+                new Named("Worker", List.of())));
+        assertDoesNotThrow(() -> PipeEndpointContracts.authenticatedActor(actorRef));
+    }
+
 }
