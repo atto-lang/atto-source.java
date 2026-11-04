@@ -22,6 +22,17 @@ public final class AotScalarWireV1VectorVerifier {
     private static final int MAX_CORPUS_BYTES = 65_536;
     private static final int EXPECTED_POSITIVE = 8;
     private static final int EXPECTED_NEGATIVE = 15;
+    private static final String HEADER = "# attolang.aot-wire-scalar-fixtures/1; P|id|signed-i64|bool|string-utf8-base64|json-utf8-base64|msgpack-hex; N|id|format|json-utf8-base64-or-msgpack-hex";
+    private static final String[] POSITIVE_IDS = {
+            "zero", "one", "negative_one", "i64_min", "i64_max",
+            "utf8_rocket", "str8_boundary", "str16_boundary"
+    };
+    private static final String[] NEGATIVE_IDS = {
+            "json_missing", "json_duplicate", "json_unknown", "json_fraction",
+            "json_null", "json_overflow", "msgpack_duplicate", "msgpack_unknown",
+            "msgpack_nil", "msgpack_float64", "msgpack_uint64",
+            "msgpack_truncated", "msgpack_trailing", "msgpack_map32", "msgpack_bad_utf8"
+    };
 
     private AotScalarWireV1VectorVerifier() { }
 
@@ -41,8 +52,7 @@ public final class AotScalarWireV1VectorVerifier {
         }
         final String text = decodeUtf8(bytes);
         String[] lines = text.split("\n", -1);
-        if (lines.length < 2 || !lines[0].startsWith(
-                "# attolang.aot-wire-scalar-fixtures/1;")) {
+        if (lines.length < 2 || !lines[0].equals(HEADER)) {
             throw new IllegalArgumentException("unrecognized golden wire corpus version");
         }
         Set<String> ids = new HashSet<>();
@@ -57,7 +67,8 @@ public final class AotScalarWireV1VectorVerifier {
                 throw new IllegalArgumentException("invalid or duplicated corpus ID at line " + i);
             }
             if (columns[0].equals("P")) {
-                if (columns.length != 7) {
+                if (columns.length != 7 || positive >= EXPECTED_POSITIVE ||
+                        !columns[1].equals(POSITIVE_IDS[positive])) {
                     throw new IllegalArgumentException("invalid positive corpus row at line " + i);
                 }
                 long n;
@@ -81,15 +92,16 @@ public final class AotScalarWireV1VectorVerifier {
                 }
                 positive++;
             } else if (columns[0].equals("N")) {
-                if (columns.length != 4) {
+                if (columns.length != 4 || negative >= EXPECTED_NEGATIVE ||
+                        !columns[1].equals(NEGATIVE_IDS[negative])) {
                     throw new IllegalArgumentException("invalid negative corpus row at line " + i);
                 }
                 final byte[] payload;
                 final boolean json;
-                if (columns[2].equals("json")) {
+                if (columns[2].equals("json") && negative < 6) {
                     json = true;
                     payload = base64(columns[3]);
-                } else if (columns[2].equals("messagepack")) {
+                } else if (columns[2].equals("messagepack") && negative >= 6) {
                     json = false;
                     payload = hex(columns[3]);
                 } else {
@@ -115,13 +127,22 @@ public final class AotScalarWireV1VectorVerifier {
     }
 
     private static byte[] base64(String value) {
-        try { return Base64.getDecoder().decode(value); }
+        try {
+            byte[] bytes = Base64.getDecoder().decode(value);
+            if (!Base64.getEncoder().encodeToString(bytes).equals(value)) {
+                throw new IllegalArgumentException("noncanonical golden base64");
+            }
+            return bytes;
+        }
         catch (IllegalArgumentException invalid) {
             throw new IllegalArgumentException("invalid corpus base64", invalid);
         }
     }
 
     private static byte[] hex(String value) {
+        if (value.length() % 2 != 0 || !value.matches("[0-9a-f]*")) {
+            throw new IllegalArgumentException("noncanonical golden hex");
+        }
         try { return HexFormat.of().parseHex(value); }
         catch (IllegalArgumentException invalid) {
             throw new IllegalArgumentException("invalid corpus hex", invalid);
