@@ -59,12 +59,13 @@ final class CounterLiveTurnModel {
             if (old != null) {
                 if (!old.fingerprint.equals(fingerprint))
                     throw new IllegalArgumentException("event id reused for a different authenticated command");
-                return new Outcome(List.of(ack(eventId, old.acceptedRevision)), false, revision);
+                return replyIfActive(new Outcome(
+                        List.of(ack(eventId, old.acceptedRevision)), false, revision));
             }
             if (baseRev != revision) {
                 String rejected = "{\"v\":1,\"type\":\"event_rejected\",\"event_id\":" + jsonString(eventId)
                         + ",\"code\":\"stale_revision\",\"rev\":" + revision + "}";
-                return new Outcome(List.of(rejected), false, revision);
+                return replyIfActive(new Outcome(List.of(rejected), false, revision));
             }
             if (revision == MAX_REV || count == MAX_REV)
                 throw new IllegalStateException("counter or revision exhausted");
@@ -93,6 +94,15 @@ final class CounterLiveTurnModel {
             return new Outcome(List.of(patch, acknowledgment), true, nextRevision);
         } finally {
             receiving = false;
+        }
+    }
+
+    // Replay ACKs and stale-revision rejections are outputs too: they must
+    // linearize against supervisor retirement just like a successful patch.
+    private Outcome replyIfActive(Outcome plan) {
+        synchronized (commitLock) {
+            if (retired) throw new IllegalStateException("actor retired before reply");
+            return plan;
         }
     }
 

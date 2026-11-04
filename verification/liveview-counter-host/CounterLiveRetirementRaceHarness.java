@@ -66,6 +66,19 @@ public final class CounterLiveRetirementRaceHarness {
                 // Expected: retired actor.
             }
         }
+        // A replay and a stale rejection are actor output plans as well; no
+        // reply path may bypass retirement admission after the last commit.
+        var replied = new CounterLiveTurnModel();
+        check(replied.increment("alice", "12345678", 0).applied(), "baseline reply commit");
+        replied.retire();
+        for (String eventId : new String[]{"12345678", "abcdef12"}) {
+            try {
+                replied.increment("alice", eventId, 0);
+                throw new AssertionError("retired model returned replay/stale output");
+            } catch (IllegalStateException expected) {
+                // Both replay and stale branches must be fenced.
+            }
+        }
         System.out.println("PASS CounterLive concurrent retirement races=" + repetitions);
     }
 }

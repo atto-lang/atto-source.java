@@ -12,6 +12,7 @@ Previously `CounterLiveTurnModel.increment` and `retire` were both synchronized 
 - The potentially slow reducer/renderer callback does **not** hold the short `commitLock`. `retire()` may acquire `commitLock` while the callback is stalled and revoke logical admission immediately.
 - Each increment prepares frames but must then acquire `commitLock`, check retirement, and commit revision/count/dedup **as one critical section**. If retirement won, throw without publishing a state transition, patch, or ACK. If the commit won, retirement is ordered after the committed revision.
 - `retired` is volatile for the initial admission check. The final check and state publication occur under the same lock as retirement, so a volatile-only check-then-publish race is not introduced.
+- Replay ACK and stale-revision rejection plans also acquire `commitLock` through `replyIfActive`; they cannot skip the terminal gate.
 - External WebSocket output remains separately generation-fenced by the real transport. A successful *state commit* does not license a late socket send after physical connection revocation. The host model returns an output plan, not a native I/O completion receipt.
 - The existing synchronous reentrancy guard and exception cleanup remain active. Actor panic, restart and scheduler guest ownership are separate integration gates.
 

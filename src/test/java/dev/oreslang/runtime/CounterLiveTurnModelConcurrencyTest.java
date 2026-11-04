@@ -73,5 +73,7 @@ final class CounterLiveTurnModelConcurrencyTest {
         assertEquals(1, model.revision());
         assertThrows(IllegalStateException.class,
                 () -> model.increment("alice", "12345678", 0));
+        assertThrows(IllegalStateException.class,
+                () -> model.increment("alice", "abcdef12", 0));
     }
 }
