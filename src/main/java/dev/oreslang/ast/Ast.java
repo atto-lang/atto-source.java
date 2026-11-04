@@ -1524,6 +1524,10 @@ public final class Ast {
                 new java.util.HashMap<>();
         private static final java.util.Map<ProgramIdentityKey, Long> PROGRAM_EPOCHS =
                 new java.util.HashMap<>();
+        // Task capture execution requires the exact successful typing
+        // generation from the same complete ownership transaction.
+        private static final java.util.Map<ProgramIdentityKey, Long>
+                TASK_TYPE_GENERATIONS = new java.util.HashMap<>();
 
         private static final class PairIdentityKey
                 extends java.lang.ref.WeakReference<TaskExpr> {
@@ -1593,6 +1597,7 @@ public final class Ast {
             java.lang.ref.Reference<? extends Program> clearedProgram;
             while ((clearedProgram = CLEARED_PROGRAMS.poll()) != null) {
                 PROGRAM_EPOCHS.remove(clearedProgram);
+                TASK_TYPE_GENERATIONS.remove(clearedProgram);
             }
             // Pair keys are queued by TaskExpr lifetime. A deliberately shared
             // TaskExpr can outlive one Program, so opportunistically retire
@@ -1633,6 +1638,7 @@ public final class Ast {
                         "Task ownership check epoch is not newer than the latest attempt");
             }
             CAPTURES.keySet().removeIf(key -> key.program() == program);
+            TASK_TYPE_GENERATIONS.keySet().removeIf(key -> key.get() == program);
             PROGRAM_EPOCHS.put(
                     new ProgramIdentityKey(program, CLEARED_PROGRAMS),
                     -checkEpoch);
@@ -1684,7 +1690,10 @@ public final class Ast {
                         TaskExpr,
                         java.util.Map<String, TaskCaptureTransfer>> staged,
                 dev.oreslang.types.OwnershipChecker.TaskPublishAuthority authority) {
-            if (authority == null || !authority.permits(program, checkEpoch)
+            long typingGeneration = staged == null || staged.isEmpty()
+                    ? 0L : dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            if (authority == null
+                    || !authority.permits(program, checkEpoch, typingGeneration)
                     || !Thread.holdsLock(CheckedCriticalBlocks.class)
                     || !Thread.holdsLock(CheckedTaskCaptures.class)
                     || !Thread.holdsLock(dev.oreslang.types.TypeChecker.class)) {
@@ -1743,6 +1752,12 @@ public final class Ast {
                         new PairIdentityKey(
                                 program, entry.getKey(), CLEARED_TASKS),
                         entry.getValue());
+            }
+            TASK_TYPE_GENERATIONS.keySet().removeIf(key -> key.get() == program);
+            if (!normalized.isEmpty()) {
+                TASK_TYPE_GENERATIONS.put(
+                        new ProgramIdentityKey(program, CLEARED_PROGRAMS),
+                        typingGeneration);
             }
             PROGRAM_EPOCHS.put(
                     new ProgramIdentityKey(program, CLEARED_PROGRAMS),
@@ -1812,6 +1827,14 @@ public final class Ast {
                 throw new IllegalStateException(
                         "Task execution requires the exact Program/TaskExpr ownership admission; "
                                 + "reparsed, cloned, unchecked, or stale Tasks are not executable");
+            }
+            Long admittedTyping = TASK_TYPE_GENERATIONS.get(
+                    new ProgramIdentityKey(program, null));
+            if (admittedTyping == null || admittedTyping <= 0
+                    || dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program)
+                            != admittedTyping.longValue()) {
+                throw new IllegalStateException(
+                        "Task execution requires the exact successful typing generation");
             }
             return admission;
         }
