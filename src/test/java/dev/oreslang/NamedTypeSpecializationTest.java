@@ -63,6 +63,54 @@ final class NamedTypeSpecializationTest {
     }
 
     @Test
+    void namedAliasesForwardInnerNamedGenericSlots() {
+        // An alias can forward its own reordered slots into a different
+        // declaration order. This must work recursively without using
+        // metadata keys or the textual order as type identity.
+        accepts("""
+                type Entry<K, V> = record { key: K, value: V };
+                define type alias Flipped<X, Y> as Entry<V=X, K=Y>;
+                fnc named(Flipped<Y=string, X=int> item): void { return; }
+                fnc positional(Entry<string, int> item): void {
+                  named(item);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void namedNominalSlotsAreCaseSensitiveAndNestedUnknownNamesReject() {
+        String declarations = """
+                define class Box<T> as
+                  pub val T value;
+                end
+                define class Outer<T> as
+                  pub val T value;
+                end
+                """;
+        rejects(declarations + "fnc bad(Box<t=int> item): void { return; }",
+                "no generic parameter named 't'");
+        rejects(declarations
+                        + "fnc bad(Outer<T=Box<t=int>> item): void { return; }",
+                "no generic parameter named 't'");
+    }
+
+    @Test
+    void positionalAfterNamedReportsTheCanonicalParserDiagnostic() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Pair<A, B> as
+                          pub val A first;
+                          pub val B second;
+                        end
+                        fnc bad(Pair<B=string, int> item): void { return; }
+                        """));
+        assertTrue(failure.getMessage().contains(
+                "positional type argument cannot follow a named type argument"),
+                failure.getMessage());
+    }
+
+    @Test
     void namedInterfaceArgumentsPreserveNominalSubstitution() {
         accepts("""
                 define module app
