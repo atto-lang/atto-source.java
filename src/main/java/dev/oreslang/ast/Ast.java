@@ -1655,12 +1655,42 @@ public final class Ast {
                         "critical ownership attempt superseded before Task publication");
         }
 
+        /**
+         * Legacy host-callable publisher retained for binary/source
+         * compatibility but intentionally unable to mint Task authority.
+         * Only the complete OwnershipChecker pass may publish a new epoch.
+         */
+        @Deprecated
         public static synchronized void publish(
                 Program program,
                 long checkEpoch,
                 java.util.Map<
                         TaskExpr,
                         java.util.Map<String, TaskCaptureTransfer>> staged) {
+            throw new IllegalStateException(
+                    "Task capture publication requires compiler-owned ownership authority");
+        }
+
+        /**
+         * Ownership-checked Task transfers may be committed only by the
+         * complete checker under the same Critical -> Task -> Type lock order
+         * as critical-body permissions. Epochs or staged maps alone cannot
+         * authorize a host-injected Task AST.
+         */
+        public static synchronized void publish(
+                Program program,
+                long checkEpoch,
+                java.util.Map<
+                        TaskExpr,
+                        java.util.Map<String, TaskCaptureTransfer>> staged,
+                dev.oreslang.types.OwnershipChecker.TaskPublishAuthority authority) {
+            if (authority == null || !authority.permits(program, checkEpoch)
+                    || !Thread.holdsLock(CheckedCriticalBlocks.class)
+                    || !Thread.holdsLock(CheckedTaskCaptures.class)
+                    || !Thread.holdsLock(dev.oreslang.types.TypeChecker.class)) {
+                throw new IllegalStateException(
+                        "Task capture publication requires compiler-owned authority and cross-ledger locks");
+            }
             java.util.Objects.requireNonNull(program, "checked Task program");
             java.util.Objects.requireNonNull(staged, "staged Task admissions");
             if (checkEpoch <= 0) {
