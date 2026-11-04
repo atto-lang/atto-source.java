@@ -1,6 +1,6 @@
 //! A conservative source-level gate for packaged native Oreslang stdlib modules.
 //! This does NOT replace compiler admission, sandboxing, or runtime capability checks.
-use std::{env, fs, path::Path, process};
+use std::{collections::HashSet, env, fs, path::Path, process};
 
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 const MAX_FILES: usize = 2048;
@@ -176,6 +176,7 @@ fn scan(root: &Path) -> Result<usize, String> {
     }
     let mut pending = vec![(root.to_path_buf(), 0)];
     let mut count = 0;
+    let mut stems = HashSet::new();
     while let Some((dir, depth)) = pending.pop() {
         if depth > 16 {
             return Err("stdlib nesting exceeds limit".into());
@@ -193,8 +194,11 @@ fn scan(root: &Path) -> Result<usize, String> {
             if !meta.is_file() {
                 return Err(format!("{}: unsupported entry", path.display()));
             }
-            if path.extension().is_none_or(|e| e != "ores") {
+            if path.extension().is_none_or(|e| e != "ores" && e != "atto") {
                 continue;
+            }
+            if !stems.insert(path.with_extension("")) {
+                return Err(format!("{}: duplicate .atto/.ores module stem", path.display()));
             }
             count += 1;
             if count > MAX_FILES || meta.len() > MAX_FILE {
@@ -205,7 +209,7 @@ fn scan(root: &Path) -> Result<usize, String> {
         }
     }
     if count == 0 {
-        return Err("stdlib contains no .ores files".into());
+        return Err("stdlib contains no .atto or .ores files".into());
     }
     Ok(count)
 }

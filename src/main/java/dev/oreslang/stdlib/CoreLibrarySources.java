@@ -42,7 +42,7 @@ public final class CoreLibrarySources {
     private static final Set<String> STD_SOURCES = Set.of(
             "core.ores", "testing.ores", "assert.ores", "trace.ores",
             "http_wire.ores", "compute.ores", "db_pool.ores",
-            "actor_persistence.ores", "data_pool.ores");
+            "actor_persistence.ores", "data_pool.ores", "bounds.atto");
 
     private CoreLibrarySources() { }
 
@@ -132,22 +132,22 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException(
                     "canonical core imports must start with 'ores.core/': " + importPath);
         }
-        return canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
+        return canonicalPathBody(importPath, CORE_IMPORT_PREFIX, CORE_SOURCES);
     }
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, STD_IMPORT_PREFIX);
+            return canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES);
         }
         if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX);
+            return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX, STD_SOURCES);
         }
         throw new IllegalArgumentException(
                 "standard-library imports must start with 'ores.std/': " + importPath);
     }
 
-    private static String canonicalPathBody(String importPath, String prefix) {
+    private static String canonicalPathBody(String importPath, String prefix, Set<String> registry) {
         if (importPath.length() > MAX_IMPORT_PATH_CHARS) {
             throw new IllegalArgumentException("Oreslang library import path is too long");
         }
@@ -160,8 +160,11 @@ public final class CoreLibrarySources {
         }
 
         String raw = importPath.substring(prefix.length());
-        if (raw.endsWith(".ores")) {
-            raw = raw.substring(0, raw.length() - ".ores".length());
+        // Respect explicit legacy and canonical suffixes.
+        String explicitSuffix = raw.endsWith(".atto") ? ".atto"
+                : raw.endsWith(".ores") ? ".ores" : null;
+        if (explicitSuffix != null) {
+            raw = raw.substring(0, raw.length() - explicitSuffix.length());
         }
         if (raw.isBlank()) {
             throw new IllegalArgumentException("Oreslang library import must name a module");
@@ -183,7 +186,12 @@ public final class CoreLibrarySources {
             }
             normalized.add(segment);
         }
-        return String.join("/", normalized) + ".ores";
+        String stem = String.join("/", normalized);
+        if (explicitSuffix != null) {
+            return stem + explicitSuffix;
+        }
+        String canonical = stem + ".atto";
+        return registry.contains(canonical) ? canonical : stem + ".ores";
     }
 
     private static String fileNameFromRelative(String relative) {
