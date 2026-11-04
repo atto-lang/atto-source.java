@@ -8,8 +8,8 @@ for this candidate. This packet cannot be used as an authorization token.
 
 **Review-only, never authorization.** The only source identity currently
 eligible for a fresh independent review is Java draft PR #2422 head
-`6d83f54736c6c45b891132b2575bdff7a470781f`, full Git tree
-`d0d974e91984ce25bac1a68087c7e1a07414e323`. Every other source
+`38b77a2d86490671c81ef3ca080c13a697d47702`, full Git tree
+`49dbc5ff0d3613b65f0a13fc974c8479119de5cd`. Every other source
 head/tree pair later in this packet is a historical receipt, **not** the
 current candidate or an approval. Any new source commit invalidates this
 pin and requires another independent review.
@@ -39,6 +39,25 @@ strict status check enforcement off, zero active destination allowlist
 entries, independent `@ORESoftware` reviews unsubmitted. Existing
 source-free Java 21 alternate carrier receipt does not grant private
 source access. Do not transfer code across GitHub organizations or merge.
+
+### Latest noncritical Task typing-proof and LLVM M0 delta
+
+The current Java candidate additionally requires an exact successful type
+generation for **noncritical** Task captures; both successful and failed
+typing rechecks revoke earlier executable Task admissions. The exact
+Program/epoch ownership token remains mandatory. Three authored JUnit tests
+and named seventh-suite CI checks cover this rule. A critical-only actor with
+no Task captures is still admitted through its separate critical proof.
+
+LLVM draft `oreslang-source.llvm#1277` currently targets source-only
+fail-closed `.atto`/`.ores` compiler tests and native critical gate ticket
+retirement receipts plus 512 host-only races. This is **not** LLVM guest
+critical execution and does not authorize any private-source transfer.
+The conformance evidence record is
+`oreslang-platform-conformance/evidence/critical-java-llvm-m0-20261103.md`.
+
+Latest source Java critical run `41754438780` failed before runner
+admission (`steps=null`); no Maven, JUnit, guest or Graal AOT result.
 
 ## Candidate identities and source-free executed evidence
 
