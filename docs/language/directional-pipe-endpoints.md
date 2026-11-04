@@ -86,6 +86,34 @@ checker must derive real actor route authority from the compiler-owned actor
 identity and the existing route plan. Any future interface dispatch must
 not let user code mint actor CONTROL/MailFrame capabilities.
 
+## Pub/sub interoperability and capability admission
+
+`pipe` is **actor/stream routing**, not pub/sub subscription syntax. A
+`Topic<T>`, `Subscription<T>`, `TopicPublisher<T>` or
+`TopicSubscriber<T>` cannot be used as a pipeline DATA payload or
+implicitly converted into an authenticated `ActorRef` route. Likewise, a
+`Channel<T>`, `ReadChannel<T>`, `WriteChannel<T>` or `ActorStream<T>`
+capability cannot be hidden inside a nested `Envelope<T>` and forwarded as
+ordinary message data.
+
+The compiler-internal `PipeEndpointContracts` traverses nested payload types
+and fails closed on these capabilities. This does **not** ban ordinary
+`ActorRef<T>` message values, which are governed by separate `Sendable`
+and actor-incarnation rules.
+
+A future explicit `Topic<T>` -> `ActorStream<T>` adapter requires a
+compiler-/runtime-minted subscriber grant, exact payload domain, bounded
+element/byte quotas, declared reliable/latest/lossy delivery policy,
+cancellation/refund accounting, per-actor exclusive-turn scheduling, and
+an independently reserved supervisor CONTROL path. No existing implicit
+`pipe` call creates that adapter.
+
+Functional `|>` remains eager value/function composition; it never means
+`ActorStream` construction. `ActorUtils::pipe` and infix `pipe`
+select the same actor route semantics. The Wasm scalar bridge rejects these
+forms before native compiler invocation until guest actor pipeline lowering is
+implemented; a host-side V8 pass is not evidence of guest parity.
+
 ## Direction, cardinality and response semantics
 
 `source pipe transform pipe sink` checks each adjacent output/input pair
