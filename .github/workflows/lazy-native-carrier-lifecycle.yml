@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native \
-            '-Dtest=ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest' \
+            '-Dtest=ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest,ActorJvmFirstCarrierAdmissionTest' \
             test
           test -s target/native/liboresthread.so
           test -n "$(find target/surefire-reports -maxdepth 1 -name 'TEST-*.xml' -print -quit)"
