@@ -522,4 +522,31 @@ final class MixedSourceInteropTest {
                 IsolatePolicy.Capability.JAVA_INTEROP,
                 IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
     }
+
+    @Test
+    void attoExtensionPreservesNativeGuestExecutionAndLegacyOres() throws Exception {
+        String guest = """
+                pub fnc main(): void {
+                  stdio.println("atto-ok");
+                  return;
+                }
+                """;
+        Path atto = temp.resolve("native.atto");
+        Files.writeString(atto, guest);
+        assertEquals(MixedSourceUnit.PrimaryLanguage.ORES,
+                MixedSourceUnit.parse(atto, guest).primaryLanguage());
+        assertEquals(MixedSourceUnit.PrimaryLanguage.ORES,
+                MixedSourceUnit.parse("/tmp/legacy.ores", "legacy.ores", guest).primaryLanguage());
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                atto,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                out,
+                new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("atto-ok"));
+    }
+
 }

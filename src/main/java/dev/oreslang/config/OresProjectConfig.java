@@ -8,12 +8,17 @@ import org.tomlj.TomlTable;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -254,18 +259,44 @@ public final class OresProjectConfig {
 
     private static Optional<Path> existingSource(Path candidate) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
+        String filename = normalized.getFileName().toString();
+        String lowerFilename = filename.toLowerCase(Locale.ROOT);
+        // Explicit foreign-source paths must never pass through this resolver.
+        // Preserve existing .ores and Java interop while admitting canonical .atto.
+        if (lowerFilename.endsWith(".atto")) {
+            // Any canonical directory entry (regular file, directory or link)
+            // wins suffix selection. The bounded no-follow reader then rejects
+            // a non-regular or linked .atto; do not fall back to a legacy peer.
+            return existsNoFollow(normalized) ? Optional.of(normalized) : Optional.empty();
+        }
+        if (lowerFilename.endsWith(".ores") || lowerFilename.endsWith(".java")) {
+            return Files.isRegularFile(normalized) ? Optional.of(normalized) : Optional.empty();
+        }
+        if (filename.contains(".")) return Optional.empty();
 
-        String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
-
-        Path ores = Path.of(normalized.toString() + ".ores");
-        if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
-
-        Path java = Path.of(normalized.toString() + ".java");
-        if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
-
+        // Canonical extension wins over legacy sources when both exist.
+        // An explicitly suffixed import can still select the legacy file.
+        for (String extension : List.of(".atto", ".ores", ".java")) {
+            Path source = Path.of(normalized.toString() + extension);
+            // Inspect the canonical .atto path without following links. Even a
+            // dangling symlink or directory occupies the canonical name and
+            // must not silently fall through to a shadowing .ores file.
+            if (extension.equals(".atto") ? existsNoFollow(source) : Files.isRegularFile(source))
+                return Optional.of(source);
+        }
         return Optional.empty();
+    }
+
+    private static boolean existsNoFollow(Path path) {
+        try {
+            Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            return true;
+        } catch (NoSuchFileException missing) {
+            return false;
+        } catch (IOException failure) {
+            // An unreadable canonical entry is not equivalent to absence.
+            throw new UncheckedIOException("cannot inspect canonical .atto source entry", failure);
+        }
     }
 
     private static Path directoryFor(Path start) {

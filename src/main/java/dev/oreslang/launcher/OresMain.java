@@ -167,7 +167,7 @@ public final class OresMain {
                 } else if (arg.startsWith("--")) {
                     throw new UsageException("unknown option: " + arg);
                 } else if (filename == null) filename = arg;
-                else throw new UsageException("only one .ores or .java source file may be supplied");
+                else throw new UsageException("only one .atto, .ores, or .java source file may be supplied");
             } catch (IllegalArgumentException invalidOption) {
                 throw new UsageException(invalidOption.getMessage());
             }
@@ -217,7 +217,7 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
+        String directOresSource = isGuestSourceFile(filename) ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -248,8 +248,8 @@ public final class OresMain {
         }
 
         if (buildAnalysis) {
-            if (!filename.endsWith(".ores")) {
-                throw new UsageException("--build-analysis currently requires a .ores source file");
+            if (!isGuestSourceFile(filename)) {
+                throw new UsageException("--build-analysis requires a .atto or .ores source file");
             }
             String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
@@ -317,6 +317,13 @@ public final class OresMain {
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
+    }
+
+    // Preserve legacy .ores while admitting new AttoLang .atto with the same
+    // bounded UTF-8 reader, warnings, compiler gates, and permission checks.
+    private static boolean isGuestSourceFile(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".ores") || lower.endsWith(".atto");
     }
 
     // Share admission policy with the linked-unit loader, including imports.
@@ -388,7 +395,7 @@ public final class OresMain {
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
-                        + "[file.ores|file.java]");
+                        + "[file.atto|file.ores|file.java]");
     }
 
     static List<String> formatSyntaxWarnings(Path path, String source) {
