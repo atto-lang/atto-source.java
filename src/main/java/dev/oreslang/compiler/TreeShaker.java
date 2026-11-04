@@ -30,7 +30,36 @@ public final class TreeShaker {
     public static Result shake(Ast.Program checkedProgram, BuildOptions options) {
         Objects.requireNonNull(checkedProgram, "checkedProgram");
         Objects.requireNonNull(options, "options");
-        return new Engine(checkedProgram, options).run();
+        // A caller bypassing type checking cannot use dead-code removal to
+        // erase compile-time declarations or unexpanded macro invocations.
+        requireMacroFreeExecutableProgram(checkedProgram);
+        Result result = new Engine(checkedProgram, options).run();
+        requireMacroFreeExecutableProgram(result.program());
+        return result;
+    }
+
+    /**
+     * Phase-one AOT closure: macro and comptime syntax must be fully erased
+     * before executable optimization. This is NOT a finite-generic-closure,
+     * native code generation or WCET certificate.
+     */
+    private static void requireMacroFreeExecutableProgram(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl
+                        || declaration instanceof Ast.MacroInvocationDecl) {
+                    throw new IllegalArgumentException(
+                            "AOT optimizer requires erased compile-time macro declarations; "
+                                    + "runtime/dead-code fallback is forbidden");
+                }
+            }
+        }
+        MacroExpansionPlanner.Plan pending = MacroExpansionPlanner.plan(program);
+        if (pending.hasInvocations()) {
+            throw new IllegalArgumentException(
+                    "AOT optimizer requires macro-free executable expressions; "
+                            + "runtime/dead-code fallback is forbidden");
+        }
     }
 
     public record Result(
@@ -110,7 +139,11 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues, roots);
+            // Tree shaking constructs new Program objects. Preserve the caller's
+            // canonical compilation-unit identity for subsequent AOT stages.
+            Ast.Program identified = MacroSourceUnitIdentity.attach(
+                    pruned, MacroSourceUnitIdentity.unitId(input));
+            return new Result(identified, retained, removed, constantValues, roots);
         }
 
         private void collectConstants() {
@@ -356,6 +389,13 @@ public final class TreeShaker {
                 return substituted;
             }
             if (expression instanceof Ast.MemberExpr member) {
+                if (MacroIdentifierHygiene.lookup(member)
+                        instanceof MacroIdentifierHygiene.CapturedFunction) {
+                    // A checked capture is authorized for this *exact* AST
+                    // identity. Rebuilding the member would destroy proof.
+                    MacroIdentifierHygiene.authorizedCapturedFunction(member);
+                    return member;
+                }
                 return new Ast.MemberExpr(
                         substitute(member.receiver(), substitutions, shadowed),
                         member.member());
@@ -573,7 +613,8 @@ public final class TreeShaker {
                         function.returnType(),
                         function.annotations(),
                         rewriteStatements(function.body(), module, locals),
-                        function.genericSpecs());
+                        function.genericSpecs(),
+                        function.effects());
             }
             if (declaration instanceof Ast.FieldDecl field) {
                 Ast.Expr initializer = rewriteExpression(field.initializer(), module, Map.of());
@@ -620,13 +661,15 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.suspends(),
                             method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
                             method.parameters(),
                             method.returnType(),
                             method.annotations(),
-                            rewriteStatements(method.body(), module, locals)));
+                            rewriteStatements(method.body(), module, locals),
+                            method.effects()));
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
@@ -638,7 +681,8 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency());
             }
             return declaration;
         }
@@ -962,6 +1006,11 @@ public final class TreeShaker {
                 return rewritten;
             }
             if (expression instanceof Ast.MemberExpr member) {
+                if (MacroIdentifierHygiene.lookup(member)
+                        instanceof MacroIdentifierHygiene.CapturedFunction) {
+                    MacroIdentifierHygiene.authorizedCapturedFunction(member);
+                    return member;
+                }
                 return new Ast.MemberExpr(
                         rewriteExpression(member.receiver(), module, locals),
                         member.member());
@@ -1342,6 +1391,21 @@ public final class TreeShaker {
                 return;
             }
             if (expression instanceof Ast.MemberExpr member) {
+                MacroIdentifierHygiene.CapturedFunction captured =
+                        MacroIdentifierHygiene.authorizedCapturedFunction(member);
+                if (captured != null) {
+                    // Checked function capture is a static, explicit dependency
+                    // on the caller's real declaration—not an external name.
+                    String target = qualify(
+                            captured.hygiene().callerModule(), captured.name());
+                    if (!symbols.containsKey(target)) {
+                        throw new IllegalArgumentException(
+                                "tree shaking cannot resolve checked macro capture '"
+                                        + target + "'; AOT fallback is forbidden");
+                    }
+                    mark(target);
+                    return;
+                }
                 if (member.receiver() instanceof Ast.NameExpr namespace
                         && !locals.contains(namespace.name())) {
                     String qualified = qualify(namespace.name(), member.member());
