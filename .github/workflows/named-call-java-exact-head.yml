@@ -1,6 +1,8 @@
 name: AttoLang named callable Java/Graal exact-head guest gate
 
 on:
+  push:
+    branches: [audit/product-call-contract-20261026]
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/parser/**'
