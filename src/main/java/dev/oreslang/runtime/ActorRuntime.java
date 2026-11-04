@@ -8925,13 +8925,28 @@ public final class ActorRuntime implements AutoCloseable {
                 supervisor = supervisor.parent;
             }
             truncated |= supervisor != null;
+            // Group ownership may transfer before stop obtains its fence. A
+            // racing observer must never attribute the failure to a group
+            // that no longer owns this actor. Do not acquire authorityLock
+            // under lifecycleLock: the reverse lock order exists on spawn.
+            if (groupId != managedByGroup.get()) {
+                supervisorIds.clear();
+                group = null;
+            }
             ActorFailureTrace.FailureKind kind =
                     failure instanceof ActorCancelledException
                             ? ActorFailureTrace.FailureKind.CANCELLED
                             : ActorFailureTrace.FailureKind.UNCLASSIFIED;
-            ref.failureTrace.compareAndSet(null, ActorFailureTrace.capture(
-                    kind, ref.id().value(), ref.generation(), parentIds, supervisorIds,
-                    truncated, group != null));
+            try {
+                ref.failureTrace.compareAndSet(null, ActorFailureTrace.capture(
+                        kind, ref.id().value(), ref.generation(), parentIds,
+                        supervisorIds, truncated, group != null));
+            } catch (RuntimeException malformedMetadata) {
+                // Diagnostic capture must not hide the original terminal
+                // failure, strand actor shutdown or turn a cause into success.
+                // No call to guest code, logging formatter or side-effectful
+                // Throwable accessor is permitted in this fallback.
+            }
         }
 
         private void fail(Throwable failure) {
