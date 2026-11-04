@@ -125,6 +125,46 @@ final class DurableWorkflowSemanticAnalysisTest {
     }
 
     @Test
+    void portableManifestV1MatchesFiveBackendGoldenBytesAndSha() throws Exception {
+        // This is compiler-side metadata parity only. It does not execute
+        // recorded commands, persist history or prove native guest replay.
+        Ast.Program source = Parser.parse("""
+                define module Billing as
+                    define activity PaymentProvider as
+                        charge(int cents) -> int { return cents; }
+                        refund(int cents) -> bool { return cents > 0; }
+                    end
+                    define workflow Checkout as
+                        run(int order_id) -> int { return order_id; }
+                        status(int order_id) -> int { return order_id; }
+                    end
+                end
+                """);
+        Ast.WorkflowDecl old = workflow(source);
+        Ast.WorkflowDecl withCommands = new Ast.WorkflowDecl(
+                old.body(), old.annotations(), List.of(
+                new Ast.ActivityStepCommand("charge-1", "PaymentProvider", "charge",
+                        List.of(new Ast.NameExpr("order_id"))),
+                new Ast.TimerCommand("timer-1", new Ast.LiteralExpr(250L)),
+                new Ast.WaitForEventCommand("approval-1", "approved"),
+                new Ast.QueryCommand("status", List.of(
+                        new Ast.Param(Ast.TypeRef.simple("int"), "order_id")),
+                        Ast.TypeRef.simple("int"))));
+        DurableExecutionManifest manifest =
+                DurableExecutionManifest.analyze(replaceWorkflow(source, withCommands));
+        var path = java.nio.file.Path.of("contracts/durable-m0/v1/manifest-v1.json");
+        byte[] expected = java.nio.file.Files.readAllBytes(path);
+        String digest = java.nio.file.Files.readString(
+                java.nio.file.Path.of("contracts/durable-m0/v1/manifest-v1.sha256")).strip();
+        assertEquals(1671, expected.length);
+        assertEquals("aa1eed7637b99d8c270c3cd7a3f15ab83acf0463b00ebaa58f0f52c8dd525784",
+                digest);
+        assertArrayEquals(expected, manifest.canonicalBytes(),
+                "Java M0 canonical UTF-8 manifest bytes must equal the shared candidate");
+        assertEquals(digest, manifest.sha256());
+    }
+
+    @Test
     void manifestBytesAreCanonicalAndCommandOrderIsPreserved() throws Exception {
         Ast.Program original = parseValidPair();
         Ast.WorkflowDecl old = workflow(original);
