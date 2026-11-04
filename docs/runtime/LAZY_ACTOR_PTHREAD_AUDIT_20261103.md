@@ -68,3 +68,48 @@ approval and protected refs.
 ## Merge gate
 
 Keep PR #2493 draft. Require exact-head focused `ActorPoolLazyStartTest`, `NativeCarrierExecutorTest`, `ActorAffinityDispatcherTest`, `ActorRuntimeNativeCarrierTest`, ActorRuntime lifecycle and JNI shutdown suites on JDK25 and GraalVM Native Image. For future backends match the *observable* lazy-pool contract while retaining each backend's actual isolation and scheduler entry requirements. Do not count source-free canaries or host-only models as guest execution evidence.
+
+## November 3/4 follow-on: bounded native attach and exact-head lifecycle workflow
+
+The previous Java `carrierLoopsEntered.await(30s)` did not bound the
+earlier native `nativeStart()` pthread attachment barrier: native code used
+`pthread_cond_wait` without a deadline. A stalled
+`AttachCurrentThreadAsDaemon` could block startup indefinitely before
+Java's timeout began. `src/main/c/oresthread.c` now uses
+`pthread_cond_timedwait` against an absolute `CLOCK_REALTIME` deadline
+of 30 seconds, checks all carrier attachments and shutdown/failure, and
+throws before actor admission on timeout. Java's existing failure path
+then seals this executor and invokes asynchronous native retirement.
+
+Additional real-source JUnit cases added to `NativeCarrierExecutorTest`
+race `ensureStarted()` with `shutdownNow()` across 12 independent
+instances and keep a physical actor turn intentionally active after
+shutdown interruption to verify that `awaitTermination()` cannot
+succeed until the JNI reaper has joined its pthread.
+
+The new source-org-only workflow
+`.github/workflows/lazy-native-carrier-lifecycle.yml` pins the exact
+checkout SHA, uses read-only permissions and no persisted checkout
+credentials, compiles the actual repository JNI library with GCC and
+Clang in separate JDK25/GraalVM jobs, and invokes focused actor/native
+lifecycle JUnit tests. No private source is transferred to another
+organization. Initial workflow run
+[41747485003](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/41747485003)
+was **UNOBSERVED**: both compiler matrix jobs failed before runner
+allocation (`runner_id=0`, `steps=[]`). A workflow being discovered
+and scheduled is not evidence its commands executed.
+
+An independent **source-free** POSIX timed-condition-variable model
+was locally built under GCC and Clang and passed 100 repeats each
+of complete attachment, timeout and shutdown-wakeup cases per
+compiler. These 600 modeled scenarios do **not** replace an exact
+`oresthread.c` JNI build, fault-injected JVM attach stall or GraalVM
+Native Image execution.
+
+**Still mandatory before merge:** obtain funded, authorized source-org
+execution; compile and execute the new JNI/JUnit tests and actual
+compiled `.atto` actor fixture; inject failures at pthread_create,
+JVM attachment, and reaper creation; demonstrate shutdown/physical
+retirement under JDK25/GraalVM Native Image. The source-org Actions
+runner-admission failure remains distinct from test failures.
+
