@@ -64,7 +64,7 @@ final class AuditCallReceiverLoanTest {
         mustReject("""
                 fnc invalid() -> int {
                   val Counter p = new Counter();
-                  return p.take_borrow(rt borrow mut p);
+                  return p.take_borrow(rt mut borrow p);
                 }
                 """);
     }
@@ -74,7 +74,7 @@ final class AuditCallReceiverLoanTest {
         mustReject("""
                 fnc invalid() -> int {
                   val Counter p = new Counter();
-                  return p.inspect(rt borrow mut p);
+                  return p.inspect(rt mut borrow p);
                 }
                 """);
     }
@@ -105,7 +105,7 @@ final class AuditCallReceiverLoanTest {
                 fnc valid() -> int {
                   val Counter p = new Counter();
                   val Counter q = new Counter();
-                  return p.inspect(rt borrow mut q);
+                  return p.inspect(rt mut borrow q);
                 }
                 """)));
     }
@@ -126,7 +126,7 @@ final class AuditCallReceiverLoanTest {
                 fnc valid() -> int {
                   val Counter p = new Counter();
                   val Counter q = new Counter();
-                  return p.take_borrow(rt borrow mut q);
+                  return p.take_borrow(rt mut borrow q);
                 }
                 """)));
     }

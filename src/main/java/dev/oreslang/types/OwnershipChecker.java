@@ -2143,7 +2143,10 @@ public final class OwnershipChecker {
             roots.add(ownershipRoot(root));
         } else if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
             Ast.Expr base = projectionBase(value);
-            if (base instanceof Ast.NameExpr) {
+            if (isBuiltinProcessNamespace(base, scope)) {
+                // The runtime owns `process`, so there is no guest owner to pin. A local
+                // named process is still in scope and takes the checked branch below.
+            } else if (base instanceof Ast.NameExpr) {
                 // Only a stable, checked projection may borrow an existing owner.
                 roots.add(ownershipRoot(borrowPlace(value, scope, true).owner()));
             } else {
@@ -2167,6 +2170,12 @@ public final class OwnershipChecker {
                 // privilege merely by spelling a VM protocol type's name.
                 && findClass(type.name()) == null
                 && !hasLocalTypeAliasNamed(type.name());
+    }
+
+    private static boolean isBuiltinProcessNamespace(Ast.Expr base, Scope scope) {
+        return base instanceof Ast.NameExpr name
+                && name.name().equals("process")
+                && scope.lookup("process") == null;
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Scope scope) {
