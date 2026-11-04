@@ -111,6 +111,31 @@ fi
 rm -f "$cycle_out" "$cycle_err"
 printf 'SG_JAVA_SHARED_CYCLE_NATIVE_PASS blob=%s guest_exit=42\n' "$cycle_blob"
 
+
+# Canonical if/then source shared byte-identically with LLVM's native parser test.
+canonical=contracts/stategraph-portability/shared-canonical-then.ores
+canonical_blob=ad42a13d1542d8df6215bff42d056a489015c842
+[[ -f "$canonical" && ! -L "$canonical" ]]
+git ls-files --error-unmatch -- "$canonical" >/dev/null
+[[ "$(git hash-object "$canonical")" = "$canonical_blob" ]]
+[[ "$(git rev-parse "HEAD:$canonical")" = "$canonical_blob" ]]
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$canonical" ||
+  { echo 'SG_JAVA_CANONICAL_THEN_CHECK_NOT_ACCEPTED' >&2; exit 1; }
+canonical_out="$(mktemp)"
+canonical_err="$(mktemp)"
+set +e
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$canonical" --execute > "$canonical_out" 2> "$canonical_err"
+canonical_status=$?
+set -e
+if [[ "$canonical_status" -ne 42 || -s "$canonical_out" || -s "$canonical_err" ]]; then
+  cat "$canonical_err" >&2
+  rm -f "$canonical_out" "$canonical_err"
+  echo "SG_JAVA_CANONICAL_THEN_GUEST_NOT_ACCEPTED status=$canonical_status" >&2
+  exit 1
+fi
+rm -f "$canonical_out" "$canonical_err"
+printf 'SG_JAVA_CANONICAL_THEN_NATIVE_PASS blob=%s guest_exit=42\n' "$canonical_blob"
+
 for name in scalar branch nominal; do
   file="tests/stategraph-portability/$name.ores"
   git ls-files --error-unmatch -- "$file" >/dev/null
