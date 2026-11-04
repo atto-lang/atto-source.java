@@ -300,10 +300,15 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = currentActor.get();
         Long sequence = CURRENT_HTTP_MAIL_SEQUENCE.get();
         ActorInboxMail<?> mail = cell == null ? null : cell.activeMail;
+        HttpTokenDelivery origin = pendingHttpTransfers.get(token);
         if (cell == null || cell.stopped.get() || mail == null
                 || sequence == null || mail.sequence() != sequence.longValue()
                 || !(mail.value() instanceof String deliveredToken)
-                || !deliveredToken.equals(token)) {
+                || !deliveredToken.equals(token)
+                || origin == null
+                || !origin.destination().equals(cell.ref.id())
+                || origin.incarnation() != cell.ref.generation()
+                || origin.firstMailSequence().get() != sequence.longValue()) {
             throw new SecurityException(
                     "HTTP transfer token does not match the admitted mailbox value");
         }
@@ -580,6 +585,39 @@ public final class ActorRuntime implements AutoCloseable {
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    /**
+     * Runtime-local, non-guest HTTP transfer admission table. A token's
+     * destination actor and its FIRST accepted mailbox sequence are bound
+     * before that mail becomes visible. No process-global token registry.
+     *
+     * This table cannot grant request access by itself: NativeHttp separately
+     * checks the matching exchange and one-shot transfer ownership.
+     */
+    private final Map<String, HttpTokenDelivery> pendingHttpTransfers =
+            new ConcurrentHashMap<>();
+
+    private record HttpTokenDelivery(
+            ActorId destination, long incarnation,
+            AtomicLong firstMailSequence) { }
+
+    void registerPendingHttpTransfer(
+            String token, ActorRef<?> destination) {
+        Objects.requireNonNull(token, "token");
+        Objects.requireNonNull(destination, "destination");
+        if (token.isBlank() || !destination.ownedBy(this)
+                || ActorRuntime.inActorExecution() || closed.get()) {
+            throw new SecurityException("HTTP token registration requires its supervisor");
+        }
+        HttpTokenDelivery candidate = new HttpTokenDelivery(
+                destination.id(), destination.generation(), new AtomicLong(-1L));
+        if (pendingHttpTransfers.putIfAbsent(token, candidate) != null) {
+            throw new IllegalStateException("HTTP transfer token already registered");
+        }
+    }
+
+    void retirePendingHttpTransfer(String token) {
+        if (token != null) pendingHttpTransfers.remove(token);
+    }
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
@@ -6020,10 +6058,40 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
-                    envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    // If this is a registered one-shot HTTP transfer, pin
+                    // its FIRST delivered mail sequence, not just token bytes
+                    // or reusable ActorId. Ignore ordinary/wrong-actor strings.
+                    // CAS is lock-free while lifecycleLock is held; do NOT
+                    // acquire NativeHttp.State here (its move path can inspect
+                    // actor lifecycle while holding the state monitor).
+                    HttpTokenDelivery httpDelivery = prepared instanceof String token
+                            ? pendingHttpTransfers.get(token) : null;
+                    if (httpDelivery != null
+                            && (!httpDelivery.destination().equals(ref.id())
+                                    || httpDelivery.incarnation() != ref.generation())) {
+                        httpDelivery = null;
+                    }
+                    if (httpDelivery != null
+                            && !httpDelivery.firstMailSequence()
+                                    .compareAndSet(-1L, sequence)) {
+                        throw new SecurityException(
+                                "HTTP transfer ticket was already delivered to its original mail");
+                    }
+                    boolean mailWritten = false;
+                    try {
+                        envelope = MessageEnvelope.message(
+                                prepared, release, sender, sequence);
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new ActorMailboxFullException(ref.id());
+                        }
+                        mailWritten = true;
+                    } finally {
+                        if (!mailWritten && httpDelivery != null) {
+                            // Failed admission cannot consume the one-shot
+                            // mail binding. No reader can see an unqueued mail.
+                            httpDelivery.firstMailSequence()
+                                    .compareAndSet(sequence, -1L);
+                        }
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
