@@ -54,7 +54,7 @@ public final class CompilerEffectAnalysisV0 {
                 if (edges > 30000 - calls.size())
                     throw new IllegalArgumentException("analysis v0 graph budget exceeded");
                 edges += calls.size();
-                rows.put(key, new Row(calls, !localKnown));
+                rows.put(key, new Row(calls, !localKnown || !reportableKey(key)));
             }
         }
         Map<String, Boolean> resolved = new HashMap<>();
@@ -77,6 +77,18 @@ public final class CompilerEffectAnalysisV0 {
 
     private static String key(String name, int arity) {
         return name + "/" + arity;
+    }
+
+    /** Escaped/truncated names are ambiguous in the public tabular report. */
+    private static boolean reportableKey(String key) {
+        if (key.isEmpty() || key.length() > 256) return false;
+        for (int i = 0; i < key.length(); ++i) {
+            char c = key.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '_' || c == '/'))
+                return false;
+        }
+        return true;
     }
 
     private static String safeKey(String key) {
