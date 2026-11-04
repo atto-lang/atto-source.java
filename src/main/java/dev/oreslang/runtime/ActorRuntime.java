@@ -8695,9 +8695,27 @@ public final class ActorRuntime implements AutoCloseable {
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
                     // close/permit release across every dispatch path.
+                    // Only the real user-mail dispatch and a scheduler-minted
+                    // SourceTask turn for the EXACT still-active original mail
+                    // can carry request context. Generic Future/ContinuationTarget
+                    // callbacks MUST NOT recover HTTP request authority merely
+                    // because they remembered a positive mailbox sequence.
+                    // Recheck at physical dispatch, not only when enqueued:
+                    // a pooled actor may have retired the original receive
+                    // and admitted a different request in the meantime.
+                    long authorizedHttpMailSequence = -1L;
+                    if (!envelope.isContinuation()) {
+                        authorizedHttpMailSequence = envelope.sequence();
+                    } else if (sourceTaskCommand && !stopped.get()) {
+                        ActorInboxMail<M> originalMail = activeMail;
+                        if (originalMail != null
+                                && originalMail.sequence() == envelope.sequence()) {
+                            authorizedHttpMailSequence = envelope.sequence();
+                        }
+                    }
                     try (MessageEnvelope activeEnvelope = envelope;
                          HttpMailDispatchScope requestScope =
-                                 new HttpMailDispatchScope(envelope.sequence())) {
+                                 new HttpMailDispatchScope(authorizedHttpMailSequence)) {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
