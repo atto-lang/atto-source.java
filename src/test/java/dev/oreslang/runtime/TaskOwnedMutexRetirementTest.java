@@ -163,12 +163,13 @@ public class TaskOwnedMutexRetirementTest {
     @Test
     void dequeuedGrantCancellationJoinsPhysicalReclamationBeforeTaskDone() throws Exception {
         var shared = OresMutex.shared(new int[] { 19 });
-        var originalHolder = shared.lock();
+        // Host guards are owned by the acquiring thread. The holder lives on
+        // its own carrier so that carrier's release performs the handoff.
+        var originalHolder = new ForeignHolder<>(shared);
         var requestQueued = new CountDownLatch(1);
         var grantDequeued = new CountDownLatch(1);
         var finishGrant = new CountDownLatch(1);
         var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
-        var grantingFailure = new AtomicReference<Throwable>();
         var never = new OresFuture<Integer>();
 
         // This hook runs after the queue's dequeue/claim linearization
@@ -193,13 +194,8 @@ public class TaskOwnedMutexRetirementTest {
             assertTrue(requestQueued.await(3, TimeUnit.SECONDS));
             assertFalse(pending.get().isDone());
 
-            var granting = Thread.ofPlatform().start(() -> {
-                try {
-                    originalHolder.release();
-                } catch (Throwable failure) {
-                    grantingFailure.set(failure);
-                }
-            });
+            var granting = originalHolder.thread;
+            originalHolder.releaseOnOwnerThread();
             try {
                 assertTrue(grantDequeued.await(3, TimeUnit.SECONDS),
                         "the waiter must be removed and its handoff claimed");
@@ -221,7 +217,7 @@ public class TaskOwnedMutexRetirementTest {
             }
 
             assertFalse(granting.isAlive(), "grant carrier must finish its handoff");
-            assertNull(grantingFailure.get(), "grant carrier must not throw");
+            assertNull(originalHolder.failure.get(), "grant carrier must not throw");
             assertInstanceOf(TaskHandle.Cancelled.class,
                     task.getDone().get(4, TimeUnit.SECONDS));
             assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
@@ -244,19 +240,18 @@ public class TaskOwnedMutexRetirementTest {
         } finally {
             finishGrant.countDown();
             shared.setAfterAsyncDequeueForTesting(null);
-            if (!originalHolder.released()) originalHolder.release();
+            originalHolder.close();
         }
     }
 
     @Test
     void publishedGrantRetirementWaitsForGrantCarrierBeforePoisoning() throws Exception {
         var shared = OresMutex.shared(new int[] { 42 });
-        var original = shared.lock();
+        var original = new ForeignHolder<>(shared);
         var queued = new CountDownLatch(1);
         var subscriberEntered = new CountDownLatch(1);
         var releaseSubscriber = new CountDownLatch(1);
         var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
-        var releaserFailure = new AtomicReference<Throwable>();
         var never = new OresFuture<Integer>();
 
         try (var scheduler = new OresScheduler(1)) {
@@ -278,13 +273,8 @@ public class TaskOwnedMutexRetirementTest {
                     throw new AssertionError(interrupted);
                 }
             });
-            var granting = Thread.ofPlatform().start(() -> {
-                try {
-                    original.release();
-                } catch (Throwable failure) {
-                    releaserFailure.set(failure);
-                }
-            });
+            var granting = original.thread;
+            original.releaseOnOwnerThread();
             try {
                 assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
                 assertTrue(OresMutex.Shared.isPublishedAsyncGrant(pending.get()));
@@ -302,7 +292,7 @@ public class TaskOwnedMutexRetirementTest {
                 granting.join(4000);
             }
             assertFalse(granting.isAlive());
-            assertNull(releaserFailure.get());
+            assertNull(original.failure.get());
             assertInstanceOf(TaskHandle.Cancelled.class,
                     task.getDone().get(4, TimeUnit.SECONDS));
             assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
@@ -313,7 +303,7 @@ public class TaskOwnedMutexRetirementTest {
             next.release();
         } finally {
             releaseSubscriber.countDown();
-            if (!original.released()) original.release();
+            original.close();
         }
     }
 
@@ -565,6 +555,54 @@ public class TaskOwnedMutexRetirementTest {
             assertInstanceOf(TaskHandle.Cancelled.class,
                     task.getDone().get(4, TimeUnit.SECONDS));
             assertTrue(shared.isPoisoned());
+        }
+    }
+
+    /**
+     * Holds a host-owned SharedMutex guard on a dedicated carrier. Host guards
+     * belong to the acquiring thread, so the release (and therefore the async
+     * waiter handoff) must run on that same carrier.
+     */
+    private static final class ForeignHolder<T> implements AutoCloseable {
+        final Thread thread;
+        final AtomicReference<Throwable> failure = new AtomicReference<>();
+        private final CountDownLatch acquired = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+
+        ForeignHolder(OresMutex.Shared<T> shared) throws InterruptedException {
+            thread = Thread.ofPlatform().name("foreign-mutex-holder").start(() -> {
+                final OresMutex.Guard<T> guard;
+                try {
+                    guard = shared.lock();
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                    acquired.countDown();
+                    return;
+                }
+                acquired.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                try {
+                    guard.release();
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                }
+            });
+            assertTrue(acquired.await(3, TimeUnit.SECONDS), "holder must acquire");
+            assertNull(failure.get(), "holder acquisition must not fail");
+        }
+
+        void releaseOnOwnerThread() {
+            release.countDown();
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            release.countDown();
+            thread.join(4000);
         }
     }
 }
