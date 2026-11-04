@@ -130,6 +130,30 @@ final class ActorFailureTraceTest {
         }
     }
 
+
+    @Test
+    void cleanupOnlyFirstWinnerAlsoCapturesDetachedTrace() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(ignored -> {
+                throw new IllegalStateException("host cleanup failed");
+            });
+            var actor = runtime.<String>spawnShared(
+                    ignored -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isPresent(), "cleanup failure must be visible");
+            var snapshot = actor.failureTrace().orElseThrow();
+            assertEquals(actor.id().value().toString(),
+                    snapshot.boundaries().get(0).identity());
+            assertEquals(actor.generation(),
+                    snapshot.boundaries().get(0).actorGeneration());
+            assertFalse(snapshot.supervisorControlDelivered());
+            assertFalse(snapshot.sourceFramesAvailable());
+            assertFalse(snapshot.toString().contains("host cleanup failed"));
+        }
+    }
+
     @Test
     void supervisorDepthTruncationIsHonestAndNeverClaimsControlDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
