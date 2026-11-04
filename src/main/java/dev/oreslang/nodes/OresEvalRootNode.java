@@ -18,6 +18,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
+import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -4028,10 +4029,15 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, left);
                                 return;
                             }
+                            // The right operand sees bindings established by the
+                            // left operand, as in the synchronous condition path.
+                            Env rightEnv = new Env(env);
+                            left.bindings().forEach((name, value) ->
+                                    rightEnv.define(name, value, Ast.BindingKind.VAL));
                             evalSuspendableCondition(
                                     t,
                                     binary.right(),
-                                    env,
+                                    rightEnv,
                                     (t2, right) ->
                                             continuation.accept(
                                                     t2,
@@ -4060,9 +4066,7 @@ public final class OresEvalRootNode extends RootNode {
                                         t,
                                         new ConditionResult(
                                                 true,
-                                                Map.of(
-                                                        test.binding(),
-                                                        value)));
+                                                java.util.Collections.singletonMap(test.binding(), value)));
                             } else {
                                 continuation.accept(
                                         t,
@@ -4095,7 +4099,7 @@ public final class OresEvalRootNode extends RootNode {
                                     matched
                                             ? new ConditionResult(
                                                     true,
-                                                    Map.copyOf(bindings))
+                                                    immutableBindings(bindings))
                                             : ConditionResult.noMatch());
                         });
                 return;
@@ -4117,6 +4121,14 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        // Snapshot source-order bindings without discarding null guest values.
+        // Map.copyOf/Map.of reject null and could fail after a pattern matched.
+        private static Map<String, Object> immutableBindings(
+                Map<String, Object> values) {
+            return java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(values));
+        }
+
         private ConditionResult mergeConditionBindings(
                 ConditionResult left,
                 ConditionResult right) {
@@ -4125,10 +4137,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             LinkedHashMap<String, Object> bindings =
                     new LinkedHashMap<>(left.bindings());
-            bindings.putAll(right.bindings());
-            return new ConditionResult(
-                    true,
-                    Map.copyOf(bindings));
+            for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
+                if (bindings.containsKey(entry.getKey())) {
+                    throw new IllegalStateException(
+                            "condition pattern binds '" + entry.getKey() + "' more than once");
+                }
+                bindings.put(entry.getKey(), entry.getValue());
+            }
+            return new ConditionResult(true, immutableBindings(bindings));
         }
 
         private void evalSuspendableExpr(
@@ -6842,7 +6858,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "the static pattern proof and runtime type metadata disagree");
                     }
                     selected = arm;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = immutableBindings(bindings);
                 }
 
                 if (selected == null && fallback != null) {
@@ -6851,7 +6867,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException("match fallback did not accept the unmatched subject");
                     }
                     selected = fallback;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = immutableBindings(bindings);
                 }
 
                 if (selected == null) {
@@ -8390,95 +8406,91 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    case "read_text" -> (Invokable) fs::readText;
-                    case "read_text_async" -> (Invokable) args -> {
+                    case "read_text", "read_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.read_text_async", () -> fs.readText(values));
+                                "fs." + name, () -> fs.readText(values));
                     };
-                    case "write_text" -> (Invokable) fs::writeText;
-                    case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
-                    case "write_text_async" -> (Invokable) args -> {
+                    case "write_text", "write_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.write_text_async", () -> fs.writeText(values));
+                                "fs." + name, () -> fs.writeText(values));
                     };
-                    case "append_text" -> (Invokable) fs::appendText;
-                    case "append_text_async" -> (Invokable) args -> {
+                    case "write_text_atomic", "write_text_atomic_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.append_text_async", () -> fs.appendText(values));
+                                "fs." + name, () -> fs.writeTextAtomic(values));
                     };
-                    case "list_dir" -> (Invokable) fs::listDir;
-                    case "is_dir" -> (Invokable) fs::isDir;
-                    case "is_symlink" -> (Invokable) fs::isSymlink;
-                    case "exists" -> (Invokable) fs::exists;
-                    case "exists_async" -> (Invokable) args -> {
+                    case "append_text", "append_text_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                                "fs." + name, () -> fs.appendText(values));
+                    };
+                    case "list_dir", "list_dir_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.exists_async", () -> fs.exists(values));
+                                "fs." + name, () -> fs.listDir(values));
                     };
-                    case "remove" -> (Invokable) fs::remove;
-                    case "remove_async" -> (Invokable) args -> {
+                    case "is_dir", "is_dir_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.isDir(values));
+                    };
+                    case "is_symlink", "is_symlink_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.isSymlink(values));
+                    };
+                    case "exists", "exists_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.exists(values));
+                    };
+                    case "remove", "remove_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.remove_async", () -> fs.remove(values));
+                                "fs." + name, () -> fs.remove(values));
                     };
-                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
-                    case "mkdir_all_async" -> (Invokable) args -> {
+                    case "mkdir_all", "mkdir_all_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.mkdir_all_async", () -> fs.mkdirAll(values));
+                                "fs." + name, () -> fs.mkdirAll(values));
                     };
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
-                    case "connect" -> (Invokable) network::connect;
-                    case "connect_async" -> (Invokable) args -> {
-                        requireTwo(args, "network.connect_async");
+                    case "connect", "connect_blocking" -> (Invokable) args -> {
+                        requireTwo(args, "network." + name);
                         String host = requireString(args.get(0), "host");
                         if (!(args.get(1) instanceof Number port)) throw new IllegalArgumentException("port must be an integer");
                         List<Object> values = List.of(host, port.intValue());
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "network.connect_async", () -> network.connect(values));
+                                "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
                 return switch (name) {
-                    case "read_line_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.read_line_async");
+                    case "read_line", "read_line_blocking" -> (Invokable) args -> {
+                        requireZero(args, "socket." + name);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.read_line_async", () -> {
+                                "socket." + name, () -> {
                                     String value = socket.readLine();
                                     return new OptionValue(value != null, value);
                                 });
                     };
-                    case "write_text_async" -> (Invokable) args -> {
-                        String value = requireStringArg(args, "socket.write_text_async");
+                    case "write_text", "write_text_blocking" -> (Invokable) args -> {
+                        String value = requireStringArg(args, "socket." + name);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.write_text_async", () -> { socket.writeText(value); return null; });
+                                "socket." + name, () -> { socket.writeText(value); return null; });
                     };
-                    case "close_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.close_async");
-                        return context.nativeIo().submitClose(context, () -> { socket.close(); return null; });
-                    };
-                    case "read_line" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.read_line");
-                        String value = socket.readLine();
-                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-                    };
-                    case "write_text" -> (Invokable) args -> {
-                        socket.writeText(requireStringArg(args, "network.socket.write_text"));
-                        return null;
-                    };
-                    case "close" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.close");
-                        socket.close();
-                        return null;
+                    case "close", "close_blocking" -> (Invokable) args -> {
+                        requireZero(args, "socket." + name);
+                        return context.nativeIo().submitClose(
+                                context, "socket." + name, () -> { socket.close(); return null; });
                     };
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
@@ -8592,6 +8604,75 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
                 };
             }
+            if (receiver instanceof OutboundHttpRequest.Response response) {
+                return switch (name) {
+                    case "status" -> response.status();
+                    case "header_count" -> response.headerCount();
+                    case "header_name_at" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number index)
+                                || !isIntegral(index)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientResponse.header_name_at requires one integral index");
+                        }
+                        long value = index.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("HTTP header index is outside int range");
+                        }
+                        return response.headerNameAt((int) value);
+                    };
+                    case "header_value_at" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number index)
+                                || !isIntegral(index)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientResponse.header_value_at requires one integral index");
+                        }
+                        long value = index.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("HTTP header index is outside int range");
+                        }
+                        return response.headerValueAt((int) value);
+                    };
+                    case "header_values" -> (Invokable) args ->
+                            response.headerValues(
+                                    requireStringArg(
+                                            args,
+                                            "HttpClientResponse.header_values"));
+                    case "take_body" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientResponse.take_body");
+                        return response.takeBody();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientResponse.close");
+                        return response.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown HttpClientResponse member " + name);
+                };
+            }
+            if (receiver instanceof OutboundHttpRequest.Body body) {
+                return switch (name) {
+                    case "closed" -> body.closed();
+                    case "read_chunk" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.get(0) instanceof Number limit)
+                                || !isIntegral(limit)) {
+                            throw new IllegalArgumentException(
+                                    "HttpClientBody.read_chunk requires one integral byte limit");
+                        }
+                        long value = limit.longValue();
+                        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException(
+                                    "HTTP body read limit is outside int range");
+                        }
+                        return body.readChunk((int) value);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "HttpClientBody.close");
+                        return body.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown HttpClientBody member " + name);
+                };
+            }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
                     case "handler" -> (Invokable) args -> {
@@ -8630,17 +8711,26 @@ public final class OresEvalRootNode extends RootNode {
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
-                    case "get_text" -> (Invokable) http::getText;
-                    case "get_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
+                    case "request" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(2) instanceof List<?> headers)) {
+                            throw new IllegalArgumentException(
+                                    "http.request requires method, URL and List<(String,String)> headers");
+                        }
+                        return OutboundHttpRequest.request(
+                                context,
+                                requireString(args.get(0), "HTTP method"),
+                                requireString(args.get(1), "HTTP URL"),
+                                headers);
                     };
-                    case "post_text" -> (Invokable) http::postText;
-                    case "post_text_async" -> (Invokable) args -> {
+                    case "get_text", "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
+                                "http." + name, () -> http.getText(values));
+                    };
+                    case "post_text", "post_text_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
+                                "http." + name, () -> http.postText(values));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
@@ -10046,26 +10136,19 @@ public final class OresEvalRootNode extends RootNode {
                         rightEnv.define(name, value, Ast.BindingKind.VAL));
                 ConditionResult right = evalCondition(binary.right(), rightEnv);
                 if (!right.matched()) return ConditionResult.noMatch();
-                LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
-                for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                    Object previous = merged.putIfAbsent(entry.getKey(), entry.getValue());
-                    if (previous != null && previous != entry.getValue()) {
-                        throw new IllegalStateException("condition pattern binds '" + entry.getKey() + "' more than once");
-                    }
-                }
-                return new ConditionResult(true, Map.copyOf(merged));
+                return mergeConditionBindings(left, right);
             }
             if (condition instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
                 if (!oresTypeMatches(value, test.targetType())) return ConditionResult.noMatch();
                 if (test.binding() == null) return ConditionResult.match();
-                return new ConditionResult(true, Map.of(test.binding(), value));
+                return new ConditionResult(true, java.util.Collections.singletonMap(test.binding(), value));
             }
             if (condition instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                 return patternMatches(test.pattern(), value, bindings)
-                        ? new ConditionResult(true, Map.copyOf(bindings))
+                        ? new ConditionResult(true, immutableBindings(bindings))
                         : ConditionResult.noMatch();
             }
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
@@ -10074,9 +10157,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
-                if (bindings.putIfAbsent(binding.name(), value) != null) {
+                if (bindings.containsKey(binding.name())) {
                     throw new IllegalStateException("pattern binds '" + binding.name() + "' more than once");
                 }
+                bindings.put(binding.name(), value);
                 return true;
             }
             if (pattern instanceof Ast.LiteralPattern literal) {
@@ -10084,17 +10168,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
-                if (typed.binding() != null && bindings.putIfAbsent(typed.binding(), value) != null) {
-                    throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                if (typed.binding() != null) {
+                    if (bindings.containsKey(typed.binding())) {
+                        throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                    }
+                    bindings.put(typed.binding(), value);
                 }
                 return true;
             }
             if (pattern instanceof Ast.StructuralPattern structural) {
                 if (!structuralPatternMatches(value, structural.target())) return false;
-                if (structural.binding() != null
-                        && bindings.putIfAbsent(structural.binding(), value) != null) {
-                    throw new IllegalStateException(
-                            "pattern binds '" + structural.binding() + "' more than once");
+                if (structural.binding() != null) {
+                    if (bindings.containsKey(structural.binding())) {
+                        throw new IllegalStateException(
+                                "pattern binds '" + structural.binding() + "' more than once");
+                    }
+                    bindings.put(structural.binding(), value);
                 }
                 return true;
             }
@@ -10320,6 +10409,10 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
+            if (name.equals("HttpClientResponse"))
+                return value instanceof OutboundHttpRequest.Response;
+            if (name.equals("HttpClientBody"))
+                return value instanceof OutboundHttpRequest.Body;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -10349,6 +10442,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
+            if (value instanceof OutboundHttpRequest.Response) return "HttpClientResponse";
+            if (value instanceof OutboundHttpRequest.Body) return "HttpClientBody";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";

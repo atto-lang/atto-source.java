@@ -22,13 +22,16 @@ public final class EffectContracts {
     public enum Effect {
         AMBIENT_READ, EXTERNAL_WRITE, IO, ENVIRONMENT, CLOCK, RANDOM,
         ACTOR, SCHEDULER, SYNCHRONIZATION, FFI_UNKNOWN, UNKNOWN_CALL,
-        THROW, RAISE, PANIC, CANCELLATION
+        THROW, RAISE, PANIC, CANCELLATION,
+        // Compiler resource/control effects: separate from observational purity.
+        ALLOC, BLOCK, SUSPEND
     }
 
     /** Pure is an observational guarantee, not a no-throw/no-panic guarantee. */
     public static Set<Effect> pureAllowance() {
         return Set.copyOf(EnumSet.of(Effect.THROW, Effect.RAISE,
-                Effect.PANIC, Effect.CANCELLATION));
+                Effect.PANIC, Effect.CANCELLATION,
+                Effect.ALLOC));
     }
 
     public record Call(String target) {
