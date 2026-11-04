@@ -3,7 +3,9 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -114,6 +116,56 @@ final class SourceTaskRequestOriginTest {
             assertThrows(SecurityException.class,
                     () -> runtime.requireCurrentHttpTransferToken("token-two"),
                     "callbacks outside an active mailbox do not carry request authority");
+        }
+    }
+
+    @Test
+    void genericFutureContinuationNeverReceivesHttpMailDispatchMarker() throws Exception {
+        // Package-private host test introspection only. This ThreadLocal is a
+        // temporary DISPATCH marker, never request-local authority or a guest
+        // API. Generic Future continuations must not receive it simply
+        // because ContinuationTarget saved the originating mail sequence.
+        Field field = ActorRuntime.class.getDeclaredField("CURRENT_HTTP_MAIL_SEQUENCE");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ThreadLocal<Long> marker = (ThreadLocal<Long>) field.get(null);
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch callbackObserved = new CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>();
+        AtomicReference<Long> realMail = new AtomicReference<>();
+        AtomicReference<Long> callbackMail = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (payload, context) -> {
+                realMail.set(marker.get());
+                var target = runtime.captureCurrentContinuationTarget();
+                runtime.enqueueOnCompletion(producer, target, (value, failure) -> {
+                    try {
+                        callbackMail.set(marker.get());
+                        assertNull(failure);
+                        assertEquals(7, value);
+                    } catch (Throwable error) {
+                        callbackFailure.set(error);
+                    } finally {
+                        callbackObserved.countDown();
+                    }
+                });
+                registered.countDown();
+            });
+            actor.send("user-mail");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertNotNull(realMail.get(), "original user mail carries its real sequence");
+            Thread foreignProducer = Thread.ofPlatform().start(
+                    () -> producer.completeFromRuntime(7));
+            foreignProducer.join(5000);
+            assertFalse(foreignProducer.isAlive());
+            assertTrue(callbackObserved.await(5, TimeUnit.SECONDS),
+                    "generic continuation was not admitted");
+            assertNull(callbackMail.get(),
+                    "generic callback may not inherit HTTP dispatch authority");
+            assertNull(callbackFailure.get());
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
