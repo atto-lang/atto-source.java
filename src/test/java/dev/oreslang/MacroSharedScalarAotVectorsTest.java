@@ -67,9 +67,10 @@ final class MacroSharedScalarAotVectorsTest {
             assertTrue(failure.getMessage().contains(requiredDiagnostic),
                     () -> name + " expected dedicated semantic denial "
                             + requiredDiagnostic + ", got " + failure);
-            assertTrue(failure.getMessage().contains("runtime")
-                            || failure.getMessage().contains("compile-time"),
-                    () -> name + " denial must retain compiler-only context: " + failure);
+            // A category mismatch is identified by its typed macro argument
+            // signature; it need not also contain the words "compile-time".
+            assertTrue(failure.getMessage().contains("macro"),
+                    () -> name + " must fail at macro semantic admission: " + failure);
         }
     }
 }
