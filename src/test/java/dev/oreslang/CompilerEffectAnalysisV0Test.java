@@ -19,6 +19,9 @@ final class CompilerEffectAnalysisV0Test {
     void realFrontendAdmitsLiteralAndDirectCallsWithoutExecutingGuest() {
         for (String source : List.of(
                 "pub fnc main(): int { return 42; }",
+                "pub fnc main(): bool { return true; }",
+                "fnc identity(int value): int { return value; } "
+                    + "pub fnc main(): int { return identity(7); }",
                 "fnc helper(): int { return 7; } "
                     + "pub fnc main(): int { return helper(); }")) {
             var report = admitted(source);
