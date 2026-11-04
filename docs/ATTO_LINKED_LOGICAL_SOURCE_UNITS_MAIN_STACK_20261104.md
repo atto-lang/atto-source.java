@@ -7,10 +7,10 @@ Parent is [Java #2513](https://github.com/ores-truffle-oreslang/oreslang-source.
 ## Implemented (source only)
 
 - A per-build `HostSourceUnitIds.Admission` maps authorized physical source files to bounded `project/<relative>` or `external/<root ordinal>/<relative>` IDs. Reserved embedded `ores.std` / `ores.core` identities remain compiler-owned.
-- Both `LinkedProgramRunner.validate` and `runWithExitStatus` create private admission registries and use the same canonical IDs for source maps, `MixedSourceUnit`, import edges, guest parsing and entry selection. Remove the previous absolute-host-path `unitId(Path)` helper.
+- Both `LinkedProgramRunner.validate` and `runWithExitStatus` create private admission registries and use the same canonical IDs for source maps, `MixedSourceUnit`, import edges, guest parsing and entry selection. Remove the previous absolute-host-path `unitId(Path)` helper. Current-main `MixedSourceUnit` and `OresProjectConfig` now accept `.atto` and prefer it when imports are extensionless.
 - Before linking, deny out-of-root paths; reject known symlink/hardlink aliases and duplicate file-key owners; verify source identity and file snapshot after the bounded read.
 - Source reads go through `SecureSourceReader` with `SecureDirectoryStream` pinning where the provider supports it, and strict UTF-8 / 16 MiB limits via `BoundedSourceReader`. Adversarial isolate validation fails closed on providers without secure directory handles.
-- 10 new linked-loader JUnit cases plus seven retained source-read hardening cases cover ordinary two-file `.atto` guest return 42, legacy `.ores`, normalized imports, invalid physical aliases, traversal, size/UTF-8/zero-byte boundaries and source replacement.
+- 11 linked-loader JUnit cases, seven source-read hardening cases, and three `.atto` file-resolution cases cover ordinary two-file `.atto` guest return 42, canonical extensionless `.atto` preference over `.ores`, normalized imports, invalid physical aliases, traversal, size/UTF-8/zero-byte boundaries and source replacement.
 
 ## Explicit limits and unresolved acceptance
 
@@ -23,7 +23,7 @@ Parent is [Java #2513](https://github.com/ores-truffle-oreslang/oreslang-source.
 ## Suggested commands after source runner admission
 
 ```bash
-mvn -q -Dtest=HostSourceUnitIdsTest,SecureSourceReaderTest test
+mvn -q -Dtest=HostSourceUnitIdsTest,SecureSourceReaderTest,AttoFileImportResolutionTest test
 mvn -q test
 ```
 
