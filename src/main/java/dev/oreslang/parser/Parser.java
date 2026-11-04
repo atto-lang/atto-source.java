@@ -3311,7 +3311,12 @@ public final class Parser {
         }
         Ast.Expr condition = parseCondition();
         List<Ast.Stmt> failureBody = parseBlock();
-        if (check(ELSE)) throw error(peek(), "guard has no 'else'; use guard condition { return; }");
+        // A following ELSE can belong to an enclosing keyword-delimited
+        // if. Only an immediately braced guard-else is unambiguously illegal.
+        // Unattached ELSE/FI tokens remain rejected by the containing parser.
+        if (check(ELSE) && checkNext(LBRACE)) {
+            throw error(peek(), "guard has no 'else'; use guard condition { return; }");
+        }
         if (!guardFailureTerminates(failureBody)) {
             throw error(previous(), "guard failure block must exit with return, break or continue");
         }
