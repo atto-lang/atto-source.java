@@ -357,6 +357,71 @@ final class InvertedColumnStoreTest {
                         InvertedColumnStore.Kind.RECORD, Integer.MAX_VALUE));
     }
 
+
+    @Test
+    void successfulSoAResizeScrubsRetiredPayloadAndIdentityWithoutLosingRows()
+            throws ReflectiveOperationException {
+        // Test-private reflection inspects *retired* backing; no backing
+        // storage reference is granted to an AttoLang guest.
+        var columnsField = InvertedColumnStore.class.getDeclaredField("columns");
+        columnsField.setAccessible(true);
+        var generationsField = InvertedColumnStore.class.getDeclaredField("generations");
+        generationsField.setAccessible(true);
+        var rowSlotsField = InvertedColumnStore.class.getDeclaredField("rowSlots");
+        rowSlotsField.setAccessible(true);
+        byte[] record = new byte[]{1, 2, 3, 4, 5, 6, 7, 8};
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.I32),
+                InvertedColumnStore.ColumnSpec.record(record.length),
+                InvertedColumnStore.ColumnSpec.scalar(InvertedColumnStore.Kind.I64))) {
+            var row = store.push(0x12345678, record, 987654321L);
+            byte[][] retired = (byte[][]) columnsField.get(store);
+            long[] oldGenerations = (long[]) generationsField.get(store);
+            int[] oldRowSlots = (int[]) rowSlotsField.get(store);
+            assertTrue(java.util.Arrays.stream(retired).anyMatch(bytes ->
+                    java.util.Arrays.mismatch(bytes, new byte[bytes.length]) != -1));
+            store.reserve(8);
+            assertNotSame(retired, columnsField.get(store));
+            for (byte[] bytes : retired) {
+                assertArrayEquals(new byte[bytes.length], bytes,
+                        "retired SoA backing must be scrubbed after growth");
+            }
+            assertArrayEquals(new long[oldGenerations.length], oldGenerations);
+            assertArrayEquals(new int[oldRowSlots.length], oldRowSlots);
+            Object[] observed = store.snapshot(row);
+            assertEquals(0x12345678, observed[0]);
+            assertArrayEquals(record, (byte[]) observed[1]);
+            assertEquals(987654321L, observed[2]);
+            store.push(77, new byte[8], 9L);
+            assertEquals(2, store.size());
+        }
+    }
+
+    @Test
+    void implicitGrowthScrubsRetiredColumnsButOverflowLeavesCurrentBacking()
+            throws ReflectiveOperationException {
+        var columnField = InvertedColumnStore.class.getDeclaredField("columns");
+        columnField.setAccessible(true);
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I64, InvertedColumnStore.Kind.BOOL)) {
+            var first = store.push(0x1020304050607080L, true);
+            byte[][] old = (byte[][]) columnField.get(store);
+            store.push(123L, false);
+            assertNotSame(old, columnField.get(store));
+            for (byte[] bytes : old) {
+                assertArrayEquals(new byte[bytes.length], bytes);
+            }
+            byte[][] current = (byte[][]) columnField.get(store);
+            assertThrows(ArithmeticException.class,
+                    () -> store.reserve(Integer.MAX_VALUE));
+            assertSame(current, columnField.get(store),
+                    "failed capacity growth must preserve the live bytes");
+            assertEquals(0x1020304050607080L, store.get(first, 0));
+            assertEquals(true, store.get(first, 1));
+            assertEquals(2, store.size());
+        }
+    }
+
 @Test
     void structuralMutationDoesNotProceedWithAnyLiveReadLoan() {
         try (var store = new InvertedColumnStore(
