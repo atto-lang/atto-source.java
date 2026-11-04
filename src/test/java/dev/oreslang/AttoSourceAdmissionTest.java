@@ -20,6 +20,24 @@ final class AttoSourceAdmissionTest {
     @TempDir Path temp;
 
     @Test
+    void byteIdenticalNativeModuleParityFixtureReturns42() throws Exception {
+        // These .atto files and the package manifest have identical Git blob
+        // identities to LLVM tests/fixtures/atto-native-parity/. A host-only
+        // source comparison cannot earn this guest-execution receipt.
+        Path entry = Path.of("examples/atto-native-parity/main.atto")
+                .toAbsolutePath().normalize();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        var run = LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                stdout, stderr);
+        assertEquals(42, run.exitStatus());
+        assertEquals(2, run.build().units().size());
+        assertEquals("", stdout.toString(StandardCharsets.UTF_8));
+        assertEquals("", stderr.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void attoIsNativeGuestSourceNotJavaHostSource() {
         MixedSourceUnit unit = MixedSourceUnit.parse(
                 temp.resolve("cache.atto"),
