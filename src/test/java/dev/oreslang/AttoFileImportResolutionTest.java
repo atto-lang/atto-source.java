@@ -98,6 +98,66 @@ final class AttoFileImportResolutionTest {
     }
 
     @Test
+    void outsideRootExistsAndMissingAreDeniedBeforeSuffixProbe() throws Exception {
+        Path project = Files.createDirectories(workspace.resolve("project"));
+        Path consumer = project.resolve("consumer.atto");
+        Path existingOutside = workspace.resolve("outside.atto");
+        Files.writeString(consumer, "pub fnc main() -> int { return 42; }");
+        Files.writeString(existingOutside, "pub fnc answer() -> int { return 7; }");
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+
+        for (String target : new String[] {"../outside", "../missing"}) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> config.resolveImport(consumer, target));
+            assertTrue(denied.getMessage().contains("outside the project root"),
+                    denied::toString);
+        }
+    }
+
+    @Test
+    void inRootSymlinkedAncestorCannotRedirectExtensionlessImport() throws Exception {
+        Path project = Files.createDirectories(workspace.resolve("project"));
+        Path outside = Files.createDirectories(workspace.resolve("external"));
+        Path consumer = project.resolve("consumer.atto");
+        Files.writeString(consumer, "pub fnc main() -> int { return 42; }");
+        Files.writeString(outside.resolve("dependency.atto"),
+                "pub fnc answer() -> int { return 7; }");
+        try {
+            Files.createSymbolicLink(project.resolve("alias"), outside);
+        } catch (UnsupportedOperationException | java.io.IOException
+                 | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symlinks unavailable on this filesystem");
+        }
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(consumer, "./alias/dependency"));
+        assertTrue(denied.getMessage().contains("symlink alias"), denied::toString);
+    }
+
+    @Test
+    void canonicalAttoIgnoresIrrelevantLegacySymlinkSibling() throws Exception {
+        Path consumer = workspace.resolve("consumer.atto");
+        Path modern = workspace.resolve("dependency.atto");
+        Path outside = Files.createDirectories(workspace.resolve("outside"));
+        Path legacyAlias = workspace.resolve("dependency.ores");
+        Files.writeString(consumer, "pub fnc main() -> int { return 42; }");
+        Files.writeString(modern, "pub fnc answer() -> int { return 42; }");
+        Files.writeString(outside.resolve("dependency.ores"),
+                "pub fnc answer() -> int { return 7; }");
+        try {
+            Files.createSymbolicLink(legacyAlias, outside.resolve("dependency.ores"));
+        } catch (UnsupportedOperationException | java.io.IOException
+                 | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "symlinks unavailable on this filesystem");
+        }
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+        assertEquals(modern.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./dependency").orElseThrow());
+    }
+
+    @Test
     void canonicalAttoImporterDoesNotImplicitlyLoadJavaSource() throws Exception {
         Path consumer = workspace.resolve("consumer.atto");
         Path java = workspace.resolve("producer.java");
