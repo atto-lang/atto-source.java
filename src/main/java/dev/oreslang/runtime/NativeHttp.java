@@ -206,6 +206,10 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 throw rejected;
             }
+            // The immutable first-mail admission was consumed; the claimed
+            // exchange is now guarded by ActorCell.activeMail plus its own
+            // generation and owner checks, never by the transfer token alone.
+            context.actors().retirePendingHttpTransfer(token);
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
         }
@@ -447,7 +451,11 @@ public final class NativeHttp implements AutoCloseable {
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
                 if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
-                if (ticket != null) { transfers.remove(ticket); ticket = null; }
+                if (ticket != null) {
+                    transfers.remove(ticket);
+                    context.actors().retirePendingHttpTransfer(ticket);
+                    ticket = null;
+                }
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
@@ -496,6 +504,11 @@ public final class NativeHttp implements AutoCloseable {
                 state.generation++; state.owner = destination.id(); state.actor = destination;
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
+                // Lock-free per-runtime registration: sending this token later
+                // binds the FIRST actually admitted actor-mail sequence. This
+                // is deliberately done without taking ActorCell.lifecycleLock
+                // while holding the exchange state monitor.
+                context.actors().registerPendingHttpTransfer(token, destination);
                 transfers.put(token, moved);
                 if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
                 return token;
@@ -802,6 +815,10 @@ public final class NativeHttp implements AutoCloseable {
         for (Server server : List.copyOf(servers)) server.close();
         for (Handler pool : pools) pool.stopPool();
         pools.clear();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        timers.shutdownNow(); io.shutdownNow();
+        for (String token : transfers.keySet()) {
+            context.actors().retirePendingHttpTransfer(token);
+        }
+        transfers.clear();
     }
 }
