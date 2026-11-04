@@ -1,0 +1,68 @@
+{
+  "schema": "attolang.macro-scalar-aot-v1",
+  "status": "SOURCE_CONTRACT_ONLY_NOT_EXECUTED",
+  "description": "Closed scalar intersection for Java/GraalVM, LLVM and .NET draft macro compilers. Expected guest value is independent of host process exit and stdout conventions.",
+  "limits": {
+    "max_macro_declarations": 8,
+    "max_macro_expansions": 128,
+    "max_const_visits": 512,
+    "max_const_depth_inclusive": 64
+  },
+  "cases": [
+    {
+      "id": "MA-S-001",
+      "source": "literal-42.atto",
+      "expected": "accept",
+      "expected_guest_int": "42",
+      "feature": "closed Const<int> quote"
+    },
+    {
+      "id": "MA-S-002",
+      "source": "identity-42.atto",
+      "expected": "accept",
+      "expected_guest_int": "42",
+      "feature": "single Syntax<Expr> caller AST splice"
+    },
+    {
+      "id": "MA-S-003",
+      "source": "nested-42.atto",
+      "expected": "accept",
+      "expected_guest_int": "42",
+      "feature": "nested syntax identity and checked const quote"
+    },
+    {
+      "id": "MA-S-004",
+      "source": "overflow-reject.atto",
+      "expected": "reject_before_codegen",
+      "feature": "checked signed i64 const overflow"
+    },
+    {
+      "id": "MA-S-005",
+      "source": "wrong-kind-reject.atto",
+      "expected": "reject_before_codegen",
+      "feature": "explicit argument kind mismatch"
+    },
+    {
+      "id": "MA-S-006",
+      "source": "dynamic-const-reject.atto",
+      "expected": "reject_before_codegen",
+      "feature": "non-closed runtime name passed as Const<int>"
+    },
+    {
+      "id": "MA-S-007",
+      "source": "unresolved-reject.atto",
+      "expected": "reject_before_codegen",
+      "feature": "unknown macro invoker cannot be runtime call"
+    }
+  ],
+  "evidence_policy": {
+    "expected_guest_value_is_process_exit": false,
+    "compiler_execution_required": true,
+    "native_guest_execution_required": true,
+    "exact_source_sha_and_tree_required": true,
+    "zero_step_workflow_pass": false,
+    "synthetic_host_test_is_macro_guest_evidence": false,
+    "source_transfer_allowed_without_independent_approval": false,
+    "macro_runtime_fallback_allowed": false
+  }
+}
