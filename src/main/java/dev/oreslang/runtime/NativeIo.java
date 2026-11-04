@@ -232,6 +232,7 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("http."+method);
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
@@ -264,6 +265,7 @@ public final class NativeIo {
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
+        TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
@@ -304,6 +306,7 @@ public final class NativeIo {
         }
 
         public String readLine() {
+            TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 return reader.readLine();
@@ -313,6 +316,7 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 writer.write(value);
@@ -326,9 +330,13 @@ public final class NativeIo {
         public void close() {
             try {
                 socket.close();
-                context.nativeIo().unregister(socket);
             } catch (IOException failure) {
                 throw new IllegalStateException("network close failed for " + endpoint + ": " + failure.getMessage(), failure);
+            } finally {
+                // A close failure does not prove the underlying handle
+                // retired. Keep it tracked for host revocation/retry unless
+                // the socket's own state confirms it closed.
+                if (socket.isClosed()) context.nativeIo().unregister(socket);
             }
         }
     }
