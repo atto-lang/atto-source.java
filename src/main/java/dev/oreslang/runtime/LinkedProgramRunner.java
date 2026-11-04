@@ -66,7 +66,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0,
+                policy != null && policy.adversarial());
         ensureJavaEntryContainsOres(entry, units, projectConfig);
 
         if (policy != null) {
@@ -179,7 +180,8 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0);
+                new HostSourceUnitIds.Admission(), new SourceAdmissionBudget(), 0,
+                policy != null && policy.adversarial());
         ensureJavaEntryContainsOres(entry, units, projectConfig);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -388,7 +390,7 @@ public final class LinkedProgramRunner {
             Map<String, Map<String, String>> importResolutions,
             HostSourceUnitIds.Admission admission,
             SourceAdmissionBudget budget,
-            int depth) throws IOException {
+            int depth, boolean requireSecure) throws IOException {
         // Check depth before identity/realpath I/O, including already visited imports.
         budget.checkDepth(depth);
         Path normalized = unit.toAbsolutePath().normalize();
@@ -397,7 +399,8 @@ public final class LinkedProgramRunner {
         // Fail before any file I/O or parsing when import recursion is too deep.
         budget.checkCanAdmitUnit(depth);
 
-        BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        BoundedSourceReader.ReadResult source = SecureSourceReader.read(
+                normalized, projectConfig, requireSecure);
         admission.verifyRead(normalized, projectConfig, id);
         budget.admit(source.byteCount(), depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
@@ -453,7 +456,7 @@ public final class LinkedProgramRunner {
             String targetId = HostSourceUnitIds.of(resolvedTarget, projectConfig);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
-                    admission, budget, depth + 1);
+                    admission, budget, depth + 1, requireSecure);
         }
     }
 
