@@ -241,7 +241,8 @@ public final class OwnershipChecker {
                     Ast.CheckedTaskCaptures.publish(
                             checkedProgram, taskCheckEpoch, pendingTaskCaptures,
                             new TaskPublishAuthority(
-                                    checkedProgram, taskCheckEpoch, typingGeneration));
+                                    checkedProgram, taskCheckEpoch,
+                                    pendingTaskCaptures.isEmpty() ? 0L : typingGeneration));
                     Ast.CheckedCriticalBlocks.publish(
                             checkedProgram, taskCheckEpoch,
                             pendingCriticalAdmissions, authority);
