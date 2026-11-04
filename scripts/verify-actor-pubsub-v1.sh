@@ -79,6 +79,7 @@ expected = {
         "zeroRecipientPublicationsAllocateSequenceButDoNotReplay",
         "reliableRejectionRollsBackEverySubscriberReservation",
         "tryReliableRejectsExtensionPoliciesAndInvalidPayloadWithoutCreatingReceipts",
+        "typedTryReliableRefusesMissingActorAuthorityAndAdmitsAfterJoin",
     },
 }
 for suite, required_methods in expected.items():
