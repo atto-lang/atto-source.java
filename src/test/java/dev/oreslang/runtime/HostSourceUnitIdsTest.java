@@ -76,6 +76,24 @@ final class HostSourceUnitIdsTest {
     }
 
     @Test
+    void extensionlessLinkedImportPrefersCanonicalAttoOverLegacyOres() throws Exception {
+        Path canonical = temp.resolve("producer.atto");
+        Path legacy = temp.resolve("producer.ores");
+        Path consumer = temp.resolve("consumer.atto");
+        Files.writeString(canonical, "pub fnc helper() -> int { return 7; }");
+        Files.writeString(legacy, "pub fnc helper() -> int { return 13; }");
+        Files.writeString(consumer, """
+                import * as lib from "./producer";
+                pub fnc main() -> int { return 42; }
+                """);
+        IncrementalCompiler.BuildResult build = LinkedProgramRunner.validate(consumer, Map.of());
+        assertTrue(build.units().containsKey("project/producer.atto"));
+        assertFalse(build.units().containsKey("project/producer.ores"));
+        assertEquals(java.util.Set.of("project/producer.atto"),
+                build.units().get("project/consumer.atto").dependencies());
+    }
+
+    @Test
     void legacyOresEntryHasDistinctCanonicalFileIdentity() throws Exception {
         Path source = temp.resolve("legacy.ores");
         Files.writeString(source, "pub fnc main() -> int { return 42; }");
