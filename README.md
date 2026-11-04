@@ -72,4 +72,6 @@ This rule applies across all repositories, including compiler backends, examples
 
 ## Canonical AttoLang source files
 
+**Implementation policy (agents and contributors):** Put guest-visible features and library logic in `.atto` by default; reserve `.java` for justified compiler, runtime, host-interop, security and bootstrap code. See [the AttoLang-first agent directive](AGENTS.md) and [Copilot instructions](.github/copilot-instructions.md). This is a source-of-implementation rule, not just an extension rule.
+
 New AttoLang modules, tests and examples use the `.atto` extension. The Java frontend accepts `.atto` as native Ores-language source while retaining `.ores` as a legacy compatibility extension. Extensionless imports prefer `.atto` before `.ores`. See [the source-extension contract](docs/ATTO_SOURCE_EXTENSION.md).
