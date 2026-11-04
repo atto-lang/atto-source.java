@@ -64,6 +64,22 @@ public final class AotScalarWireV1 {
         public String qualifiedType() { return qualifiedType; }
         public List<Field> fields() { return fields; }
         public Decoded decodeJson(String json) { return new Json(this, json).decode(); }
+        /** Strict UTF-8 entrypoint: no replacement-character coercion. */
+        public Decoded decodeJsonUtf8(byte[] data) {
+            if (data == null || data.length > MAX_INPUT_BYTES) {
+                throw invalid("JSON UTF-8 input exceeds byte budget");
+            }
+            final String value;
+            try {
+                value = StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .decode(ByteBuffer.wrap(data.clone())).toString();
+            } catch (CharacterCodingException badUtf8) {
+                throw invalid("malformed JSON UTF-8");
+            }
+            return decodeJson(value);
+        }
         public Decoded decodeMessagePack(byte[] data) { return new MsgPack(this, data).decode(); }
 
         private int fieldIndex(String key) {
