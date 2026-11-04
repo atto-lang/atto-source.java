@@ -1,10 +1,70 @@
 package dev.oreslang.ast;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.HashSet;
 
 public final class Ast {
+    private static final String INTERNAL_MODULE_REFERENCE_PREFIX = "$module$";
+    private static final int MAX_INTERNAL_MODULE_NAME_CHARS = 4_096;
+
     private Ast() { }
+
+    /**
+     * Compiler-lowered, source-unspellable module reference used after an
+     * authority-sensitive name has already been resolved. The module spelling
+     * is encoded losslessly rather than hashed, so collisions cannot redirect
+     * the reference.
+     */
+    public static String internalModuleReference(String module) {
+        if (module == null || module.isBlank()
+                || module.length() > MAX_INTERNAL_MODULE_NAME_CHARS) {
+            throw new IllegalArgumentException("invalid internal module reference");
+        }
+        return INTERNAL_MODULE_REFERENCE_PREFIX
+                + HexFormat.of().formatHex(module.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Returns the exact module carried by a compiler-internal reference, or
+     * null for an ordinary source name. Malformed internal references fail
+     * closed instead of falling back to normal name lookup.
+     */
+    public static String internalModuleReferenceTarget(String name) {
+        if (name == null || !name.startsWith(INTERNAL_MODULE_REFERENCE_PREFIX)) {
+            return null;
+        }
+        String hex = name.substring(INTERNAL_MODULE_REFERENCE_PREFIX.length());
+        if (hex.isEmpty() || (hex.length() & 1) != 0) {
+            throw new IllegalArgumentException("malformed internal module reference");
+        }
+        final byte[] bytes;
+        try {
+            bytes = HexFormat.of().parseHex(hex);
+        } catch (IllegalArgumentException malformed) {
+            throw new IllegalArgumentException(
+                    "malformed internal module reference", malformed);
+        }
+        final String module;
+        try {
+            module = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException malformed) {
+            throw new IllegalArgumentException(
+                    "malformed internal module reference", malformed);
+        }
+        if (module.isBlank() || module.length() > MAX_INTERNAL_MODULE_NAME_CHARS) {
+            throw new IllegalArgumentException("malformed internal module reference");
+        }
+        return module;
+    }
 
     /** Shared guest AST admission rule for closed structural field keys. */
     private static String requireStaticFieldName(String name) {
@@ -60,8 +120,8 @@ public final class Ast {
      * A separate typed lowering gate must prove state ownership, guarded
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+    public sealed interface Decl permits FunctionDecl, MacroDecl, MacroInvocationDecl,
+            ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -128,6 +188,232 @@ public final class Ast {
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
+    }
+
+    /** Compiler-only syntax categories accepted by the v1 macro contract. */
+    public enum MacroSyntaxKind { EXPR, STMT, DECL, TYPE, PATTERN }
+
+    /** Compiler-only macro input categories. These never enter runtime ABI. */
+    public enum MacroParamKind { TYPE, CONST, IDENTIFIER, SYNTAX }
+
+    /**
+     * A macro parameter type is deliberately distinct from ordinary TypeRef.
+     * Only CONST carries a value type; only SYNTAX carries a syntax category.
+     */
+    public record MacroParamType(
+            MacroParamKind kind,
+            TypeRef constType,
+            MacroSyntaxKind syntaxKind) {
+        private static final int MAX_CONST_VALUE_TYPE_NODES = 512;
+        private static final int MAX_CONST_VALUE_TYPE_DEPTH = 64;
+        private static final java.util.Set<String> COMPILER_META_TYPE_NAMES =
+                java.util.Set.of("Type", "Const", "Identifier", "Syntax", "SyntaxList");
+
+        private record ConstValueTypeNode(TypeRef type, int depth) { }
+
+        private static void validateConstValueType(TypeRef root) {
+            java.util.ArrayDeque<ConstValueTypeNode> pending = new java.util.ArrayDeque<>();
+            pending.push(new ConstValueTypeNode(root, 0));
+            int visited = 0;
+            while (!pending.isEmpty()) {
+                ConstValueTypeNode node = pending.pop();
+                TypeRef type = node.type();
+                if (++visited > MAX_CONST_VALUE_TYPE_NODES
+                        || node.depth() > MAX_CONST_VALUE_TYPE_DEPTH) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type exceeds bounded compiler meta-type validation budget");
+                }
+                if (type.inferArguments()) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type must be closed and cannot contain inferred generic arguments");
+                }
+                if (type.isBorrow()) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type cannot contain a runtime borrow capability");
+                }
+                if (COMPILER_META_TYPE_NAMES.contains(type.name())) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type must be an ordinary compile-time-serializable type, "
+                                    + "not compiler-only macro meta type '" + type.name() + "'");
+                }
+                int children = type.arguments().size();
+                if ((long) visited + pending.size() + children > MAX_CONST_VALUE_TYPE_NODES) {
+                    throw new IllegalArgumentException(
+                            "Const<T> value type exceeds bounded compiler meta-type validation budget");
+                }
+                for (int i = children - 1; i >= 0; i--) {
+                    pending.push(new ConstValueTypeNode(
+                            type.arguments().get(i), node.depth() + 1));
+                }
+            }
+        }
+
+        public MacroParamType {
+            java.util.Objects.requireNonNull(kind, "macro parameter kind");
+            if (kind == MacroParamKind.CONST) {
+                java.util.Objects.requireNonNull(constType, "Const<T> macro parameter type");
+                validateConstValueType(constType);
+                if (syntaxKind != null) {
+                    throw new IllegalArgumentException("Const<T> macro parameter cannot carry a syntax kind");
+                }
+            } else if (kind == MacroParamKind.SYNTAX) {
+                java.util.Objects.requireNonNull(syntaxKind, "Syntax<K> macro parameter kind");
+                if (constType != null) {
+                    throw new IllegalArgumentException("Syntax<K> macro parameter cannot carry a const type");
+                }
+            } else if (constType != null || syntaxKind != null) {
+                throw new IllegalArgumentException("Type/Identifier macro parameter has no nested payload");
+            }
+        }
+
+        public static MacroParamType type() {
+            return new MacroParamType(MacroParamKind.TYPE, null, null);
+        }
+
+        public static MacroParamType identifier() {
+            return new MacroParamType(MacroParamKind.IDENTIFIER, null, null);
+        }
+
+        public static MacroParamType constant(TypeRef type) {
+            return new MacroParamType(MacroParamKind.CONST, type, null);
+        }
+
+        public static MacroParamType syntax(MacroSyntaxKind kind) {
+            return new MacroParamType(MacroParamKind.SYNTAX, null, kind);
+        }
+    }
+
+    public record MacroParam(MacroParamType type, String name) {
+        public MacroParam {
+            java.util.Objects.requireNonNull(type, "macro parameter type");
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid macro parameter name");
+            }
+            if (java.util.Set.of(
+                    "quote", "unquote", "hygienic", "capture_fnc", "declare_fnc")
+                    .contains(name)) {
+                throw new IllegalArgumentException(
+                        "'" + name + "' is reserved for a compile-time macro intrinsic");
+            }
+        }
+    }
+
+    /**
+     * Macro outputs are typed syntax. V1 permits a single Syntax<K>, or a
+     * declaration list; arbitrary runtime/meta types are not result kinds.
+     */
+    public record MacroResultKind(MacroSyntaxKind syntaxKind, boolean list) {
+        public MacroResultKind {
+            java.util.Objects.requireNonNull(syntaxKind, "macro result syntax kind");
+            if (list && syntaxKind != MacroSyntaxKind.DECL) {
+                throw new IllegalArgumentException("v1 macro lists may contain declarations only");
+            }
+        }
+
+        public static MacroResultKind syntax(MacroSyntaxKind kind) {
+            return new MacroResultKind(kind, false);
+        }
+
+        public static MacroResultKind declarations() {
+            return new MacroResultKind(MacroSyntaxKind.DECL, true);
+        }
+    }
+
+    /**
+     * Compile-time-only macro declaration. Macro declarations are never runtime
+     * callable values; an expansion phase must eliminate them before executable
+     * semantic analysis/code generation.
+     */
+    public record MacroDecl(
+            String name,
+            Visibility visibility,
+            List<MacroParam> parameters,
+            MacroResultKind resultKind,
+            List<Stmt> body,
+            SourceSite definitionSite) implements Decl {
+        public MacroDecl {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid macro name");
+            }
+            parameters = List.copyOf(parameters);
+            body = List.copyOf(body);
+            java.util.Objects.requireNonNull(resultKind, "macro result kind");
+            java.util.Objects.requireNonNull(definitionSite, "macro definition source site");
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (MacroParam parameter : parameters) {
+                if (!names.add(parameter.name())) {
+                    throw new IllegalArgumentException("duplicate macro parameter '" + parameter.name() + "'");
+                }
+            }
+        }
+    }
+
+    /** Source location retained for macro diagnostics/provenance only. */
+    public record SourceSite(int line, int column) {
+        public SourceSite {
+            if (line < 1 || column < 1) {
+                throw new IllegalArgumentException("source site coordinates are 1-based");
+            }
+        }
+    }
+
+    /** Compiler-only macro invocation arguments; never runtime values or ABI types. */
+    public sealed interface MacroArgument permits MacroTypeArgument, MacroConstArgument,
+            MacroIdentifierArgument, MacroSyntaxExprArgument, MacroSyntaxStmtArgument,
+            MacroSyntaxTypeArgument, MacroSyntaxPatternArgument { }
+
+    public record MacroTypeArgument(TypeRef type) implements MacroArgument {
+        public MacroTypeArgument { java.util.Objects.requireNonNull(type, "macro type argument"); }
+    }
+
+    public record MacroConstArgument(Expr expression) implements MacroArgument {
+        public MacroConstArgument { java.util.Objects.requireNonNull(expression, "macro const argument"); }
+    }
+
+    /**
+     * Hygienic identifier syntax input. The parser stores spelling and call-site
+     * provenance only. Referencing an existing caller binding remains a separate
+     * checked expansion operation that must resolve identity, declaration kind,
+     * and visibility before generated syntax can use that binding.
+     */
+    public record MacroIdentifierArgument(String name, SourceSite site) implements MacroArgument {
+        public static final int MAX_NAME_CHARS = 1_024;
+
+        public MacroIdentifierArgument {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")
+                    || name.length() > MAX_NAME_CHARS) {
+                throw new IllegalArgumentException("invalid macro identifier argument");
+            }
+            java.util.Objects.requireNonNull(site, "macro identifier call site");
+        }
+    }
+
+    public record MacroSyntaxExprArgument(Expr expression) implements MacroArgument {
+        public MacroSyntaxExprArgument { java.util.Objects.requireNonNull(expression, "macro Syntax<Expr> argument"); }
+    }
+
+    public record MacroSyntaxStmtArgument(Stmt statement) implements MacroArgument {
+        public MacroSyntaxStmtArgument { java.util.Objects.requireNonNull(statement, "macro Syntax<Stmt> argument"); }
+    }
+
+    public record MacroSyntaxTypeArgument(TypeRef type) implements MacroArgument {
+        public MacroSyntaxTypeArgument { java.util.Objects.requireNonNull(type, "macro Syntax<Type> argument"); }
+    }
+
+    public record MacroSyntaxPatternArgument(Pattern pattern) implements MacroArgument {
+        public MacroSyntaxPatternArgument { java.util.Objects.requireNonNull(pattern, "macro Syntax<Pattern> argument"); }
+    }
+
+    /** Declaration-position macro invocation. Expansion must eliminate this node. */
+    public record MacroInvocationDecl(
+            String name,
+            List<MacroArgument> arguments,
+            SourceSite site) implements Decl {
+        public MacroInvocationDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("macro invocation name cannot be blank");
+            arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(site, "macro invocation source site");
+        }
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
@@ -1104,7 +1390,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, MacroInvocationExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -1154,6 +1440,21 @@ public final class Ast {
 
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
+
+    /**
+     * Expression-position macro invocation. This is compiler syntax, not a
+     * runtime call; expansion must remove it before executable semantic IR.
+     */
+    public record MacroInvocationExpr(
+            String name,
+            List<MacroArgument> arguments,
+            SourceSite site) implements Expr {
+        public MacroInvocationExpr {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("macro invocation name cannot be blank");
+            arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(site, "macro invocation source site");
+        }
+    }
 
     /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
     public enum CallOrigin {
