@@ -2457,6 +2457,7 @@ public final class Parser {
             turn.addAll(body);
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
+        if (match(GUARD)) return parseGuard();
         if (match(IF)) return parseIf();
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
@@ -3286,6 +3287,59 @@ public final class Parser {
 
     private boolean isDiscardToken(Token token) {
         return token.type() == IDENT && token.lexeme().equals("_");
+    }
+
+
+    /**
+     * AttoLang guard inverts a boolean precondition and runs its mandatory
+     * terminal failure block. The positive path stays in the current scope.
+     * The canonical form has no 'else' or trailing 'fi'.
+     *
+     * Keep Option payload refinement closed until the type checker has
+     * ownership-aware, stable payload projections; scalar boolean guards
+     * lower through the existing checked IfStmt representation.
+     */
+    private Ast.Stmt parseGuard() {
+        if (check(LBRACE)) throw error(peek(), "guard requires a boolean condition");
+        // Presence narrowing is a separate ownership-checked language slice.
+        // Reject it before a nominal `is` expression could be misinterpreted.
+        for (int at = current; at + 1 < tokens.size() && tokens.get(at).type() != LBRACE; at++) {
+            if (tokens.get(at).type() == IS
+                    && tokens.get(at + 1).lexeme().equals("Some")) {
+                throw error(tokens.get(at), "guard is Some requires ownership-checked Option narrowing");
+            }
+        }
+        Ast.Expr condition = parseCondition();
+        List<Ast.Stmt> failureBody = parseBlock();
+        // A following ELSE can belong to an enclosing keyword-delimited
+        // if. Only an immediately braced guard-else is unambiguously illegal.
+        // Unattached ELSE/FI tokens remain rejected by the containing parser.
+        if (check(ELSE) && checkNext(LBRACE)) {
+            throw error(peek(), "guard has no 'else'; use guard condition { return; }");
+        }
+        if (!guardFailureTerminates(failureBody)) {
+            throw error(previous(), "guard failure block must exit with return, break or continue");
+        }
+        return new Ast.IfStmt(
+                List.of(new Ast.IfBranch(new Ast.UnaryExpr("!", condition), failureBody)),
+                List.of());
+    }
+
+    private boolean guardFailureTerminates(List<Ast.Stmt> body) {
+        if (body.isEmpty()) return false;
+        Ast.Stmt last = body.getLast();
+        if (last instanceof Ast.ReturnStmt || last instanceof Ast.BreakStmt
+                || last instanceof Ast.ContinueStmt) return true;
+        if (last instanceof Ast.BlockStmt block) return guardFailureTerminates(block.body());
+        if (last instanceof Ast.IfStmt branch) {
+            if (branch.elseBody().isEmpty() || !guardFailureTerminates(branch.elseBody()))
+                return false;
+            for (Ast.IfBranch arm : branch.branches()) {
+                if (!guardFailureTerminates(arm.body())) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     private Ast.Stmt parseIf() {
