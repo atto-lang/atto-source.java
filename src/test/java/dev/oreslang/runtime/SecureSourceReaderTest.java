@@ -37,4 +37,42 @@ final class SecureSourceReaderTest {
         assertThrows(IllegalArgumentException.class,
                 () -> SecureSourceReader.read(file, project));
     }
+
+    @Test void rejectsIntermediateSymlinkEvenWhenItPointsInsideProject() throws Exception {
+        Path real = Files.createDirectory(root.resolve("real"));
+        Path alias = root.resolve("alias");
+        Path source = real.resolve("value.atto");
+        Files.writeString(source, "pub fnc value() -> int { return 7; }");
+        try {
+            Files.createSymbolicLink(alias, real.getFileName());
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unsupported");
+        }
+        var project = OresProjectConfig.discover(source, Map.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> SecureSourceReader.read(alias.resolve("value.atto"), project, true));
+    }
+
+    @Test void adversarialAdmissionRequiresOrUsesSecureDirectoryProvider() throws Exception {
+        Path file = root.resolve("safe.atto");
+        Files.writeString(file, "pub fnc value() -> int { return 42; }");
+        var project = OresProjectConfig.discover(file, Map.of());
+        try (var stream = Files.newDirectoryStream(root)) {
+            if (stream instanceof java.nio.file.SecureDirectoryStream<?>) {
+                assertTrue(SecureSourceReader.read(file, project, true).text().contains("42"));
+            } else {
+                assertThrows(SecurityException.class,
+                        () -> SecureSourceReader.read(file, project, true));
+            }
+        }
+    }
+
+    @Test void rejectsBinaryNulBeforeParserCanInspectSource() throws Exception {
+        Path file = root.resolve("binary.atto");
+        Files.write(file, new byte[] {65, 0, 66});
+        var project = OresProjectConfig.discover(file, Map.of());
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> SecureSourceReader.read(file, project));
+        assertTrue(ex.getMessage().contains("NUL"));
+    }
 }
