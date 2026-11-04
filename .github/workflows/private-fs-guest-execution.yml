@@ -51,7 +51,11 @@ jobs:
        && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != ''
        && inputs.source_commit == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
        && inputs.source_tree == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
-    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    # Runner groups must be admin-restricted to this private source repo;
+    # labels alone are not an isolation or runner-ownership boundary.
+    runs-on:
+      group: oreslang-private-source-ephemeral
+      labels: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 45
     steps:
       - name: Validate approved immutable refs before any source checkout
