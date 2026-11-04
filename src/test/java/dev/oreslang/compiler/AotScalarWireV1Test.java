@@ -223,4 +223,57 @@ final class AotScalarWireV1Test {
                 OresCompiler.compileAotScalarWireSchemaV1(
                         source, "pkg@revision1", "type_of<BadScalar>()"));
     }
+
+    @Test void strictJsonUtf8RejectsInvalidSequences() {
+        var compiled = schema();
+        byte[] valid = "{\"count\":5,\"title\":\"rocket\",\"enabled\":true}"
+                .getBytes(StandardCharsets.UTF_8);
+        assertEquals(List.of(5L, "rocket", true),
+                compiled.decodeJsonUtf8(valid).slots());
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeJsonUtf8(bytes(0xc3, 0x28)));
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeJsonUtf8(bytes(0xed, 0xa0, 0x80)));
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeJsonUtf8(null));
+        assertThrows(IllegalArgumentException.class, () ->
+                compiled.decodeJsonUtf8(new byte[65_537]));
+    }
+
+    @Test void messagePackDoesNotCoerceUnsigned64OrFloatingPoint() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0x83);
+        append(out, "count"); out.write(0xcf); // u64, refused even when value could fit
+        out.writeBytes(bytes(0,0,0,0,0,0,0,1));
+        append(out, "title"); append(out, "x");
+        append(out, "enabled"); out.write(0xc3);
+        rejectsPack(out.toByteArray());
+    }
+
+    @Test void jsonExactFieldNameMatchingUsesDecodedEscapes() {
+        var result = schema().decodeJson(
+                "{\"co\\u0075nt\":2,\"title\":\"ok\",\"enabled\":true}");
+        assertEquals(2L, result.at(0));
+        rejectsJson("{\"count\":2,\"co\\u0075nt\":3,\"title\":\"ok\",\"enabled\":true}");
+    }
+
+    @Test void truncatedMessagePackIntegerAndStringReject() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0x83);
+        append(out, "count"); out.write(0xd3); out.write(0);
+        rejectsPack(out.toByteArray());
+        out.reset();
+        out.write(0x83);
+        append(out, "count"); out.write(1);
+        append(out, "title"); out.write(0xda); out.write(0x10); out.write(0x00);
+        rejectsPack(out.toByteArray());
+    }
+
+    @Test void decoderHasNoPolymorphicGuestConstructionAuthority() {
+        assertEquals(AotScalarWireV1.Kind.I64, schema().fields().getFirst().kind());
+        assertEquals(AotScalarWireV1.Kind.STRING, schema().fields().get(1).kind());
+        assertEquals(AotScalarWireV1.Kind.BOOL, schema().fields().get(2).kind());
+        rejectsJson("{\"count\":1,\"title\":{},\"enabled\":true}");
+        rejectsJson("{\"count\":1,\"title\":[],\"enabled\":true}");
+    }
 }
