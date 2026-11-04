@@ -26,7 +26,7 @@ final class AttoFirstLlvmImportParityTest {
     private static void assertGuestReturns42(Path entry) throws Exception {
         var build = LinkedProgramRunner.validate(entry, Map.of());
         // Real imported source, not a Java hard-coded replacement.
-        assertEquals(2, build.units().size(), "linked source should have two .atto units");
+        assertEquals(2, build.units().size(), "linked source should have two AttoLang/legacy units");
         var stdout = new ByteArrayOutputStream();
         var stderr = new ByteArrayOutputStream();
         var result = LinkedProgramRunner.runWithExitStatus(
@@ -51,6 +51,22 @@ final class AttoFirstLlvmImportParityTest {
         Files.copy(FIXTURES.resolve("math.atto"), work.resolve("math.atto"));
         Files.writeString(work.resolve("math.ores"),
                 "define module Math as pub fnc add(int n): int { return 17; } end\n");
+        assertGuestReturns42(work.resolve("main.atto"));
+    }
+
+    @Test
+    void implicitAttoImportPrefersModernOverLegacyShadow(@TempDir Path work) throws Exception {
+        Files.copy(FIXTURES.resolve("main.atto"), work.resolve("main.atto"));
+        Files.copy(FIXTURES.resolve("math.atto"), work.resolve("math.atto"));
+        Files.writeString(work.resolve("math.ores"),
+                "define module Math as pub fnc add(int n): int { return 17; } end\n");
+        assertGuestReturns42(work.resolve("main.atto"));
+    }
+
+    @Test
+    void legacyOnlyImportRemainsAdmittedForMigration(@TempDir Path work) throws Exception {
+        Files.copy(FIXTURES.resolve("main.atto"), work.resolve("main.atto"));
+        Files.copy(FIXTURES.resolve("math.atto"), work.resolve("math.ores"));
         assertGuestReturns42(work.resolve("main.atto"));
     }
 
