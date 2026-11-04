@@ -255,8 +255,10 @@ public final class OresProjectConfig {
         return Optional.empty();
     }
 
-    private static Optional<Path> existingSource(Path candidate, boolean canonicalAttoImporter) {
-        Path normalized = candidate.toAbsolutePath().normalize();
+    private Optional<Path> existingSource(Path candidate, boolean canonicalAttoImporter) {
+        // Never query existence until the candidate belongs to an authorized
+        // root and all lexically named descendants are checked for symlinks.
+        Path normalized = requireSafeSourceCandidate(candidate);
         if (Files.isRegularFile(normalized)) return Optional.of(normalized);
 
         String text = normalized.toString().toLowerCase();
@@ -266,14 +268,13 @@ public final class OresProjectConfig {
         // A canonical .atto importer may select only the canonical spelling
         // when extensionless. Do not probe a legacy sibling (or silently
         // downgrade into host .java) if the .atto candidate is absent.
-        Path atto = Path.of(normalized.toString() + ".atto");
+        Path atto = requireSafeSourceCandidate(Path.of(normalized.toString() + ".atto"));
         if (canonicalAttoImporter) {
-            return Files.isRegularFile(atto)
-                    ? Optional.of(atto.toAbsolutePath().normalize()) : Optional.empty();
+            return Files.isRegularFile(atto) ? Optional.of(atto) : Optional.empty();
         }
 
         // Legacy importers must spell a twin's extension explicitly.
-        Path ores = Path.of(normalized.toString() + ".ores");
+        Path ores = requireSafeSourceCandidate(Path.of(normalized.toString() + ".ores"));
         boolean hasAtto = Files.isRegularFile(atto);
         boolean hasOres = Files.isRegularFile(ores);
         if (hasAtto && hasOres) {
@@ -283,10 +284,43 @@ public final class OresProjectConfig {
         if (hasAtto) return Optional.of(atto.toAbsolutePath().normalize());
         if (hasOres) return Optional.of(ores.toAbsolutePath().normalize());
 
-        Path java = Path.of(normalized.toString() + ".java");
-        if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
+        Path java = requireSafeSourceCandidate(Path.of(normalized.toString() + ".java"));
+        if (Files.isRegularFile(java)) return Optional.of(java);
 
         return Optional.empty();
+    }
+
+    /**
+     * Source-root authority must precede extensionless suffix probing.
+     * Only the selected root (which may itself be a trusted checkout symlink)
+     * is exempt from the descendant symlink check.
+     */
+    private Path requireSafeSourceCandidate(Path candidate) {
+        final Path normalized = candidate.toAbsolutePath().normalize();
+        Path authorizedRoot = projectRoot.toAbsolutePath().normalize();
+        if (!normalized.startsWith(authorizedRoot)) {
+            authorizedRoot = null;
+            for (Path root : searchRoots()) {
+                Path approved = root.toAbsolutePath().normalize();
+                if (normalized.startsWith(approved)) {
+                    authorizedRoot = approved;
+                    break;
+                }
+            }
+        }
+        if (authorizedRoot == null || normalized.equals(authorizedRoot)) {
+            throw new IllegalArgumentException(
+                    "source file is outside the project root and configured import roots");
+        }
+        Path cursor = authorizedRoot;
+        for (Path part : authorizedRoot.relativize(normalized)) {
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new IllegalArgumentException(
+                        "source import traverses a symlink alias before file admission");
+            }
+        }
+        return normalized;
     }
 
     private static Path directoryFor(Path start) {
