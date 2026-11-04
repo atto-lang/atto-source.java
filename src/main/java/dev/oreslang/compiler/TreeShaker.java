@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.CheckedCallPlan;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -188,61 +189,65 @@ public final class TreeShaker {
                     || function.body().size() != 1
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
                     || returned.value() == null
-                    || containsLambda(returned.value())
+                    || containsUninlineableCheckedRegion(returned.value())
                     || functionsBeingInlined.contains(target.id())) {
                 return false;
             }
             return arguments.stream().allMatch(Ast.LiteralExpr.class::isInstance);
         }
 
-        private boolean containsLambda(Ast.Expr expression) {
+        private boolean containsUninlineableCheckedRegion(Ast.Expr expression) {
             if (expression == null) return false;
             if (expression instanceof Ast.LambdaExpr) return true;
-            if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
-            if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
-            if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
-            if (expression instanceof Ast.SpreadExpr spread) return containsLambda(spread.expression());
-            if (expression instanceof Ast.NamedArgExpr named) return containsLambda(named.value());
+            if (expression instanceof Ast.TypeTestExpr test) return containsUninlineableCheckedRegion(test.value());
+            if (expression instanceof Ast.PatternTestExpr test) return containsUninlineableCheckedRegion(test.value());
+            if (expression instanceof Ast.CastExpr cast) return containsUninlineableCheckedRegion(cast.value());
+            if (expression instanceof Ast.SpreadExpr spread) return containsUninlineableCheckedRegion(spread.expression());
+            if (expression instanceof Ast.NamedArgExpr named) return containsUninlineableCheckedRegion(named.value());
             if (expression instanceof Ast.BinaryExpr binary) {
-                return containsLambda(binary.left()) || containsLambda(binary.right());
+                return containsUninlineableCheckedRegion(binary.left()) || containsUninlineableCheckedRegion(binary.right());
             }
-            if (expression instanceof Ast.TrapExpr trapped) return containsLambda(trapped.expression());
-            if (expression instanceof Ast.UnaryExpr unary) return containsLambda(unary.operand());
+            if (expression instanceof Ast.TrapExpr trapped) return containsUninlineableCheckedRegion(trapped.expression());
+            if (expression instanceof Ast.UnaryExpr unary) return containsUninlineableCheckedRegion(unary.operand());
             if (expression instanceof Ast.AssignExpr assignment) {
-                return containsLambda(assignment.target()) || containsLambda(assignment.value());
+                return containsUninlineableCheckedRegion(assignment.target()) || containsUninlineableCheckedRegion(assignment.value());
             }
             if (expression instanceof Ast.ConditionalExpr conditional) {
-                return containsLambda(conditional.condition())
-                        || containsLambda(conditional.whenTrue())
-                        || containsLambda(conditional.whenFalse());
+                return containsUninlineableCheckedRegion(conditional.condition())
+                        || containsUninlineableCheckedRegion(conditional.whenTrue())
+                        || containsUninlineableCheckedRegion(conditional.whenFalse());
             }
             if (expression instanceof Ast.RuntimeCallExpr runtime) {
-                return runtime.arguments().stream().anyMatch(this::containsLambda);
+                return runtime.arguments().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
             if (expression instanceof Ast.CallExpr call) {
-                if (containsLambda(call.callee())) return true;
-                return call.arguments().stream().anyMatch(this::containsLambda);
+                // Never inline an outer function by substituting into the
+                // already validated arguments of a nested checked call.
+                if (CheckedCallPlan.lookup(call) != null) return true;
+                if (containsUninlineableCheckedRegion(call.callee())) return true;
+                return call.arguments().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
-            if (expression instanceof Ast.MemberExpr member) return containsLambda(member.receiver());
+            if (expression instanceof Ast.MemberExpr member) return containsUninlineableCheckedRegion(member.receiver());
             if (expression instanceof Ast.IndexExpr indexed) {
-                return containsLambda(indexed.receiver()) || containsLambda(indexed.index());
+                return containsUninlineableCheckedRegion(indexed.receiver()) || containsUninlineableCheckedRegion(indexed.index());
             }
             if (expression instanceof Ast.NewExpr created) {
-                return created.arguments().stream().anyMatch(this::containsLambda);
+                if (CheckedCallPlan.lookup(created) != null) return true;
+                return created.arguments().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
-            if (expression instanceof Ast.AwaitExpr awaited) return containsLambda(awaited.expression());
+            if (expression instanceof Ast.AwaitExpr awaited) return containsUninlineableCheckedRegion(awaited.expression());
             // Task bodies are independently scheduled effect regions. Never
             // constant-inline a callable through this boundary.
             if (expression instanceof Ast.TaskExpr) return true;
             if (expression instanceof Ast.ListExpr list) {
-                return list.elements().stream().anyMatch(this::containsLambda);
+                return list.elements().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
             if (expression instanceof Ast.TupleExpr tuple) {
-                return tuple.elements().stream().anyMatch(this::containsLambda);
+                return tuple.elements().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
             if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.ObjectField field : object.fields()) {
-                    if (containsLambda(field.value())) return true;
+                    if (containsUninlineableCheckedRegion(field.value())) return true;
                 }
             }
             return false;
@@ -960,6 +965,10 @@ public final class TreeShaker {
                 return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
             }
             if (expression instanceof Ast.CallExpr call) {
+                // Never rewrite a checked call's child expression without
+                // fresh type/effect/ownership checks; preserve original AST
+                // identity and its already validated evaluation ordering.
+                if (CheckedCallPlan.lookup(call) != null) return call;
                 Ast.Expr callee = rewriteExpression(call.callee(), module, locals);
                 List<Ast.Expr> arguments = new ArrayList<>();
                 for (Ast.Expr argument : call.arguments()) {
@@ -992,6 +1001,7 @@ public final class TreeShaker {
                         rewriteExpression(indexed.index(), module, locals));
             }
             if (expression instanceof Ast.NewExpr created) {
+                if (CheckedCallPlan.lookup(created) != null) return created;
                 List<Ast.Expr> arguments = new ArrayList<>();
                 for (Ast.Expr argument : created.arguments()) {
                     arguments.add(rewriteExpression(argument, module, locals));
