@@ -296,10 +296,20 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         synchronized (growLock) {
             closed.set(true);
             var abandoned = new ArrayList<Runnable>();
-            for (var lane : lanes) for (var pending : lane.shutdownNow()) {
-                QueuedTurn task = (QueuedTurn) pending;
-                task.rejectAdmission();
-                abandoned.add(task.command);
+            for (var lane : lanes) {
+                // A lane may request dispatcher shutdown from its own active
+                // carrier. NativeCarrierExecutor.shutdownNow() deliberately
+                // rejects a self-interrupt; use its cooperative shutdown path
+                // and still account for every queued turn and queue permit.
+                List<Runnable> pendingTurns = lane instanceof NativeCarrierExecutor nativeLane
+                        && nativeLane.isCurrentCarrierThread()
+                        ? nativeLane.requestShutdownFromCarrier()
+                        : lane.shutdownNow();
+                for (var pending : pendingTurns) {
+                    QueuedTurn task = (QueuedTurn) pending;
+                    task.rejectAdmission();
+                    abandoned.add(task.command);
+                }
             }
             return List.copyOf(abandoned);
         }
