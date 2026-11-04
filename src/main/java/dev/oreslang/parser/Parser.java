@@ -77,7 +77,7 @@ public final class Parser {
         for (int i = 0; i < tokens.size(); i++) {
             Token token = tokens.get(i);
             if (token.type() == QUANTUM) {
-                throw error(token, "quantum execution requires explicit backend lowering; no implicit CPU fallback");
+                throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
             }
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
