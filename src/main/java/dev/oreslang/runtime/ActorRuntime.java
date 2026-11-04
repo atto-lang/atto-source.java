@@ -8892,9 +8892,46 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void recordFinalizationFailure(Throwable failure) {
             Throwable original = ref.terminationCause.get();
-            if (original == null && ref.terminationCause.compareAndSet(null, failure)) return;
+            if (original == null && ref.terminationCause.compareAndSet(null, failure)) {
+                recordDetachedFailureTrace(failure);
+                return;
+            }
             original = ref.terminationCause.get();
             if (original != null && original != failure) original.addSuppressed(failure);
+        }
+
+        /** Failure-only, bounded host metadata; no Throwable methods or guest values are read. */
+        private void recordDetachedFailureTrace(Throwable failure) {
+            // An exhausted/faulting host cannot safely allocate a trace.
+            if (failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath
+                    || failure instanceof LinkageError) return;
+            if (ref.failureTrace.get() != null) return;
+
+            ArrayList<java.util.UUID> parentIds = new ArrayList<>();
+            ActorCell<?> cursor = parent;
+            while (cursor != null && parentIds.size() < ActorFailureTrace.MAX_PARENT_ACTORS) {
+                parentIds.add(cursor.ref.id().value());
+                cursor = cursor.parent;
+            }
+            boolean truncated = cursor != null;
+            ArrayList<java.util.UUID> supervisorIds = new ArrayList<>();
+            ActorGroupId groupId = managedByGroup.get();
+            ActorGroup group = groupId == null ? null : actorGroups.get(groupId);
+            ActorSupervisor supervisor = group == null ? null : group.supervisor;
+            while (supervisor != null
+                    && supervisorIds.size() < ActorFailureTrace.MAX_SUPERVISORS) {
+                supervisorIds.add(supervisor.id().value());
+                supervisor = supervisor.parent;
+            }
+            truncated |= supervisor != null;
+            ActorFailureTrace.FailureKind kind =
+                    failure instanceof ActorCancelledException
+                            ? ActorFailureTrace.FailureKind.CANCELLED
+                            : ActorFailureTrace.FailureKind.UNCLASSIFIED;
+            ref.failureTrace.compareAndSet(null, ActorFailureTrace.capture(
+                    kind, ref.id().value(), ref.generation(), parentIds, supervisorIds,
+                    truncated, group != null));
         }
 
         private void fail(Throwable failure) {
@@ -8967,8 +9004,9 @@ public final class ActorRuntime implements AutoCloseable {
             boolean scheduleTeardown;
             synchronized (lifecycleLock) {
                 if (finalized) return;
-                if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
+                if (recordCause && cause != null
+                        && ref.terminationCause.compareAndSet(null, cause)) {
+                    recordDetachedFailureTrace(cause);
                 }
                 if (cause != null || closed.get() || forceKillFenced) {
                     gracefulTeardownPending = false;
