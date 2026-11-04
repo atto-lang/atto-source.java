@@ -137,4 +137,41 @@ final class NativeCarrierExecutorTest {
             }
         }
     }
+
+    @Test
+    void runningNoncooperativeTurnPreventsPrematurePthreadJoinReceipt() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-inflight-retirement-");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch leaveTurn = new CountDownLatch(1);
+        try {
+            executor.execute(() -> {
+                entered.countDown();
+                // Simulate an uncooperative guest turn: shutdownNow's
+                // interruption must not be mistaken for actual retirement.
+                while (leaveTurn.getCount() != 0L) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(1);
+                    } catch (InterruptedException ignored) {
+                        // Keep the turn active until the explicit test release.
+                    }
+                }
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(executor.shutdownNow().isEmpty());
+            assertFalse(executor.isTerminated(),
+                    "shutdown request is not a pthread_join receipt");
+            assertFalse(executor.awaitTermination(20, TimeUnit.MILLISECONDS),
+                    "an active native guest turn must fence physical retirement");
+        } finally {
+            leaveTurn.countDown();
+            executor.shutdownNow();
+        }
+        assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        assertTrue(executor.isTerminated());
+        assertEquals(0, executor.registeredCarrierCount());
+    }
 }
