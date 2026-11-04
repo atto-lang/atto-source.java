@@ -62,6 +62,12 @@ public final class ReturnCleanupChecker {
     public static Ast.Program check(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl macro) {
+                    throw residualMacro("declaration", macro.name());
+                }
+                if (declaration instanceof Ast.MacroInvocationDecl invocation) {
+                    throw residualMacro("declaration invocation", invocation.name());
+                }
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     callable(fn.body(), fn.parameters(), null);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
@@ -274,6 +280,9 @@ public final class ReturnCleanupChecker {
 
     private static void expression(Ast.Expr expr, Scope scope, boolean inDefer, State state) {
         if (expr == null) return;
+        if (expr instanceof Ast.MacroInvocationExpr invocation) {
+            throw residualMacro("expression invocation", invocation.name());
+        }
         if (expr instanceof Ast.AssignExpr assignment) {
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Binding target = scope.resolve(name.name());
@@ -363,5 +372,12 @@ public final class ReturnCleanupChecker {
         } else if (expr instanceof Ast.ObjectExpr object) {
             object.fields().forEach(f -> expression(f.value(), scope, inDefer, state));
         }
+    }
+
+    private static IllegalArgumentException residualMacro(String kind, String name) {
+        return new IllegalArgumentException(
+                "unexpanded macro " + kind + " '" + name
+                        + "' reached return/cleanup analysis; compile-time expansion must eliminate "
+                        + "all macro nodes before executable analysis; runtime fallback is forbidden");
     }
 }
