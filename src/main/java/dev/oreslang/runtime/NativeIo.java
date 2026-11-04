@@ -53,12 +53,17 @@ public final class NativeIo {
      */
     public static long fileSize(OresContext context, String rawPath) {
         Path lexical = lexicalPath(rawPath);
+        // Validate the caller's lexical scope BEFORE probing file existence,
+        // symlinks or canonical paths. An out-of-scope missing path must
+        // report permission denial, not leak its filesystem state.
+        context.requirePermission(RuntimePermissions.Permission.READ,
+                lexical.toString(), "fs.file_size");
         if (Files.isSymbolicLink(lexical)) {
             throw new SecurityException("fs.file_size refuses symlink: " + lexical);
         }
         Path path = canonicalExistingPath(rawPath);
-        context.requirePermission(RuntimePermissions.Permission.READ,
-                lexical.toString(), "fs.file_size");
+        // A parent may itself be a symlink; never let the lexical grant
+        // authorize the resolved destination outside its READ scope.
         context.requirePermission(RuntimePermissions.Permission.READ,
                 path.toString(), "fs.file_size");
         try {
