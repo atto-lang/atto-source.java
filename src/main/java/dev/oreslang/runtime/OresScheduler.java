@@ -201,6 +201,14 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
+    /**
+     * Tasks that have physically stopped executing but whose cleanup or
+     * retirement failed. They are held strongly here (never reclaimed) and
+     * keep {@link #hasIncompleteCleanup()} true, but they no longer count as
+     * live work. Otherwise an actor STOP waiting for physical quiescence would
+     * hang forever instead of reaching its quarantine/report path.
+     */
+    private final Set<TaskRunner<?>> quarantined = ConcurrentHashMap.newKeySet();
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -526,6 +534,7 @@ public final class OresScheduler implements AutoCloseable {
      */
     public boolean hasIncompleteCleanup() {
         return physicalRetirementFailure.get() != null
+                || !quarantined.isEmpty()
                 || !tasks.isEmpty()
                 || retiringPhysicalCallbacks.get() != 0
                 || pendingTerminalNotifications.get() != 0;
@@ -1339,10 +1348,32 @@ public final class OresScheduler implements AutoCloseable {
             }
         }
 
+        /**
+         * The Task has stopped executing but its cleanup did not finish.
+         * Hold it in quarantine: never reclaimed, still reported by
+         * hasIncompleteCleanup(), but no longer blocking physical quiescence.
+         */
+        private void quarantineIfStopped() {
+            if (!cleanupIncomplete.get() || phase.get() != TERMINAL
+                    || executing.get()) return;
+            if (!quarantined.add(this)) return;
+            Throwable reason = quiescenceFailure.get();
+            physicalRetirementFailure.compareAndSet(null, reason != null
+                    ? reason : new CleanupIncompleteError(
+                            "task cleanup incomplete; quarantined"));
+            tasks.remove(this);
+            cancelWallDeadline();
+            notifyActorStopQuiescent();
+        }
+
         private void retireWhenQuiescent() {
             // Never run physical retirement while a source defer/finally/FFI
             // obligation remains incomplete, or while a guest carrier runs.
-            if (cleanupIncomplete.get() || phase.get() != TERMINAL
+            if (cleanupIncomplete.get()) {
+                quarantineIfStopped();
+                return;
+            }
+            if (phase.get() != TERMINAL
                     || executing.get() || !quiescenceState.compareAndSet(0, 1))
                 return;
             cancelWallDeadline();
@@ -1355,7 +1386,7 @@ public final class OresScheduler implements AutoCloseable {
             } catch (Throwable retirementFailure) {
                 // Do not publish a preceding successful guest result when
                 // physical owner/FFI loan retirement failed. The callback is
-                // at-most-once; leave the Task strongly held in quarantine.
+                // at-most-once; the Task moves to quarantine below.
                 quiescenceFailure.compareAndSet(null, retirementFailure);
                 cleanupIncomplete.set(true);
                 if (retirementFailure instanceof VirtualMachineError fatal) throw fatal;
@@ -1365,6 +1396,7 @@ public final class OresScheduler implements AutoCloseable {
                 deadlineQuiescenceRetired.set(true);
                 releaseDeadlineSlotIfRetired();
                 quiescenceState.set(cleanupIncomplete.get() ? 3 : 2);
+                quarantineIfStopped();
             }
         }
 
