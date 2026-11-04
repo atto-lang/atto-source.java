@@ -70,7 +70,10 @@
       <resource>
         <directory>stdlib</directory>
         <targetPath>dev/oreslang/std</targetPath>
-        <includes><include>**/*.ores</include></includes>
+        <includes>
+          <include>**/*.atto</include>
+          <include>**/*.ores</include>
+        </includes>
       </resource>
     </resources>
     <plugins>
