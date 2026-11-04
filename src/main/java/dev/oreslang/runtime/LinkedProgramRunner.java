@@ -395,7 +395,7 @@ public final class LinkedProgramRunner {
         if (units.containsKey(id)) return;
         budget.checkCanAdmitUnit(depth);
 
-        BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        BoundedSourceReader.ReadResult source = SecureSourceReader.read(normalized, projectConfig);
         admission.verifyRead(normalized, projectConfig, id);
         budget.admit(source.byteCount(), depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
