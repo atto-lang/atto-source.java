@@ -1,6 +1,6 @@
-# Actor Pub/Sub v1
+# Actor Pub/Sub backend v1 draft
 
-Status: normative in-memory actor-runtime contract.
+Status: Java/Graal runtime draft. Portable-core equivalence is **NOT_EXECUTED** and must be measured against `oreslang-platform-conformance#305`; this document must not independently redefine the cross-backend core.
 
 Oreslang pub/sub is a capability of actors, not a new actor declaration kind. Do
 not add `define publisher` or `define subscriber`. The source model is built
@@ -50,14 +50,24 @@ type. A group name is discovery only and never grants membership.
 The exact parser/lowering spelling may evolve, but the semantic model above is
 normative. No compiler may reinterpret group membership as supervision.
 
+## Portable core versus backend extensions
+
+The cross-backend portable-v1 core is the group-scoped **RELIABLE** path only:
+atomic all-recipient admission, one topic sequence allocated only after full
+admission succeeds, no implicit loss/coalescing/retry, and a nonblocking
+`try_publish` admission result. Java's current host/runtime `publish` surface
+and its completion future are implementation substrate, not proof that the
+source-level portable `try_publish` contract has executed.
+
+`LATEST` and `LOSSY` remain useful Java runtime policies, but they are
+**explicit backend extensions** outside portable-v1. They may not be used to
+claim portable-core parity and must be negotiated/versioned separately.
+
 ## Delivery contract
 
-* RELIABLE is bounded asynchronous backpressure. Publication must never create an
-  unbounded waiter list. Completion acknowledges delivery admission, not handler
-  execution.
-* LATEST has one unread slot per subscriber and coalesces an older unread value.
-* LOSSY never waits and drops a new value when the subscriber's bounded queue is
-  full.
+* RELIABLE is the only portable-core candidate. The Java host substrate uses bounded reservation plus completion tracking; portable certification additionally requires the source-level nonblocking `try_publish` result and the shared vectors.
+* LATEST is a Java extension: one unread slot per subscriber and coalescing of an older unread value.
+* LOSSY is a Java extension: never wait and drop a new value when the subscriber's bounded queue is full.
 * Delivery is at-most-once per accepted subscription publication.
 * FIFO is required per publisher-to-subscription pair. There is no total order
   across topics or independent publishers.
