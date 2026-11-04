@@ -22,7 +22,8 @@ public final class OresCompiler {
     }
 
     public static Ast.Program parseAndTypeCheck(String source) {
-        return analyze(Parser.parse(source));
+        return analyze(MacroSourceUnitIdentity.attach(
+                Parser.parse(source), MacroSourceUnitIdentity.MEMORY_UNIT));
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
@@ -48,7 +49,8 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult parseAndTypeCheckWithDiagnostics(String source) {
-        return analyzeWithDiagnostics(Parser.parse(source));
+        return analyzeWithDiagnostics(MacroSourceUnitIdentity.attach(
+                Parser.parse(source), MacroSourceUnitIdentity.MEMORY_UNIT));
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
@@ -79,6 +81,28 @@ public final class OresCompiler {
      */
     public static TreeShaker.Result compileForBuild(String source, BuildOptions options) {
         return TreeShaker.shake(parseAndTypeCheck(source), options);
+    }
+
+    /**
+     * Opt-in phase-two AOT specialization planning for a deliberately closed
+     * direct-call subset. The returned graph is a build manifest, not a native
+     * image, machine code artifact, or proof of closed actor/trait layouts.
+     */
+    public static AotFiniteGenericClosure.Plan planFiniteAotGenerics(
+            String source, BuildOptions options) {
+        return AotFiniteGenericClosure.plan(parseAndTypeCheck(source), options);
+    }
+
+    /**
+     * Phase-three prototype: lower the strictly admitted scalar direct-call
+     * subset to closed specialized HIR, not machine code. The same AST is
+     * type-/ownership-checked once and bound to its finite instance manifest.
+     */
+    public static AotSpecializedIr.Module lowerFiniteAotHir(
+            String source, BuildOptions options) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        AotFiniteGenericClosure.Plan plan = AotFiniteGenericClosure.plan(checked, options);
+        return AotSpecializedIr.lower(checked, plan);
     }
 
     /**
