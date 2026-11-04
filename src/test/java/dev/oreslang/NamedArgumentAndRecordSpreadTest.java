@@ -413,6 +413,50 @@ final class NamedArgumentAndRecordSpreadTest {
                 () -> OwnershipChecker.check(Parser.parse(code)));
     }
 
+    @Test
+    void directRoutineNamedArgumentsShareFunctionBindingAndLexicalOrder()
+            throws Exception {
+        String code = """
+                fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 4;
+                }
+
+                fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 2;
+                }
+
+                routine encode(int first, int second): int {
+                    return first * 10 + second;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(
+                            encode(second: second(), first: first()));
+                    return;
+                }
+                """;
+
+        assertEquals("BA42", checkedExecution(code));
+    }
+
+    @Test
+    void routineNamedCollisionCannotBypassTypeChecking() {
+        String code = """
+                routine encode(int first, int second): int {
+                    return first * 10 + second;
+                }
+
+                pub routine main(): void {
+                    encode(first: 1, first: 2);
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+    }
+
     private static String checkedExecution(String code) throws Exception {
         var parsed = Parser.parse(code);
         var typed = TypeChecker.check(parsed);
