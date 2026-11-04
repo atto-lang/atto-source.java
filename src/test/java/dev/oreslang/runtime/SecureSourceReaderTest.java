@@ -25,8 +25,12 @@ final class SecureSourceReaderTest {
                 [source]
                 roots = ["src"]
                 """);
+        boolean pinnedDirectories;
+        try (var stream = Files.newDirectoryStream(root)) {
+            pinnedDirectories = stream instanceof java.nio.file.SecureDirectoryStream<?>;
+        }
         var read = SecureSourceReader.read(file,
-                OresProjectConfig.discover(file, Map.of()), true);
+                OresProjectConfig.discover(file, Map.of()), pinnedDirectories);
         assertEquals(source, read.text());
         assertEquals(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
                 read.byteCount());
