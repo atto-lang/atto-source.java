@@ -230,8 +230,20 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
-        final boolean canonicalAttoImporter = importer.getFileName() != null
-                && importer.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".atto");
+        // Reject noncanonical *importer* identities as well as imported
+        // targets. Otherwise consumer.ATTO inherits .atto import semantics
+        // on one filesystem while remaining distinct on another.
+        final Path importerFileName = importer.getFileName();
+        final String importerName = importerFileName == null ? "" : importerFileName.toString();
+        final String importerLower = importerName.toLowerCase(Locale.ROOT);
+        if ((importerLower.endsWith(".atto") || importerLower.endsWith(".ores")
+                || importerLower.endsWith(".java"))
+                && !(importerName.endsWith(".atto") || importerName.endsWith(".ores")
+                        || importerName.endsWith(".java"))) {
+            throw new IllegalArgumentException(
+                    "noncanonical importer source extension: use exactly .atto, .ores or .java");
+        }
+        final boolean canonicalAttoImporter = importerName.endsWith(".atto");
         String unix = importPath.replace('\\', '/');
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw, canonicalAttoImporter);
