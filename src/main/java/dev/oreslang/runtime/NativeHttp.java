@@ -179,6 +179,12 @@ public final class NativeHttp implements AutoCloseable {
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
         synchronized (exchange.state) {
             exchange.checkOwner();
+            // Checking ActorId ownership alone is insufficient: the same
+            // pooled actor may have accepted another request on a later mail.
+            // Validate against the actual delivered token before consuming it.
+            if (ActorRuntime.inActorExecution()) {
+                context.actors().requireCurrentHttpTransferToken(token);
+            }
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             // Bind the exchange to an admitted logical user-mail receive.
             // If admission fails, restore the *same* one-shot transfer ticket:
