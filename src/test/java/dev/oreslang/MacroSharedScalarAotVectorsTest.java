@@ -54,10 +54,22 @@ final class MacroSharedScalarAotVectorsTest {
     void sharedNegativeProgramsFailBeforeExecutableSemanticAdmission() {
         for (String name : List.of("overflow-reject.atto", "wrong-kind-reject.atto",
                 "dynamic-const-reject.atto", "unresolved-reject.atto")) {
-            RuntimeException failure = assertThrows(RuntimeException.class,
+            String requiredDiagnostic = switch (name) {
+                case "overflow-reject.atto" -> "compile-time integer + overflow";
+                case "wrong-kind-reject.atto" -> "requires Syntax<Expr>, got const";
+                case "dynamic-const-reject.atto" -> "not a closed compile-time expression";
+                case "unresolved-reject.atto" -> "unresolved compile-time macro";
+                default -> throw new AssertionError("unrecognized negative vector " + name);
+            };
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(source(name)), name);
-            assertNotNull(failure.getMessage(), name);
-            assertFalse(failure.getMessage().isBlank(), name);
+            assertTrue(failure.getMessage().contains(requiredDiagnostic),
+                    () -> name + " expected dedicated semantic denial "
+                            + requiredDiagnostic + ", got " + failure);
+            assertTrue(failure.getMessage().contains("runtime")
+                            || failure.getMessage().contains("compile-time"),
+                    () -> name + " denial must retain compiler-only context: " + failure);
         }
     }
 }
