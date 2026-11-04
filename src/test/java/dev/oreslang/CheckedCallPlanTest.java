@@ -371,10 +371,9 @@ final class CheckedCallPlanTest {
                         new Ast.NamedArgExpr("a", new Ast.LiteralExpr(10L)),
                         new Ast.NamedArgExpr("b", new Ast.LiteralExpr(20L))));
         Ast.copyCheckedMetadata(namedSource, valueOnlyRewrite);
-        assertEquals(
-                namedPlan,
-                CheckedCallPlan.require(valueOnlyRewrite),
-                "rewriting only named argument values preserves binding shape");
+        assertNull(
+                CheckedCallPlan.lookup(valueOnlyRewrite),
+                "changed named argument values require fresh effect/ownership/type checks");
     }
 
     @Test
@@ -410,8 +409,8 @@ final class CheckedCallPlanTest {
                 direct.typeArgumentsPresent(),
                 List.of(new Ast.LiteralExpr(9L)));
         Ast.copyCheckedMetadata(direct, sameTarget);
-        assertEquals(plan, CheckedCallPlan.require(sameTarget),
-                "value-only rewrites on the same callable retain the plan");
+        assertNull(CheckedCallPlan.lookup(sameTarget),
+                "a structurally equal but replaced callee/argument must not inherit proof");
 
         Ast.NewExpr firstConstructor = new Ast.NewExpr(
                 Ast.TypeRef.simple("Foo"),
@@ -428,7 +427,15 @@ final class CheckedCallPlanTest {
                 Ast.TypeRef.simple("Foo"),
                 List.of(new Ast.LiteralExpr(2L)));
         Ast.copyCheckedMetadata(firstConstructor, sameConstructor);
-        assertEquals(plan, CheckedCallPlan.require(sameConstructor));
+        assertNull(CheckedCallPlan.lookup(sameConstructor),
+                "constructor arguments changed after validation cannot inherit proof");
+
+        Ast.NewExpr sameChildrenConstructor = new Ast.NewExpr(
+                firstConstructor.type(),
+                firstConstructor.arguments());
+        Ast.copyCheckedMetadata(firstConstructor, sameChildrenConstructor);
+        assertEquals(plan, CheckedCallPlan.require(sameChildrenConstructor),
+                "reusing identical checked children preserves the existing ABI mapping");
     }
 
     @Test
