@@ -112,6 +112,10 @@ public final class Parser {
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
+            if (looksLikeMacroInvocationDeclaration()) {
+                rootDeclarations.add(parseMacroInvocationDeclaration());
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -161,6 +165,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(MACRO)) {
+                    validateOnlyVisibilityModifiers(modifiers, "macros");
+                    rejectCallableStructuralAnnotation(annotations, "macro declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "macro declarations");
+                    rootDeclarations.add(parseMacroDecl(modifiers.visibility));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -219,7 +230,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected macro, module, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -343,6 +354,9 @@ public final class Parser {
 
     private Ast.Decl parseModuleMember() {
         rejectUnsupportedAcceleratorSyntax();
+        if (looksLikeMacroInvocationDeclaration()) {
+            return parseMacroInvocationDeclaration();
+        }
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
@@ -387,6 +401,12 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (match(MACRO)) {
+                validateOnlyVisibilityModifiers(modifiers, "macros");
+                rejectCallableStructuralAnnotation(annotations, "macro declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "macro declarations");
+                return parseMacroDecl(modifiers.visibility);
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -428,7 +448,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected macro, class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -535,6 +555,424 @@ public final class Parser {
         }
         if (modifiers.untrusted) return Ast.ActorKind.UNTRUSTED;
         return isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
+    }
+
+    private Ast.MacroDecl parseMacroDecl(Ast.Visibility visibility) {
+        Token macroName = consume(IDENT, "expected macro name");
+        String name = macroName.lexeme();
+        if (check(LT)) {
+            throw error(peek(),
+                    "define macro does not declare ordinary generic parameters; pass compiler-known Type values explicitly");
+        }
+        consume(LPAREN, "expected '(' after macro name");
+
+        List<Ast.MacroParam> parameters = new ArrayList<>();
+        java.util.HashSet<String> parameterNames = new java.util.HashSet<>();
+        if (!check(RPAREN)) {
+            do {
+                Ast.MacroParamType type = parseMacroParamType();
+                if (check(MUT) || isContextualIdentifier("structural")) {
+                    throw error(peek(), "macro parameters are immutable compiler values; mut/structural is not permitted");
+                }
+                Token parameterName = consume(IDENT, "expected macro parameter name after compiler-only meta type");
+                if (isMacroIntrinsicName(parameterName.lexeme())) {
+                    throw error(parameterName,
+                            "'" + parameterName.lexeme()
+                                    + "' is reserved for a compile-time macro intrinsic");
+                }
+                if (!parameterNames.add(parameterName.lexeme())) {
+                    throw error(parameterName, "duplicate macro parameter '" + parameterName.lexeme() + "'");
+                }
+                parameters.add(new Ast.MacroParam(type, parameterName.lexeme()));
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after macro parameters");
+
+        consume(ARROW, "define macro requires an explicit '-> <macro-result-kind>'");
+        Ast.MacroResultKind resultKind = parseMacroResultKind();
+        List<Ast.Stmt> body = parseBlock();
+        rejectMacroQuoteShadowing(body);
+        return new Ast.MacroDecl(
+                name,
+                visibility,
+                parameters,
+                resultKind,
+                body,
+                new Ast.SourceSite(macroName.line(), macroName.column()));
+    }
+
+    /**
+     * Macro intrinsics are contextual: ordinary runtime code may use these names,
+     * but a macro body cannot rebind quote/unquote/hygienic/capture_fnc/declare_fnc
+     * and thereby make compiler-only authority ambiguous. Quoted Syntax<K>
+     * payloads are compiler data, not macro-body lexical scope, so
+     * MacroInvocationExpr payloads are deliberately not traversed here.
+     */
+    private void rejectMacroQuoteShadowing(List<Ast.Stmt> statements) {
+        for (Ast.Stmt statement : statements) {
+            if (statement instanceof Ast.BindingStmt binding) {
+                rejectMacroQuoteBinding(binding.name());
+                rejectMacroQuoteShadowing(binding.initializer());
+            } else if (statement instanceof Ast.DestructureStmt destructure) {
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) rejectMacroQuoteBinding(binding.name());
+                }
+                rejectMacroQuoteShadowing(destructure.initializer());
+            } else if (statement instanceof Ast.ReturnStmt returned) {
+                rejectMacroQuoteShadowing(returned.value());
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                rejectMacroQuoteShadowing(yielded.value());
+            } else if (statement instanceof Ast.ExprStmt expression) {
+                rejectMacroQuoteShadowing(expression.expression());
+            } else if (statement instanceof Ast.DeferStmt deferred) {
+                rejectMacroQuoteShadowing(deferred.expression());
+            } else if (statement instanceof Ast.BlockStmt block) {
+                rejectMacroQuoteShadowing(block.body());
+            } else if (statement instanceof Ast.TaskScopeStmt scope) {
+                rejectMacroQuoteShadowing(scope.body());
+            } else if (statement instanceof Ast.UsingBorrowStmt using) {
+                rejectMacroQuoteBinding(using.binding());
+                rejectMacroQuoteShadowing(using.resource());
+                rejectMacroQuoteShadowing(using.body());
+            } else if (statement instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    rejectMacroQuoteShadowing(branch.condition());
+                    rejectMacroQuoteShadowing(branch.body());
+                }
+                rejectMacroQuoteShadowing(conditional.elseBody());
+            } else if (statement instanceof Ast.MatchStmt matched) {
+                rejectMacroQuoteShadowing(matched.subject());
+                for (Ast.MatchArm arm : matched.arms()) {
+                    rejectMacroQuoteShadowing(arm.pattern());
+                    rejectMacroQuoteShadowing(arm.guard());
+                    rejectMacroQuoteShadowing(arm.body());
+                }
+            } else if (statement instanceof Ast.SwitchStmt switched) {
+                rejectMacroQuoteShadowing(switched.subject());
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    for (Ast.Expr constant : arm.constants()) {
+                        rejectMacroQuoteShadowing(constant);
+                    }
+                    rejectMacroQuoteShadowing(arm.body());
+                }
+                rejectMacroQuoteShadowing(switched.defaultBody());
+            } else if (statement instanceof Ast.TryStmt tried) {
+                if (tried.errorName() != null) rejectMacroQuoteBinding(tried.errorName());
+                rejectMacroQuoteShadowing(tried.body());
+                rejectMacroQuoteShadowing(tried.catchBody());
+                rejectMacroQuoteShadowing(tried.finallyBody());
+            } else if (statement instanceof Ast.ForOfStmt loop) {
+                rejectMacroQuoteBinding(loop.bindingName());
+                rejectMacroQuoteShadowing(loop.iterable());
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.ForOfDestructureStmt loop) {
+                for (Ast.DestructureBinding binding : loop.bindings()) {
+                    if (!binding.isDiscard()) rejectMacroQuoteBinding(binding.name());
+                }
+                rejectMacroQuoteShadowing(loop.iterable());
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.ForStmt loop) {
+                if (loop.initializer() != null) rejectMacroQuoteShadowing(List.of(loop.initializer()));
+                rejectMacroQuoteShadowing(loop.condition());
+                rejectMacroQuoteShadowing(loop.update());
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.DoWhileStmt loop) {
+                rejectMacroQuoteShadowing(loop.body());
+                rejectMacroQuoteShadowing(loop.condition());
+            } else if (statement instanceof Ast.LoopStmt loop) {
+                rejectMacroQuoteShadowing(loop.body());
+            } else if (statement instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectArm arm : selected.arms()) {
+                    if (arm.bindingName() != null) rejectMacroQuoteBinding(arm.bindingName());
+                    rejectMacroQuoteShadowing(arm.channel());
+                    rejectMacroQuoteShadowing(arm.value());
+                    rejectMacroQuoteShadowing(arm.body());
+                }
+            }
+        }
+    }
+
+    private void rejectMacroQuoteShadowing(Ast.Expr expression) {
+        if (expression == null || expression instanceof Ast.MacroInvocationExpr) return;
+        if (expression instanceof Ast.MatchExpr matched) {
+            rejectMacroQuoteShadowing(matched.subject());
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                rejectMacroQuoteShadowing(arm.pattern());
+                rejectMacroQuoteShadowing(arm.guard());
+                rejectMacroQuoteShadowing(arm.value());
+            }
+        } else if (expression instanceof Ast.TypeTestExpr test) {
+            if (test.binding() != null) rejectMacroQuoteBinding(test.binding());
+            rejectMacroQuoteShadowing(test.value());
+        } else if (expression instanceof Ast.PatternTestExpr test) {
+            rejectMacroQuoteShadowing(test.pattern());
+            rejectMacroQuoteShadowing(test.value());
+        } else if (expression instanceof Ast.CastExpr cast) {
+            rejectMacroQuoteShadowing(cast.value());
+        } else if (expression instanceof Ast.SpreadExpr spread) {
+            rejectMacroQuoteShadowing(spread.expression());
+        } else if (expression instanceof Ast.BinaryExpr binary) {
+            rejectMacroQuoteShadowing(binary.left());
+            rejectMacroQuoteShadowing(binary.right());
+        } else if (expression instanceof Ast.UnaryExpr unary) {
+            rejectMacroQuoteShadowing(unary.operand());
+        } else if (expression instanceof Ast.AssignExpr assignment) {
+            rejectMacroQuoteShadowing(assignment.target());
+            rejectMacroQuoteShadowing(assignment.value());
+        } else if (expression instanceof Ast.ConditionalExpr conditional) {
+            rejectMacroQuoteShadowing(conditional.condition());
+            rejectMacroQuoteShadowing(conditional.whenTrue());
+            rejectMacroQuoteShadowing(conditional.whenFalse());
+        } else if (expression instanceof Ast.CallExpr call) {
+            rejectMacroQuoteShadowing(call.callee());
+            for (Ast.Expr argument : call.arguments()) rejectMacroQuoteShadowing(argument);
+        } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr argument : runtime.arguments()) rejectMacroQuoteShadowing(argument);
+        } else if (expression instanceof Ast.MemberExpr member) {
+            rejectMacroQuoteShadowing(member.receiver());
+        } else if (expression instanceof Ast.IndexExpr indexed) {
+            rejectMacroQuoteShadowing(indexed.receiver());
+            rejectMacroQuoteShadowing(indexed.index());
+        } else if (expression instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) rejectMacroQuoteShadowing(argument);
+        } else if (expression instanceof Ast.AwaitExpr awaited) {
+            rejectMacroQuoteShadowing(awaited.expression());
+        } else if (expression instanceof Ast.TaskExpr task) {
+            rejectMacroQuoteShadowing(task.body());
+        } else if (expression instanceof Ast.TrapExpr trapped) {
+            rejectMacroQuoteShadowing(trapped.expression());
+        } else if (expression instanceof Ast.ChannelOpExpr operation) {
+            rejectMacroQuoteShadowing(operation.channel());
+            rejectMacroQuoteShadowing(operation.value());
+            rejectMacroQuoteShadowing(operation.callbackBody());
+        } else if (expression instanceof Ast.DynamicSelectExpr selected) {
+            rejectMacroQuoteShadowing(selected.cases());
+        } else if (expression instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) rejectMacroQuoteShadowing(item);
+        } else if (expression instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) rejectMacroQuoteShadowing(item);
+        } else if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) rejectMacroQuoteShadowing(field.value());
+        } else if (expression instanceof Ast.LambdaExpr lambda) {
+            for (Ast.Param parameter : lambda.parameters()) {
+                rejectMacroQuoteBinding(parameter.name());
+            }
+            rejectMacroQuoteShadowing(lambda.expressionBody());
+            if (lambda.blockBody() != null) rejectMacroQuoteShadowing(lambda.blockBody());
+        }
+    }
+
+    private void rejectMacroQuoteShadowing(Ast.Pattern pattern) {
+        if (pattern == null) return;
+        if (pattern instanceof Ast.BindingPattern binding) {
+            rejectMacroQuoteBinding(binding.name());
+        } else if (pattern instanceof Ast.TypePattern typed) {
+            if (typed.binding() != null) rejectMacroQuoteBinding(typed.binding());
+        } else if (pattern instanceof Ast.StructuralPattern structural) {
+            if (structural.binding() != null) rejectMacroQuoteBinding(structural.binding());
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) rejectMacroQuoteShadowing(element);
+        } else if (pattern instanceof Ast.ConstructorPattern constructor) {
+            for (Ast.Pattern argument : constructor.arguments()) rejectMacroQuoteShadowing(argument);
+        }
+    }
+
+    private boolean isMacroIntrinsicName(String name) {
+        return "quote".equals(name)
+                || "unquote".equals(name)
+                || "hygienic".equals(name)
+                || "capture_fnc".equals(name)
+                || "declare_fnc".equals(name);
+    }
+
+    private void rejectMacroQuoteBinding(String name) {
+        if (isMacroIntrinsicName(name)) {
+            throw error(previous(),
+                    "'" + name
+                            + "' is reserved for a compile-time macro intrinsic and cannot be rebound in a macro body");
+        }
+    }
+
+    private Ast.MacroParamType parseMacroParamType() {
+        Token head = consume(IDENT,
+                "macro parameter must use Type, Const<T>, Identifier, or Syntax<K>");
+        return switch (head.lexeme()) {
+            case "Type" -> Ast.MacroParamType.type();
+            case "Identifier" -> Ast.MacroParamType.identifier();
+            case "Const" -> {
+                consume(LT, "Const macro parameter requires exactly one type argument: Const<T>");
+                if (check(GT)) {
+                    throw error(peek(), "Const<T> macro parameter requires a non-empty value type");
+                }
+                Ast.TypeRef valueType = parseTypeRef();
+                consume(GT, "expected '>' after Const<T> macro parameter type");
+                if (containsCompilerOnlyMacroMetaType(valueType)) {
+                    throw error(previous(),
+                            "Const<T> value type must be an ordinary compile-time-serializable type, not another macro meta type");
+                }
+                yield Ast.MacroParamType.constant(valueType);
+            }
+            case "Syntax" -> {
+                consume(LT, "Syntax macro parameter requires exactly one syntax kind: Syntax<K>");
+                Ast.MacroSyntaxKind syntaxKind = parseMacroSyntaxKind();
+                consume(GT, "expected '>' after Syntax<K> macro parameter kind");
+                yield Ast.MacroParamType.syntax(syntaxKind);
+            }
+            case "SyntaxList" -> throw error(head,
+                    "SyntaxList is a macro result container in v1, not a macro parameter type");
+            default -> throw error(head,
+                    "macro parameter must use Type, Const<T>, Identifier, or Syntax<K>");
+        };
+    }
+
+    private Ast.MacroResultKind parseMacroResultKind() {
+        Token head = consume(IDENT,
+                "macro result kind must be Syntax<Expr|Stmt|Decl|Type|Pattern> or SyntaxList<Decl>");
+        if (head.lexeme().equals("Syntax")) {
+            consume(LT, "Syntax macro result requires exactly one syntax kind: Syntax<K>");
+            Ast.MacroSyntaxKind syntaxKind = parseMacroSyntaxKind();
+            consume(GT, "expected '>' after Syntax<K> macro result kind");
+            return Ast.MacroResultKind.syntax(syntaxKind);
+        }
+        if (head.lexeme().equals("SyntaxList")) {
+            consume(LT, "SyntaxList macro result requires SyntaxList<Decl>");
+            Token kind = consume(IDENT, "SyntaxList macro result requires declaration kind 'Decl'");
+            if (!kind.lexeme().equals("Decl")) {
+                throw error(kind, "v1 macro list results are restricted to SyntaxList<Decl>");
+            }
+            consume(GT, "expected '>' after SyntaxList<Decl>");
+            return Ast.MacroResultKind.declarations();
+        }
+        throw error(head,
+                "macro result kind must be Syntax<Expr|Stmt|Decl|Type|Pattern> or SyntaxList<Decl>");
+    }
+
+    private Ast.MacroSyntaxKind parseMacroSyntaxKind() {
+        Token kind = consume(IDENT,
+                "expected macro syntax kind Expr, Stmt, Decl, Type, or Pattern");
+        return switch (kind.lexeme()) {
+            case "Expr" -> Ast.MacroSyntaxKind.EXPR;
+            case "Stmt" -> Ast.MacroSyntaxKind.STMT;
+            case "Decl" -> Ast.MacroSyntaxKind.DECL;
+            case "Type" -> Ast.MacroSyntaxKind.TYPE;
+            case "Pattern" -> Ast.MacroSyntaxKind.PATTERN;
+            default -> throw error(kind,
+                    "macro syntax kind must be Expr, Stmt, Decl, Type, or Pattern");
+        };
+    }
+
+    private boolean containsCompilerOnlyMacroMetaType(Ast.TypeRef type) {
+        if (type.name().equals("Type")
+                || type.name().equals("Const")
+                || type.name().equals("Identifier")
+                || type.name().equals("Syntax")
+                || type.name().equals("SyntaxList")) {
+            return true;
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsCompilerOnlyMacroMetaType(argument)) return true;
+        }
+        return false;
+    }
+
+    private boolean looksLikeMacroInvocationDeclaration() {
+        int i = current;
+        if (i >= tokens.size() || tokens.get(i).type() != IDENT) return false;
+        i++;
+        while (i + 1 < tokens.size()
+                && (tokens.get(i).type() == DOT || tokens.get(i).type() == DOUBLE_COLON)
+                && tokens.get(i + 1).type() == IDENT) {
+            i += 2;
+        }
+        return i + 1 < tokens.size()
+                && tokens.get(i).type() == BANG
+                && tokens.get(i + 1).type() == LPAREN;
+    }
+
+    private Ast.MacroInvocationDecl parseMacroInvocationDeclaration() {
+        Token first = consume(IDENT, "expected macro name");
+        StringBuilder name = new StringBuilder(first.lexeme());
+        while (match(DOT, DOUBLE_COLON)) {
+            name.append('.').append(consume(IDENT, "expected macro name after namespace qualifier").lexeme());
+        }
+        consume(BANG, "macro invocation requires '!'");
+        consume(LPAREN, "macro invocation requires '(' after '!'");
+        List<Ast.MacroArgument> arguments = parseMacroInvocationArguments();
+        consume(RPAREN, "expected ')' after macro arguments");
+        consume(SEMICOLON, "declaration-position macro invocation must end with ';'");
+        return new Ast.MacroInvocationDecl(
+                name.toString(), arguments, new Ast.SourceSite(first.line(), first.column()));
+    }
+
+    private List<Ast.MacroArgument> parseMacroInvocationArguments() {
+        List<Ast.MacroArgument> arguments = new ArrayList<>();
+        if (check(RPAREN)) return List.of();
+        do {
+            if (match(TYPE)) {
+                arguments.add(new Ast.MacroTypeArgument(parseTypeRef()));
+                continue;
+            }
+            if (match(CONST)) {
+                arguments.add(new Ast.MacroConstArgument(parseExpression()));
+                continue;
+            }
+            if (isContextualIdentifier("ident")) {
+                advance();
+                Token identifier = consume(IDENT,
+                        "macro 'ident' argument requires a call-site identifier name");
+                arguments.add(new Ast.MacroIdentifierArgument(
+                        identifier.lexeme(), new Ast.SourceSite(identifier.line(), identifier.column())));
+                continue;
+            }
+            if (isContextualIdentifier("syntax")) {
+                advance();
+                arguments.add(parseMacroSyntaxArgument());
+                continue;
+            }
+            throw error(peek(),
+                    "macro arguments require an explicit compiler category: "
+                            + "'type T', 'const expr', 'ident name', or 'syntax <kind> ...'");
+        } while (match(COMMA));
+        return List.copyOf(arguments);
+    }
+
+    private Ast.MacroArgument parseMacroSyntaxArgument() {
+        if (isContextualIdentifier("expr")) {
+            advance();
+            return new Ast.MacroSyntaxExprArgument(parseExpression());
+        }
+        if (match(TYPE)) {
+            return new Ast.MacroSyntaxTypeArgument(parseTypeRef());
+        }
+        if (isContextualIdentifier("pattern")) {
+            advance();
+            return new Ast.MacroSyntaxPatternArgument(parsePattern());
+        }
+        if (isContextualIdentifier("stmt")) {
+            advance();
+            List<Ast.Stmt> body = parseBlock();
+            if (body.size() != 1) {
+                throw error(previous(),
+                        "syntax stmt requires exactly one statement inside its '{ ... }' wrapper");
+            }
+            return new Ast.MacroSyntaxStmtArgument(body.getFirst());
+        }
+        if (isContextualIdentifier("decl")) {
+            throw error(peek(),
+                    "syntax decl source arguments are reserved until declaration quotation has "
+                            + "hygienic provenance; use type/ident or a generated Syntax<Decl> value");
+        }
+        throw error(peek(),
+                "syntax macro argument requires expr, stmt, type, pattern, or decl");
+    }
+
+    private String macroCalleePath(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr name) return name.name();
+        if (expression instanceof Ast.MemberExpr member) {
+            String parent = macroCalleePath(member.receiver());
+            return parent == null ? null : parent + "." + member.member();
+        }
+        return null;
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
@@ -2377,6 +2815,10 @@ public final class Parser {
             if (next == TRAIT) {
                 throw error(define, "trait declarations are compile-time declarations and cannot execute inside a block");
             }
+            if (next == MACRO) {
+                throw error(define,
+                        "define macro is a compile-time declaration and cannot execute inside a runtime block");
+            }
         }
         if (check(TRAIT)) {
             throw error(peek(), "trait declarations are static/module-scope declarations; runtime trait creation is forbidden");
@@ -4164,7 +4606,21 @@ public final class Parser {
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
-            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+            if (check(BANG)
+                    && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() == LPAREN) {
+                String macroName = macroCalleePath(expr);
+                if (macroName == null) {
+                    throw error(peek(),
+                            "macro invocation callee must be a static macro name or namespace-qualified macro name");
+                }
+                Token bang = advance();
+                consume(LPAREN, "expected '(' after macro invocation '!'");
+                List<Ast.MacroArgument> args = parseMacroInvocationArguments();
+                consume(RPAREN, "expected ')' after macro arguments");
+                expr = new Ast.MacroInvocationExpr(
+                        macroName, args, new Ast.SourceSite(bang.line(), bang.column()));
+            } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
