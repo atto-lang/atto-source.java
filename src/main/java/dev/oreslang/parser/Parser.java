@@ -2171,12 +2171,20 @@ public final class Parser {
                 while (match(COMMA)) args.add(parseTypeRef());
                 consume(GT, "expected '>' after type arguments");
             } else {
+                boolean sawNamedTypeArgument = false;
                 do {
                     if (check(IDENT) && checkNext(EQUAL)) {
+                        sawNamedTypeArgument = true;
                         String parameterName = advance().lexeme();
                         consume(EQUAL, "expected '=' after named type parameter");
                         args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
                     } else {
+                        // Canonicalization must not erase an invalid source ordering.
+                        // Only a positional prefix may precede named type arguments.
+                        if (sawNamedTypeArgument) {
+                            throw error(peek(),
+                                    "positional type argument cannot follow a named type argument");
+                        }
                         args.add(parseTypeRef());
                     }
                 } while (match(COMMA));
