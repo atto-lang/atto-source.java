@@ -47,7 +47,7 @@ final class DeferredChannelOwnershipHardeningTest {
                 actor fnc bad(): void {
                   val Channel<int> output = Channel.new<int>(1);
                   let Bar owner = new Bar();
-                  val &Bar view = rt borrow owner;
+                  val borrow Bar view = rt borrow owner;
                   nb cb writech output, 42 || -> {
                     stdio.println(view.foo);
                   };
@@ -77,7 +77,7 @@ final class DeferredChannelOwnershipHardeningTest {
                 actor fnc good(): void {
                   val Channel<int> output = Channel.new<int>(1);
                   let Bar owner = new Bar();
-                  val &Bar view = rt borrow owner;
+                  val borrow Bar view = rt borrow owner;
                   nb cb writech output, 42 || -> {
                     stdio.println("done");
                   };
