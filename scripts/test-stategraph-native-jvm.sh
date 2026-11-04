@@ -84,6 +84,33 @@ fi
 rm -f "$guest_out" "$guest_err"
 printf 'SG_JAVA_SHARED_SUPERSTEP_NATIVE_PASS blob=%s guest_exit=42\n' "$expected_superstep_blob"
 
+
+# Canonical bounded-recursion and branch guest shared with native LLVM.
+cycle=contracts/stategraph-portability/shared-bounded-cycle.ores
+cycle_blob=3c69cdf00c4e1390898ef0594eba76c54c0e2d7f
+[[ -f "$cycle" && ! -L "$cycle" ]]
+git ls-files --error-unmatch -- "$cycle" >/dev/null
+[[ "$(git hash-object "$cycle")" = "$cycle_blob" ]] ||
+  { echo 'SG_JAVA_SHARED_CYCLE_SOURCE_DRIFT' >&2; exit 1; }
+[[ "$(git rev-parse "HEAD:$cycle")" = "$cycle_blob" ]] ||
+  { echo 'SG_JAVA_SHARED_CYCLE_HEAD_DRIFT' >&2; exit 1; }
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$cycle" ||
+  { echo 'SG_JAVA_SHARED_CYCLE_CHECK_NOT_ACCEPTED' >&2; exit 1; }
+cycle_out="$(mktemp)"
+cycle_err="$(mktemp)"
+set +e
+timeout --kill-after=3s 80s python3 contracts/v1/java_probe.py "$cycle" --execute > "$cycle_out" 2> "$cycle_err"
+cycle_status=$?
+set -e
+if [[ "$cycle_status" -ne 42 || -s "$cycle_out" || -s "$cycle_err" ]]; then
+  cat "$cycle_err" >&2
+  rm -f "$cycle_out" "$cycle_err"
+  echo "SG_JAVA_SHARED_CYCLE_GUEST_NOT_ACCEPTED status=$cycle_status" >&2
+  exit 1
+fi
+rm -f "$cycle_out" "$cycle_err"
+printf 'SG_JAVA_SHARED_CYCLE_NATIVE_PASS blob=%s guest_exit=42\n' "$cycle_blob"
+
 for name in scalar branch nominal; do
   file="tests/stategraph-portability/$name.ores"
   git ls-files --error-unmatch -- "$file" >/dev/null
