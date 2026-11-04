@@ -839,16 +839,25 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            Invocation current = initial;
-            int tailHops = 0;
-            while (true) {
-                Object result = current.owner().executeRaw(current);
-                if (!(result instanceof TailCall tail)) return result;
-                current = tail.invocation();
-                tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
-                    current.owner().context.schedulerSafepoint();
+            // Count non-tail guest invocation nesting before pushing another
+            // interpreter frame. Tail hops stay in this single guarded entry.
+            // This is an early budget check, not recovery from StackOverflowError.
+            int guestCallDepth = dev.oreslang.runtime.GuestCallDepthGuard.enter();
+            try {
+                Invocation current = initial;
+                int tailHops = 0;
+                while (true) {
+                    Object result = current.owner().executeRaw(current);
+                    if (!(result instanceof TailCall tail)) return result;
+                    current = tail.invocation();
+                    tailHops++;
+                    if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                        current.owner().context.schedulerSafepoint();
+                    }
                 }
+            } finally {
+                // Carrier reuse must not inherit a prior actor's call budget.
+                dev.oreslang.runtime.GuestCallDepthGuard.leave(guestCallDepth);
             }
         }
 
