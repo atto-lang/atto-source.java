@@ -259,11 +259,19 @@ public final class OresProjectConfig {
         // Never query existence until the candidate belongs to an authorized
         // root and all lexically named descendants are checked for symlinks.
         Path normalized = requireSafeSourceCandidate(candidate);
-        String text = normalized.toString().toLowerCase(Locale.ROOT);
-        // Explicit source extensions may resolve as spelled; a physical file
-        // without an admitted extension must not bypass .atto/.ores selection.
-        if (text.endsWith(".atto") || text.endsWith(".ores")
-                || text.endsWith(".java")) {
+        String sourceName = normalized.getFileName().toString();
+        String lowerName = sourceName.toLowerCase(Locale.ROOT);
+        // Source suffixes are part of the logical source identity: accepting
+        // .ATTO/.OrEs on one filesystem and case-folding them on another
+        // silently aliases different source units. Deny an explicitly
+        // noncanonical spelling before probing that file's existence.
+        if (lowerName.endsWith(".atto") || lowerName.endsWith(".ores")
+                || lowerName.endsWith(".java")) {
+            if (!(sourceName.endsWith(".atto") || sourceName.endsWith(".ores")
+                    || sourceName.endsWith(".java"))) {
+                throw new IllegalArgumentException(
+                        "noncanonical source extension: use exactly .atto, .ores or .java");
+            }
             return Files.isRegularFile(normalized)
                     ? Optional.of(normalized) : Optional.empty();
         }
