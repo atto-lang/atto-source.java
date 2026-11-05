@@ -304,7 +304,7 @@ mod tests {
         assert!(inspect_core("import module n from 'ores.std/core';").is_err());
         assert!(inspect_core("do java { System.exit(0); }").is_err());
         assert!(inspect_core("import class Runtime from 'java:java.lang.Runtime';").is_err());
-        assert!(inspect_core("// java {}\\nfnc f(): void {}").is_ok());
+        assert!(inspect_core("// java {}\nfnc f(): void {}").is_ok());
     }
 
     #[test]
@@ -319,8 +319,43 @@ mod tests {
         assert!(scan_core(&root).is_err());
         fs::remove_file(root.join("numeric.ores")).unwrap();
         fs::write(root.join("numeric.atto"),
-            "import module A from 'std/core';\\ndefine module numeric as end").unwrap();
+            "import module A from 'std/core';\ndefine module numeric as end").unwrap();
         assert!(scan_core(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_sources_must_be_single_unambiguous_literals() {
+        assert!(inspect("import module core from 'std/core';").is_ok());
+        assert!(inspect_core("import module n from 'ores.core/numeric.atto';").is_ok());
+        for invalid in [
+            "import module core;",
+            "import module core from;",
+            "import module core from 'std/core' + 'extra';",
+            "import module core from 'std/core' from 'std/assert';",
+            "import module core from 'std//core';",
+            "import module core from 'std/%2e%2e/core';",
+            "import module core from 'std/core.atto.ores';",
+            "import module core from 'std/../core';",
+            "import module core from 'ores.core/numeric';",
+        ] {
+            assert!(inspect(invalid).is_err(), "{invalid}");
+        }
+        assert!(inspect_core("import module n from 'std/core';").is_err());
+        assert!(inspect_core("import module n from 'ores.core//numeric';").is_err());
+    }
+
+    #[test]
+    fn packaged_source_budget_matches_java_classpath_admission() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-source-quota-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("numeric.atto");
+        fs::write(&path, "a".repeat(MAX_FILE as usize)).unwrap();
+        assert_eq!(scan_core(&root).unwrap(), 1, "exactly 1 MiB is permitted");
+        fs::write(&path, "a".repeat(MAX_FILE as usize + 1)).unwrap();
+        assert!(scan_core(&root).is_err(), "oversized guest source must be rejected");
         fs::remove_dir_all(root).unwrap();
     }
 
