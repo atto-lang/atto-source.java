@@ -42,12 +42,14 @@ final class SupervisorFailureInboxTest {
         assertEquals(actor.toString(), receipt.actorIdentity());
         assertEquals(5L, receipt.actorGeneration());
         assertEquals(supervisor.toString(), receipt.supervisorIdentity());
+        assertEquals(1L, receipt.claimAttempt());
         assertFalse(receipt.supervisorControlDelivered());
         assertEquals(0, inbox.queuedCount());
         assertTrue(inbox.pollHost().isEmpty(), "claim is single-winner");
-        assertFalse(inbox.acknowledgeHost(receipt.sequence(), actor.toString(), 6),
-                "stale/wrong actor generation cannot acknowledge receipt");
-        assertFalse(inbox.acknowledgeHost(receipt.sequence(), UUID.randomUUID().toString(), 5));
+        assertFalse(inbox.acknowledgeHost(receipt.sequence(), actor.toString(), 6,
+                receipt.claimAttempt()), "wrong actor generation cannot acknowledge receipt");
+        assertFalse(inbox.acknowledgeHost(receipt.sequence(), UUID.randomUUID().toString(), 5,
+                receipt.claimAttempt()));
         assertFalse(inbox.offerTrusted(snapshot(UUID.randomUUID(), supervisor, 1)),
                 "claimed but unacknowledged receipt still consumes capacity");
 
@@ -56,10 +58,15 @@ final class SupervisorFailureInboxTest {
                 "requeue itself must not duplicate delivery candidates");
         var retry = inbox.pollHost().orElseThrow();
         assertEquals(receipt.sequence(), retry.sequence());
-        assertFalse(inbox.acknowledgeHost(receipt.sequence(), actor.toString(), 6));
-        assertTrue(inbox.acknowledgeHost(receipt.sequence(), actor.toString(), 5));
-        assertFalse(inbox.acknowledgeHost(receipt.sequence(), actor.toString(), 5),
-                "duplicate ack must never count twice");
+        assertEquals(receipt.claimAttempt() + 1, retry.claimAttempt());
+        assertFalse(inbox.acknowledgeHost(retry.sequence(), actor.toString(), 5,
+                receipt.claimAttempt()), "old claim attempt cannot acknowledge retry");
+        assertFalse(inbox.acknowledgeHost(retry.sequence(), actor.toString(), 6,
+                retry.claimAttempt()));
+        assertTrue(inbox.acknowledgeHost(retry.sequence(), actor.toString(), 5,
+                retry.claimAttempt()));
+        assertFalse(inbox.acknowledgeHost(retry.sequence(), actor.toString(), 5,
+                retry.claimAttempt()), "duplicate ack must never count twice");
         assertEquals(0, inbox.outstandingCount());
         assertTrue(inbox.offerTrusted(snapshot(UUID.randomUUID(), supervisor, 1)));
     }
@@ -80,8 +87,10 @@ final class SupervisorFailureInboxTest {
         assertEquals(0, otherInbox.outstandingCount());
 
         var claimed = inbox.pollHost().orElseThrow();
-        assertFalse(inbox.acknowledgeHost(claimed.sequence(), actor.toString(), 4));
-        assertTrue(inbox.acknowledgeHost(claimed.sequence(), actor.toString(), 3));
+        assertFalse(inbox.acknowledgeHost(claimed.sequence(), actor.toString(), 4,
+                claimed.claimAttempt()));
+        assertTrue(inbox.acknowledgeHost(claimed.sequence(), actor.toString(), 3,
+                claimed.claimAttempt()));
         assertEquals(0, inbox.outstandingCount());
         assertFalse(new SupervisorFailureInbox(supervisor, 1).offerTrusted(
                 ActorFailureTrace.capture(
@@ -116,13 +125,18 @@ final class SupervisorFailureInboxTest {
             assertTrue(supervisor.pollHostFailureReceipt().isEmpty());
             assertFalse(supervisor.acknowledgeHostFailureReceipt(
                     receipt.sequence(), receipt.actorIdentity(),
-                    receipt.actorGeneration() + 1));
+                    receipt.actorGeneration() + 1, receipt.claimAttempt()));
             assertEquals(1, supervisor.requeueUnacknowledgedHostFailureReceipts());
-            assertEquals(receipt.sequence(),
-                    supervisor.pollHostFailureReceipt().orElseThrow().sequence());
-            assertTrue(supervisor.acknowledgeHostFailureReceipt(
+            var retry = supervisor.pollHostFailureReceipt().orElseThrow();
+            assertEquals(receipt.sequence(), retry.sequence());
+            assertEquals(receipt.claimAttempt() + 1, retry.claimAttempt());
+            assertFalse(supervisor.acknowledgeHostFailureReceipt(
                     receipt.sequence(), receipt.actorIdentity(),
-                    receipt.actorGeneration()));
+                    receipt.actorGeneration(), receipt.claimAttempt()),
+                    "stale claim must never acknowledge the retry");
+            assertTrue(supervisor.acknowledgeHostFailureReceipt(
+                    retry.sequence(), retry.actorIdentity(),
+                    retry.actorGeneration(), retry.claimAttempt()));
             assertEquals(0, supervisor.outstandingHostFailureReceipts());
             group.close();
         }
@@ -146,7 +160,7 @@ final class SupervisorFailureInboxTest {
                             denied.set(unexpected);
                         }
                         try {
-                            supervisor.acknowledgeHostFailureReceipt(1, UUID.randomUUID().toString(), 1);
+                            supervisor.acknowledgeHostFailureReceipt(1, UUID.randomUUID().toString(), 1, 1);
                             denied.set(new AssertionError("actor forged supervisor ack"));
                         } catch (SecurityException expected) {
                             // Must be rejected before any receipt state is touched.
