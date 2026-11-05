@@ -9179,8 +9179,11 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingDrains.clear();
                 pendingStopDrainNotifications = failedDrainWaiters.size();
                 if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
+                else mailbox.close(ref.detachedObservationFailure());
+                // Closed channel state is observable by other actors/Futures.
+                // Never retain a Throwable from the child actor's arena.
+                continuationMailbox.close(
+                        cause == null ? null : ref.detachedObservationFailure());
                 drainOrdinaryMailboxReservations();
                 // Leave sourceTaskMailbox open: the stopped actor's scheduler
                 // still owns authenticated lexical unwind continuations.
@@ -9408,7 +9411,9 @@ public final class ActorRuntime implements AutoCloseable {
             // cannot precede child STOP propagation, owned-Future revocation,
             // or scheduler lexical-cancellation requests. Track their physical
             // notification drains separately from guest resource receipts.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
+            // Drain observer Futures are cross-actor values, not a wire for
+            // the guest Throwable that originally terminated this actor.
+            Throwable drainFailure = terminated(ref);
             Throwable drainPublishFailure = null;
             for (DrainWaiter waiter : failedDrainWaiters) {
                 OresFuture<Void> observer = waiter.completion();
