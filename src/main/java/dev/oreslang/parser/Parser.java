@@ -161,6 +161,18 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                // This frontend has no nominal inverted declaration AST or
+                // compiler-owned row-storage ABI yet. Do not reinterpret the
+                // portable DOP v1 contract as an ordinary struct/class or
+                // silently fall back to a Java reference-model collection.
+                // Keep 'inverted' contextual outside declaration heads.
+                if (isContextualIdentifier("inverted")
+                        && (checkNext(STRUCT) || checkNext(CLASS))) {
+                    throw error(peek(),
+                            "DOP_INVERTED_BACKEND_UNSUPPORTED: Java requires "
+                            + "typed inverted schema, checked row-lifetime lowering "
+                            + "and a guest storage ABI; host-only SoA is not guest execution");
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
