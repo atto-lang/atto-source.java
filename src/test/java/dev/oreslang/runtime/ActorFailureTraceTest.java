@@ -148,6 +148,62 @@ final class ActorFailureTraceTest {
 
 
     @Test
+    void initializationObserverFuturesNeverExportOriginalThrowable() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var failed = runtime.<String>spawnShared(ignored -> {
+                throw new IllegalArgumentException("startup arena secret");
+            });
+            var readyRef = failed.readyRef();
+            Throwable readyError = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.getReady().get(5, TimeUnit.SECONDS)).getCause();
+            assertDetachedObserverFailure(readyError, failed, "startup arena secret");
+            Throwable readyRefError = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> readyRef.get(5, TimeUnit.SECONDS)).getCause();
+            assertDetachedObserverFailure(readyRefError, failed, "startup arena secret");
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+            Throwable doneError = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.getDone().get(5, TimeUnit.SECONDS)).getCause();
+            assertDetachedObserverFailure(doneError, failed, "startup arena secret");
+            // Host-only raw cause remains a known separate retention gap.
+            assertTrue(failed.failure().isPresent());
+        }
+    }
+
+    @Test
+    void postReadinessFailureDoesNotExposeGuestExceptionThroughDone() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var failed = runtime.<String>spawnShared(
+                    ignored -> (message, context) -> {
+                        throw new IllegalStateException("message arena secret");
+                    });
+            failed.getReady().get(5, TimeUnit.SECONDS);
+            failed.send("fail");
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+            Throwable doneError = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.getDone().get(5, TimeUnit.SECONDS)).getCause();
+            assertDetachedObserverFailure(doneError, failed, "message arena secret");
+            assertFalse(failed.failureTrace().orElseThrow().sourceFramesAvailable());
+        }
+    }
+
+    private static void assertDetachedObserverFailure(Throwable failure,
+            ActorRuntime.ActorRef<?> actor, String secret) {
+        var detached = assertInstanceOf(ActorFailureTrace.ObservationFailure.class, failure);
+        assertEquals("atto.actor-failure-observation.v1", detached.schema());
+        assertEquals(actor.id().value().toString(), detached.actorIdentity());
+        assertEquals(actor.generation(), detached.actorGeneration());
+        assertNull(detached.getCause(), "no raw child Throwable as cause");
+        assertEquals(0, detached.getSuppressed().length, "no child suppressed errors");
+        assertEquals(0, detached.getStackTrace().length, "no carrier stack");
+        assertFalse(detached.getMessage().contains(secret));
+        assertFalse(detached.supervisorControlDelivered());
+        detached.trace().ifPresent(trace -> {
+            assertEquals(detached.actorIdentity(), trace.boundaries().get(0).identity());
+            assertEquals(detached.actorGeneration(), trace.boundaries().get(0).actorGeneration());
+        });
+    }
+
+    @Test
     void cleanupOnlyFirstWinnerAlsoCapturesDetachedTrace() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             runtime.setActorExitHook(ignored -> {
