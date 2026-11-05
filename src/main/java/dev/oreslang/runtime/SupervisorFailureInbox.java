@@ -26,15 +26,17 @@ public final class SupervisorFailureInbox {
     /** Public immutable diagnostic view, not a supervisor authority token. */
     public static final class Receipt {
         private final long sequence;
+        private final long claimAttempt;
         private final String supervisorIdentity;
         private final String actorIdentity;
         private final long actorGeneration;
         private final ActorFailureTrace.Snapshot trace;
 
-        private Receipt(long sequence, String supervisorIdentity,
+        private Receipt(long sequence, long claimAttempt, String supervisorIdentity,
                 String actorIdentity, long actorGeneration,
                 ActorFailureTrace.Snapshot trace) {
             this.sequence = sequence;
+            this.claimAttempt = claimAttempt;
             this.supervisorIdentity = supervisorIdentity;
             this.actorIdentity = actorIdentity;
             this.actorGeneration = actorGeneration;
@@ -42,6 +44,12 @@ public final class SupervisorFailureInbox {
         }
 
         public long sequence() { return sequence; }
+        /** Incremented for every host claim; old retry attempts cannot ack. */
+        public long claimAttempt() { return claimAttempt; }
+        private Receipt nextClaimAttempt() {
+            return new Receipt(sequence, Math.addExact(claimAttempt, 1),
+                    supervisorIdentity, actorIdentity, actorGeneration, trace);
+        }
         public String supervisorIdentity() { return supervisorIdentity; }
         public String actorIdentity() { return actorIdentity; }
         public long actorGeneration() { return actorGeneration; }
@@ -105,7 +113,7 @@ public final class SupervisorFailureInbox {
         }
         if (active.size() >= capacity || nextSequence == Long.MAX_VALUE) return false;
         long sequence = nextSequence++;
-        Receipt receipt = new Receipt(sequence, supervisorIdentity,
+        Receipt receipt = new Receipt(sequence, 0, supervisorIdentity,
                 terminal.identity(), terminal.actorGeneration(), trace);
         active.put(sequence, new Entry(receipt, false));
         queued.addLast(sequence);
@@ -114,14 +122,17 @@ public final class SupervisorFailureInbox {
 
     /** Host-only observation; claim does not mean guest supervisor execution. */
     synchronized Optional<Receipt> pollHost() {
-        Long sequence = queued.pollFirst();
+        Long sequence = queued.peekFirst();
         if (sequence == null) return Optional.empty();
         Entry entry = active.get(sequence);
         if (entry == null || entry.claimed()) {
             throw new IllegalStateException("failure inbox receipt accounting violated");
         }
-        active.put(sequence, new Entry(entry.receipt(), true));
-        return Optional.of(entry.receipt());
+        // Never consume a queued receipt if attempt numbering is exhausted.
+        Receipt claimed = entry.receipt().nextClaimAttempt();
+        active.put(sequence, new Entry(claimed, true));
+        queued.removeFirst();
+        return Optional.of(claimed);
     }
 
     /**
@@ -130,13 +141,15 @@ public final class SupervisorFailureInbox {
      * the newer one's receipt. A repeated ack returns false.
      */
     synchronized boolean acknowledgeHost(
-            long sequence, String actorIdentity, long actorGeneration) {
+            long sequence, String actorIdentity, long actorGeneration,
+            long claimAttempt) {
         Objects.requireNonNull(actorIdentity, "actorIdentity");
         Entry entry = active.get(sequence);
         if (entry == null || !entry.claimed()) return false;
         Receipt receipt = entry.receipt();
         if (!receipt.actorIdentity().equals(actorIdentity)
-                || receipt.actorGeneration() != actorGeneration) return false;
+                || receipt.actorGeneration() != actorGeneration
+                || receipt.claimAttempt() != claimAttempt) return false;
         active.remove(sequence);
         return true;
     }
