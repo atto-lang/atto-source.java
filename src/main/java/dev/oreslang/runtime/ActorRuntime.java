@@ -3057,6 +3057,12 @@ public final class ActorRuntime implements AutoCloseable {
         // from silently reparenting an existing supervisory domain.
         private final ActorSupervisor parent;
         private volatile SupervisorCodeSlot<?> codeSlot;
+        /**
+         * Explicit host-only failure handoff; null until a supervisor opts in.
+         * This is a bounded CONTROL *admission* substrate, not a handler,
+         * dispatch-completion or actual guest policy execution receipt.
+         */
+        private volatile SupervisorFailureInbox failureInbox;
 
         private ActorSupervisor(SupervisorId id, ActorSupervisor parent) {
             this.id = Objects.requireNonNull(id, "id");
@@ -3064,6 +3070,62 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public SupervisorId id() { return id; }
+
+        /**
+         * Host-only opt-in to bounded terminal-failure admission. Default
+         * standalone runtimes have no implicit CONTROL handler, so they do
+         * not accidentally convert advisory supervisor ownership into policy
+         * execution. Configuring an inbox does not configure a dispatcher.
+         */
+        public void enableHostFailureInbox(int capacity) {
+            requireSupervisorContext("configure supervisor failure inbox");
+            requireCallerRuntimeAffinity("configure supervisor failure inbox");
+            synchronized (runtimeLifecycleLock) {
+                if (closed.get() || supervisors.get(id) != this) {
+                    throw new IllegalStateException("supervisor is not active");
+                }
+                if (failureInbox != null) {
+                    throw new IllegalStateException("supervisor failure inbox already configured");
+                }
+                failureInbox = new SupervisorFailureInbox(id.value(), capacity);
+            }
+        }
+
+        /** Claim a diagnostic receipt; not proof that supervisor CONTROL ran. */
+        public Optional<SupervisorFailureInbox.Receipt> pollHostFailureReceipt() {
+            requireSupervisorContext("poll supervisor failure inbox");
+            requireCallerRuntimeAffinity("poll supervisor failure inbox");
+            SupervisorFailureInbox inbox = failureInbox;
+            return inbox == null ? Optional.empty() : inbox.pollHost();
+        }
+
+        /** Only a previously claimed actor incarnation can be acknowledged. */
+        public boolean acknowledgeHostFailureReceipt(
+                long sequence, String actorIdentity, long actorGeneration) {
+            requireSupervisorContext("acknowledge supervisor failure inbox");
+            requireCallerRuntimeAffinity("acknowledge supervisor failure inbox");
+            SupervisorFailureInbox inbox = failureInbox;
+            return inbox != null
+                    && inbox.acknowledgeHost(sequence, actorIdentity, actorGeneration);
+        }
+
+        /**
+         * Host coordinator restart retry: preserve receipt sequence.
+         * Does not claim exactly-once policy execution or dispatch success.
+         */
+        public int requeueUnacknowledgedHostFailureReceipts() {
+            requireSupervisorContext("retry supervisor failure inbox");
+            requireCallerRuntimeAffinity("retry supervisor failure inbox");
+            SupervisorFailureInbox inbox = failureInbox;
+            return inbox == null ? 0 : inbox.requeueUnacknowledgedHost();
+        }
+
+        public int outstandingHostFailureReceipts() {
+            requireSupervisorContext("inspect supervisor failure inbox");
+            requireCallerRuntimeAffinity("inspect supervisor failure inbox");
+            SupervisorFailureInbox inbox = failureInbox;
+            return inbox == null ? 0 : inbox.outstandingCount();
+        }
 
         /**
          * Associate exactly one owner CONTROL code slot with this stable
@@ -8995,15 +9057,25 @@ public final class ActorRuntime implements AutoCloseable {
                     failure instanceof ActorCancelledException
                             ? ActorFailureTrace.FailureKind.CANCELLED
                             : ActorFailureTrace.FailureKind.UNCLASSIFIED;
+            SupervisorFailureInbox inbox =
+                    group == null ? null : group.supervisor.failureInbox;
             try {
-                ref.failureTrace.compareAndSet(null, ActorFailureTrace.capture(
+                ActorFailureTrace.Snapshot snapshot = ActorFailureTrace.capture(
                         kind, ref.id().value(), ref.generation(), parentIds,
-                        supervisorIds, truncated, group != null));
+                        supervisorIds, truncated, group != null);
+                ref.failureTrace.compareAndSet(null, snapshot);
+                // No callbacks or dispatcher submission under lifecycleLock.
+                // A full configured inbox MUST NOT silently lose a terminal
+                // failure; fail closed by quarantining this actor's arena.
+                if (inbox != null && (!Objects.equals(groupId, managedByGroup.get())
+                        || !inbox.offerTrusted(snapshot))) {
+                    sourceStopCleanupAborted = true;
+                }
             } catch (RuntimeException malformedMetadata) {
-                // Diagnostic capture must not hide the original terminal
-                // failure, strand actor shutdown or turn a cause into success.
-                // No call to guest code, logging formatter or side-effectful
-                // Throwable accessor is permitted in this fallback.
+                // Privileged failure admission that was explicitly enabled
+                // must fail closed; other diagnostic capture remains best-effort.
+                // Never consult a guest Throwable/formatter in this path.
+                if (inbox != null) sourceStopCleanupAborted = true;
             }
         }
 
