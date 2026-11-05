@@ -225,6 +225,36 @@ final class ActorFailureTraceTest {
     }
 
     @Test
+    void alreadyPendingDrainCannotRetainOriginalChildException() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(
+                    ignored -> (message, context) -> {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("test timeout");
+                        }
+                        throw new IllegalStateException("private child error object");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("fail");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            // Observe an accepted but still unfinished mailbox message.
+            var pendingDrain = actor.drain();
+            assertFalse(pendingDrain.isDone());
+            release.countDown();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            var result = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> pendingDrain.get(5, TimeUnit.SECONDS));
+            var ended = assertInstanceOf(
+                    ActorRuntime.ActorTerminatedException.class, result.getCause());
+            assertDetachedObserverFailure(ended.getCause(), actor, "private child error object");
+            assertFalse(ended.toString().contains("private child error object"));
+        }
+    }
+
+    @Test
     void cleanupOnlyFirstWinnerAlsoCapturesDetachedTrace() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             runtime.setActorExitHook(ignored -> {
