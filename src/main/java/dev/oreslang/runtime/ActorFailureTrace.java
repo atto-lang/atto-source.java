@@ -67,6 +67,52 @@ public final class ActorFailureTrace {
         public boolean supervisorControlDelivered() { return false; }
     }
 
+    /**
+     * Detached failure observed by actor lifecycle Futures. A raw Throwable
+     * cannot be the exceptional result of ready(), readyRef(), or done():
+     * its cause/suppressed frames may retain another actor's heap, arena loans
+     * or mutable guest state. This value is diagnostic data only, never a
+     * supervisor CONTROL receipt or permission to inspect actor memory.
+     */
+    public static final class ObservationFailure extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        private final String actorIdentity;
+        private final long actorGeneration;
+        private final FailureKind failureKind;
+        private final Snapshot trace;
+
+        private ObservationFailure(UUID actor, long generation, Snapshot snapshot) {
+            super("actor lifecycle failed (detached diagnostic)", null, false, false);
+            Objects.requireNonNull(actor, "actor");
+            if (generation <= 0) throw new IllegalArgumentException("negative actor generation");
+            String identity = actor.toString();
+            if (snapshot != null && (snapshot.boundaries().isEmpty()
+                    || !snapshot.boundaries().get(0).identity().equals(identity)
+                    || snapshot.boundaries().get(0).actorGeneration() != generation)) {
+                throw new IllegalArgumentException("failure trace actor/generation mismatch");
+            }
+            actorIdentity = identity;
+            actorGeneration = generation;
+            trace = snapshot;
+            failureKind = snapshot == null ? FailureKind.UNCLASSIFIED : snapshot.failureKind();
+        }
+
+        public String schema() { return "atto.actor-failure-observation.v1"; }
+        public String actorIdentity() { return actorIdentity; }
+        public long actorGeneration() { return actorGeneration; }
+        public FailureKind failureKind() { return failureKind; }
+        public java.util.Optional<Snapshot> trace() {
+            return java.util.Optional.ofNullable(trace);
+        }
+        /** Neither source frames nor supervisor delivery may be inferred. */
+        public boolean supervisorControlDelivered() { return false; }
+    }
+
+    /** Only runtime-owned metadata can manufacture a detached observer failure. */
+    static ObservationFailure observation(UUID actor, long generation, Snapshot trace) {
+        return new ObservationFailure(actor, generation, trace);
+    }
+
     private ActorFailureTrace() { }
 
     /**
