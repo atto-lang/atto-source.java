@@ -205,6 +205,8 @@ and `done()` now publish an immutable, **stackless**
 than retaining the raw child Throwable in their settled Future state.
 `ActorTerminatedException` raised by closed-ref send/drain paths now carries
 that detached observation as its cause, not the child Throwable.
+Actor output-stream terminal errors are also closed with a detached
+observation, so the output channel does not hold a raw child exception.
 The observation has a host-issued actor identity/generation, an optional
 immutable causal snapshot and a fixed message; it contains no guest stack,
 guest exception message or Throwable cause chain. It is diagnostic, not an
@@ -212,8 +214,8 @@ authenticated supervisor CONTROL receipt.
 
 **Remaining P0 gaps:** Legacy host-only `ActorRef.failure()` continues to
 hold the original raw Throwable after finalization for compatibility and may
-retain guest-owned objects. Generic `OresFuture`, outbound stream failures,
-pending mailbox/drain error paths, one-shot invocation bridges, and other
+retain guest-owned objects. Generic `OresFuture`, pending mailbox/drain error paths,
+one-shot invocation bridges, and other
 host interop completion paths can still retain raw Throwables; no universal
 cross-heap Future sanitization is claimed. No implicit conversion from
 `ObservationFailure` to guest `throw`/`raise`/`panic` is implemented.
