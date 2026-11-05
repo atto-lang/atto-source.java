@@ -56,10 +56,21 @@ public final class ActorFailureTrace {
                     && !sourceClass.getName().startsWith("java.util.ImmutableCollections$")) {
                 throw new IllegalArgumentException("diagnostic boundaries require a host-owned list");
             }
-            // Copy BEFORE validation: an ArrayList can be concurrently changed
-            // by a host caller between separate size/get checks. The immutable
-            // copy is the only snapshot whose shape becomes authoritative.
-            List<Boundary> detached = List.copyOf(boundaries);
+            // Bound allocation BEFORE copying. List.copyOf(original) could
+            // allocate an arbitrarily large guest-controlled collection before
+            // the post-copy size check. Because the exact class is host-owned,
+            // size/get are trusted, but every read is explicitly capped.
+            // A concurrent mutation may reject the snapshot, never increase
+            // the amount copied or publish a live mutable list.
+            int count = boundaries.size();
+            if (count < 1 || count > MAX_BOUNDARIES) {
+                throw new IllegalArgumentException("unbounded causal boundary snapshot");
+            }
+            ArrayList<Boundary> bounded = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                bounded.add(Objects.requireNonNull(boundaries.get(i), "boundary"));
+            }
+            List<Boundary> detached = List.copyOf(bounded);
             if (detached.isEmpty() || detached.size() > MAX_BOUNDARIES
                     || detached.get(0).kind() != BoundaryKind.ACTOR_TERMINAL) {
                 throw new IllegalArgumentException("invalid causal boundary snapshot");
