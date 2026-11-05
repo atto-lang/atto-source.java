@@ -246,6 +246,67 @@ final class SupervisorFailureInboxTest {
     }
 
     @Test
+    void releasedWorkerFailureIsAttributedOnlyToNewSupervisor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var original = runtime.createSupervisor();
+            var replacement = runtime.createSupervisor();
+            original.enableHostFailureInbox(4);
+            replacement.enableHostFailureInbox(4);
+            var firstGroup = runtime.createActorGroup(original);
+            var secondGroup = runtime.createActorGroup(replacement);
+            var worker = runtime.<String>spawnShared(
+                    ignored -> (message, context) -> {
+                        throw new IllegalArgumentException("transferred private secret");
+                    });
+            worker.getReady().get(5, TimeUnit.SECONDS);
+            firstGroup.manageWorker(worker);
+            assertTrue(firstGroup.releaseWorker(worker));
+            secondGroup.manageWorker(worker);
+            // Closing the prior group must not steal the new supervisor route.
+            firstGroup.close();
+            worker.send("fail");
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, original.outstandingHostFailureReceipts());
+            assertEquals(1, replacement.outstandingHostFailureReceipts());
+            var receipt = replacement.pollHostFailureReceipt().orElseThrow();
+            assertEquals(worker.id().value().toString(), receipt.actorIdentity());
+            assertEquals(replacement.id().value().toString(), receipt.supervisorIdentity());
+            assertEquals(worker.generation(), receipt.actorGeneration());
+            assertFalse(receipt.toString().contains("transferred private secret"));
+            assertTrue(replacement.acknowledgeHostFailureReceipt(
+                    receipt.sequence(), receipt.actorIdentity(),
+                    receipt.actorGeneration(), receipt.claimAttempt()));
+            secondGroup.close();
+        }
+    }
+
+    @Test
+    void managedWorkerCloseStillRetainsSupervisorFailureReceipt() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            supervisor.enableHostFailureInbox(2);
+            var group = runtime.createActorGroup(supervisor);
+            var worker = supervisor.<String>startChildHost(
+                    group, ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    ignored -> (message, context) -> { });
+            worker.getReady().get(5, TimeUnit.SECONDS);
+            group.close();
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, supervisor.outstandingHostFailureReceipts(),
+                    "closing the management group must not discard its terminal receipt");
+            var receipt = supervisor.pollHostFailureReceipt().orElseThrow();
+            assertEquals(worker.id().value().toString(), receipt.actorIdentity());
+            assertEquals(supervisor.id().value().toString(), receipt.supervisorIdentity());
+            assertEquals(ActorFailureTrace.FailureKind.CANCELLED,
+                    receipt.failureKind());
+            assertTrue(supervisor.acknowledgeHostFailureReceipt(
+                    receipt.sequence(), receipt.actorIdentity(),
+                    receipt.actorGeneration(), receipt.claimAttempt()));
+        }
+    }
+
+    @Test
     void actorExecutionCannotClaimOrAcknowledgeSupervisorHostReceipts() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var supervisor = runtime.createSupervisor();
