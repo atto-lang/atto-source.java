@@ -122,6 +122,14 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
 }
 
 fn inspect(source: &str) -> Result<(), String> {
+    inspect_with_root(source, "std/")
+}
+
+fn inspect_core(source: &str) -> Result<(), String> {
+    inspect_with_root(source, "ores.core/")
+}
+
+fn inspect_with_root(source: &str, allowed_root: &str) -> Result<(), String> {
     let tokens = lex(source)?;
     for (i, t) in tokens.iter().enumerate() {
         if t.name("java")
@@ -151,7 +159,7 @@ fn inspect(source: &str) -> Result<(), String> {
                         return Err(format!("line {}: missing import source", part.line));
                     }
                     let name = src.iter().map(|t| t.text.as_str()).collect::<String>();
-                    if !name.starts_with("std/")
+                    if !name.starts_with(allowed_root)
                         || name.contains("..")
                         || name.starts_with('/')
                         || name.contains(':')
@@ -167,6 +175,14 @@ fn inspect(source: &str) -> Result<(), String> {
 }
 
 fn scan(root: &Path) -> Result<usize, String> {
+    scan_with_root(root, false)
+}
+
+fn scan_core(root: &Path) -> Result<usize, String> {
+    scan_with_root(root, true)
+}
+
+fn scan_with_root(root: &Path, core: bool) -> Result<usize, String> {
     if fs::symlink_metadata(root)
         .map_err(|e| e.to_string())?
         .file_type()
@@ -205,7 +221,8 @@ fn scan(root: &Path) -> Result<usize, String> {
                 return Err(format!("{}: resource budget exceeded", path.display()));
             }
             let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            inspect(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+            (if core { inspect_core(&source) } else { inspect(&source) })
+                .map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
     if count == 0 {
@@ -216,13 +233,18 @@ fn scan(root: &Path) -> Result<usize, String> {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() > 1 || args.first().is_some_and(|s| s.starts_with('-')) {
-        eprintln!("usage: oreslang-stdlib-boundary-audit [stdlib-directory]");
+    if args.len() > 2 || args.iter().any(|s| s.starts_with('-')) {
+        eprintln!("usage: oreslang-stdlib-boundary-audit [stdlib-directory] [core-directory]");
         process::exit(2);
     }
     let root = args.first().map(String::as_str).unwrap_or("stdlib");
-    match scan(Path::new(root)) {
-        Ok(n) => println!("verified {n} native Oreslang stdlib source file(s)"),
+    let result = scan(Path::new(root)).and_then(|std_count| {
+        if let Some(core_root) = args.get(1) {
+            scan_core(Path::new(core_root)).map(|core_count| std_count + core_count)
+        } else { Ok(std_count) }
+    });
+    match result {
+        Ok(n) => println!("verified {n} native AttoLang library source file(s)"),
         Err(e) => {
             eprintln!("stdlib boundary audit failed: {e}");
             process::exit(1);
@@ -249,6 +271,33 @@ mod tests {
 
         fs::write(root.join("bounds.ores"), source).unwrap();
         assert!(scan(&root).is_err(), "parallel .atto/.ores sources must be denied");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn freestanding_core_import_boundary() {
+        assert!(inspect_core("import module n from 'ores.core/numeric';").is_ok());
+        assert!(inspect_core("import module n from 'std/core';").is_err());
+        assert!(inspect_core("import module n from 'ores.std/core';").is_err());
+        assert!(inspect_core("do java { System.exit(0); }").is_err());
+        assert!(inspect_core("import class Runtime from 'java:java.lang.Runtime';").is_err());
+        assert!(inspect_core("// java {}\\nfnc f(): void {}").is_ok());
+    }
+
+    #[test]
+    fn freestanding_core_scanner_refuses_source_alias_collision() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("atto-core-audit-{}-{stamp}", process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("numeric.atto"), "define module numeric as end").unwrap();
+        assert_eq!(scan_core(&root).unwrap(), 1);
+        fs::write(root.join("numeric.ores"), "define module numeric as end").unwrap();
+        assert!(scan_core(&root).is_err());
+        fs::remove_file(root.join("numeric.ores")).unwrap();
+        fs::write(root.join("numeric.atto"),
+            "import module A from 'std/core';\\ndefine module numeric as end").unwrap();
+        assert!(scan_core(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
