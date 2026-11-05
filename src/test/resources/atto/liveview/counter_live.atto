@@ -1,0 +1,24 @@
+// TARGET PORTABILITY FIXTURE ONLY — not yet executable on five backends.
+// Source syntax follows draft AttoLang spec/05-actors-and-state.md.
+// No host sockets, Node objects or privileges are exposed to this actor.
+// The future typed LiveView adapter must map an authenticated increment
+// event to Increment and render read_count() through the shared protocol.
+define class Increment as
+  int amount: 1
+end
+
+define actor CounterLive as
+  state {
+    let int count: 0
+  }
+
+  receive(Increment message) -> void ::
+    self.handle_state(critical-write |s| -> {
+      s.count = s.count + message.amount
+    })
+  end
+
+  read_count() -> int ::
+    return self.handle_state(critical-read |s| -> s.count)
+  end
+end
