@@ -1,0 +1,21 @@
+// HTTP wire-phase decision predicates from HttpResponseWirePhase.java.
+// The runtime's response lock, physical I/O and terminal ownership stay Java.
+define module http_response_phase_policy as
+  pub fnc may_begin(bool reserved, bool terminal, bool started): bool {
+    return reserved && !terminal && !started;
+  }
+
+  pub fnc may_record_sent(bool started, bool sent): bool {
+    return started && !sent;
+  }
+
+  // Once headers were attempted, a second HTTP status is forbidden.
+  pub fnc may_send_error(bool terminal, bool started,
+                         bool operation_busy): bool {
+    return !terminal && !started && !operation_busy;
+  }
+
+  pub fnc may_finish(bool terminal): bool {
+    return !terminal;
+  }
+end

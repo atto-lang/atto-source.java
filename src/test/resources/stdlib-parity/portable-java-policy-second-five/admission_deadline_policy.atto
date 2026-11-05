@@ -1,0 +1,16 @@
+import module admission_deadline_policy from "std/admission_deadline_policy.atto";
+pub routine main(): void {
+  stdio.println(admission_deadline_policy.valid_timeout_ns(1));
+  stdio.println(admission_deadline_policy.valid_timeout_ns(300000000000));
+  stdio.println(admission_deadline_policy.valid_timeout_ns(300000000001));
+  stdio.println(admission_deadline_policy.valid_timeout_ns(0));
+  stdio.println(admission_deadline_policy.within_window(0, 1));
+  stdio.println(admission_deadline_policy.within_window(1, 1));
+  stdio.println(admission_deadline_policy.within_window(-1, 100));
+  stdio.println(admission_deadline_policy.should_revoke(-1, 100));
+  stdio.println(admission_deadline_policy.should_revoke(100, 100));
+  stdio.println(admission_deadline_policy.should_revoke(99, 100));
+  stdio.println(admission_deadline_policy.can_propose_publication(true, 99, 100));
+  stdio.println(admission_deadline_policy.can_propose_publication(false, 99, 100));
+  return;
+}

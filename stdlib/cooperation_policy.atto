@@ -1,0 +1,29 @@
+// Soft scheduler-quantum PREDICATES from SourceCooperationQuantum.java.
+// Never creates a continuation, publishes scheduler cooperation or reads clocks.
+define module cooperation_policy as
+  pub fnc next_backedge_count(int prior): int {
+    if prior < 0; do return -1; fi
+    if prior == 9223372036854775807; do return prior; fi
+    return prior + 1;
+  }
+
+  // Java polls at every 64th completed backedge or after the 512th.
+  // Division/multiplication avoids source-language remainder/bitwise ops.
+  pub fnc needs_poll(int completed): bool {
+    if completed < 1; do return false; fi
+    if completed >= 512; do return true; fi
+    return (completed / 64) * 64 == completed;
+  }
+
+  // elapsed_ns is a host-sampled monotonic delta, NOT a guest clock.
+  pub fnc should_cooperate(bool watchdog_requested,
+                           int completed, int elapsed_ns): bool {
+    if completed < 0; do return false; fi
+    if watchdog_requested || completed >= 512; do return true; fi
+    return elapsed_ns >= 2000000;
+  }
+
+  pub fnc dispatch_over_budget(int completed): bool {
+    return completed >= 512;
+  }
+end

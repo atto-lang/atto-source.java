@@ -1,0 +1,16 @@
+import module cooperation_policy from "std/cooperation_policy.atto";
+pub routine main(): void {
+  stdio.println(cooperation_policy.needs_poll(1));
+  stdio.println(cooperation_policy.needs_poll(64));
+  stdio.println(cooperation_policy.needs_poll(65));
+  stdio.println(cooperation_policy.needs_poll(511));
+  stdio.println(cooperation_policy.needs_poll(512));
+  stdio.println(cooperation_policy.needs_poll(513));
+  stdio.println(cooperation_policy.next_backedge_count(0));
+  stdio.println(cooperation_policy.next_backedge_count(9223372036854775807));
+  stdio.println(cooperation_policy.should_cooperate(false, 64, 1999999));
+  stdio.println(cooperation_policy.should_cooperate(false, 64, 2000000));
+  stdio.println(cooperation_policy.should_cooperate(true, 1, -1));
+  stdio.println(cooperation_policy.should_cooperate(false, 512, 0));
+  return;
+}
