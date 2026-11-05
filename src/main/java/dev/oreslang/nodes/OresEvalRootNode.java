@@ -202,8 +202,12 @@ public final class OresEvalRootNode extends RootNode {
         // Per-carrier synchronous call chains. A routine remains logically active
         // after tail-transfer to a fnc, until that entire invocation returns.
         // Never retain this across unrelated actor turns or carrier reuse.
-        private static final ThreadLocal<IdentityHashMap<Ast.FunctionDecl, Boolean>>
-                ACTIVE_ROUTINES = new ThreadLocal<>();
+        private static final class RoutineFrameState {
+            private final IdentityHashMap<Ast.FunctionDecl, Boolean> active =
+                    new IdentityHashMap<>();
+            private int nestedInvocations;
+        }
+        private static final ThreadLocal<RoutineFrameState> ACTIVE_ROUTINES = new ThreadLocal<>();
         private static final Object UNINITIALIZED_FIELD = new Object();
 
         private enum InvocationKind {
@@ -844,11 +848,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            IdentityHashMap<Ast.FunctionDecl, Boolean> activeRoutines = ACTIVE_ROUTINES.get();
-            if (activeRoutines == null) {
-                activeRoutines = new IdentityHashMap<>();
-                ACTIVE_ROUTINES.set(activeRoutines);
+            RoutineFrameState routineState = ACTIVE_ROUTINES.get();
+            if (routineState == null) {
+                routineState = new RoutineFrameState();
+                ACTIVE_ROUTINES.set(routineState);
             }
+            routineState.nestedInvocations++;
             // Preserve routine ancestry across trampoline hops. A nested invoke
             // sees that ancestry, but releases only its own entries in finally.
             // Ordinary fnc/method recursion never adds entries to this map.
@@ -861,10 +866,10 @@ public final class OresEvalRootNode extends RootNode {
                             || current.kind() == InvocationKind.FUNCTION_BODY)
                             && current.target() instanceof Ast.FunctionDecl fn
                             && fn.kind() == Ast.CallableKind.ROUTINE) {
-                        if (activeRoutines.containsKey(fn)) {
+                        if (routineState.active.containsKey(fn)) {
                             throw new dev.oreslang.runtime.RoutineReentryException(fn.name());
                         }
-                        activeRoutines.put(fn, Boolean.TRUE);
+                        routineState.active.put(fn, Boolean.TRUE);
                         entered.push(fn);
                     }
                     Object result = current.owner().executeRaw(current);
@@ -876,8 +881,8 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
             } finally {
-                while (!entered.isEmpty()) activeRoutines.remove(entered.pop());
-                if (activeRoutines.isEmpty()) ACTIVE_ROUTINES.remove();
+                while (!entered.isEmpty()) routineState.active.remove(entered.pop());
+                if (--routineState.nestedInvocations == 0) ACTIVE_ROUTINES.remove();
             }
         }
 
