@@ -199,6 +199,11 @@ public final class OresEvalRootNode extends RootNode {
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
+        // Per-carrier synchronous call chains. A routine remains logically active
+        // after tail-transfer to a fnc, until that entire invocation returns.
+        // Never retain this across unrelated actor turns or carrier reuse.
+        private static final ThreadLocal<IdentityHashMap<Ast.FunctionDecl, Boolean>>
+                ACTIVE_ROUTINES = new ThreadLocal<>();
         private static final Object UNINITIALIZED_FIELD = new Object();
 
         private enum InvocationKind {
@@ -839,16 +844,40 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            Invocation current = initial;
-            int tailHops = 0;
-            while (true) {
-                Object result = current.owner().executeRaw(current);
-                if (!(result instanceof TailCall tail)) return result;
-                current = tail.invocation();
-                tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
-                    current.owner().context.schedulerSafepoint();
+            IdentityHashMap<Ast.FunctionDecl, Boolean> activeRoutines = ACTIVE_ROUTINES.get();
+            if (activeRoutines == null) {
+                activeRoutines = new IdentityHashMap<>();
+                ACTIVE_ROUTINES.set(activeRoutines);
+            }
+            // Preserve routine ancestry across trampoline hops. A nested invoke
+            // sees that ancestry, but releases only its own entries in finally.
+            // Ordinary fnc/method recursion never adds entries to this map.
+            ArrayDeque<Ast.FunctionDecl> entered = new ArrayDeque<>();
+            try {
+                Invocation current = initial;
+                int tailHops = 0;
+                while (true) {
+                    if ((current.kind() == InvocationKind.FUNCTION
+                            || current.kind() == InvocationKind.FUNCTION_BODY)
+                            && current.target() instanceof Ast.FunctionDecl fn
+                            && fn.kind() == Ast.CallableKind.ROUTINE) {
+                        if (activeRoutines.containsKey(fn)) {
+                            throw new dev.oreslang.runtime.RoutineReentryException(fn.name());
+                        }
+                        activeRoutines.put(fn, Boolean.TRUE);
+                        entered.push(fn);
+                    }
+                    Object result = current.owner().executeRaw(current);
+                    if (!(result instanceof TailCall tail)) return result;
+                    current = tail.invocation();
+                    tailHops++;
+                    if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                        current.owner().context.schedulerSafepoint();
+                    }
                 }
+            } finally {
+                while (!entered.isEmpty()) activeRoutines.remove(entered.pop());
+                if (activeRoutines.isEmpty()) ACTIVE_ROUTINES.remove();
             }
         }
 
