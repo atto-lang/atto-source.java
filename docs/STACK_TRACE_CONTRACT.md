@@ -199,15 +199,29 @@ boundary is **not** an on-raise/on-panic callback. Existing host-compatible
 `ActorRef.failure()`/`ActorHandle.failure()` raw-Throwable reads now reject
 ordinary actor execution. `ActorHandle.failureTrace()` instead admits
 only its parent actor's authenticated child handle and returns the detached
-value snapshot. Host access to the legacy raw cause, and exceptional
-`done()`/`ready()` Futures, **still retain the raw Throwable**; these paths
-must not be serialized, published to other actors, stored in independent
-supervisor arenas or treated as a safe cross-tenant error wire. Exceptional
-Future delivery remains an explicit P0 transport audit gate.
-Future backend integration must replace those paths with authenticated
-CONTROL events carrying a detached, descriptor-validated
-`GuestErrorWireCodec` compact snapshot plus an immutable causal sidecar,
-while keeping the original Throwable inside its owning execution domain.
+value snapshot. The actor lifecycle observers `ready()`, `readyRef()`,
+and `done()` now publish an immutable, **stackless**
+`ActorFailureTrace.ObservationFailure` on exceptional completion, rather
+than retaining the raw child Throwable in their settled Future state.
+`ActorTerminatedException` raised by closed-ref send/drain paths now carries
+that detached observation as its cause, not the child Throwable.
+The observation has a host-issued actor identity/generation, an optional
+immutable causal snapshot and a fixed message; it contains no guest stack,
+guest exception message or Throwable cause chain. It is diagnostic, not an
+authenticated supervisor CONTROL receipt.
+
+**Remaining P0 gaps:** Legacy host-only `ActorRef.failure()` continues to
+hold the original raw Throwable after finalization for compatibility and may
+retain guest-owned objects. Generic `OresFuture`, outbound stream failures,
+pending mailbox/drain error paths, one-shot invocation bridges, and other
+host interop completion paths can still retain raw Throwables; no universal
+cross-heap Future sanitization is claimed. No implicit conversion from
+`ObservationFailure` to guest `throw`/`raise`/`panic` is implemented.
+Do not serialize host exceptions or use this observation as an authority
+token. Complete those remaining paths and add authenticated CONTROL events
+carrying a detached, descriptor-validated `GuestErrorWireCodec` compact
+snapshot plus an immutable causal sidecar, while keeping raw guest failure
+objects inside their owning execution domains.
 
 The trace is deliberately not attempted after fatal JVM
 `VirtualMachineError`, `ThreadDeath` or `LinkageError`; no host stack
