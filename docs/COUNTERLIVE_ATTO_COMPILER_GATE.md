@@ -8,9 +8,9 @@ LiveView PR #17 head checked on November 4, 2026. Git blob:
 `242168d28b84d7380eec5a4fcf9aa98695de3b74`.
 
 `CounterLiveAttoCompilerGateTest` exercises the **real** Java backend's
-`LinkedProgramRunner.validate` API. A valid result must identify the exact
+`LinkedProgramRunner.validate` API and the real `OresMain --check` CLI path. A valid result must identify the exact
 `.atto` source unit. A mutated actor with `return self.count` instead of the
-sealed `critical-read` callback must be rejected. There is no exception,
+sealed `critical-read` callback must be rejected by both entry points. There is no exception,
 feature-flag, host mock, or fallback that silently marks unsupported syntax
 as supported. Unsupported actor syntax should cause the test to fail.
 

@@ -50,6 +50,29 @@ final class CounterLiveAttoCompilerGateTest {
     }
 
     @Test
+    void realCliCheckAdmitsSamePhoenixCounterLiveFixture() throws Exception {
+        assertEquals(0, OresMain.exitStatusForArgs(
+                new String[]{"--check", sourcePath().toString()}),
+                "real launcher --check must admit the exact .atto actor source");
+    }
+
+    @Test
+    void realCliCheckRejectsDirectSealedStateEscape() throws Exception {
+        String original = Files.readString(sourcePath());
+        String sealedRead = "return self.handle_state(critical-read |s| -> s.count)";
+        assertTrue(original.contains(sealedRead), "fixture's sealed-state syntax changed");
+        Path source = Files.createTempFile("counter-live-cli-state-", ".atto");
+        try {
+            Files.writeString(source, original.replace(sealedRead, "return self.count"),
+                    StandardCharsets.UTF_8);
+            assertTrue(OresMain.exitStatusForArgs(new String[]{"--check", source.toString()}) != 0,
+                    "CLI must not validate a direct sealed actor state escape");
+        } finally {
+            Files.deleteIfExists(source);
+        }
+    }
+
+    @Test
     void realCompilerRejectsDirectAccessToSealedActorState() throws Exception {
         String original = Files.readString(sourcePath());
         String sealedRead = "return self.handle_state(critical-read |s| -> s.count)";
