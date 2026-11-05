@@ -183,6 +183,15 @@ final class ActorFailureTraceTest {
                     () -> failed.getDone().get(5, TimeUnit.SECONDS)).getCause();
             assertDetachedObserverFailure(doneError, failed, "message arena secret");
             assertFalse(failed.failureTrace().orElseThrow().sourceFramesAvailable());
+            var rejected = assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> failed.send("again"));
+            assertDetachedObserverFailure(rejected.getCause(), failed, "message arena secret");
+            Throwable drainFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.drain().get(5, TimeUnit.SECONDS)).getCause();
+            var terminated = assertInstanceOf(
+                    ActorRuntime.ActorTerminatedException.class, drainFailure);
+            assertDetachedObserverFailure(
+                    terminated.getCause(), failed, "message arena secret");
         }
     }
 
