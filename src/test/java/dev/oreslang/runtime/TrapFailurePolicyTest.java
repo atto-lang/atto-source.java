@@ -70,6 +70,15 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(chain, GuestPanic.class));
     }
 
+    @Test void routineReentryRemainsUntrappableEvenThroughWrappers() {
+        RoutineReentryException direct = new RoutineReentryException("step");
+        RuntimeException nested = new CompletionException(direct);
+        assertFalse(TrapFailurePolicy.isTrappable(direct, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(direct, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isTrappable(nested, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(nested, GuestPanic.class));
+    }
+
     @Test void explicitGuestCatchCanRecoverDenialAndTimeout() {
         assertTrue(TrapFailurePolicy.isGuestCatchable(
                 new SecurityException("denied"), GuestPanic.class));
