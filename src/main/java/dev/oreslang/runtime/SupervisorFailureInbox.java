@@ -112,11 +112,23 @@ public final class SupervisorFailureInbox {
             }
         }
         if (active.size() >= capacity || nextSequence == Long.MAX_VALUE) return false;
-        long sequence = nextSequence++;
+        long sequence = nextSequence;
         Receipt receipt = new Receipt(sequence, 0, supervisorIdentity,
                 terminal.identity(), terminal.actorGeneration(), trace);
-        active.put(sequence, new Entry(receipt, false));
-        queued.addLast(sequence);
+        Entry queuedEntry = new Entry(receipt, false);
+        // The HashMap and ArrayDeque are two parts of ONE admission. An OOM
+        // between their writes cannot leave a phantom outstanding receipt
+        // which blocks capacity forever or can never be polled. Do not
+        // consume sequence space until both structures are consistent.
+        try {
+            active.put(sequence, queuedEntry);
+            queued.addLast(sequence);
+        } catch (RuntimeException | OutOfMemoryError incompleteAdmission) {
+            active.remove(sequence);
+            queued.remove(sequence);
+            throw incompleteAdmission;
+        }
+        nextSequence = sequence + 1;
         return true;
     }
 
