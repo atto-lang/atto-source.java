@@ -143,6 +143,67 @@ final class SupervisorFailureInboxTest {
     }
 
     @Test
+    void saturatedInboxRetainsActorUntilExplicitExactSupervisorRetry() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var owner = runtime.createSupervisor();
+            var other = runtime.createSupervisor();
+            owner.enableHostFailureInbox(1);
+            other.enableHostFailureInbox(1);
+            var group = runtime.createActorGroup(owner);
+            var first = owner.<String>startChildHost(
+                    group, ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    ignored -> (message, context) -> {
+                        throw new IllegalStateException("first guest secret");
+                    });
+            first.getReady().get(5, TimeUnit.SECONDS);
+            first.send("fail");
+            assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, owner.outstandingHostFailureReceipts());
+
+            var blocked = owner.<String>startChildHost(
+                    group, ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    ignored -> (message, context) -> {
+                        throw new IllegalStateException("second guest secret");
+                    });
+            blocked.getReady().get(5, TimeUnit.SECONDS);
+            blocked.send("fail");
+            assertFalse(blocked.awaitTermination(200, TimeUnit.MILLISECONDS),
+                    "a full inbox must not silently finalize an undelivered failure");
+            assertFalse(owner.retryHostFailureAdmission(blocked),
+                    "retry cannot bypass a full inbox");
+            assertFalse(other.retryHostFailureAdmission(blocked),
+                    "unrelated supervisor must not recover a blocked actor");
+            assertFalse(owner.retryHostFailureAdmission(first),
+                    "completed actor cannot mint another receipt");
+
+            var admittedFirst = owner.pollHostFailureReceipt().orElseThrow();
+            assertTrue(owner.acknowledgeHostFailureReceipt(
+                    admittedFirst.sequence(), admittedFirst.actorIdentity(),
+                    admittedFirst.actorGeneration(), admittedFirst.claimAttempt()));
+            assertEquals(0, owner.outstandingHostFailureReceipts());
+            assertTrue(owner.retryHostFailureAdmission(blocked),
+                    "capacity release permits retry of the original child failure");
+            assertTrue(blocked.awaitTermination(5, TimeUnit.SECONDS),
+                    "successful host admission must release only the inbox fence");
+            var admittedSecond = owner.pollHostFailureReceipt().orElseThrow();
+            assertEquals(blocked.id().value().toString(),
+                    admittedSecond.actorIdentity());
+            assertEquals(blocked.generation(),
+                    admittedSecond.actorGeneration());
+            assertNotEquals(admittedFirst.sequence(), admittedSecond.sequence());
+            assertFalse(admittedSecond.toString().contains("second guest secret"));
+            assertFalse(owner.retryHostFailureAdmission(blocked),
+                    "a finalized child cannot be replayed as a new terminal failure");
+            assertTrue(owner.acknowledgeHostFailureReceipt(
+                    admittedSecond.sequence(), admittedSecond.actorIdentity(),
+                    admittedSecond.actorGeneration(), admittedSecond.claimAttempt()));
+            group.close();
+        }
+    }
+
+    @Test
     void actorExecutionCannotClaimOrAcknowledgeSupervisorHostReceipts() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var supervisor = runtime.createSupervisor();
