@@ -348,6 +348,47 @@ final class InvertedColumnStoreTest {
 
 
     @Test
+    void canonicalDopV1DenseSwapReuseKeepsOpaqueGenerationalHandlesDistinct() {
+        // Host-only reference for contracts/dop-inverted-v1; this JUnit test
+        // does NOT compile/execute either canonical .atto guest fixture.
+        try (var store = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I64, InvertedColumnStore.Kind.I64);
+             var foreign = new InvertedColumnStore(
+                InvertedColumnStore.Kind.I64, InvertedColumnStore.Kind.I64)) {
+            var removed = store.push(7L, 70L);
+            var survivor = store.push(19L, 190L);
+            var foreignHandle = foreign.push(19L, 190L);
+            store.eraseSwap(removed);
+
+            assertEquals(1, store.size());
+            assertEquals(19L, store.get(survivor, 0));
+            assertEquals(190L, store.get(survivor, 1));
+            var moved = store.handleAt(0);
+            assertEquals(survivor.slot(), moved.slot());
+            assertEquals(survivor.generation(), moved.generation());
+            assertThrows(IllegalArgumentException.class, () -> store.handleAt(1),
+                    "a former dense index beyond live length is not valid");
+            assertThrows(IllegalArgumentException.class, () -> store.get(removed, 0),
+                    "deletion revokes the old issued row capability");
+            assertThrows(IllegalArgumentException.class, () -> store.get(foreignHandle, 0),
+                    "owner identity may not be borrowed across stores");
+
+            var reused = store.push(42L, 420L);
+            assertEquals(2, store.size());
+            assertEquals(42L, store.get(store.handleAt(1), 0));
+            assertEquals(420L, store.get(reused, 1));
+            assertEquals(19L, store.get(survivor, 0));
+            assertEquals(removed.slot(), reused.slot(),
+                    "recycling the free identity slot is permitted");
+            assertNotEquals(removed.generation(), reused.generation(),
+                    "recycled identity must advance its generation");
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.set(removed, 0, 123L),
+                    "an old handle cannot mutate a newly reused slot");
+        }
+    }
+
+    @Test
     void rawRecordColumnsEnforceTheSharedHostReferenceStrideCap() {
         assertDoesNotThrow(() -> InvertedColumnStore.ColumnSpec.record(64 * 1024));
         assertThrows(IllegalArgumentException.class,
