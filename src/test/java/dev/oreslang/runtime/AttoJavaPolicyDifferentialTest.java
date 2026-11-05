@@ -107,10 +107,16 @@ final class AttoJavaPolicyDifferentialTest {
             int bEnd = bBegin + random.nextInt(rows - bBegin + 1);
             int aMode = random.nextInt(modes.length);
             int bMode = random.nextInt(modes.length);
+            // Trusted Java host requires a named operator for REDUCE;
+            // guest metadata may compare modes without minting that authority.
+            String aReduction = modes[aMode] == DopRegionSchedule.Mode.REDUCE
+                    ? "sum" : null;
+            String bReduction = modes[bMode] == DopRegionSchedule.Mode.REDUCE
+                    ? "sum" : null;
             var a = new DopRegionSchedule.Access(leftRoot, aField,
-                    aBegin, aEnd, modes[aMode], null);
+                    aBegin, aEnd, modes[aMode], aReduction);
             var b = new DopRegionSchedule.Access(rightRoot, bField,
-                    bBegin, bEnd, modes[bMode], null);
+                    bBegin, bEnd, modes[bMode], bReduction);
             expressions.add("region_policy.independent_metadata("
                     + rows + ", " + fields + ", " + sameRoot + ", "
                     + aField + ", " + aBegin + ", " + aEnd + ", " + (aMode+1)
