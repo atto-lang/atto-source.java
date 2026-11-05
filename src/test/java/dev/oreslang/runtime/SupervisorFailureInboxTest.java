@@ -72,6 +72,48 @@ final class SupervisorFailureInboxTest {
     }
 
     @Test
+    void concurrentDuplicateTerminalOffersPublishOnlyOneOutstandingReceipt() throws Exception {
+        UUID supervisor = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        var inbox = new SupervisorFailureInbox(supervisor, 1);
+        var trace = snapshot(actor, supervisor, 15);
+        int publishers = 24;
+        var allReady = new CountDownLatch(publishers);
+        var release = new CountDownLatch(1);
+        var completed = new CountDownLatch(publishers);
+        var failure = new AtomicReference<Throwable>();
+        for (int i = 0; i < publishers; i++) {
+            Thread.ofVirtual().start(() -> {
+                try {
+                    allReady.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("publisher start deadline");
+                    }
+                    if (!inbox.offerTrusted(trace)) {
+                        throw new AssertionError("duplicate admission unexpectedly denied");
+                    }
+                } catch (Throwable unexpected) {
+                    failure.compareAndSet(null, unexpected);
+                } finally {
+                    completed.countDown();
+                }
+            });
+        }
+        assertTrue(allReady.await(5, TimeUnit.SECONDS));
+        release.countDown();
+        assertTrue(completed.await(5, TimeUnit.SECONDS));
+        assertNull(failure.get());
+        assertEquals(1, inbox.outstandingCount());
+        assertEquals(1, inbox.queuedCount());
+        var claim = inbox.pollHost().orElseThrow();
+        assertEquals(actor.toString(), claim.actorIdentity());
+        assertTrue(inbox.pollHost().isEmpty());
+        assertTrue(inbox.acknowledgeHost(
+                claim.sequence(), claim.actorIdentity(),
+                claim.actorGeneration(), claim.claimAttempt()));
+    }
+
+    @Test
     void onlyDirectSupervisorOwnsTheReceiptAndOnlyCorrectIncarnationIsAccepted() {
         UUID supervisor = UUID.randomUUID();
         UUID ancestor = UUID.randomUUID();
