@@ -182,6 +182,9 @@ final class ActorFailureTraceTest {
             Throwable doneError = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> failed.getDone().get(5, TimeUnit.SECONDS)).getCause();
             assertDetachedObserverFailure(doneError, failed, "message arena secret");
+            Throwable outputFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.outputs().next().get(5, TimeUnit.SECONDS)).getCause();
+            assertDetachedObserverFailure(outputFailure, failed, "message arena secret");
             assertFalse(failed.failureTrace().orElseThrow().sourceFramesAvailable());
             var rejected = assertThrows(ActorRuntime.ActorTerminatedException.class,
                     () -> failed.send("again"));
