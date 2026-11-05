@@ -2628,7 +2628,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.kind = kind;
             this.generation = generation;
             this.emergencyObservation =
-                    ActorFailureTrace.observation(id.value(), generation, null);
+                    ActorFailureTrace.observation(id.value(), generation,
+                            ActorFailureTrace.FailureKind.UNCLASSIFIED);
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(detachedObservationFailure());
@@ -2650,7 +2651,16 @@ public final class ActorRuntime implements AutoCloseable {
             ActorFailureTrace.Snapshot snapshot = failureTrace.get();
             if (snapshot == null) return emergencyObservation;
             try {
-                return ActorFailureTrace.observation(id.value(), generation, snapshot);
+                // A public Future is not an authenticated supervisor handle:
+                // expose only the actor's failure kind, never the parent or
+                // supervisor ancestry carried by the privileged snapshot.
+                ActorFailureTrace.Boundary root = snapshot.boundaries().get(0);
+                if (!root.identity().equals(id.value().toString())
+                        || root.actorGeneration() != generation) {
+                    return emergencyObservation;
+                }
+                return ActorFailureTrace.observation(
+                        id.value(), generation, snapshot.failureKind());
             } catch (OutOfMemoryError | StackOverflowError exhausted) {
                 // Formatting/allocating a diagnostic must not strand actor
                 // finalization. The preallocated marker contains no guest
