@@ -10,6 +10,7 @@ const MAX_FILES: usize = 2048;
 enum Kind {
     Name,
     Literal,
+    TemplateLiteral,
     Symbol(char),
 }
 #[derive(Clone, Debug)]
@@ -91,7 +92,9 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
                     ));
                 }
                 out.push(Token {
-                    kind: Kind::Literal,
+                    // Template syntax may be valid in expressions but cannot
+                    // be a compiler-owned library import path.
+                    kind: if quote == 96 { Kind::TemplateLiteral } else { Kind::Literal },
                     text: value.into(),
                     line: initial,
                 });
@@ -126,7 +129,8 @@ fn is_safe_library_import(name: &str, allowed_root: &str) -> bool {
     let Some(relative) = name.strip_prefix(allowed_root) else {
         return false;
     };
-    if relative.is_empty() || relative.len() > 4096 || relative.contains("..") {
+    // Java bounds the FULL path including std/ or ores.core/, not just the suffix.
+    if relative.is_empty() || name.len() > 4096 || relative.contains("..") {
         return false;
     }
     let segments: Vec<_> = relative.split('/').collect();
@@ -332,6 +336,7 @@ mod tests {
             "import module core;",
             "import module core from;",
             "import module core from 'std/core' + 'extra';",
+            "import module core from `std/core`;",
             "import module core from 'std/core' from 'std/assert';",
             "import module core from 'std//core';",
             "import module core from 'std/%2e%2e/core';",
@@ -343,6 +348,18 @@ mod tests {
         }
         assert!(inspect_core("import module n from 'std/core';").is_err());
         assert!(inspect_core("import module n from 'ores.core//numeric';").is_err());
+    }
+
+    #[test]
+    fn full_path_limit_matches_java_and_templates_cannot_name_libraries() {
+        let admitted = format!("std/{}", "a".repeat(4096 - "std/".len()));
+        let oversized = format!("std/{}", "a".repeat(4097 - "std/".len()));
+        assert_eq!(admitted.len(), 4096);
+        assert_eq!(oversized.len(), 4097);
+        assert!(is_safe_library_import(&admitted, "std/"));
+        assert!(!is_safe_library_import(&oversized, "std/"));
+        assert!(inspect("let x = `std/core`;").is_ok());
+        assert!(inspect("import module core from `std/core`;").is_err());
     }
 
     #[test]
