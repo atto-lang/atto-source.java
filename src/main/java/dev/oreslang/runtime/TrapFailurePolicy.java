@@ -51,7 +51,8 @@ public final class TrapFailurePolicy {
                     || current instanceof Error
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
-                    || current instanceof RejectedExecutionException) {
+                    || current instanceof RejectedExecutionException
+                    || current instanceof RoutineReentryException) {
                 return false;
             }
             if (!explicitGuestCatch
