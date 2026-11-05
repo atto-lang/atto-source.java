@@ -3130,6 +3130,51 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Retry an actor's original terminal receipt after host-side inbox
+         * backpressure. The stopped actor is already sealed and retains its
+         * arena until the admission claim succeeds. No guest code, CONTROL
+         * handler, or callback is executed by this host operation.
+         *
+         * The exact ActorRef instance and generation are required: a stale
+         * ref, a different supervisor, an unblocked actor, or an invalid
+         * causal snapshot cannot release the quarantine fence.
+         */
+        public boolean retryHostFailureAdmission(ActorRef<?> actor) {
+            requireSupervisorContext("retry supervisor failure admission");
+            requireCallerRuntimeAffinity("retry supervisor failure admission");
+            Objects.requireNonNull(actor, "actor");
+            if (!actor.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("actor belongs to another runtime");
+            }
+            SupervisorFailureInbox inbox = failureInbox;
+            if (inbox == null || closed.get() || supervisors.get(id) != this) {
+                return false;
+            }
+            ActorCell<?> cell = actors.get(actor.id());
+            if (cell == null || cell.ref != actor) return false;
+            synchronized (cell.lifecycleLock) {
+                if (cell.finalized || !cell.stopped.get()
+                        || !cell.supervisorFailureAdmissionBlocked) {
+                    return false;
+                }
+                ActorFailureTrace.Snapshot snapshot = actor.failureTrace.get();
+                if (snapshot == null || !snapshot.supervisorAssociationKnown()) {
+                    return false;
+                }
+                // The inbox checks the direct supervisor identity and
+                // terminal actor generation; no ancestor route may claim it.
+                if (!inbox.offerTrusted(snapshot)) return false;
+                cell.supervisorFailureAdmissionBlocked = false;
+                // This may still remain quarantined for an independent
+                // cleanup failure. Receipt admission is not an arena-release
+                // acknowledgement and never overrides sourceStopCleanupAborted.
+                cell.finalizeStopLocked();
+                cell.lifecycleLock.notifyAll();
+                return true;
+            }
+        }
+
+        /**
          * Associate exactly one owner CONTROL code slot with this stable
          * supervisor. Source-level guest policy loading remains compiler-gated.
          */
@@ -7930,6 +7975,13 @@ public final class ActorRuntime implements AutoCloseable {
         private int pendingChildStopDispatches;
         private boolean sourceStopCleanupActive;
         private boolean sourceStopCleanupAborted;
+        /**
+         * Distinct from irrecoverable cleanup corruption: a configured
+         * supervisor failure inbox is full. Host retry may clear this only
+         * after the exact detached terminal snapshot is admitted.
+         * Guarded by lifecycleLock; actor finalization must remain fenced.
+         */
+        private boolean supervisorFailureAdmissionBlocked;
         private boolean sourceSchedulerCloseFinished;
         private Throwable sourceSchedulerCloseFailure;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
@@ -8310,7 +8362,8 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || gracefulTeardownPending
-                    || !children.isEmpty()) return;
+                    || !children.isEmpty()
+                    || supervisorFailureAdmissionBlocked) return;
             OresScheduler scheduler = sourceScheduler;
             if (sourceStopCleanupAborted) {
                 recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
@@ -9090,9 +9143,19 @@ public final class ActorRuntime implements AutoCloseable {
                 // No callbacks or dispatcher submission under lifecycleLock.
                 // A full configured inbox MUST NOT silently lose a terminal
                 // failure; fail closed by quarantining this actor's arena.
-                if (inbox != null && (!Objects.equals(groupId, managedByGroup.get())
-                        || !inbox.offerTrusted(snapshot))) {
-                    sourceStopCleanupAborted = true;
+                if (inbox != null) {
+                    if (!Objects.equals(groupId, managedByGroup.get())) {
+                        // A second transfer after capture invalidates the
+                        // selected supervisor route. This is not recoverable
+                        // by retrying a receipt against the wrong supervisor.
+                        sourceStopCleanupAborted = true;
+                    } else if (!inbox.offerTrusted(snapshot)) {
+                        // Capacity denial is recoverable by an authenticated
+                        // host retry after the supervisor drains its inbox.
+                        // Preserve actor state until the exact trace is
+                        // admitted; never count a rejected offer as delivered.
+                        supervisorFailureAdmissionBlocked = true;
+                    }
                 }
             } catch (RuntimeException malformedMetadata) {
                 // Privileged failure admission that was explicitly enabled
