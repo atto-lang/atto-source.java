@@ -28,3 +28,17 @@ No Java implementation removal in this tranche. Java currently remains an author
 `CanonicalAttoHostPolicyExtractionTest` pins the five imported guest sources, exact unit IDs, no Java islands, no shadowing and no legacy source duplicates; runs five compiler-backed `.atto` fixtures; and compares bounded layout, conflict and dense32 values to the existing Java host oracle. This test is **authored, NOT EXECUTED** until real exact-head job steps and guest receipts exist.
 
 Before claiming implementation parity or replacing Java, require actual nonzero-step Java/Graal guest tests (positive and negative), comprehensive parameterized differential tests and independent review. Port the same fixtures to LLVM, .NET NativeAOT, Wasm and Forge/Cranelift. Source-free host smoke, compiler-only admission and `steps=[]` are not guest-parity proof. No cross-org private source mirroring or privileged access introduced.
+
+## Deterministic differential matrix (additional acceptance gate)
+
+`AttoJavaPolicyDifferentialTest` now generates one real compiled .atto
+guest per module and compares: 72 seeded AoS/SoA/AoSoA layout shapes and
+offsets with Java DataOrientedLayout, 90 seeded region-root/slice/mode
+conflicts with Java DopRegionSchedule, unsigned dense32 extremes with
+ManagedReferencePolicy, and 80 bounded task-admission vectors with an
+independent pure Java arithmetic oracle. Invalid negative cases are also
+pinned. Task admission is a pure *contract vector*, not evidence of Java
+scheduler integration. Actor-result identity remains host-owned.
+
+This code is authored but the compiler-backed tests remain NOT_EXECUTED
+until exact-head nonzero-step CI job/fixture receipts exist.
