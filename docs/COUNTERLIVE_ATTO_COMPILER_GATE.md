@@ -9,8 +9,12 @@ LiveView PR #17 head checked on November 4, 2026. Git blob:
 
 `CounterLiveAttoCompilerGateTest` exercises the **real** Java backend's
 `LinkedProgramRunner.validate` API and the real `OresMain --check` CLI path. A valid result must identify the exact
-`.atto` source unit. A mutated actor with `return self.count` instead of the
-sealed `critical-read` callback must be rejected by both entry points. There is no exception,
+`.atto` source unit. Negative tests first validate an **unmodified positive control at the identical
+source path**, and only then mutate that source and require rejection. This
+prevents an unsupported parser, missing configuration or bad temp path from
+masquerading as sealed-state enforcement. The checks include direct state reads,
+direct writes through `self`, and illegal writes under `critical-read`. The
+CLI denial requires exit status **1**, not merely any nonzero usage failure. There is no exception,
 feature-flag, host mock, or fallback that silently marks unsupported syntax
 as supported. Unsupported actor syntax should cause the test to fail.
 
