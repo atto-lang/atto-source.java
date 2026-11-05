@@ -26,9 +26,9 @@ shared actor SharedCounter {
       return false;
     fi
 
-    val guard = maybe_guard.unwrap();
-    guard.set(0, guard.get(0) + 1);
-    guard.release();
+    val lock_guard = maybe_guard.unwrap();
+    lock_guard.set(0, lock_guard.get(0) + 1);
+    lock_guard.release();
     return true;
   }
 
