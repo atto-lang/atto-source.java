@@ -373,3 +373,27 @@ The source organization still uses `ubuntu-latest` /
 a Java command executes. A single-job rerun was requested during this
 audit, but no stepful receipt exists on the current PR head. No
 cross-organization private source mirror or secret/token checkout was used.
+
+### Exact-file no-Maven value probe (CI admission workaround, not guest proof)
+
+Run `sh scripts/verify-supervisor-failure-values.sh` on a checked-out
+**exact PR head** with JDK 17+ to compile the authoritative
+`ActorFailureTrace.java`, `SupervisorFailureInbox.java`, and
+`SupervisorFailureValueProbe.java` sources using
+`javac --release 17 -Xlint:all -Werror`. No Maven, GraalVM, source mirror,
+token, or guest compiler is required once a checkout is available.
+
+The probe executes 100 rounds of 24 concurrent terminal receipt offers
+(2,400 offers), at-least-once host claim/retry and generation/attempt fences,
+1,000 oversized 100,000-boundary rejection attempts, malformed parent/
+supervisor causality, direct-supervisor denial, and final quota accounting.
+Snapshots are now capped **before any defensive copy allocation**, rather
+than copying an arbitrarily large host `ArrayList` before rejecting it.
+The Java source for the probe is checked into the draft PR for independent
+reproduction. This probe is **host-value-only**: it does not validate the
+`ActorRuntime` lifecycle wiring or any compiled `.atto` guest path.
+
+An attempted rerun of the existing `fast-ci` job at an earlier head was
+accepted by the GitHub API but returned a new job with `steps=null`, so
+it is **runner admission failure**, not an executed test. The Actions
+minute/billing/admin issue still requires an authorized runner owner.
