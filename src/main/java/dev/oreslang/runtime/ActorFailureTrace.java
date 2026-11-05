@@ -56,11 +56,49 @@ public final class ActorFailureTrace {
                     && !sourceClass.getName().startsWith("java.util.ImmutableCollections$")) {
                 throw new IllegalArgumentException("diagnostic boundaries require a host-owned list");
             }
-            if (boundaries.isEmpty() || boundaries.size() > MAX_BOUNDARIES
-                    || boundaries.get(0).kind() != BoundaryKind.ACTOR_TERMINAL) {
+            // Copy BEFORE validation: an ArrayList can be concurrently changed
+            // by a host caller between separate size/get checks. The immutable
+            // copy is the only snapshot whose shape becomes authoritative.
+            List<Boundary> detached = List.copyOf(boundaries);
+            if (detached.isEmpty() || detached.size() > MAX_BOUNDARIES
+                    || detached.get(0).kind() != BoundaryKind.ACTOR_TERMINAL) {
                 throw new IllegalArgumentException("invalid causal boundary snapshot");
             }
-            boundaries = List.copyOf(boundaries);
+            int parentCount = 0;
+            int supervisorCount = 0;
+            boolean seenSupervisor = false;
+            for (int i = 0; i < detached.size(); i++) {
+                Boundary boundary = detached.get(i);
+                if (i != 0) {
+                    if (boundary.kind() == BoundaryKind.ACTOR_TERMINAL) {
+                        throw new IllegalArgumentException("duplicate terminal actor boundary");
+                    }
+                    if (boundary.kind() == BoundaryKind.PARENT_ACTOR) {
+                        if (seenSupervisor || ++parentCount > MAX_PARENT_ACTORS) {
+                            throw new IllegalArgumentException("invalid parent actor lineage");
+                        }
+                    } else if (boundary.kind() == BoundaryKind.SUPERVISOR_ASSOCIATION) {
+                        seenSupervisor = true;
+                        if (++supervisorCount > MAX_SUPERVISORS) {
+                            throw new IllegalArgumentException("unbounded supervisor lineage");
+                        }
+                    } else {
+                        throw new IllegalArgumentException("unknown causal boundary kind");
+                    }
+                }
+                // With at most 17 entries a fixed bounded scan is cheaper and
+                // avoids allocating a guest-facing hash table or traversing
+                // any untrusted adapter while validating the captured value.
+                for (int j = 0; j < i; j++) {
+                    if (boundary.identity().equals(detached.get(j).identity())) {
+                        throw new IllegalArgumentException("repeated causal identity");
+                    }
+                }
+            }
+            if (supervisorAssociationKnown != (supervisorCount > 0)) {
+                throw new IllegalArgumentException("inconsistent supervisor association");
+            }
+            boundaries = detached;
         }
         public String schema() { return "atto.actor-failure-causality.v1"; }
         public boolean sourceFramesAvailable() { return false; }
