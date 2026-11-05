@@ -8,7 +8,7 @@ define module actor_result_policy as
 
   // O(n^2) uniqueness is deliberately capped at 256 elements to prevent
   // guest CPU abuse. Larger batches require a bounded, trusted hash primitive.
-  pub fnc distinct_local_ids(Array<int> ids): bool {
+  pub fnc distinct_local_ids(borrow Array<int> ids): bool {
     if ids.size > 256; do return false; fi
     for (let int i = 0; i < ids.size; i = i + 1) {
       val int candidate = ids.get(i);
