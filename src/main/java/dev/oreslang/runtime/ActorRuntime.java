@@ -8272,7 +8272,12 @@ public final class ActorRuntime implements AutoCloseable {
             catch (Throwable failure) { recordFinalizationFailure(failure); }
             staticSelectCursors.clear();
             codeActorState = null;
-            try { outputStream.close(ref.terminationCause.get()); }
+            // Output observers may live in a different actor heap. Never close
+            // their channel with a raw child Throwable or its guest-owned cause.
+            try {
+                outputStream.close(ref.terminationCause.get() == null
+                        ? null : ref.detachedObservationFailure());
+            }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
             for (ActorShardLease lease : List.copyOf(shardLeases)) {
