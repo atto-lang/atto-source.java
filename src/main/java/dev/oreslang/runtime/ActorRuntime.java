@@ -2627,7 +2627,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.generation = generation;
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
-                    readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
+                    readyRefFuture.failFromRuntime(detachedObservationFailure());
                 } else {
                     readyRefFuture.completeFromRuntime(this);
                 }
@@ -2641,6 +2641,10 @@ public final class ActorRuntime implements AutoCloseable {
             return new ActorAddress(runtimeInstanceId, id, generation, kind, "local-process");
         }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+        /** Observer Futures must not expose a guest-owned Throwable or its cause graph. */
+        private ActorFailureTrace.ObservationFailure detachedObservationFailure() {
+            return ActorFailureTrace.observation(id.value(), generation, failureTrace.get());
+        }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         /**
          * Legacy host-only raw cause. An actor must use detached failureTrace
@@ -8301,11 +8305,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
-                ref.readyFuture.failFromRuntime(
-                        terminal == null ? new ActorTerminatedException(ref.id(), kind, null) : terminal);
+                ref.readyFuture.failFromRuntime(ref.detachedObservationFailure());
             }
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
+            else ref.doneFuture.failFromRuntime(ref.detachedObservationFailure());
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }
@@ -8723,7 +8726,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     synchronized (lifecycleLock) {
                         if (stopped.get() || forceKillFenced) {
-                            ref.readyFuture.failFromRuntime(terminated(ref));
+                            ref.readyFuture.failFromRuntime(ref.detachedObservationFailure());
                         } else {
                             ref.readyFuture.completeFromRuntime(null);
                         }
