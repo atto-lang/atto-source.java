@@ -57,8 +57,8 @@ final class SourceTaskCleanupHardeningTest {
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
                   block {
-                    val guard = mutex.lock();
-                    guard.value = 7;
+                    val lock_guard = mutex.lock();
+                    lock_guard.value = 7;
                   }
                   // A lexical block's exit must release its implicit guard,
                   // allowing another same-Task acquisition without a deadlock.

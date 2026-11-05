@@ -249,8 +249,8 @@ final class OptionResultSemanticsTest {
                 fnc good(): void {
                   let Mutex<Box> mutex = Mutex.new(new Box());
                   val maybe = mutex.try_lock();
-                  val guard = maybe.unwrap();
-                  guard.release();
+                  val lock_guard = maybe.unwrap();
+                  lock_guard.release();
                   return;
                 }
                 """)));
@@ -262,9 +262,9 @@ final class OptionResultSemanticsTest {
                 fnc bad(): void {
                   let Mutex<Box> mutex = Mutex.new(new Box());
                   val maybe = mutex.try_lock();
-                  val guard = maybe.unwrap();
+                  val lock_guard = maybe.unwrap();
                   val again = maybe.unwrap();
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """)));
