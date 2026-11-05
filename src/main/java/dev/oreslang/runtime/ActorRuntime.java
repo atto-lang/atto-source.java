@@ -2605,6 +2605,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final long generation;
+        /** Preallocated at spawn: observing terminal failure never requires OOM recovery. */
+        private final ActorFailureTrace.ObservationFailure emergencyObservation;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         /** Host-owned, detached causal value; never a child arena reference. */
         private final AtomicReference<ActorFailureTrace.Snapshot> failureTrace =
@@ -2625,6 +2627,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.id = id;
             this.kind = kind;
             this.generation = generation;
+            this.emergencyObservation =
+                    ActorFailureTrace.observation(id.value(), generation, null);
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(detachedObservationFailure());
@@ -2643,7 +2647,20 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         /** Observer Futures must not expose a guest-owned Throwable or its cause graph. */
         private ActorFailureTrace.ObservationFailure detachedObservationFailure() {
-            return ActorFailureTrace.observation(id.value(), generation, failureTrace.get());
+            ActorFailureTrace.Snapshot snapshot = failureTrace.get();
+            if (snapshot == null) return emergencyObservation;
+            try {
+                return ActorFailureTrace.observation(id.value(), generation, snapshot);
+            } catch (OutOfMemoryError | StackOverflowError exhausted) {
+                // Formatting/allocating a diagnostic must not strand actor
+                // finalization. The preallocated marker contains no guest
+                // data, has no Java stack and makes no CONTROL-delivery claim.
+                return emergencyObservation;
+            } catch (RuntimeException invalidMetadata) {
+                // Inconsistent generation/identity is never silently accepted
+                // as an authenticated failure sidecar.
+                return emergencyObservation;
+            }
         }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         /**
