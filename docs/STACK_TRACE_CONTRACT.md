@@ -207,9 +207,11 @@ than retaining the raw child Throwable in their settled Future state.
 that detached observation as its cause, not the child Throwable.
 Actor output-stream terminal errors are also closed with a detached
 observation, so the output channel does not hold a raw child exception.
-The observation has a host-issued actor identity/generation, an optional
-immutable causal snapshot and a fixed message; it contains no guest stack,
-guest exception message or Throwable cause chain. It is diagnostic, not an
+The observation has a host-issued actor identity/generation, a coarse
+failure kind and a fixed message; it contains no supervisor/parent ancestry,
+privileged causal snapshot, guest stack, guest exception message or raw
+Throwable cause chain. The full causal snapshot remains restricted to
+`failureTrace()` on the authenticated host/CONTROL/parent-child surfaces. It is diagnostic, not an
 authenticated supervisor CONTROL receipt.
 
 **Remaining P0 gaps:** Legacy host-only `ActorRef.failure()` continues to
