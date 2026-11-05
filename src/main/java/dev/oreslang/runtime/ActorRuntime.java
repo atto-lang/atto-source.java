@@ -3101,12 +3101,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Only a previously claimed actor incarnation can be acknowledged. */
         public boolean acknowledgeHostFailureReceipt(
-                long sequence, String actorIdentity, long actorGeneration) {
+                long sequence, String actorIdentity, long actorGeneration,
+                long claimAttempt) {
             requireSupervisorContext("acknowledge supervisor failure inbox");
             requireCallerRuntimeAffinity("acknowledge supervisor failure inbox");
             SupervisorFailureInbox inbox = failureInbox;
             return inbox != null
-                    && inbox.acknowledgeHost(sequence, actorIdentity, actorGeneration);
+                    && inbox.acknowledgeHost(
+                            sequence, actorIdentity, actorGeneration, claimAttempt);
         }
 
         /**
