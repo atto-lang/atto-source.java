@@ -3462,6 +3462,9 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor is already managed by a different ActorGroup");
                 }
+                // The direct supervisor is pinned as host metadata even if
+                // this group is subsequently closed/removed from the registry.
+                cell.managedSupervisorRoute.set(new ManagedSupervisorRoute(id, supervisor));
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 if (cell.stopped.get()) {
                     managedWorkers.remove(worker.id(), worker);
@@ -3538,6 +3541,10 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
                 managedWorkers.remove(worker.id(), worker);
+                ManagedSupervisorRoute pinned = cell.managedSupervisorRoute.get();
+                if (pinned != null && pinned.groupId().equals(id)) {
+                    cell.managedSupervisorRoute.compareAndSet(pinned, null);
+                }
                 return true;
             }
         }
@@ -5376,6 +5383,8 @@ public final class ActorRuntime implements AutoCloseable {
                                             "ActorGroup managed worker limit exceeded: maximum "
                                                     + inherited.memberLimit);
                                 }
+                                cell.managedSupervisorRoute.set(new ManagedSupervisorRoute(
+                                        inheritedId, inherited.supervisor));
                                 cell.managedByGroup.set(inheritedId);
                                 inherited.managedWorkers.put(id, ref);
                                 parent.children.add(cell);
@@ -7922,6 +7931,15 @@ public final class ActorRuntime implements AutoCloseable {
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
+        /**
+         * Retain an immutable supervisor route without retaining a closed
+         * ActorGroup. Group close removes the live registry entry before
+         * some actor cleanup failures are published; removing the map entry
+         * must not erase that actor's already-assigned lifecycle authority.
+         * Only a matching current managedByGroup ID may use this route.
+         */
+        private final AtomicReference<ManagedSupervisorRoute> managedSupervisorRoute =
+                new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
@@ -7933,6 +7951,8 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedContinuations;
         private long nextUserMessageSequence;
         private long lastProcessedUserMessageSequence = -1L;
+        private record ManagedSupervisorRoute(
+                ActorGroupId groupId, ActorSupervisor supervisor) { }
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
@@ -9081,10 +9101,22 @@ public final class ActorRuntime implements AutoCloseable {
          * supervisor inbox is different: a missing terminal receipt is a
          * delivery obligation which must be quarantined, never silently lost.
          */
+        private ActorSupervisor managedSupervisorFor(ActorGroupId groupId) {
+            if (groupId == null) return null;
+            ActorGroup live = actorGroups.get(groupId);
+            if (live != null) return live.supervisor;
+            ManagedSupervisorRoute pinned = managedSupervisorRoute.get();
+            return pinned != null && groupId.equals(pinned.groupId())
+                    ? pinned.supervisor() : null;
+        }
+
         private boolean requiresSupervisorFailureAdmission() {
-            ActorGroupId ownerId = managedByGroup.get();
-            ActorGroup owner = ownerId == null ? null : actorGroups.get(ownerId);
-            return owner != null && owner.supervisor.failureInbox != null;
+            return hasConfiguredFailureInbox(managedByGroup.get());
+        }
+
+        private boolean hasConfiguredFailureInbox(ActorGroupId groupId) {
+            ActorSupervisor owner = managedSupervisorFor(groupId);
+            return owner != null && owner.failureInbox != null;
         }
 
         /** Failure-only, bounded host metadata; no Throwable methods or guest values are read. */
@@ -9124,8 +9156,8 @@ public final class ActorRuntime implements AutoCloseable {
             boolean truncated = cursor != null;
             ArrayList<java.util.UUID> supervisorIds = new ArrayList<>();
             ActorGroupId groupId = managedByGroup.get();
-            ActorGroup group = groupId == null ? null : actorGroups.get(groupId);
-            ActorSupervisor supervisor = group == null ? null : group.supervisor;
+            ActorSupervisor supervisor = managedSupervisorFor(groupId);
+            ActorSupervisor directSupervisor = supervisor;
             while (supervisor != null
                     && supervisorIds.size() < ActorFailureTrace.MAX_SUPERVISORS) {
                 supervisorIds.add(supervisor.id().value());
@@ -9138,28 +9170,27 @@ public final class ActorRuntime implements AutoCloseable {
             // under lifecycleLock: the reverse lock order exists on spawn.
             ActorGroupId routeAfterCapture = managedByGroup.get();
             if (!Objects.equals(groupId, routeAfterCapture)) {
-                ActorGroup replacement = routeAfterCapture == null
-                        ? null : actorGroups.get(routeAfterCapture);
-                // Do not silently lose an explicitly configured failure
-                // delivery obligation during group ownership transfer.
-                if ((group != null && group.supervisor.failureInbox != null)
-                        || (replacement != null
-                                && replacement.supervisor.failureInbox != null)) {
+                // No attribution to a former supervisor is permitted after
+                // an ownership transfer, even if a stale group map entry
+                // remains briefly visible. Failing to admit a configured
+                // receipt must quarantine rather than claim delivery.
+                if (hasConfiguredFailureInbox(groupId)
+                        || hasConfiguredFailureInbox(routeAfterCapture)) {
                     sourceStopCleanupAborted = true;
                 }
                 supervisorIds.clear();
-                group = null;
+                directSupervisor = null;
             }
             ActorFailureTrace.FailureKind kind =
                     failure instanceof ActorCancelledException
                             ? ActorFailureTrace.FailureKind.CANCELLED
                             : ActorFailureTrace.FailureKind.UNCLASSIFIED;
             SupervisorFailureInbox inbox =
-                    group == null ? null : group.supervisor.failureInbox;
+                    directSupervisor == null ? null : directSupervisor.failureInbox;
             try {
                 ActorFailureTrace.Snapshot snapshot = ActorFailureTrace.capture(
                         kind, ref.id().value(), ref.generation(), parentIds,
-                        supervisorIds, truncated, group != null);
+                        supervisorIds, truncated, directSupervisor != null);
                 ref.failureTrace.compareAndSet(null, snapshot);
                 // No callbacks or dispatcher submission under lifecycleLock.
                 // A full configured inbox MUST NOT silently lose a terminal
