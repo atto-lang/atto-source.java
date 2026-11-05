@@ -1,0 +1,11 @@
+import module dense_index from "std/dense_index.atto";
+pub routine main(): void {
+  stdio.println(dense_index.encode32(0).unwrap());
+  stdio.println(dense_index.decode32(1).unwrap());
+  stdio.println(dense_index.encode32(4294967294).unwrap());
+  stdio.println(dense_index.decode32(0).unwrap());
+  stdio.println(dense_index.is_null_word(0));
+  stdio.println(dense_index.encode32(4294967295).is_err());
+  stdio.println(dense_index.decode32(-1).is_err());
+  return;
+}

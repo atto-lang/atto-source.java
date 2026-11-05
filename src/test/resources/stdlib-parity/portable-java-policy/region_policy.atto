@@ -1,0 +1,11 @@
+import module region_policy from "std/region_policy.atto";
+pub routine main(): void {
+  stdio.println(region_policy.valid_access(8, 2, 0, 0, 5, 1));
+  stdio.println(region_policy.independent_metadata(8, 2, true, 0, 0, 5, 1, 0, 2, 6, 1));
+  stdio.println(region_policy.independent_metadata(8, 2, true, 0, 0, 5, 1, 0, 2, 6, 2));
+  stdio.println(region_policy.independent_metadata(8, 2, true, 0, 0, 3, 2, 0, 3, 7, 2));
+  stdio.println(region_policy.independent_metadata(8, 2, true, 0, 0, 5, 2, 1, 2, 6, 2));
+  stdio.println(region_policy.independent_metadata(8, 2, false, 0, 0, 5, 2, 0, 2, 6, 2));
+  stdio.println(region_policy.independent_metadata(8, 2, false, 0, 0, 9, 2, 0, 2, 6, 2));
+  return;
+}
