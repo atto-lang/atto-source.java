@@ -97,6 +97,17 @@ final class ActorFailureTraceTest {
             assertFalse(detached.truncated());
             assertTrue(detached.supervisorAssociationKnown());
             assertFalse(detached.supervisorControlDelivered());
+            Throwable publicFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.getDone().get(5, TimeUnit.SECONDS)).getCause();
+            var publicObservation = assertInstanceOf(
+                    ActorFailureTrace.ObservationFailure.class, publicFailure);
+            assertFalse(publicObservation.toString().contains(leafId.toString()));
+            assertFalse(publicObservation.toString().contains(parentId.toString()));
+            assertFalse(publicObservation.toString().contains(rootId.toString()));
+            assertTrue(java.util.Arrays.stream(
+                    ActorFailureTrace.ObservationFailure.class.getDeclaredFields())
+                    .noneMatch(field -> field.getType() == ActorFailureTrace.Snapshot.class),
+                    "public Future error must not retain privileged supervisor ancestry");
             group.close();
         }
         // No actor memory slice, supervisor registry, guest Throwable or
