@@ -119,18 +119,17 @@ public final class SupervisorFailureInbox {
         Receipt receipt = new Receipt(sequence, 0, supervisorIdentity,
                 terminal.identity(), terminal.actorGeneration(), trace);
         Entry queuedEntry = new Entry(receipt, false);
-        // The HashMap and ArrayDeque are two parts of ONE admission. An OOM
-        // between their writes cannot leave a phantom outstanding receipt
-        // which blocks capacity forever or can never be polled. Do not
-        // consume sequence space until both structures are consistent.
-        try {
-            active.put(sequence, queuedEntry);
-            queued.addLast(sequence);
-        } catch (RuntimeException | OutOfMemoryError incompleteAdmission) {
-            active.remove(sequence);
-            queued.remove(sequence);
-            throw incompleteAdmission;
-        }
+        // The map, queue, and sequence must advance as ONE admission.
+        // Rollback after a failed ArrayDeque growth is not guaranteed safe
+        // under OOM. Allocate and mutate isolated replacement indices first;
+        // all failures leave the original ledger intact. The bounded ledger
+        // has at most MAX_CAPACITY entries and no guest callbacks.
+        Map<Long, Entry> replacementActive = new HashMap<>(active);
+        ArrayDeque<Long> replacementQueued = new ArrayDeque<>(queued);
+        replacementActive.put(sequence, queuedEntry);
+        replacementQueued.addLast(sequence);
+        active = replacementActive;
+        queued = replacementQueued;
         nextSequence = sequence + 1;
         return true;
     }
