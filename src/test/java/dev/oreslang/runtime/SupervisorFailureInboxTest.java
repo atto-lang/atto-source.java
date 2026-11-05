@@ -114,6 +114,51 @@ final class SupervisorFailureInboxTest {
     }
 
     @Test
+    void replayOfMultipleClaimedReceiptsPreservesQueueAndClaimFences() {
+        UUID supervisor = UUID.randomUUID();
+        var inbox = new SupervisorFailureInbox(supervisor, 4);
+        UUID[] actors = {UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), UUID.randomUUID()};
+        for (UUID actor : actors) {
+            assertTrue(inbox.offerTrusted(snapshot(actor, supervisor, 11)));
+        }
+        var oldFirst = inbox.pollHost().orElseThrow();
+        var oldSecond = inbox.pollHost().orElseThrow();
+        assertEquals(2, inbox.queuedCount());
+        assertEquals(4, inbox.outstandingCount());
+        assertEquals(2, inbox.requeueUnacknowledgedHost());
+        assertEquals(4, inbox.queuedCount(),
+                "claimed receipts must return to the queue without missing slots");
+        assertEquals(0, inbox.requeueUnacknowledgedHost(),
+                "a second retry must not duplicate already queued receipts");
+
+        var receipts = new java.util.ArrayList<SupervisorFailureInbox.Receipt>();
+        for (int i = 0; i < actors.length; i++) {
+            var claim = inbox.pollHost().orElseThrow();
+            receipts.add(claim);
+            assertEquals(actors[i].toString(), claim.actorIdentity(),
+                    "earlier failed claims must replay before unclaimed work");
+        }
+        assertEquals(oldFirst.sequence(), receipts.get(0).sequence());
+        assertEquals(oldSecond.sequence(), receipts.get(1).sequence());
+        assertEquals(oldFirst.claimAttempt() + 1, receipts.get(0).claimAttempt());
+        assertEquals(oldSecond.claimAttempt() + 1, receipts.get(1).claimAttempt());
+        assertEquals(1, receipts.get(2).claimAttempt());
+        assertEquals(1, receipts.get(3).claimAttempt());
+        assertFalse(inbox.acknowledgeHost(oldFirst.sequence(),
+                oldFirst.actorIdentity(), 11, oldFirst.claimAttempt()));
+        assertFalse(inbox.acknowledgeHost(oldSecond.sequence(),
+                oldSecond.actorIdentity(), 11, oldSecond.claimAttempt()));
+        for (var claim : receipts) {
+            assertTrue(inbox.acknowledgeHost(claim.sequence(),
+                    claim.actorIdentity(), claim.actorGeneration(),
+                    claim.claimAttempt()));
+        }
+        assertEquals(0, inbox.outstandingCount());
+        assertEquals(0, inbox.queuedCount());
+    }
+
+    @Test
     void onlyDirectSupervisorOwnsTheReceiptAndOnlyCorrectIncarnationIsAccepted() {
         UUID supervisor = UUID.randomUUID();
         UUID ancestor = UUID.randomUUID();
