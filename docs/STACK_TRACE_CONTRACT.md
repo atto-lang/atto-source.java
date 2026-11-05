@@ -267,12 +267,22 @@ For a supervisor with an enabled ledger, a first-winner actor failure attempts
 to admit its immutable value-only causal snapshot before normal reclamation.
 The ledger accepts the exact actor incarnation and **direct** supervisor
 association, never an ancestor-only ID; queued and claimed-but-unacknowledged
-entries both consume a bounded capacity of 1–256. On failed enabled admission
-(e.g., saturation, group-transfer race, malformed metadata), the runtime
-marks source cleanup incomplete and **quarantines actor finalization** rather
-than silently treating a dropped failure as acknowledged. Recovery from
-this quarantine is **not yet implemented**; deployments should not opt into
-this inbox without a host consumer that can drain it.
+entries both consume a bounded capacity of 1–256. A full inbox now sets a
+**separate recoverable admission fence**: the stopped actor cannot finalize,
+but its cleanup-corruption flag is not forged. After the host claims and
+acknowledges an older receipt to release quota, the **matching** supervisor
+may explicitly call `retryHostFailureAdmission(actorRef)`. This validates
+runtime ownership, exact ActorRef identity/incarnation, terminal snapshot and
+direct supervisor before admitting the original failure, clearing only the
+inbox-specific fence, and resuming physical finalization. It never clears
+genuine source-cleanup quarantine. Wrong-supervisor, pre-stop, stale-ref and
+still-full retries fail closed.
+
+Unrecoverable diagnostic corruption, a group-transfer race or failed
+allocation/serialization may still quarantine the actor without automatic
+recovery. Both the retry mechanism and host claim API are off by default.
+Deployments enabling an inbox must provide a trusted host consumer and explicit
+drain/retry lifecycle; there is **no automatic VM CONTROL policy handler**.
 
 `pollHostFailureReceipt()` returns an immutable receipt with a stable sequence,
 actor identity/generation, direct supervisor ID, and detached trace. Each
@@ -282,8 +292,11 @@ CONTROL coordinator claim cannot acknowledge a receipt retried after restart.
 `requeueUnacknowledgedHostFailureReceipts()` keeps the sequence but increments
 the attempt on a fresh claim. This is an **at-least-once host replay mechanism**;
 neither a claim nor an acknowledgement proves the `.atto` supervisor policy
-executed. Durable exactly-once guest policy execution, hot-upgrade fencing,
-actual CONTROL dispatcher integration, and queue recovery remain unverified.
+executed. Durable exactly-once guest policy execution, hot-upgrade fencing, automatic
+VM CONTROL dispatch, automatic queue recovery and process-crash persistence
+remain unverified. Inbox map+queue admission now rolls back partial writes
+under a rejected/allocation-failed offer and consumes the sequence only after
+the two stores are coherent.
 
 Separately, terminal actor mailbox and continuation-channel closure and
 previously pending `drain()` observers now propagate only detached host
@@ -291,8 +304,9 @@ failure causes; no child raw `Throwable` is placed into those channels.
 The legacy host-only `ActorRef.failure()` and unrelated generic Future,
 one-shot, and guest error paths still require source-local ownership audits.
 
-Authored regression suite: `SupervisorFailureInboxTest` and expanded
-`ActorFailureTraceTest`. The `SupervisorFailureInbox` and
+Authored regression suite: `SupervisorFailureInboxTest` (including full-inbox
+quarantine and exact-supervisor explicit retry) and expanded
+`ActorFailureTraceTest` (including immutable-copy topology validation). The `SupervisorFailureInbox` and
 `ActorFailureTrace` source value classes alone have been compiled against
 exact Git blobs locally with OpenJDK 21 `javac --release 17 -Xlint:all -Werror`,
 and an isolated concurrent host-ledger probe passed. These are **NOT**
