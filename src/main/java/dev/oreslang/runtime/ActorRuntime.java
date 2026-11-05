@@ -9075,23 +9075,44 @@ public final class ActorRuntime implements AutoCloseable {
             if (original != null && original != failure) original.addSuppressed(failure);
         }
 
+        /**
+         * No allocations or guest calls: optional host diagnostics must not
+         * prevent ordinary actor retirement after a secondary OOM. An opted-in
+         * supervisor inbox is different: a missing terminal receipt is a
+         * delivery obligation which must be quarantined, never silently lost.
+         */
+        private boolean requiresSupervisorFailureAdmission() {
+            ActorGroupId ownerId = managedByGroup.get();
+            ActorGroup owner = ownerId == null ? null : actorGroups.get(ownerId);
+            return owner != null && owner.supervisor.failureInbox != null;
+        }
+
         /** Failure-only, bounded host metadata; no Throwable methods or guest values are read. */
         private void recordDetachedFailureTrace(Throwable failure) {
             try {
                 recordDetachedFailureTraceBounded(failure);
             } catch (OutOfMemoryError | StackOverflowError captureExhaustion) {
-                // A secondary fatal diagnostic-allocation failure must not
-                // obscure the first actor failure. Never release a heap after
-                // failure evidence could not be safely accounted for.
-                sourceStopCleanupAborted = true;
+                // A secondary diagnostic failure must not mask the original
+                // cause or permanently leak an unsupervised actor arena.
+                // Configured supervisor delivery remains fail-closed.
+                if (requiresSupervisorFailureAdmission()) {
+                    sourceStopCleanupAborted = true;
+                }
             }
         }
 
         private void recordDetachedFailureTraceBounded(Throwable failure) {
-            // An exhausted/faulting host cannot safely allocate a trace.
+            // Fatal host failures are not recoverable guest errors. Do not
+            // allocate their traces, but never silently skip a configured
+            // supervisor failure-delivery obligation either.
             if (failure instanceof VirtualMachineError
                     || failure instanceof ThreadDeath
-                    || failure instanceof LinkageError) return;
+                    || failure instanceof LinkageError) {
+                if (requiresSupervisorFailureAdmission()) {
+                    sourceStopCleanupAborted = true;
+                }
+                return;
+            }
             if (ref.failureTrace.get() != null) return;
 
             ArrayList<java.util.UUID> parentIds = new ArrayList<>();
