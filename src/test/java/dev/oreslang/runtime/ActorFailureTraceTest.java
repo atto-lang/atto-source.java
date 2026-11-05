@@ -71,6 +71,16 @@ final class ActorFailureTraceTest {
                 ActorFailureTrace.BoundaryKind.SUPERVISOR_ASSOCIATION,
                 supervisor, 0);
 
+        // This is an exact JDK ArrayList, deliberately much larger than
+        // MAX_BOUNDARIES. Admission must reject before copying its contents.
+        var enormous = new ArrayList<ActorFailureTrace.Boundary>();
+        for (int i = 0; i < 100_000; i++) enormous.add(terminal);
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        enormous, false, false),
+                "oversized snapshot must be rejected before cloning it");
+
         assertThrows(IllegalArgumentException.class, () ->
                 new ActorFailureTrace.Snapshot(
                         ActorFailureTrace.FailureKind.UNCLASSIFIED,
