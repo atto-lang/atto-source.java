@@ -181,8 +181,19 @@ public final class SupervisorFailureInbox {
         for (int i = claimed.size() - 1; i >= 0; i--) {
             Long sequence = claimed.get(i);
             Entry entry = active.get(sequence);
-            active.put(sequence, new Entry(entry.receipt(), false));
+            // Allocate the replacement BEFORE changing either index.
+            // Queuing first prevents the OOM hole where active says the
+            // receipt is unclaimed but its sequence is no longer queued.
+            Entry replayable = new Entry(entry.receipt(), false);
             queued.addFirst(sequence);
+            try {
+                // Replacing an existing exact HashMap key does not grow it.
+                active.put(sequence, replayable);
+            } catch (RuntimeException | Error failedCommit) {
+                // A failed index update may not strand a phantom receipt.
+                queued.removeFirstOccurrence(sequence);
+                throw failedCommit;
+            }
         }
         return claimed.size();
     }
