@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -22,10 +24,18 @@ public final class BoundedSourceReader {
     }
 
     public static ReadResult readWithByteCount(Path path) throws IOException {
-        byte[] bytes;
         try (InputStream input = Files.newInputStream(path)) {
-            bytes = input.readNBytes(MAX_BYTES + 1);
+            return decode(input);
         }
+    }
+
+    /** Caller owns the open descriptor. The loader never reopens the pathname. */
+    static ReadResult readWithByteCount(ReadableByteChannel channel) throws IOException {
+        return decode(Channels.newInputStream(channel));
+    }
+
+    private static ReadResult decode(InputStream input) throws IOException {
+        byte[] bytes = input.readNBytes(MAX_BYTES + 1);
         if (bytes.length > MAX_BYTES) {
             throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
         }
