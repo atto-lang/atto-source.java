@@ -312,3 +312,38 @@ exact Git blobs locally with OpenJDK 21 `javac --release 17 -Xlint:all -Werror`,
 and an isolated concurrent host-ledger probe passed. These are **NOT**
 full-head Maven/JUnit, GraalVM, real CONTROL, or compiler-backed `.atto`
 execution results. Do not promote this PR until those checks actually run.
+
+### Additional failure-inbox audit (2026-11-04)
+
+- **Recoverable backpressure:** `supervisorFailureAdmissionBlocked` is
+  separate from `sourceStopCleanupAborted`. On saturated admission, the
+  stopped actor remains unfinalized. After an older receipt is acknowledged,
+  `ActorSupervisor.retryHostFailureAdmission(actorRef)` retries that actor's
+  **original** detached trace through the exact direct supervisor and checks
+  the runtime, ActorRef identity, actor generation, and stopped state. The
+  method does not execute a guest CONTROL handler or clear unrelated cleanup
+  quarantine. No automatic retry is yet wired; a trusted host coordinator
+  must perform it.
+- **Atomic ledger admission:** `offerTrusted` now rolls back partial
+  map/queue insertion if ordinary failure or OOM occurs between stores;
+  receipt sequence numbers are committed only after both stores succeed.
+- **Immutable-canonical diagnostic structure:** `Snapshot` validates a
+  defensive immutable copy, rejects a duplicate terminal, repeated IDs,
+  parents appearing after supervisors, more than 8 parent or supervisor
+  hops, and a mismatch between the association flag and the actual path.
+  This is data-shape validation, **not cryptographic provenance**; only the
+  authenticated runtime owns admission authority.
+- **Emergency resource distinction:** a secondary OOM/stack overflow while
+  capturing optional diagnostics must not automatically retain unsupervised
+  heaps forever. When an actor is bound to an opted-in supervisor failure
+  inbox, failed or fatally skipped capture instead remains fail-closed.
+  The latter case is a real availability/quarantine limitation until
+  authenticated recovery is designed.
+- **Authored tests (unexecuted):** `SupervisorFailureInboxTest` now includes
+  full-inbox recovery, wrong-supervisor denial, retained arena prior to
+  admission, and 24 simultaneous duplicate-failure publications.
+  `ActorFailureTraceTest` includes malformed immutable topology rejection.
+  Full Java compilation, Maven/JUnit, source-level `.atto` execution,
+  supervisor CONTROL delivery and LLVM/.NET/Wasm/Forge parity are not proven.
+
+**No merge until exact-head nonzero-step tests and independent safety review.**
