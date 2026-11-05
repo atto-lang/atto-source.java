@@ -79,7 +79,8 @@ public final class ActorFailureTrace {
         private final String actorIdentity;
         private final long actorGeneration;
         private final FailureKind failureKind;
-        private final Snapshot trace;
+        // Throwable is Serializable; the diagnostic sidecar is not a wire contract.
+        private final transient Snapshot trace;
 
         private ObservationFailure(UUID actor, long generation, Snapshot snapshot) {
             super("actor lifecycle failed (detached diagnostic)", null, false, false);
