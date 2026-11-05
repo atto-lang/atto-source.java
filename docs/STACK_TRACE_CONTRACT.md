@@ -347,3 +347,29 @@ execution results. Do not promote this PR until those checks actually run.
   supervisor CONTROL delivery and LLVM/.NET/Wasm/Forge parity are not proven.
 
 **No merge until exact-head nonzero-step tests and independent safety review.**
+
+### Group-close versus terminal failure publication — additional hardening
+
+A closing `ActorGroup` removes itself from the live `actorGroups`
+registry before every possible late actor cleanup/cancellation failure has
+finished. Relying solely on `actorGroups.get(managedByGroup)` could lose an
+already-assigned **direct** supervisor route, silently skipping a configured
+failure inbox after group teardown. `ActorCell` now pins a runtime-owned
+`ManagedSupervisorRoute(groupId, supervisor)` when lifecycle management is
+accepted (including inherited group ownership). The route contains no guest
+heap reference, private message, or original Throwable. Failure capture
+resolves the live group first, falling back to this pinned, ID-checked route
+when the group has retired. Releasing a worker clears only the old matching
+pin; another supervisor's new ownership cannot be cleared by a racing
+release from the previous group.
+
+Authored tests assert that a released-and-readopted worker reports failure
+**only** to its new supervisor and that group closure does not discard the
+managed worker's cancellation receipt. These tests are not yet executed
+with the full Java actor runtime.
+
+The source organization still uses `ubuntu-latest` /
+`ubuntu-24.04` hosted runners. Jobs showing `steps=null` fail before
+a Java command executes. A single-job rerun was requested during this
+audit, but no stepful receipt exists on the current PR head. No
+cross-organization private source mirror or secret/token checkout was used.
