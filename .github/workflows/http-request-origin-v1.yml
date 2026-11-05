@@ -1,0 +1,84 @@
+name: HTTP authenticated request origin v1 (exact head)
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/OresScheduler.java"
+      - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/HttpRequestLocals.java"
+      - "src/test/java/dev/oreslang/runtime/SourceTaskRequestOriginTest.java"
+      - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/HttpRequestLocalsTest.java"
+      - ".github/workflows/http-request-origin-v1.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-jdk25-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head with no retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Record immutable test input SHA
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD"
+          echo "HTTP_ORIGIN_GUEST_SOURCE_HEAD=$actual"
+          echo "HTTP_ORIGIN_GUEST_ROOT_TREE=$(git rev-parse HEAD^{tree})"
+      - name: Set up JDK25/GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: "graalvm"
+          cache: maven
+      - name: Execute real HTTP guest and source-task host regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=SourceTaskRequestOriginTest,NativeHttpTest,HttpRequestLocalsTest,ActorCarrierIdentityCleanupTest \
+            -DfailIfNoTests=true test
+      - name: Fail closed on missing/empty/skipped Surefire evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          files = list(Path('target/surefire-reports').glob('TEST-*.xml'))
+          assert files, "no Surefire XML evidence was emitted"
+          wanted = {'SourceTaskRequestOriginTest', 'NativeHttpTest',
+                    'HttpRequestLocalsTest', 'ActorCarrierIdentityCleanupTest'}
+          suites = {}
+          cases = failures = errors = skips = 0
+          for file in files:
+              root = ET.parse(file).getroot()
+              suite_name = root.attrib.get('name', '').split('.')[-1]
+              if suite_name not in wanted:
+                  continue
+              assert suite_name not in suites, (
+                  f"duplicate target suite {suite_name}: {suites.get(suite_name)} and {file}")
+              suite_cases = int(root.attrib.get('tests', 0))
+              assert suite_cases > 0, f"target suite {suite_name} did not execute tests"
+              suites[suite_name] = file
+              cases += suite_cases
+              failures += int(root.attrib.get('failures', 0))
+              errors += int(root.attrib.get('errors', 0))
+              skips += int(root.attrib.get('skipped', 0))
+          assert set(suites) == wanted, (
+              f"missing target test suites: {sorted(wanted - set(suites))}")
+          assert not (failures or errors or skips), (
+              f"cases={cases} failed={failures} errors={errors} skipped={skips}")
+          print(f"HTTP_ORIGIN_JDK25_GUEST_TESTS_EXECUTED suites={len(suites)} "
+                f"cases={cases} failed={failures} errors={errors} skipped={skips}")
+          PY
