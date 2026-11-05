@@ -209,10 +209,8 @@ final class ActorFailureTraceTest {
         assertEquals(0, detached.getStackTrace().length, "no carrier stack");
         assertFalse(detached.getMessage().contains(secret));
         assertFalse(detached.supervisorControlDelivered());
-        detached.trace().ifPresent(trace -> {
-            assertEquals(detached.actorIdentity(), trace.boundaries().get(0).identity());
-            assertEquals(detached.actorGeneration(), trace.boundaries().get(0).actorGeneration());
-        });
+        assertEquals(ActorFailureTrace.FailureKind.UNCLASSIFIED, detached.failureKind());
+        assertFalse(detached.toString().contains(secret));
     }
 
     @Test
