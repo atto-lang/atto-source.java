@@ -9024,6 +9024,17 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Failure-only, bounded host metadata; no Throwable methods or guest values are read. */
         private void recordDetachedFailureTrace(Throwable failure) {
+            try {
+                recordDetachedFailureTraceBounded(failure);
+            } catch (OutOfMemoryError | StackOverflowError captureExhaustion) {
+                // A secondary fatal diagnostic-allocation failure must not
+                // obscure the first actor failure. Never release a heap after
+                // failure evidence could not be safely accounted for.
+                sourceStopCleanupAborted = true;
+            }
+        }
+
+        private void recordDetachedFailureTraceBounded(Throwable failure) {
             // An exhausted/faulting host cannot safely allocate a trace.
             if (failure instanceof VirtualMachineError
                     || failure instanceof ThreadDeath
@@ -9051,7 +9062,17 @@ public final class ActorRuntime implements AutoCloseable {
             // racing observer must never attribute the failure to a group
             // that no longer owns this actor. Do not acquire authorityLock
             // under lifecycleLock: the reverse lock order exists on spawn.
-            if (!Objects.equals(groupId, managedByGroup.get())) {
+            ActorGroupId routeAfterCapture = managedByGroup.get();
+            if (!Objects.equals(groupId, routeAfterCapture)) {
+                ActorGroup replacement = routeAfterCapture == null
+                        ? null : actorGroups.get(routeAfterCapture);
+                // Do not silently lose an explicitly configured failure
+                // delivery obligation during group ownership transfer.
+                if ((group != null && group.supervisor.failureInbox != null)
+                        || (replacement != null
+                                && replacement.supervisor.failureInbox != null)) {
+                    sourceStopCleanupAborted = true;
+                }
                 supervisorIds.clear();
                 group = null;
             }
