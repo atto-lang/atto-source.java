@@ -59,6 +59,51 @@ final class ActorFailureTraceTest {
     }
 
     @Test
+    void forgedCausalTopologyIsRejectedAfterImmutableDefensiveCopy() {
+        var actor = UUID.randomUUID().toString();
+        var parent = UUID.randomUUID().toString();
+        var supervisor = UUID.randomUUID().toString();
+        var terminal = new ActorFailureTrace.Boundary(
+                ActorFailureTrace.BoundaryKind.ACTOR_TERMINAL, actor, 9);
+        var ancestor = new ActorFailureTrace.Boundary(
+                ActorFailureTrace.BoundaryKind.PARENT_ACTOR, parent, 0);
+        var supervisorBoundary = new ActorFailureTrace.Boundary(
+                ActorFailureTrace.BoundaryKind.SUPERVISOR_ASSOCIATION,
+                supervisor, 0);
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        List.of(terminal, terminal), false, false),
+                "multiple terminal actor markers must not be accepted");
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        List.of(terminal, supervisorBoundary, ancestor), false, true),
+                "parent lineage must precede supervisor associations");
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        List.of(terminal, ancestor, ancestor), false, false),
+                "duplicate parent identity must not be accepted");
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        List.of(terminal, supervisorBoundary), false, false),
+                "supervisor identity cannot appear under associationKnown=false");
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        List.of(terminal), false, true),
+                "associationKnown=true requires a concrete supervisor boundary");
+        assertEquals(List.of(terminal, ancestor, supervisorBoundary),
+                new ActorFailureTrace.Snapshot(
+                        ActorFailureTrace.FailureKind.UNCLASSIFIED,
+                        List.of(terminal, ancestor, supervisorBoundary),
+                        false, true).boundaries());
+    }
+
+    @Test
     void capturesOnlyTrustedHostLineageBeforeActorArenaRetirement() throws Exception {
         ActorFailureTrace.Snapshot detached;
         UUID actorId;
