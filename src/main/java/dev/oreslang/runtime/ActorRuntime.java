@@ -5930,7 +5930,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
-        return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
+        return new ActorTerminatedException(ref.id(), ref.kind(), ref.detachedObservationFailure());
     }
 
     /** Non-cancellable observer over all mail accepted before this call.
