@@ -155,6 +155,12 @@ public final class TypeChecker {
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.InvertedStructDecl inverted) {
+                    throw new IllegalArgumentException(
+                            "DOP_INVERTED_BACKEND_UNSUPPORTED: nominal inverted struct '"
+                                    + inverted.name() + "' has parsed column metadata but "
+                                    + "requires checked ownership MIR and guest storage ABI");
+                }
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
                     throw new IllegalArgumentException(
                             "checked exceptional effect on function '" + fn.name()

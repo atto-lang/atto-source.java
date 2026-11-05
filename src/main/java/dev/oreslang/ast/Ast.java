@@ -61,7 +61,7 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, InvertedStructDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -481,6 +481,53 @@ public final class Ast {
         }
         public static ActorConcurrency serial(ActorTransport transport) {
             return new ActorConcurrency(transport, 1, 1);
+        }
+    }
+
+
+    /**
+     * Checked source-schema AST for the first one-level two-i64 inverted
+     * struct slice. This is type metadata, NOT a runtime class or a
+     * guest-visible backing collection. It is rejected by TypeChecker until
+     * ownership-checked MIR and the column ABI are implemented.
+     */
+    public record InvertedColumnDecl(String name, TypeRef type) {
+        public InvertedColumnDecl {
+            java.util.Objects.requireNonNull(name, "inverted column name");
+            java.util.Objects.requireNonNull(type, "inverted column type");
+            if (name.isBlank()) {
+                throw new IllegalArgumentException("inverted column name cannot be blank");
+            }
+        }
+    }
+
+    public record InvertedStructDecl(
+            String name, Visibility visibility, List<InvertedColumnDecl> columns)
+            implements Decl {
+        public InvertedStructDecl {
+            java.util.Objects.requireNonNull(name, "inverted nominal struct name");
+            java.util.Objects.requireNonNull(visibility, "inverted struct visibility");
+            if (name.isBlank()) {
+                throw new IllegalArgumentException("inverted nominal struct name cannot be blank");
+            }
+            columns = List.copyOf(columns);
+            if (columns.size() != 2) {
+                throw new IllegalArgumentException(
+                        "inverted v1 schema requires exactly two columns");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (InvertedColumnDecl column : columns) {
+                if (!seen.add(column.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate inverted column '" + column.name() + "'");
+                }
+                if (!column.type().name().equals("int")
+                        || !column.type().arguments().isEmpty()
+                        || column.type().inferArguments()) {
+                    throw new IllegalArgumentException(
+                            "inverted v1 field must be a scalar int: " + column.name());
+                }
+            }
         }
     }
 
