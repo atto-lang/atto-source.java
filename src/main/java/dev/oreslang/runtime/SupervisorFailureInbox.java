@@ -65,8 +65,11 @@ public final class SupervisorFailureInbox {
 
     private final String supervisorIdentity;
     private final int capacity;
-    private final Map<Long, Entry> active = new HashMap<>();
-    private final ArrayDeque<Long> queued = new ArrayDeque<>();
+    // Mutable ledger views are swapped only under this instance's monitor.
+    // Host retries build both replacement indices before committing, so
+    // even a failed ArrayDeque growth cannot half-requeue a receipt.
+    private Map<Long, Entry> active = new HashMap<>();
+    private ArrayDeque<Long> queued = new ArrayDeque<>();
     private long nextSequence = 1;
 
     SupervisorFailureInbox(UUID supervisorId, int capacity) {
@@ -177,24 +180,39 @@ public final class SupervisorFailureInbox {
         for (Map.Entry<Long, Entry> item : active.entrySet()) {
             if (item.getValue().claimed()) claimed.add(item.getKey());
         }
+        if (claimed.isEmpty()) return 0;
         claimed.sort(Long::compareTo);
-        for (int i = claimed.size() - 1; i >= 0; i--) {
-            Long sequence = claimed.get(i);
-            Entry entry = active.get(sequence);
-            // Allocate the replacement BEFORE changing either index.
-            // Queuing first prevents the OOM hole where active says the
-            // receipt is unclaimed but its sequence is no longer queued.
-            Entry replayable = new Entry(entry.receipt(), false);
-            queued.addFirst(sequence);
-            try {
-                // Replacing an existing exact HashMap key does not grow it.
-                active.put(sequence, replayable);
-            } catch (RuntimeException | Error failedCommit) {
-                // A failed index update may not strand a phantom receipt.
-                queued.removeFirstOccurrence(sequence);
-                throw failedCommit;
-            }
+        if (claimed.size() + queued.size() != active.size()) {
+            throw new IllegalStateException("failure inbox receipt accounting violated");
         }
+
+        // Stage BOTH indices before modifying either one. ArrayDeque.addFirst
+        // can write its head slot before growing; OOM during that grow leaves
+        // the old in-place implementation with a queued/claimed split-brain.
+        // Here an exception at any allocation step leaves the original ledger
+        // intact. Max storage remains proportional to MAX_CAPACITY (256).
+        Map<Long, Entry> replacementActive = new HashMap<>(active);
+        ArrayDeque<Long> replacementQueued = new ArrayDeque<>(capacity);
+        for (Long sequence : claimed) {
+            Entry entry = active.get(sequence);
+            if (entry == null || !entry.claimed()) {
+                throw new IllegalStateException("failure inbox receipt accounting violated");
+            }
+            replacementActive.put(sequence, new Entry(entry.receipt(), false));
+            replacementQueued.addLast(sequence);
+        }
+        for (Long sequence : queued) {
+            Entry entry = active.get(sequence);
+            if (entry == null || entry.claimed()) {
+                throw new IllegalStateException("failure inbox receipt accounting violated");
+            }
+            replacementQueued.addLast(sequence);
+        }
+
+        // No allocation or guest callback between these assignments. All
+        // accessors hold this monitor, so observers see one committed ledger.
+        active = replacementActive;
+        queued = replacementQueued;
         return claimed.size();
     }
 
