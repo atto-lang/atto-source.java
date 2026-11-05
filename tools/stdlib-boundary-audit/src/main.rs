@@ -2,7 +2,8 @@
 //! This does NOT replace compiler admission, sandboxing, or runtime capability checks.
 use std::{collections::HashSet, env, fs, path::Path, process};
 
-const MAX_FILE: u64 = 2 * 1024 * 1024;
+// Match CoreLibrarySources.MAX_SOURCE_BYTES (1 MiB), including the boundary.
+const MAX_FILE: u64 = 1024 * 1024;
 const MAX_FILES: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +122,28 @@ fn lex(s: &str) -> Result<Vec<Token>, String> {
     Ok(out)
 }
 
+fn is_safe_library_import(name: &str, allowed_root: &str) -> bool {
+    let Some(relative) = name.strip_prefix(allowed_root) else {
+        return false;
+    };
+    if relative.is_empty() || relative.len() > 4096 || relative.contains("..") {
+        return false;
+    }
+    let segments: Vec<_> = relative.split('/').collect();
+    if segments.len() > 32 {
+        return false;
+    }
+    segments.into_iter().all(|segment| {
+        let bytes = segment.as_bytes();
+        bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            && bytes.iter().all(|b| {
+                b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-' || *b == b'.'
+            })
+            && !segment.ends_with(".atto.ores")
+            && !segment.ends_with(".ores.atto")
+    })
+}
+
 fn inspect(source: &str) -> Result<(), String> {
     inspect_with_root(source, "std/")
 }
@@ -152,22 +175,22 @@ fn inspect_with_root(source: &str, allowed_root: &str) -> Result<(), String> {
                 return Err(format!("line {}: oversized import", t.line));
             }
             let statement = &rest[..size];
+            // A source import must have exactly one, unspliced literal path.
+            // The compiler still owns the final syntax and type decision.
+            let mut source_at = None;
             for (j, part) in statement.iter().enumerate() {
                 if part.name("from") {
-                    let src = &statement[j + 1..];
-                    if src.is_empty() {
-                        return Err(format!("line {}: missing import source", part.line));
-                    }
-                    let name = src.iter().map(|t| t.text.as_str()).collect::<String>();
-                    if !name.starts_with(allowed_root)
-                        || name.contains("..")
-                        || name.starts_with('/')
-                        || name.contains(':')
-                        || name.contains('\\')
-                    {
-                        return Err(format!("line {}: unsafe stdlib import source", part.line));
+                    if source_at.replace(j).is_some() {
+                        return Err(format!("line {}: multiple import sources", t.line));
                     }
                 }
+            }
+            let at = source_at.ok_or_else(|| format!("line {}: import without from", t.line))?;
+            if at + 2 != statement.len() || statement[at + 1].kind != Kind::Literal {
+                return Err(format!("line {}: import must have one literal source", t.line));
+            }
+            if !is_safe_library_import(&statement[at + 1].text, allowed_root) {
+                return Err(format!("line {}: unsafe stdlib import source", t.line));
             }
         }
     }
