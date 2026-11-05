@@ -252,3 +252,49 @@ under memory pressure and does not alter terminal failure semantics.
 5. Capture exact head commit/tree/blob hashes, stepful workflow jobs, real
    compiler/guest execution and independent review. Zero-step CI is runner
    admission failure; `ATTO_GUEST_COMPILER_EXECUTION=NOT_EXECUTED` is not parity.
+
+### Bounded host supervisor failure inbox — follow-up candidate
+
+The optional `ActorSupervisor.enableHostFailureInbox(capacity)` wires a
+supervisor-owned, bounded **admission ledger**, not executable guest supervisor
+CONTROL. It is deliberately **off by default**, because an advisory
+`ActorSupervisor` and installed `SupervisorCodeSlot` do not yet constitute
+an authenticated source-level failure handler or guarantee of VM CONTROL
+dispatch. Only host/supervisor callers can configure, claim, acknowledge, or
+retry receipts. Ordinary actors and ActorGroup Mailman turns are denied.
+
+For a supervisor with an enabled ledger, a first-winner actor failure attempts
+to admit its immutable value-only causal snapshot before normal reclamation.
+The ledger accepts the exact actor incarnation and **direct** supervisor
+association, never an ancestor-only ID; queued and claimed-but-unacknowledged
+entries both consume a bounded capacity of 1–256. On failed enabled admission
+(e.g., saturation, group-transfer race, malformed metadata), the runtime
+marks source cleanup incomplete and **quarantines actor finalization** rather
+than silently treating a dropped failure as acknowledged. Recovery from
+this quarantine is **not yet implemented**; deployments should not opt into
+this inbox without a host consumer that can drain it.
+
+`pollHostFailureReceipt()` returns an immutable receipt with a stable sequence,
+actor identity/generation, direct supervisor ID, and detached trace. Each
+claim increments a `claimAttempt`; an acknowledgement must match sequence,
+actor identity, actor generation **and the latest claim attempt**. An old
+CONTROL coordinator claim cannot acknowledge a receipt retried after restart.
+`requeueUnacknowledgedHostFailureReceipts()` keeps the sequence but increments
+the attempt on a fresh claim. This is an **at-least-once host replay mechanism**;
+neither a claim nor an acknowledgement proves the `.atto` supervisor policy
+executed. Durable exactly-once guest policy execution, hot-upgrade fencing,
+actual CONTROL dispatcher integration, and queue recovery remain unverified.
+
+Separately, terminal actor mailbox and continuation-channel closure and
+previously pending `drain()` observers now propagate only detached host
+failure causes; no child raw `Throwable` is placed into those channels.
+The legacy host-only `ActorRef.failure()` and unrelated generic Future,
+one-shot, and guest error paths still require source-local ownership audits.
+
+Authored regression suite: `SupervisorFailureInboxTest` and expanded
+`ActorFailureTraceTest`. The `SupervisorFailureInbox` and
+`ActorFailureTrace` source value classes alone have been compiled against
+exact Git blobs locally with OpenJDK 21 `javac --release 17 -Xlint:all -Werror`,
+and an isolated concurrent host-ledger probe passed. These are **NOT**
+full-head Maven/JUnit, GraalVM, real CONTROL, or compiler-backed `.atto`
+execution results. Do not promote this PR until those checks actually run.
