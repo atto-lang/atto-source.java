@@ -3,8 +3,8 @@ on:
   pull_request:
     paths:
       - 'stdlib/core.ores'
-      - 'src/main/java/dev/oreslang/compiler/TypedScalarSmt.java'
-      - 'src/test/java/dev/oreslang/compiler/TypedScalarSmtTest.java'
+      - 'src/main/java/dev/atto/compiler/TypedScalarSmt.java'
+      - 'src/test/java/dev/atto/compiler/TypedScalarSmtTest.java'
       - 'scripts/check_core_math_guest.mjs'
       - 'tests/core_math_guest_validator.test.mjs'
       - 'examples/native-core-math-24.ores'

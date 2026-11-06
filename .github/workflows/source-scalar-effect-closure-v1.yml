@@ -2,9 +2,9 @@ name: Source-derived scalar effects v1
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/types/EffectContracts.java'
-      - 'src/main/java/dev/oreslang/types/ScalarSourceEffectFactsV1.java'
-      - 'src/test/java/dev/oreslang/ScalarSourceEffectFactsV1Test.java'
+      - 'src/main/java/dev/atto/types/EffectContracts.java'
+      - 'src/main/java/dev/atto/types/ScalarSourceEffectFactsV1.java'
+      - 'src/test/java/dev/atto/ScalarSourceEffectFactsV1Test.java'
       - 'docs/SOURCE_SCALAR_EFFECT_CLOSURE_V1.md'
       - '.github/workflows/source-scalar-effect-closure-v1.yml'
   workflow_dispatch:
@@ -27,9 +27,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
-          git hash-object src/main/java/dev/oreslang/types/EffectContracts.java
-          git hash-object src/main/java/dev/oreslang/types/ScalarSourceEffectFactsV1.java
-          git hash-object src/test/java/dev/oreslang/ScalarSourceEffectFactsV1Test.java
+          git hash-object src/main/java/dev/atto/types/EffectContracts.java
+          git hash-object src/main/java/dev/atto/types/ScalarSourceEffectFactsV1.java
+          git hash-object src/test/java/dev/atto/ScalarSourceEffectFactsV1Test.java
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'

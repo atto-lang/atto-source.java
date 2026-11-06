@@ -5,8 +5,8 @@ on:
     paths:
       - '.github/workflows/actor-heap-placement-exact-head.yml'
       - 'pom.xml'
-      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
-      - 'src/test/java/dev/oreslang/runtime/ActorHeapPlacementGuardTest.java'
+      - 'src/main/java/dev/atto/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/atto/runtime/ActorHeapPlacementGuardTest.java'
   workflow_dispatch:
 
 permissions:
@@ -55,7 +55,7 @@ jobs:
           expected = os.environ["EXPECTED_SHA"]
           observed = git("rev-parse", "HEAD")
           tree = git("rev-parse", "HEAD^{tree}")
-          report = Path("target/surefire-reports/TEST-dev.oreslang.runtime.ActorHeapPlacementGuardTest.xml")
+          report = Path("target/surefire-reports/TEST-dev.atto.runtime.ActorHeapPlacementGuardTest.xml")
           counts = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}
           parsed = False
           if report.is_file():

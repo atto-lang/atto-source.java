@@ -1,4 +1,4 @@
-module dev.oreslang {
+module dev.atto {
     requires java.management;
     requires java.net.http;
     requires jdk.httpserver;
@@ -10,9 +10,9 @@ module dev.oreslang {
     requires org.graalvm.truffle;
     requires org.tomlj;
 
-    exports dev.oreslang.launcher;
-    exports dev.oreslang.compiler;
+    exports dev.atto.launcher;
+    exports dev.atto.compiler;
 
     provides com.oracle.truffle.api.provider.TruffleLanguageProvider
-        with dev.oreslang.OresLanguageProvider;
+        with dev.atto.OresLanguageProvider;
 }

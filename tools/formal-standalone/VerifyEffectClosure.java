@@ -1,4 +1,4 @@
-import dev.oreslang.types.EffectContracts;
+import dev.atto.types.EffectContracts;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;

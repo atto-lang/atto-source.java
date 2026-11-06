@@ -17,8 +17,8 @@ import org.w3c.dom.NodeList;
 public final class AttoGuestReceiptVerifier {
     private record Suite(String name, List<String> methods) { int count() { return methods.size(); } }
     private static final List<Suite> REQUIRED = List.of(
-            new Suite("dev.oreslang.AttoCanonicalFixtureGuestTest", List.of("canonicalAttoFixtureParsesTypechecksAndResolvesExtensionlessImport", "canonicalAttoFixtureLinksAndExecutesGuestWithExpectedOutput", "absentCanonicalAttoHelperFailsClosedBeforeGuestExecution")),
-            new Suite("dev.oreslang.AttoImportedModuleClassGuestTest", List.of("canonicalAttoPublicFileRootClassImportsAndRuns", "canonicalAttoPublicClassInsideImportedModuleResolvesAtExecution", "qualifiedConstructorCannotBindToUnrelatedLocalHomonym", "privateClassInImportedModuleIsNotConstructible", "unknownModuleAliasNeverResolvesLocalClass")));
+            new Suite("dev.atto.AttoCanonicalFixtureGuestTest", List.of("canonicalAttoFixtureParsesTypechecksAndResolvesExtensionlessImport", "canonicalAttoFixtureLinksAndExecutesGuestWithExpectedOutput", "absentCanonicalAttoHelperFailsClosedBeforeGuestExecution")),
+            new Suite("dev.atto.AttoImportedModuleClassGuestTest", List.of("canonicalAttoPublicFileRootClassImportsAndRuns", "canonicalAttoPublicClassInsideImportedModuleResolvesAtExecution", "qualifiedConstructorCannotBindToUnrelatedLocalHomonym", "privateClassInImportedModuleIsNotConstructible", "unknownModuleAliasNeverResolvesLocalClass")));
 
     private static void require(boolean ok, String diagnostic) {
         if (!ok) throw new IllegalStateException(diagnostic);

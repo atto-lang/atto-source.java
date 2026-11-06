@@ -1,7 +1,7 @@
-package dev.oreslang.runtime.accel;
+package dev.atto.runtime.accel;
 
-import dev.oreslang.runtime.accel.GpuBufferFence;
-import dev.oreslang.runtime.accel.QuantumCircuitIR;
+import dev.atto.runtime.accel.GpuBufferFence;
+import dev.atto.runtime.accel.QuantumCircuitIR;
 import java.util.Arrays;
 
 /** No JUnit or Maven dependencies: executable accelerator admission smoke. */

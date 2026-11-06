@@ -50,7 +50,7 @@ jobs:
       - name: Load native stdlib through the modular JVM launcher
         run: |
           mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
-          java --enable-native-access=ALL-UNNAMED -p "target/classes:$(cat target/classpath.txt)" -m dev.oreslang/dev.oreslang.launcher.OresMain examples/native-core-library.ores
+          java --enable-native-access=ALL-UNNAMED -p "target/classes:$(cat target/classpath.txt)" -m dev.atto/dev.atto.launcher.OresMain examples/native-core-library.ores
       - name: Compile and run shared Oreslang program
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
       - name: Run native Oreslang test framework

@@ -5,14 +5,14 @@ on:
     paths:
       - '.github/workflows/untrusted-host-primitives.yml'
       - 'pom.xml'
-      - 'src/main/java/dev/oreslang/runtime/GuestAdmissionDeadline.java'
-      - 'src/main/java/dev/oreslang/runtime/UntrustedSourceIdentity.java'
-      - 'src/main/java/dev/oreslang/runtime/UntrustedSourceImageCache.java'
-      - 'src/main/java/dev/oreslang/runtime/VerifiedCloseFence.java'
-      - 'src/test/java/dev/oreslang/runtime/GuestAdmissionDeadlineTest.java'
-      - 'src/test/java/dev/oreslang/runtime/UntrustedSourceIdentityTest.java'
-      - 'src/test/java/dev/oreslang/runtime/UntrustedSourceImageCacheTest.java'
-      - 'src/test/java/dev/oreslang/runtime/VerifiedCloseFenceTest.java'
+      - 'src/main/java/dev/atto/runtime/GuestAdmissionDeadline.java'
+      - 'src/main/java/dev/atto/runtime/UntrustedSourceIdentity.java'
+      - 'src/main/java/dev/atto/runtime/UntrustedSourceImageCache.java'
+      - 'src/main/java/dev/atto/runtime/VerifiedCloseFence.java'
+      - 'src/test/java/dev/atto/runtime/GuestAdmissionDeadlineTest.java'
+      - 'src/test/java/dev/atto/runtime/UntrustedSourceIdentityTest.java'
+      - 'src/test/java/dev/atto/runtime/UntrustedSourceImageCacheTest.java'
+      - 'src/test/java/dev/atto/runtime/VerifiedCloseFenceTest.java'
   workflow_dispatch:
 
 permissions:
@@ -66,7 +66,7 @@ jobs:
               "GuestAdmissionDeadlineTest",
           )
           paths = [
-              Path("target/surefire-reports/TEST-dev.oreslang.runtime." + name + ".xml")
+              Path("target/surefire-reports/TEST-dev.atto.runtime." + name + ".xml")
               for name in requested
           ]
           counts = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}

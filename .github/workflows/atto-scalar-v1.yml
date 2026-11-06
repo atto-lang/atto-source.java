@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - 'contracts/atto-scalar-v1/**'
-      - 'src/test/java/dev/oreslang/AttoScalarV1GuestTest.java'
+      - 'src/test/java/dev/atto/AttoScalarV1GuestTest.java'
       - '.github/workflows/atto-scalar-v1.yml'
   push:
     branches: ['test/atto-scalar-java-20261103']

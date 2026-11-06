@@ -13,7 +13,7 @@
       ]
     },
     {
-      "type": "dev.oreslang.runtime.NativeCarrierExecutor",
+      "type": "dev.atto.runtime.NativeCarrierExecutor",
       "jniAccessible": true,
       "methods": [
         {
@@ -27,36 +27,36 @@
   ],
   "resources": [
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/std/*.ores"
+      "module": "dev.atto",
+      "glob": "dev/atto/std/*.ores"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/std/**/*.ores"
+      "module": "dev.atto",
+      "glob": "dev/atto/std/**/*.ores"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/std/*.atto"
+      "module": "dev.atto",
+      "glob": "dev/atto/std/*.atto"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/std/**/*.atto"
+      "module": "dev.atto",
+      "glob": "dev/atto/std/**/*.atto"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/core/*.atto"
+      "module": "dev.atto",
+      "glob": "dev/atto/core/*.atto"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/core/**/*.atto"
+      "module": "dev.atto",
+      "glob": "dev/atto/core/**/*.atto"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/core/*.ores"
+      "module": "dev.atto",
+      "glob": "dev/atto/core/*.ores"
     },
     {
-      "module": "dev.oreslang",
-      "glob": "dev/oreslang/core/**/*.ores"
+      "module": "dev.atto",
+      "glob": "dev/atto/core/**/*.ores"
     }
   ]
 }

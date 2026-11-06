@@ -2,9 +2,9 @@ name: Actor proxy slab exact-head JVM evidence
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/runtime/ActorProxyRequestSlab.java'
-      - 'src/main/java/dev/oreslang/runtime/ActorShardBacking.java'
-      - 'src/test/java/dev/oreslang/runtime/ActorProxyRequestSlabTest.java'
+      - 'src/main/java/dev/atto/runtime/ActorProxyRequestSlab.java'
+      - 'src/main/java/dev/atto/runtime/ActorShardBacking.java'
+      - 'src/test/java/dev/atto/runtime/ActorProxyRequestSlabTest.java'
       - '.github/workflows/actor-proxy-slab-exact-head.yml'
   workflow_dispatch:
 permissions:
@@ -39,8 +39,8 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dtest=ActorProxyRequestSlabTest -DfailIfNoTests=true test
-          test -s target/surefire-reports/TEST-dev.oreslang.runtime.ActorProxyRequestSlabTest.xml
-          ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' target/surefire-reports/TEST-dev.oreslang.runtime.ActorProxyRequestSlabTest.xml
+          test -s target/surefire-reports/TEST-dev.atto.runtime.ActorProxyRequestSlabTest.xml
+          ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' target/surefire-reports/TEST-dev.atto.runtime.ActorProxyRequestSlabTest.xml
       - name: Record exact-head provenance
         if: always()
         shell: bash
@@ -48,4 +48,4 @@ jobs:
           set -euo pipefail
           echo "HEAD=$(git rev-parse HEAD)"
           echo "TREE=$(git rev-parse 'HEAD^{tree}')"
-          git hash-object src/main/java/dev/oreslang/runtime/ActorProxyRequestSlab.java
+          git hash-object src/main/java/dev/atto/runtime/ActorProxyRequestSlab.java

@@ -2,8 +2,8 @@ name: Java Native QUIC admission (not wire parity)
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/runtime/NativeQuicAdmission.java'
-      - 'src/test/java/dev/oreslang/runtime/NativeQuicAdmissionTest.java'
+      - 'src/main/java/dev/atto/runtime/NativeQuicAdmission.java'
+      - 'src/test/java/dev/atto/runtime/NativeQuicAdmissionTest.java'
       - 'docs/QUIC_HTTP3_BACKEND_GATE.md'
       - '.github/workflows/native-quic-admission.yml'
   workflow_dispatch:

@@ -4,8 +4,8 @@ on:
     paths:
       - .github/workflows/smart-pointer-exact-head.yml
       - pom.xml
-      - src/main/java/dev/oreslang/runtime/OresSmartPointers.java
-      - src/test/java/dev/oreslang/runtime/OresSmartPointersTest.java
+      - src/main/java/dev/atto/runtime/OresSmartPointers.java
+      - src/test/java/dev/atto/runtime/OresSmartPointersTest.java
   workflow_dispatch:
 permissions:
   contents: read

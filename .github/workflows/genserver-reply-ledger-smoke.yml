@@ -3,9 +3,9 @@ name: GenServer reply ledger generational smoke
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
-      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java'
-      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java'
+      - 'src/main/java/dev/atto/runtime/GenServerReplyLedger.java'
+      - 'src/test/java/dev/atto/runtime/GenServerReplyLedgerSmoke.java'
+      - 'src/test/java/dev/atto/runtime/GenServerReplyLedgerGenerationalSmoke.java'
       - '.github/workflows/genserver-reply-ledger-smoke.yml'
   workflow_dispatch:
 
@@ -28,10 +28,10 @@ jobs:
         run: |
           mkdir -p /tmp/ores-genserver-test
           javac -d /tmp/ores-genserver-test \
-            src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java \
-            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java \
-            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java
+            src/main/java/dev/atto/runtime/GenServerReplyLedger.java \
+            src/test/java/dev/atto/runtime/GenServerReplyLedgerSmoke.java \
+            src/test/java/dev/atto/runtime/GenServerReplyLedgerGenerationalSmoke.java
       - name: Prove one-shot races, ABA fencing and generation exhaustion
         run: |
-          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerSmoke
-          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerGenerationalSmoke
+          java -cp /tmp/ores-genserver-test dev.atto.runtime.GenServerReplyLedgerSmoke
+          java -cp /tmp/ores-genserver-test dev.atto.runtime.GenServerReplyLedgerGenerationalSmoke

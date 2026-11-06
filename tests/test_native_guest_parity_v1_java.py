@@ -37,7 +37,7 @@ def main():
         expected_probe = root / "contracts/v1/java_probe.py"
         if probe != expected_probe or not probe.is_file() or probe.is_symlink():
             raise RuntimeError("must use unmodified in-repository Java guest probe")
-        launcher = root / "target/classes/dev/oreslang/launcher/OresMain.class"
+        launcher = root / "target/classes/dev/atto/launcher/OresMain.class"
         classpath = root / "target/conformance-classpath.txt"
         if (not launcher.is_file() or launcher.is_symlink() or
                 not classpath.is_file() or not classpath.read_text().strip()):

@@ -1,5 +1,5 @@
-import dev.oreslang.types.DataOrientedBorrowChecker;
-import dev.oreslang.types.DataOrientedBorrowChecker.*;
+import dev.atto.types.DataOrientedBorrowChecker;
+import dev.atto.types.DataOrientedBorrowChecker.*;
 import java.io.*;
 import java.util.*;
 

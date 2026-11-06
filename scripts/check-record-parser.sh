@@ -8,9 +8,9 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 javac --release 21 -encoding UTF-8 -d "$tmp" \
-  "$root/src/main/java/dev/oreslang/ast/Ast.java" \
-  "$root/src/main/java/dev/oreslang/parser/Token.java" \
-  "$root/src/main/java/dev/oreslang/parser/Lexer.java" \
-  "$root/src/main/java/dev/oreslang/parser/Parser.java" \
-  "$root/src/test/java/dev/oreslang/RecordParserSmoke.java"
-java -ea -cp "$tmp" dev.oreslang.RecordParserSmoke
+  "$root/src/main/java/dev/atto/ast/Ast.java" \
+  "$root/src/main/java/dev/atto/parser/Token.java" \
+  "$root/src/main/java/dev/atto/parser/Lexer.java" \
+  "$root/src/main/java/dev/atto/parser/Parser.java" \
+  "$root/src/test/java/dev/atto/RecordParserSmoke.java"
+java -ea -cp "$tmp" dev.atto.RecordParserSmoke

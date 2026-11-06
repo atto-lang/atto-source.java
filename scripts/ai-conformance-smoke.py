@@ -214,7 +214,7 @@ def main():
         probe = Path(args.java_probe)
         if not probe.is_absolute() or not probe.is_file():
             parser.error("--java-probe must be an existing absolute file")
-        clazz = root / "target/classes/dev/oreslang/launcher/OresMain.class"
+        clazz = root / "target/classes/dev/atto/launcher/OresMain.class"
         cp = root / "target/conformance-classpath.txt"
         if not clazz.is_file() or not cp.is_file() or not cp.read_text().strip():
             parser.error("real Java launcher classes and Maven classpath must be built first")

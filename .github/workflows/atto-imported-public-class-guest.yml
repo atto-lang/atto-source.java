@@ -4,8 +4,8 @@ name: AttoLang imported class guest regression (Java)
 on:
   pull_request:
     paths:
-      - 'src/test/java/dev/oreslang/AttoImportedModuleClassGuestTest.java'
-      - 'src/test/java/dev/oreslang/AttoCanonicalFixtureGuestTest.java'
+      - 'src/test/java/dev/atto/AttoImportedModuleClassGuestTest.java'
+      - 'src/test/java/dev/atto/AttoCanonicalFixtureGuestTest.java'
       - 'scripts/ci/AttoGuestReceiptVerifier.java'
       - 'src/test/resources/atto/canonical-v1/**'
       - 'src/main/java/**'

@@ -2,9 +2,9 @@ name: Java IPC receipt ledger (host reference)
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/runtime/IpcReceiptLedger.java'
-      - 'src/test/java/dev/oreslang/runtime/IpcReceiptLedgerTest.java'
-      - 'src/test/java/dev/oreslang/runtime/IpcReceiptLedgerSmoke.java'
+      - 'src/main/java/dev/atto/runtime/IpcReceiptLedger.java'
+      - 'src/test/java/dev/atto/runtime/IpcReceiptLedgerTest.java'
+      - 'src/test/java/dev/atto/runtime/IpcReceiptLedgerSmoke.java'
       - '.github/workflows/ipc-receipt-host.yml'
   push:
     branches: [main]
@@ -27,8 +27,8 @@ jobs:
       - name: Compile and run dependency-free thread/correlation check
         run: |
           mkdir -p target/ipc-smoke
-          javac -d target/ipc-smoke src/main/java/dev/oreslang/runtime/IpcReceiptLedger.java src/test/java/dev/oreslang/runtime/IpcReceiptLedgerSmoke.java
-          java -cp target/ipc-smoke dev.oreslang.runtime.IpcReceiptLedgerSmoke
+          javac -d target/ipc-smoke src/main/java/dev/atto/runtime/IpcReceiptLedger.java src/test/java/dev/atto/runtime/IpcReceiptLedgerSmoke.java
+          java -cp target/ipc-smoke dev.atto.runtime.IpcReceiptLedgerSmoke
       - name: Run actual JUnit receipts
         run: mvn -B -ntp -Dtest=IpcReceiptLedgerTest test
       - name: Classify evidence

@@ -56,7 +56,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--report",type=Path)
     args=parser.parse_args()
-    launcher=ROOT/"target/classes/dev/oreslang/launcher/OresMain.class"
+    launcher=ROOT/"target/classes/dev/atto/launcher/OresMain.class"
     classpath=ROOT/"target/conformance-classpath.txt"
     probe=ROOT/"contracts/v1/java_probe.py"
     for target in (launcher,classpath,probe):

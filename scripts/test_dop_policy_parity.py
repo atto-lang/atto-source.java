@@ -83,7 +83,7 @@ def main():
         if args.java_root:
             root = args.java_root.resolve()
             subprocess.run(['java', '-m', 'jdk.compiler/com.sun.tools.javac.Main', '-d', tmp,
-                str(root/'src/main/java/dev/oreslang/types/DataOrientedBorrowChecker.java'),
+                str(root/'src/main/java/dev/atto/types/DataOrientedBorrowChecker.java'),
                 str(root/'verification/DopPolicyProbe.java')], check=True)
             commands.append(('Java', ['java', '-cp', tmp, 'DopPolicyProbe']))
         if args.llvm_root:

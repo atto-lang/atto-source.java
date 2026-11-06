@@ -2,14 +2,14 @@ name: Logical borrow policy
 on:
   pull_request:
     paths:
-      - src/main/java/dev/oreslang/types/DataOrientedBorrowChecker.java
+      - src/main/java/dev/atto/types/DataOrientedBorrowChecker.java
       - verification/DopPolicyProbe.java
       - scripts/test_dop_policy_parity.py
       - .github/workflows/logical-borrow-policy.yml
   push:
     branches: [main]
     paths:
-      - src/main/java/dev/oreslang/types/DataOrientedBorrowChecker.java
+      - src/main/java/dev/atto/types/DataOrientedBorrowChecker.java
       - verification/DopPolicyProbe.java
       - scripts/test_dop_policy_parity.py
       - .github/workflows/logical-borrow-policy.yml

@@ -9,17 +9,17 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 javac --release 21 -encoding UTF-8 -Xlint:all -Werror -d "$tmp" \
-  "$root/src/main/java/dev/oreslang/ast/Ast.java" \
-  "$root/src/main/java/dev/oreslang/ast/AnnotationExpander.java" \
-  "$root/src/main/java/dev/oreslang/ast/CallableSelector.java" \
-  "$root/src/main/java/dev/oreslang/imports/ImportRules.java" \
-  "$root/src/main/java/dev/oreslang/parser/Token.java" \
-  "$root/src/main/java/dev/oreslang/parser/Lexer.java" \
-  "$root/src/main/java/dev/oreslang/parser/Parser.java" \
-  "$root/src/main/java/dev/oreslang/runtime/OresSymbol.java" \
-  "$root/src/main/java/dev/oreslang/types/Types.java" \
-  "$root/src/main/java/dev/oreslang/types/ReturnCleanupChecker.java" \
-  "$root/src/main/java/dev/oreslang/types/OwnershipChecker.java" \
-  "$root/src/main/java/dev/oreslang/types/TypeChecker.java" \
-  "$root/src/test/java/dev/oreslang/RecordFrontendSmoke.java"
-java -Xmx256m -ea -cp "$tmp" dev.oreslang.RecordFrontendSmoke
+  "$root/src/main/java/dev/atto/ast/Ast.java" \
+  "$root/src/main/java/dev/atto/ast/AnnotationExpander.java" \
+  "$root/src/main/java/dev/atto/ast/CallableSelector.java" \
+  "$root/src/main/java/dev/atto/imports/ImportRules.java" \
+  "$root/src/main/java/dev/atto/parser/Token.java" \
+  "$root/src/main/java/dev/atto/parser/Lexer.java" \
+  "$root/src/main/java/dev/atto/parser/Parser.java" \
+  "$root/src/main/java/dev/atto/runtime/OresSymbol.java" \
+  "$root/src/main/java/dev/atto/types/Types.java" \
+  "$root/src/main/java/dev/atto/types/ReturnCleanupChecker.java" \
+  "$root/src/main/java/dev/atto/types/OwnershipChecker.java" \
+  "$root/src/main/java/dev/atto/types/TypeChecker.java" \
+  "$root/src/test/java/dev/atto/RecordFrontendSmoke.java"
+java -Xmx256m -ea -cp "$tmp" dev.atto.RecordFrontendSmoke

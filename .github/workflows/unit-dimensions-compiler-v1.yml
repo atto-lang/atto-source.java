@@ -2,8 +2,8 @@ name: Compile-time dimension algebra v1
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/types/UnitDimensions.java'
-      - 'src/test/java/dev/oreslang/UnitDimensionsTest.java'
+      - 'src/main/java/dev/atto/types/UnitDimensions.java'
+      - 'src/test/java/dev/atto/UnitDimensionsTest.java'
       - 'docs/UNIT_DIMENSIONS_AOT_V1.md'
       - '.github/workflows/unit-dimensions-compiler-v1.yml'
   workflow_dispatch:
@@ -22,8 +22,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          git hash-object src/main/java/dev/oreslang/types/UnitDimensions.java
-          git hash-object src/test/java/dev/oreslang/UnitDimensionsTest.java
+          git hash-object src/main/java/dev/atto/types/UnitDimensions.java
+          git hash-object src/test/java/dev/atto/UnitDimensionsTest.java
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'

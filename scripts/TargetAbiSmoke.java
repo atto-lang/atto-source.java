@@ -1,4 +1,4 @@
-import dev.oreslang.compiler.TargetAbi;
+import dev.atto.compiler.TargetAbi;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;

@@ -3,15 +3,15 @@ name: Typed Map runtime exact-head
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/runtime/OresKeyedMap.java'
-      - 'src/main/java/dev/oreslang/runtime/OresSymbol.java'
-      - 'src/main/java/dev/oreslang/runtime/SymbolPropertyKeyCodec.java'
-      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
-      - 'src/test/java/dev/oreslang/runtime/OresKeyedMapTest.java'
-      - 'src/test/java/dev/oreslang/runtime/OresKeyedMapLookupOptionTest.java'
-      - 'src/test/java/dev/oreslang/runtime/OresSymbolTest.java'
-      - 'src/test/java/dev/oreslang/runtime/OresSymbolActorBoundaryTest.java'
-      - 'src/test/java/dev/oreslang/runtime/SymbolPropertyKeyCodecTest.java'
+      - 'src/main/java/dev/atto/runtime/OresKeyedMap.java'
+      - 'src/main/java/dev/atto/runtime/OresSymbol.java'
+      - 'src/main/java/dev/atto/runtime/SymbolPropertyKeyCodec.java'
+      - 'src/main/java/dev/atto/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/atto/runtime/OresKeyedMapTest.java'
+      - 'src/test/java/dev/atto/runtime/OresKeyedMapLookupOptionTest.java'
+      - 'src/test/java/dev/atto/runtime/OresSymbolTest.java'
+      - 'src/test/java/dev/atto/runtime/OresSymbolActorBoundaryTest.java'
+      - 'src/test/java/dev/atto/runtime/SymbolPropertyKeyCodecTest.java'
       - '.github/workflows/typed-map-runtime-exact-head.yml'
   workflow_dispatch:
 

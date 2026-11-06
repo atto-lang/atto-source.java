@@ -2,10 +2,10 @@ name: Annotated mutable heap state admission
 on:
   pull_request:
     paths:
-      - 'src/main/java/dev/oreslang/parser/Parser.java'
-      - 'src/main/java/dev/oreslang/compiler/StateRegionLoanReceipt.java'
-      - 'src/test/java/dev/oreslang/AnnotatedMutableHeapStateAdmissionTest.java'
-      - 'src/test/java/dev/oreslang/StateRegionLoanReceiptTest.java'
+      - 'src/main/java/dev/atto/parser/Parser.java'
+      - 'src/main/java/dev/atto/compiler/StateRegionLoanReceipt.java'
+      - 'src/test/java/dev/atto/AnnotatedMutableHeapStateAdmissionTest.java'
+      - 'src/test/java/dev/atto/StateRegionLoanReceiptTest.java'
       - '.github/workflows/annotated-mutable-heap-state.yml'
   workflow_dispatch:
 permissions:

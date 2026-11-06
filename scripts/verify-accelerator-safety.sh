@@ -6,10 +6,10 @@ cd "$root"
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 javac -d "$work" \
-    src/main/java/dev/oreslang/runtime/accel/QuantumCircuitIR.java \
-    src/main/java/dev/oreslang/runtime/accel/GpuBufferFence.java \
+    src/main/java/dev/atto/runtime/accel/QuantumCircuitIR.java \
+    src/main/java/dev/atto/runtime/accel/GpuBufferFence.java \
     scripts/AcceleratorSafetySmoke.java
-java -cp "$work" dev.oreslang.runtime.accel.AcceleratorSafetySmoke
+java -cp "$work" dev.atto.runtime.accel.AcceleratorSafetySmoke
 
 # Do not trust reflection alone: prove javac itself forbids each backend
 # control-plane transition to consumers outside the runtime package.
@@ -17,7 +17,7 @@ for call in 'beginCommand(id)' 'complete(t, true)' 'cancelPending(t)' \
             'acknowledgeCancelledDeviceEvent(t, id)' \
             'retireAfterBackendRelease(id)'; do
     printf '%s\n' \
-        'import dev.oreslang.runtime.accel.GpuBufferFence;' \
+        'import dev.atto.runtime.accel.GpuBufferFence;' \
         'final class OutsideRuntimePackage {' \
         '  static void invoke(GpuBufferFence fence, GpuBufferFence.Ticket t,' \
         '                     GpuBufferFence.Identity id) {' \

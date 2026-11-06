@@ -8,13 +8,13 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/sourcepath"
 ln -s "$root/src/main/java/dev" "$work/sourcepath/dev"
 javac --release 21 -sourcepath "$work/sourcepath" -d "$work/classes" \
-  "$root/src/main/java/dev/oreslang/ast/Ast.java" \
-  "$root/src/main/java/dev/oreslang/parser/Token.java" \
-  "$root/src/main/java/dev/oreslang/parser/Lexer.java" \
-  "$root/src/main/java/dev/oreslang/parser/Parser.java" \
-  "$root/src/main/java/dev/oreslang/runtime/OresSymbol.java" \
-  "$root/src/test/java/dev/oreslang/parser/FuturePipelineProvenanceCheck.java" \
-  "$root/src/test/java/dev/oreslang/parser/FuturePipelineTypingCheck.java"
-java -cp "$work/classes" dev.oreslang.parser.FuturePipelineProvenanceCheck
-java -cp "$work/classes" dev.oreslang.parser.FuturePipelineTypingCheck
+  "$root/src/main/java/dev/atto/ast/Ast.java" \
+  "$root/src/main/java/dev/atto/parser/Token.java" \
+  "$root/src/main/java/dev/atto/parser/Lexer.java" \
+  "$root/src/main/java/dev/atto/parser/Parser.java" \
+  "$root/src/main/java/dev/atto/runtime/OresSymbol.java" \
+  "$root/src/test/java/dev/atto/parser/FuturePipelineProvenanceCheck.java" \
+  "$root/src/test/java/dev/atto/parser/FuturePipelineTypingCheck.java"
+java -cp "$work/classes" dev.atto.parser.FuturePipelineProvenanceCheck
+java -cp "$work/classes" dev.atto.parser.FuturePipelineTypingCheck
 
