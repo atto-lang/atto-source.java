@@ -22,6 +22,9 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // Parsing context only, never device authorization. Global GPU intrinsics
+    // must not become ordinary host-call expressions outside gpu fnc.
+    private boolean insideGpuKernelBody;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -464,8 +467,14 @@ public final class Parser {
                         "GPU-KERNEL-006: gpu fnc rejects suspends, async, generator, "
                                 + "actor, static, structural and runtime modifiers");
             }
-            return new Ast.GpuKernelDecl(
-                    parseFunction(annotations, modifiers, Ast.CallableKind.FNC));
+            boolean previousGpuBody = insideGpuKernelBody;
+            insideGpuKernelBody = true;
+            try {
+                return new Ast.GpuKernelDecl(
+                        parseFunction(annotations, modifiers, Ast.CallableKind.FNC));
+            } finally {
+                insideGpuKernelBody = previousGpuBody;
+            }
         }
         rejectUnsupportedAcceleratorSyntax();
         if (isLegacyFnSpelling()) {
@@ -4182,6 +4191,9 @@ public final class Parser {
             return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false);
         }
         if (check(GPU) && checkNext(DOT)) {
+            if (!insideGpuKernelBody) {
+                throw error(peek(), "GPU-KERNEL-006: gpu intrinsics are not host functions");
+            }
             // The reserved gpu namespace is parsed only as an AST reference.
             // A device-kernel checker admits gpu.global_id with a fixed axis;
             // ordinary CPU TypeChecker contexts still reject this namespace.

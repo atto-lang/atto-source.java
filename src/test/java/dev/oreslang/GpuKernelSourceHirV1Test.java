@@ -117,6 +117,15 @@ final class GpuKernelSourceHirV1Test {
         assertTrue(error.getMessage().contains("GPU-KERNEL-006"), error::getMessage);
     }
 
+    @Test void gpuIntrinsicsAreRejectedOutsideGpuKernelBodies() {
+        String source = "pub fnc main(): void {"
+                + " const int i = gpu.global_id(0);"
+                + " return; }";
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                Parser.parse(source));
+        assertTrue(error.getMessage().contains("GPU-KERNEL-006"), error::getMessage);
+    }
+
     @Test void nonGpuDeclarationDoesNotInheritKernelIdentity() {
         String host = SAXPY.replace("pub gpu fnc", "pub fnc");
         Ast.Program program = Parser.parse(host);
