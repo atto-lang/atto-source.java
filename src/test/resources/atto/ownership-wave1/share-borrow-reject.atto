@@ -1,0 +1,9 @@
+define class Payload as
+  pub let int count = 42;
+end
+pub fnc main(): int {
+  let Payload owner = new Payload();
+  val loan = rt borrow owner;
+  val alias = rt share loan;
+  return alias.count;
+}
