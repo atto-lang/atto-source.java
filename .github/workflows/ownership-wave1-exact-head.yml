@@ -1,0 +1,62 @@
+# Same source repository only. Never export private source to external CI.
+# Zero assigned runners / zero steps means NOT_EXECUTED, not a test result.
+name: AttoLang ownership Wave 1 exact-head compiler/guest
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/PointerlessFncOwnershipTest.java'
+      - 'src/test/java/dev/oreslang/StaticBorrowEscapeBoundaryTest.java'
+      - 'src/test/java/dev/oreslang/ProjectedMethodReceiverLoanTest.java'
+      - 'src/test/java/dev/oreslang/PrimitiveBorrowCopyTest.java'
+      - 'src/test/java/dev/oreslang/SharedBorrowContractTest.java'
+      - 'src/test/resources/borrow-contract.tsv'
+      - '.github/workflows/ownership-wave1-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ownership-wave1-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+jobs:
+  ownership-junit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Configure GraalVM and JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Prove exact source commit and tree were checked out
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "ATTO_OWNERSHIP_WAVE1_COMMIT=$(git rev-parse HEAD)"
+          echo "ATTO_OWNERSHIP_WAVE1_TREE=$(git rev-parse 'HEAD^{tree}')"
+          java -version
+          mvn -version
+      - name: Execute real ownership and primitive-copy JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -DfailIfNoTests=true \
+            -Dtest=PointerlessFncOwnershipTest,StaticBorrowEscapeBoundaryTest,ProjectedMethodReceiverLoanTest,PrimitiveBorrowCopyTest,SharedBorrowContractTest \
+            test
+      - name: Full project Maven regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native verify
