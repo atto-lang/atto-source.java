@@ -1,6 +1,6 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.Ast;
+import dev.atto.ast.Ast;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;

@@ -1,6 +1,6 @@
-package dev.oreslang.config;
+package dev.atto.config;
 
-import dev.oreslang.imports.ImportRules;
+import dev.atto.imports.ImportRules;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;

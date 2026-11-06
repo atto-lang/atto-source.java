@@ -1,7 +1,7 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.Ast;
-import dev.oreslang.parser.Parser;
+import dev.atto.ast.Ast;
+import dev.atto.parser.Parser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;

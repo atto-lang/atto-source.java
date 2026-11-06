@@ -1,6 +1,6 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.runtime.LocalVirtualActorI64;
+import dev.atto.runtime.LocalVirtualActorI64;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;

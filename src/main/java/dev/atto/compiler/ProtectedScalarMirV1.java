@@ -1,9 +1,9 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.Ast;
-import dev.oreslang.parser.Parser;
-import dev.oreslang.runtime.LocalVirtualActorI64;
-import dev.oreslang.runtime.ScalarStateContainer;
+import dev.atto.ast.Ast;
+import dev.atto.parser.Parser;
+import dev.atto.runtime.LocalVirtualActorI64;
+import dev.atto.runtime.ScalarStateContainer;
 
 import java.util.List;
 import java.util.Objects;

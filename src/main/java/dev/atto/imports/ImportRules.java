@@ -1,6 +1,6 @@
-package dev.oreslang.imports;
+package dev.atto.imports;
 
-import dev.oreslang.ast.Ast;
+import dev.atto.ast.Ast;
 
 import java.util.List;
 import java.util.regex.Pattern;

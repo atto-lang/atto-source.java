@@ -1,4 +1,4 @@
-package dev.oreslang.interop;
+package dev.atto.interop;
 
 import java.util.Map;
 

@@ -1,9 +1,9 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.parser.Lexer;
-import dev.oreslang.parser.Token;
-import dev.oreslang.runtime.LocalVirtualActorI64;
-import dev.oreslang.runtime.ScalarStateContainer;
+import dev.atto.parser.Lexer;
+import dev.atto.parser.Token;
+import dev.atto.runtime.LocalVirtualActorI64;
+import dev.atto.runtime.ScalarStateContainer;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;

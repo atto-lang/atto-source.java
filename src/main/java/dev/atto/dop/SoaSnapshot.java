@@ -1,4 +1,4 @@
-package dev.oreslang.dop;
+package dev.atto.dop;
 
 import java.util.ArrayList;
 import java.util.Collections;

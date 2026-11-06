@@ -1,6 +1,6 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.Ast;
+import dev.atto.ast.Ast;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
