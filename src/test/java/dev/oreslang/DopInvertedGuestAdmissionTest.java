@@ -65,7 +65,8 @@ final class DopInvertedGuestAdmissionTest {
     void canonicalAttoSourcesArePinnedToSharedGitBlobs() throws Exception {
         var expected = java.util.Map.of(
                 "swap-reuse.atto", "8f5599a9e0b11ded2929110b4936441fceb2ef21",
-                "removed-index-trap.atto", "c3c87cfd2515707932734e183bb5768436526a96");
+                "removed-index-trap.atto", "c3c87cfd2515707932734e183bb5768436526a96",
+                "positive-immutable-column-swap.atto", "863b1f20137656a277fc7bc04415a6f001f76512");
         for (var entry : expected.entrySet()) {
             Path file = Path.of("contracts", "dop-inverted-v1", entry.getKey());
             assertFalse(Files.isSymbolicLink(file), "canonical source may not be a symlink");
