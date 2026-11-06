@@ -55,6 +55,18 @@ final class AttoGpuExplicitLaunchAdmissionTest {
     }
 
     @Test
+    void negativeGridAndBlockConstantsRejectAtTypeBoundary() {
+        for (String source : List.of(
+                LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "grid: [-1, 1, 1]"),
+                LAUNCH.replace("block: [256, 1, 1]", "block: [-1, 1, 1]"))) {
+            assertDoesNotThrow(() -> Parser.parse(source));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(error.getMessage().contains("GPU-LAUNCH-003"), error::getMessage);
+        }
+    }
+
+    @Test
     void malformedLaunchGeometryAndConfigurationFailParser() {
         for (String bad : List.of(
                 LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "grid: [4, 2]"),
