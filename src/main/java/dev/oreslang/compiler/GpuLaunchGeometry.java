@@ -34,6 +34,43 @@ public final class GpuLaunchGeometry {
                        long totalGroups, long threadsPerGroup,
                        long totalLogicalThreads, boolean emptyLaunch) { }
 
+    /** Logical work extent must remain distinct from rounded-up physical lanes. */
+    public record LogicalPlan(Dim3 over, Dim3 group, long logicalWorkItems,
+                              Plan physical) {
+        public LogicalPlan {
+            Objects.requireNonNull(over, "logical extent");
+            Objects.requireNonNull(group, "logical group");
+            Objects.requireNonNull(physical, "physical plan");
+        }
+    }
+
+    private static long checkedCeilDiv(long extent, long group) {
+        if (group <= 0) throw new IllegalArgumentException(
+                "GPU-LAUNCH-003: group dimensions must be positive");
+        // Avoid extent + group - 1, which can overflow before division.
+        return extent / group + (extent % group == 0 ? 0 : 1);
+    }
+
+    /**
+     * Short-form `over/group`: compute a device-constrained physical grid
+     * while preserving the original logical extent for later padded-tail,
+     * group-barrier convergence and per-index buffer-footprint proof.
+     */
+    public static LogicalPlan validateLogical(Dim3 over, Dim3 group,
+                                              long sharedBytes, Limits limits) {
+        Objects.requireNonNull(over, "logical GPU work extent");
+        Objects.requireNonNull(group, "logical GPU workgroup");
+        Objects.requireNonNull(limits, "device limits");
+        Dim3 grid = new Dim3(checkedCeilDiv(over.x(), group.x()),
+                checkedCeilDiv(over.y(), group.y()),
+                checkedCeilDiv(over.z(), group.z()));
+        Plan physical = validate(grid, group, sharedBytes, limits);
+        long logicalCount = (over.x() == 0 || over.y() == 0 || over.z() == 0)
+                ? 0 : checkedProduct(checkedProduct(over.x(), over.y(), "logical"),
+                        over.z(), "logical");
+        return new LogicalPlan(over, group, logicalCount, physical);
+    }
+
     private static long checkedProduct(long left, long right, String kind) {
         try {
             return Math.multiplyExact(left, right);
