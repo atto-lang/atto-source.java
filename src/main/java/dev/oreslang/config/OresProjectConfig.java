@@ -274,6 +274,20 @@ public final class OresProjectConfig {
         if (expanded.startsWith("https://") || expanded.startsWith("http://")) {
             throw new IllegalArgumentException("remote source imports require locked Zed URL admission (not implemented)");
         }
+        // Do not let environment interpolation turn a static filesystem
+        // import into an implicit java:, file:, ftp:, or other URI import.
+        // Windows drive-qualified absolute paths are the only colon prefix
+        // admitted here; they still go through physical source authorization.
+        if (expanded.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) {
+            boolean windowsDrive = expanded.length() >= 3
+                    && Character.isLetter(expanded.charAt(0))
+                    && expanded.charAt(1) == ':'
+                    && (expanded.charAt(2) == '/' || expanded.charAt(2) == '\\');
+            if (!windowsDrive) {
+                throw new IllegalArgumentException(
+                        "unsupported import URI scheme; use a verified filesystem or locked Zed source");
+            }
+        }
         if (expanded.startsWith("+")) {
             if (!expanded.startsWith("+/")) {
                 throw new IllegalArgumentException("project-root source imports require canonical +/ prefix");
