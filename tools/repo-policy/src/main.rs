@@ -181,7 +181,7 @@ fn verify_repository(root: &Path) -> Result<String, String> {
     }
     // The source may grow after metadata admission. Read at most MAX_BYTES+1
     // from one opened descriptor; never use an unbounded fs::read here.
-    let mut file = fs::File::open(&manifest)
+    let file = fs::File::open(&manifest)
         .map_err(|_| invalid("cannot open manifest"))?;
     let opened = file.metadata().map_err(|_| invalid("cannot inspect opened manifest"))?;
     if !opened.is_file() {
