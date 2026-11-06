@@ -92,6 +92,65 @@ final class AttoGpuExplicitLaunchAdmissionTest {
     }
 
     @Test
+    void logicalOverGroupOneDimensionalLaunchPreservesLogicalExtent() {
+        String source = LAUNCH.replace(
+                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
+                "over: [n],\n                    group: [256]");
+        Ast.Program program = assertDoesNotThrow(() -> Parser.parse(source));
+        String tree = program.toString();
+        assertTrue(tree.contains("GpuOverGeometry"), tree);
+        assertFalse(tree.contains("GpuGridGeometry"), tree);
+        assertTrue(tree.contains("over=[NameExpr[name=n], LiteralExpr[value=1], LiteralExpr[value=1]]"), tree);
+        assertTrue(tree.contains("group=[LiteralExpr[value=256], LiteralExpr[value=1], LiteralExpr[value=1]]"), tree);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-008"), error::getMessage);
+        assertTrue(error.getMessage().contains("no implicit CPU fallback"), error::getMessage);
+    }
+
+    @Test
+    void twoDimensionalLogicalExtentPadsThirdAxisToOne() {
+        String source = LAUNCH.replace(
+                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
+                "over: [width, height],\n                    group: [16, 16]");
+        String tree = assertDoesNotThrow(() -> Parser.parse(source)).toString();
+        assertTrue(tree.contains("GpuOverGeometry"), tree);
+        assertTrue(tree.contains("over=[NameExpr[name=width], NameExpr[name=height], LiteralExpr[value=1]]"), tree);
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void zeroAndNegativeLogicalGeometryIsRejectedAtTypeBoundary() {
+        String logical = LAUNCH.replace(
+                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
+                "over: [n],\n                    group: [256]");
+        for (String invalid : List.of(
+                logical.replace("group: [256]", "group: [0]"),
+                logical.replace("group: [256]", "group: [-1]"),
+                logical.replace("over: [n]", "over: [-1]"))) {
+            assertDoesNotThrow(() -> Parser.parse(invalid), invalid);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(invalid));
+            assertTrue(error.getMessage().contains("GPU-LAUNCH-003"), error::getMessage);
+        }
+    }
+
+    @Test
+    void logicalAndPhysicalGeometryCannotBeMixedOrSilentlyAutoTuned() {
+        String logical = LAUNCH.replace(
+                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
+                "over: [n],\n                    group: [256]");
+        for (String bad : List.of(
+                logical.replace("group: [256]", "block: [256, 1, 1]"),
+                logical.replace("over: [n]", "grid: [1, 1, 1]"),
+                logical.replace("group: [256]", "group: auto"),
+                logical.replace("over: [n]", "over: []"),
+                logical.replace("over: [n]", "over: [1, 2, 3, 4]"))) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(bad), bad);
+        }
+    }
+
+    @Test
     void contextualLaunchIdentifierRemainsUsableAsNormalFunctionName() {
         String source = """
                 fnc launch(int a): int { return a; }
