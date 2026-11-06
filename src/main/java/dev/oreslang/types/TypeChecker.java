@@ -4323,25 +4323,39 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.GpuLaunchExpr launch) {
-            // A positive parse must never fall through to ordinary function
-            // invocation or CPU task lowering. Detect simple bad dimensions
-            // before the device-admission gate; dynamic dimensions will need
-            // checked runtime geometry after real backend lowering exists.
+            // The logical `over/group` source is not a precomputed grid:
+            // preserve the original extent for later tail/alias proof.
+            // No branch reaches the CPU evaluator while GPU lowering is absent.
+            List<Ast.Expr> group;
+            List<Ast.Expr> extent;
+            if (launch.geometry() instanceof Ast.GpuGridGeometry physical) {
+                group = physical.block();
+                extent = physical.grid();
+                // Exact physical grid and block geometry.
+            } else if (launch.geometry() instanceof Ast.GpuOverGeometry logicalGeometry) {
+                group = logicalGeometry.group();
+                extent = logicalGeometry.over();
+                // Distinct logical extent and physical workgroup shape.
+            } else {
+                throw new IllegalArgumentException("GPU-LAUNCH-003: unsupported launch geometry");
+            }
             for (int axis = 0; axis < 3; axis++) {
-                Long blockSize = gpuConstantDimension(launch.block().get(axis));
-                if (blockSize != null && blockSize <= 0) {
+                Long groupSize = gpuConstantDimension(group.get(axis));
+                if (groupSize != null && groupSize <= 0) {
                     throw new IllegalArgumentException(
-                            "GPU-LAUNCH-003: GPU block dimensions must be positive");
+                            "GPU-LAUNCH-003: GPU block/group dimensions must be positive");
                 }
-                Long gridSize = gpuConstantDimension(launch.grid().get(axis));
-                if (gridSize != null && gridSize < 0) {
+                Long extentSize = gpuConstantDimension(extent.get(axis));
+                if (extentSize != null && extentSize < 0) {
                     throw new IllegalArgumentException(
-                            "GPU-LAUNCH-003: GPU grid dimensions cannot be negative");
+                            "GPU-LAUNCH-003: GPU grid/over dimensions cannot be negative");
                 }
             }
+            // Both modes stay fail-closed. Logical over/group additionally
+            // requires a verified padded-tail and barrier-convergence proof.
             throw new IllegalArgumentException(
                     "GPU-LAUNCH-008: explicit GPU launch is parser-visible but "
-                            + "physical GPU dispatch and owned device-buffer "
+                            + "physical GPU dispatch, padded-tail proofs, and owned device-buffer "
                             + "fence lowering are not enabled; no implicit CPU fallback");
         }
         if (expr instanceof Ast.TaskExpr task) {
