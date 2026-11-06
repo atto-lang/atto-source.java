@@ -89,7 +89,14 @@ public final class Parser {
                         i > 0 && tokens.get(i - 1).type() == NB
                                 && i + 1 < tokens.size()
                                 && tokens.get(i + 1).type() == LBRACE;
-                if (!canonicalTask && !legacyNbTask) {
+                // Only the scoped `on gpu(device)` spelling may reach the
+                // explicit-launch parser. Every malformed or out-of-context
+                // use still fails parsing; this is not device authority.
+                boolean launchPlacement = token.type() == GPU
+                        && i > 0 && tokens.get(i - 1).type() == IDENT
+                        && tokens.get(i - 1).lexeme().equals("on")
+                        && i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
+                if (!canonicalTask && !legacyNbTask && !launchPlacement) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
                             + " { ... }' is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
@@ -4037,6 +4044,64 @@ public final class Parser {
         return expr;
     }
 
+    private void expectGpuLaunchField(String expected) {
+        Token field = consume(IDENT, "GPU launch requires '" + expected + "' field");
+        if (!field.lexeme().equals(expected)) {
+            throw error(field, "GPU-LAUNCH-003: expected GPU launch field '" + expected + "'");
+        }
+        consume(COLON, "GPU launch field '" + expected + "' requires ':'");
+    }
+
+    private List<Ast.Expr> parseGpuLaunchDimensions(String field) {
+        consume(LBRACKET, "GPU-LAUNCH-003: " + field + " requires [x, y, z]");
+        List<Ast.Expr> dimensions = new ArrayList<>(3);
+        for (int axis = 0; axis < 3; axis++) {
+            dimensions.add(parseExpression());
+            if (axis < 2) consume(COMMA, "GPU-LAUNCH-003: expected next " + field + " dimension");
+        }
+        consume(RBRACKET, "GPU-LAUNCH-003: " + field + " requires three dimensions");
+        return List.copyOf(dimensions);
+    }
+
+    private Ast.Expr parseExplicitGpuLaunch() {
+        Token start = advance(); // contextual 'launch'
+        Ast.Expr kernel = new Ast.NameExpr(
+                consume(IDENT, "GPU-LAUNCH-001: expected statically resolved kernel name").lexeme());
+        // A qualified kernel name is a statically resolved member path, not
+        // dynamic callable transfer or a runtime closure.
+        while (match(DOT, DOUBLE_COLON)) {
+            kernel = new Ast.MemberExpr(kernel,
+                    consume(IDENT, "GPU-LAUNCH-001: expected qualified kernel member").lexeme());
+        }
+        consume(LPAREN, "GPU-LAUNCH-001: expected '(' after GPU kernel name");
+        List<Ast.Expr> arguments = parseCallArgumentsUntil(RPAREN);
+        consume(RPAREN, "GPU-LAUNCH-001: expected ')' after GPU kernel arguments");
+        if (!matchContextualKeyword("on")) {
+            throw error(peek(), "GPU-LAUNCH-004: explicit launch requires 'on gpu(device)'");
+        }
+        consume(GPU, "GPU-LAUNCH-004: explicit launch requires GPU placement");
+        consume(LPAREN, "GPU-LAUNCH-004: GPU placement requires '('");
+        Ast.Expr device = parseExpression();
+        consume(RPAREN, "GPU-LAUNCH-004: GPU placement requires ')'");
+        consume(LBRACE, "GPU-LAUNCH-003: GPU launch requires configuration block");
+        expectGpuLaunchField("grid");
+        List<Ast.Expr> grid = parseGpuLaunchDimensions("grid");
+        consume(COMMA, "GPU-LAUNCH-003: grid and block must be separated by ','");
+        expectGpuLaunchField("block");
+        List<Ast.Expr> block = parseGpuLaunchDimensions("block");
+        consume(COMMA, "GPU-LAUNCH-003: block and queue must be separated by ','");
+        expectGpuLaunchField("queue");
+        Ast.Expr queue = parseExpression();
+        Ast.Expr sharedBytes = new Ast.LiteralExpr(0L);
+        if (match(COMMA) && !check(RBRACE)) {
+            expectGpuLaunchField("shared_bytes");
+            sharedBytes = parseExpression();
+            match(COMMA);
+        }
+        consume(RBRACE, "GPU-LAUNCH-003: GPU launch configuration must end with '}'");
+        return new Ast.GpuLaunchExpr(kernel, arguments, device, grid, block, queue, sharedBytes);
+    }
+
     private Ast.Expr parseUnary() {
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
@@ -4058,6 +4123,12 @@ public final class Parser {
             throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+
+        // launch is contextual: ordinary launch(...) calls remain legal.
+        // Explicit GPU execution is AST-visible, but NOT host-executable.
+        if (check(IDENT) && peek().lexeme().equals("launch") && checkNext(IDENT)) {
+            return parseExplicitGpuLaunch();
+        }
 
         // task is contextual: task(...) and identifiers named task remain legal.
         if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
