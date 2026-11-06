@@ -27,7 +27,9 @@ Added/preserved exactly the donor regression sources:
 - 4 authored JUnit cases: `PrimitiveBorrowCopyTest` (#1380).
 - 4 authored JUnit cases: `SharedBorrowContractTest` (#1380) plus its shared TSV oracle.
 
-**93 authored tests are NOT executed.** Their presence is not a pass. The new same-repo exact-head workflow must execute JDK25/GraalVM Maven targeted tests, then full project `verify`. A job with zero runner assignment / zero steps is **NOT_EXECUTED**.
+Added a sixth JUnit test class, `AttoOwnershipWave1GuestTest` (2 `@Test` methods), with eight physical `.atto` sources under `src/test/resources/atto/ownership-wave1/`: four guest return-code positives (42), and four checker-semantic negatives that must parse before denial. The `copy-only-share` negative deliberately calls the Java ownership checker directly because the current nominal frontend has separate type-resolution constraints; it is not evidence of full linked compiler admission.
+
+**95 authored JUnit test methods and eight `.atto` fixtures are NOT executed.** Their presence is not a pass. The new same-repo exact-head workflow must execute JDK25/GraalVM Maven targeted tests, then full project `verify`. A job with zero runner assignment / zero steps is **NOT_EXECUTED**.
 
 ## Independent review blockers
 
