@@ -803,6 +803,36 @@ final class PointerlessFncOwnershipTest {
                 "guest Array<T> must remain live and resizable after a scoped loan retires");
     }
 
+    @Test
+    void rtCopyRejectsUnresolvedComputedResultRatherThanCopyPlaceholder() {
+        // The standalone ownership checker deliberately assigns a permissive
+        // placeholder to unknown names. Arithmetic must not upgrade an
+        // unknown result into compiler-proven Copy.
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                fnc invalid(): void {
+                  val duplicate = rt copy (unknown_value + 1);
+                  return;
+                }
+                """));
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(parsed));
+        assertTrue(rejected.getMessage().contains("statically resolved Copy type"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void rtCopyPreservesResolvedArithmeticAndBooleanScalarValues() {
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                fnc valid(): int {
+                  val int number = rt copy (7 + 5);
+                  val bool condition = rt copy (number > 3);
+                  if condition; then return number; fi
+                  return 0;
+                }
+                """));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
