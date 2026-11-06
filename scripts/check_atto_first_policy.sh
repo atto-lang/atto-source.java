@@ -43,8 +43,34 @@ fi
 # Metadata cannot establish semantic correctness; it makes exceptions auditable.
 field_value() {
   local label="$1" line
-  line="$(grep -i -m1 -E "^[[:space:]]*${label}:[[:space:]]*" "$body" || true)"
-  [[ -n "$line" ]] || return 1
+  # Multiple authority fields can tell reviewers and CI opposing stories.
+  # Reject duplicates even when the first value looks acceptable.
+  line="$(grep -i -E "^[[:space:]]*${label}:[[:space:]]*" "$body" || true)"
+  [[ -n "$line" && "$line" != *
+  printf '%s\n' "${line#*:}" | sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+valid_field() {
+  local label="$1" value
+  value="$(field_value "$label")" || return 1
+  (( ${#value} >= 12 )) || return 1
+  [[ ! "${value,,}" =~ ^(todo|tbd|n/a|none|none\ yet|pending|placeholder|-)\.?$ ]]
+}
+
+missing=0
+for field in 'AttoLang guest implementation' 'Java host/compiler exception' 'Guest test evidence'; do
+  if ! valid_field "$field"; then
+    echo "atto-first: required descriptive PR body field missing/placeholder: $field:" >&2
+    missing=1
+  fi
+done
+if (( missing != 0 )); then
+  printf 'atto-first: %s Java file(s) changed; provide guest implementation, a specific host/compiler justification, and honest test evidence.\n' "${#java_paths[@]}" >&2
+  printf 'atto-first: example: Java host/compiler exception: parser: extend .atto matching; Java only contains AST support.\n' >&2
+  exit 1
+fi
+printf 'atto-first: %s Java path(s) disclosed; semantic review of the claimed exception is STILL REQUIRED\n' "${#java_paths[@]}"
+printf '  %s\n' "${java_paths[@]}"
+\n'* ]] || return 1
   printf '%s\n' "${line#*:}" | sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 valid_field() {
