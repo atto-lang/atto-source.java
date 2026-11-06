@@ -57,10 +57,34 @@ final class DopInvertedGuestAdmissionTest {
                     schema.columns().stream().map(Ast.InvertedColumnDecl::name).toList());
             assertEquals(List.of("int", "int"),
                     schema.columns().stream().map(c -> c.type().name()).toList());
+            assertEquals(List.of(true, false),
+                    schema.columns().stream().map(Ast.InvertedColumnDecl::mutable).toList(),
+                    "source let must not be discarded before ownership checking");
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(schemaOnly(fixture(name))),
                     "schema parsed but not executable until ownership MIR exists");
         }
+    }
+
+    @Test
+    void invertedColumnMutabilityIsPerFieldAndDoesNotGrantExecution() {
+        String ordinaryThenMutable = "define inverted struct Row as "
+                + "value: int; let token: int; end";
+        var schema = parsedSchema(ordinaryThenMutable);
+        assertEquals(List.of(false, true),
+                schema.columns().stream().map(Ast.InvertedColumnDecl::mutable).toList());
+        assertEquals(List.of("value", "token"),
+                schema.columns().stream().map(Ast.InvertedColumnDecl::name).toList());
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(ordinaryThenMutable))
+                .getMessage().contains(MISSING_BACKEND),
+                "metadata must not grant unverified guest write loans");
+
+        String mutableThenOrdinary = "define inverted struct Row as "
+                + "let value: int; token: int; end";
+        var reversed = parsedSchema(mutableThenOrdinary);
+        assertEquals(List.of(true, false),
+                reversed.columns().stream().map(Ast.InvertedColumnDecl::mutable).toList());
     }
 
     @Test
