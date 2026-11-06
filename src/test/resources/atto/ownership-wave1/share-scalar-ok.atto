@@ -1,0 +1,4 @@
+pub fnc main(): int {
+  const int value = 42;
+  return rt share value;
+}
