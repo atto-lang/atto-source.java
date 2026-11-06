@@ -2866,7 +2866,12 @@ public final class TypeChecker {
                 // as the internal unary form, without nesting loan wrappers.
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
-                case "copy", "take", "share" -> operand;
+                // Only a true compiler-proven scalar copy detaches a loan.
+                // Nominal values and containers retain their existing proofs.
+                case "copy" -> operand instanceof Borrow borrow
+                        && borrow.target() instanceof Primitive primitive
+                        && primitive != Primitive.VOID ? primitive : operand;
+                case "take", "share" -> operand;
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
             };
