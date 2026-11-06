@@ -1,0 +1,8 @@
+fnc forbidden(SelectSet handle): void {
+  val SelectSet copied = rt copy handle;
+  val SelectSet published = rt share handle;
+  return;
+}
+pub fnc main(): int {
+  return 42;
+}
