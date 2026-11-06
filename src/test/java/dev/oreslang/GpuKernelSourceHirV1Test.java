@@ -38,7 +38,7 @@ final class GpuKernelSourceHirV1Test {
     @Test void kernelIsNotAnOrdinaryCpuFunction() {
         var ast = kernel(SAXPY);
         assertEquals("saxpy", ast.signature().name());
-        assertFalse(ast instanceof Ast.FunctionDecl);
+        assertFalse(((Ast.Decl) ast) instanceof Ast.FunctionDecl);
         var plan = GpuKernelSourceHirV1.lower(ast);
         assertEquals("saxpy", plan.symbol());
         assertEquals(5, plan.parameters().size());
