@@ -4328,7 +4328,14 @@ public final class TypeChecker {
             // This checks safe source geometry but never grants type, borrow,
             // device, queue, or fence authority. Unsupported GPU dispatch
             // must still fail closed without CPU fallback.
-            GpuLaunchSourceHirV1.lower(launch);
+            GpuLaunchSourceHirV1.Candidate sourceHir = GpuLaunchSourceHirV1.lower(launch);
+            for (GpuLaunchSourceHirV1.I64Expr axis : sourceHir.geometry().extent()) {
+                checkGpuI64Bindings(axis, env);
+            }
+            for (GpuLaunchSourceHirV1.I64Expr axis : sourceHir.geometry().group()) {
+                checkGpuI64Bindings(axis, env);
+            }
+            checkGpuI64Bindings(sourceHir.sharedBytes(), env);
             throw new IllegalArgumentException(
                     "GPU-LAUNCH-008: explicit GPU launch is parser-visible but "
                             + "physical GPU dispatch, padded-tail proofs, and owned device-buffer "
@@ -4855,6 +4862,29 @@ public final class TypeChecker {
                     name + " scalar argument " + (i + 1));
         }
         return Primitive.BOOL;
+    }
+
+    /**
+     * Conditional GPU geometry name typing. A source-HIR symbol with an
+     * actual lexical binding must resolve to the canonical integer type.
+     * Unbound names are not assumed valid: the enclosing GPU launch remains
+     * GPU-LAUNCH-008 until full symbol/kernel/loan proof is implemented.
+     */
+    private static void checkGpuI64Bindings(GpuLaunchSourceHirV1.I64Expr expr, Env env) {
+        if (expr instanceof GpuLaunchSourceHirV1.Symbol symbol) {
+            Env.Binding binding = env.lookup(symbol.name());
+            if (binding != null && binding.type() != Primitive.INT) {
+                throw new IllegalArgumentException(
+                        "GPU-LAUNCH-003: geometry symbol '" + symbol.name()
+                                + "' must have integer type, got " + binding.type());
+            }
+        } else if (expr instanceof GpuLaunchSourceHirV1.CeilDiv div) {
+            checkGpuI64Bindings(div.extent(), env);
+            checkGpuI64Bindings(div.group(), env);
+        } else if (expr instanceof GpuLaunchSourceHirV1.Arithmetic op) {
+            checkGpuI64Bindings(op.left(), env);
+            checkGpuI64Bindings(op.right(), env);
+        }
     }
 
     /** Extract only statically evident signed GPU geometry without widening or overflow. */

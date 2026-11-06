@@ -108,6 +108,17 @@ final class GpuLaunchSourceHirV1Test {
         assertTrue(e.getMessage().contains("no implicit CPU fallback"));
     }
 
+    @Test void productionTypecheckerRejectsBoundBooleanGridDimension() {
+        var input = "pub fnc main(): void {"
+                + " bool flag = true;"
+                + " val pending = launch saxpy(a, x, y, out, n) on gpu(device) {"
+                + " grid: [flag, 1, 1], block: [256, 1, 1], queue: queue };"
+                + " return; }";
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck(input));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-003"), error::getMessage);
+    }
+
     @Test void productionTypecheckerRejectsUnsupportedGeometryHostCallEarly() {
         var e = assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck(source("hostCall()")));
