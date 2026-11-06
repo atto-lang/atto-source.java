@@ -198,14 +198,14 @@ final class ClassCallableProductBindingTest {
                 }
 
                 define class Codec as
-                    pub encode(int a, int b): int {
+                    pub static fnc encode(int a, int b): int {
                         return a * 100 + b;
                     }
                 end
 
                 async fnc forwarded(): int {
-                    const codec = new Codec();
-                    return codec.encode(
+                    // Static: no receiver borrow is live across the awaits.
+                    return Codec.encode(
                             b: await second(),
                             a: await first());
                 }
@@ -296,28 +296,38 @@ final class ClassCallableProductBindingTest {
     }
 
     @Test
-    void genericLabeledMethodCallsRemainFailClosedAtOwnershipLowering() {
-        var typed = TypeChecker.check(Parser.parse("""
+    void genericLabeledMethodAndStaticCallsBindThroughTheCheckedPlan()
+            throws Exception {
+        String code = """
+                fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 19;
+                }
+
+                fnc second(): string {
+                    stdio.stdout.write("B");
+                    return "x";
+                }
+
                 define class Codec as
-                    pub identity<T>(T value): T {
-                        return value;
+                    pub pick<L, R>(L left, R right): L {
+                        return left;
+                    }
+
+                    pub static fnc keep<L, R>(L left, R right): L {
+                        return left;
                     }
                 end
 
                 pub routine main(): void {
                     const codec = new Codec();
-                    stdio.stdout.write(codec.identity(value: 42));
+                    stdio.stdout.write(codec.pick(right: "x", left: 19));
+                    stdio.stdout.write(Codec.keep<R=string>(right: second(), left: 19));
                     return;
                 }
-                """));
+                """;
 
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> OwnershipChecker.check(typed));
-        assertTrue(
-                failure.getMessage().contains("generic")
-                        || failure.getMessage().contains("source-to-ABI"),
-                failure.getMessage());
+        assertEquals("19B19", checkedExecution(code));
     }
 
     @Test

@@ -1326,9 +1326,15 @@ public final class OresEvalRootNode extends RootNode {
                 CheckedCallPlan published =
                         CheckedCallPlan.lookup(callSite);
                 if (published == null) {
-                    throw new IllegalStateException(
-                            label
-                                    + " is missing its TypeChecker-published call plan");
+                    // Only the positional identity may be reconstructed at
+                    // run time; labeled or record-pack calls need the
+                    // TypeChecker-published plan.
+                    if (!reconstructed.isTriviallyPositional()) {
+                        throw new IllegalStateException(
+                                label
+                                        + " is missing its TypeChecker-published call plan");
+                    }
+                    return reconstructed;
                 }
                 if (!published.equals(reconstructed)) {
                     throw new IllegalStateException(
@@ -5487,6 +5493,9 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            // Binding failures are delivered here; a throwing
+                            // downstream consumer must not be re-delivered.
+                            Invocation invocation;
                             try {
                                 Ast.FunctionDecl direct =
                                         selectDirectFunction(
@@ -5498,19 +5507,20 @@ public final class OresEvalRootNode extends RootNode {
                                             "no function " + name.name()
                                                     + " accepts the supplied fixed argument shape");
                                 }
-                                Invocation invocation =
+                                invocation =
                                         functionInvocation(
                                                 direct,
                                                 values.inAbiOrder(call, direct));
-                                completeSourceInvocation(
-                                        t,
-                                        invocation,
-                                        invocationDeclaresAsync(invocation),
-                                        env,
-                                        continuation);
                             } catch (RuntimeException | Error failure2) {
                                 continuation.accept(t, null, failure2);
+                                return;
                             }
+                            completeSourceInvocation(
+                                    t,
+                                    invocation,
+                                    invocationDeclaresAsync(invocation),
+                                    env,
+                                    continuation);
                         });
                 return;
             }
@@ -5534,25 +5544,28 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        Invocation invocation;
+                                        boolean declaredFuture;
                                         try {
-                                            Invocation invocation =
+                                            invocation =
                                                     prepareInvocationEvaluated(
                                                             call,
                                                             receiver,
                                                             values,
                                                             env);
-                                            boolean declaredFuture =
+                                            declaredFuture =
                                                     invocationDeclaresAsync(
                                                             invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    env,
-                                                    continuation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
+                                            return;
                                         }
+                                        completeSourceInvocation(
+                                                t2,
+                                                invocation,
+                                                declaredFuture,
+                                                env,
+                                                continuation);
                                     });
                         });
                 return;
@@ -5602,30 +5615,41 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            // Only the invocation itself is guarded. Each successful outcome
+            // is delivered outside the catch so that a throwing downstream
+            // consumer is never re-delivered as a second (failure) completion,
+            // which would trip the single-delivery fence and hide the error.
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
+                result = invoke(invocation);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (result instanceof OresFuture<?> future
+                    && !declaredFuture) {
+                // A settled Future is a value, not a suspension: do not
+                // publish Await or relinquish the actor's execution lease.
+                // In particular, no-yield guards can remain held across
+                // this already-committed result without re-entering the
+                // scheduler or running another actor's mailbox turn.
+                if (future.isDone()) {
+                    Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completedFailure) {
+                        continuation.accept(task, null, completedFailure);
                         return;
                     }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
+                    continuation.accept(task, completed, null);
+                    return;
+                }
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                try {
                     task.suspend(
                             future,
                             (t, value, failure) ->
@@ -5633,15 +5657,13 @@ public final class OresEvalRootNode extends RootNode {
                                             t,
                                             value,
                                             failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
+                } catch (RuntimeException | Error suspendFailure) {
+                    // Suspension was never registered; this is the only delivery.
+                    continuation.accept(task, null, suspendFailure);
                 }
-            } catch (RuntimeException | Error failure) {
-                continuation.accept(task, null, failure);
+                return;
             }
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {

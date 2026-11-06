@@ -677,9 +677,10 @@ public final class TypeChecker {
     }
 
     private Type resolveModuleContractRef(Ast.TypeRef ref, Ast.InterfaceDecl contract, Set<String> generics) {
-        validateGenericArity(ref, contract.genericParameters(), "contract " + contract.name());
+        List<Ast.TypeRef> boundTypes = bindNominalTypeArguments(
+                ref, contract.genericParameters(), "contract " + contract.name());
         return new Named(qualifiedInterfaceName(contract),
-                ref.arguments().stream().map(arg -> resolve(arg, generics, null)).toList());
+                boundTypes.stream().map(arg -> resolve(arg, generics, null)).toList());
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
@@ -955,6 +956,26 @@ public final class TypeChecker {
 
     private record MethodOrigin(Ast.ClassDecl owner, Named ownerType) { }
 
+    /**
+     * Named calls bind by parameter label, and a base-typed receiver resolves
+     * labels against the inherited declaration while dispatch runs the
+     * override. Renaming or reordering labels would therefore bind the same
+     * source call to different slots depending on the runtime class.
+     */
+    private static void requireStableParameterLabels(
+            List<Ast.Param> inherited, List<Ast.Param> local, String what, String origin) {
+        for (int i = 0; i < Math.min(inherited.size(), local.size()); i++) {
+            String expected = inherited.get(i).name();
+            String actual = local.get(i).name();
+            if (!expected.equals(actual)) {
+                throw new IllegalArgumentException(what + " parameter " + (i + 1)
+                        + " is labeled '" + actual + "' but the inherited declaration from "
+                        + origin + " labels it '" + expected
+                        + "'; overrides must keep parameter labels so named calls bind identically");
+            }
+        }
+    }
+
     private void validateInheritedClassOverloads(Ast.ClassDecl klass) {
         validateInheritedClassOverloads(klass, false);
         validateInheritedClassOverloads(klass, true);
@@ -981,6 +1002,12 @@ public final class TypeChecker {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
                         }
+                        requireStableParameterLabels(
+                                parentMethod.parameters(),
+                                local.parameters(),
+                                (staticNamespace ? "static function '" : "method '")
+                                        + klass.name() + "." + local.name() + "'",
+                                methodOriginLabel(origin));
                         // Dispatch selects the child's declaration, but inherited public
                         // contracts still advertise this slot to callers (including through
                         // a base-typed receiver). A private override would typecheck as
@@ -1800,6 +1827,20 @@ public final class TypeChecker {
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+            }
+            // Structural assignability ignores labels; named calls through the
+            // interface type bind by the interface's labels, so they must match.
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl required)) continue;
+                for (Ast.MethodDecl local : klass.methods()) {
+                    if (local.isStatic() || !local.name().equals(required.name())
+                            || local.parameters().size() != required.parameters().size()) continue;
+                    requireStableParameterLabels(
+                            required.parameters(),
+                            local.parameters(),
+                            "method '" + klass.name() + "." + local.name() + "'",
+                            "interface " + iface.name());
+                }
             }
         }
     }
@@ -3094,7 +3135,8 @@ public final class TypeChecker {
                                     result));
                 }
                 throw new IllegalArgumentException(
-                        label + " has no overload accepting the supplied fixed argument shape");
+                        label + " has no overload accepting the supplied fixed argument shape"
+                                + " (expanded call arity " + expanded.size() + ")");
             }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
@@ -10189,13 +10231,13 @@ public final class TypeChecker {
             case "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (declared != null) {
-                    validateGenericArity(
-                            ref,
-                            declared.genericParameters(),
-                            "class " + declared.name());
+                    // A user class shadowing Box/Arc/... binds named type
+                    // arguments by declaration slot like any other class.
+                    List<Ast.TypeRef> boundTypes = bindNominalTypeArguments(
+                            ref, declared.genericParameters(), "class " + declared.name());
                     yield new Named(
                             qualifiedClassName(declared),
-                            ref.arguments().stream()
+                            boundTypes.stream()
                                     .map(arg -> resolve(arg, generics, self))
                                     .toList());
                 }

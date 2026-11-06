@@ -196,6 +196,12 @@ public final class TreeShaker {
             return arguments.stream().allMatch(Ast.LiteralExpr.class::isInstance);
         }
 
+        /** Labeled, record-pack or omitted-slot bindings must not be re-derived after substitution. */
+        private boolean hasNonPositionalPlan(Ast.Expr site) {
+            CheckedCallPlan plan = CheckedCallPlan.lookup(site);
+            return plan != null && !plan.isTriviallyPositional();
+        }
+
         private boolean containsUninlineableCheckedRegion(Ast.Expr expression) {
             if (expression == null) return false;
             if (expression instanceof Ast.LambdaExpr) return true;
@@ -223,7 +229,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.CallExpr call) {
                 // Never inline an outer function by substituting into the
                 // already validated arguments of a nested checked call.
-                if (CheckedCallPlan.lookup(call) != null) return true;
+                if (hasNonPositionalPlan(call)) return true;
                 if (containsUninlineableCheckedRegion(call.callee())) return true;
                 return call.arguments().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
@@ -232,7 +238,7 @@ public final class TreeShaker {
                 return containsUninlineableCheckedRegion(indexed.receiver()) || containsUninlineableCheckedRegion(indexed.index());
             }
             if (expression instanceof Ast.NewExpr created) {
-                if (CheckedCallPlan.lookup(created) != null) return true;
+                if (hasNonPositionalPlan(created)) return true;
                 return created.arguments().stream().anyMatch(this::containsUninlineableCheckedRegion);
             }
             if (expression instanceof Ast.AwaitExpr awaited) return containsUninlineableCheckedRegion(awaited.expression());
@@ -968,7 +974,7 @@ public final class TreeShaker {
                 // Never rewrite a checked call's child expression without
                 // fresh type/effect/ownership checks; preserve original AST
                 // identity and its already validated evaluation ordering.
-                if (CheckedCallPlan.lookup(call) != null) return call;
+                if (hasNonPositionalPlan(call)) return call;
                 Ast.Expr callee = rewriteExpression(call.callee(), module, locals);
                 List<Ast.Expr> arguments = new ArrayList<>();
                 for (Ast.Expr argument : call.arguments()) {
@@ -1001,7 +1007,7 @@ public final class TreeShaker {
                         rewriteExpression(indexed.index(), module, locals));
             }
             if (expression instanceof Ast.NewExpr created) {
-                if (CheckedCallPlan.lookup(created) != null) return created;
+                if (hasNonPositionalPlan(created)) return created;
                 List<Ast.Expr> arguments = new ArrayList<>();
                 for (Ast.Expr argument : created.arguments()) {
                     arguments.add(rewriteExpression(argument, module, locals));

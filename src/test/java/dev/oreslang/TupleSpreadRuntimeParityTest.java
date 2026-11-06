@@ -18,12 +18,12 @@ final class TupleSpreadRuntimeParityTest {
     @Test
     void directFunctionSelectsOverloadByExpandedTupleArity() throws Exception {
         String code = """
-                fnc select(int a): int { return a; }
-                fnc select(int a, int b): int { return a + b; }
+                fnc choose(int a): int { return a; }
+                fnc choose(int a, int b): int { return a + b; }
 
                 pub routine main(): void {
                     const args = (19, 23);
-                    stdio.stdout.write(select(...args));
+                    stdio.stdout.write(choose(...args));
                     return;
                 }
                 """;
@@ -33,12 +33,12 @@ final class TupleSpreadRuntimeParityTest {
     @Test
     void suspendableFunctionExpandsStoredTupleBeforeDirectDispatch() throws Exception {
         String code = """
-                fnc select(int a): int { return a; }
-                fnc select(int a, int b): int { return a + b; }
+                fnc choose(int a): int { return a; }
+                fnc choose(int a, int b): int { return a + b; }
 
                 async fnc forwarded(): int {
                     const args = (19, 23);
-                    return select(...args);
+                    return choose(...args);
                 }
 
                 pub routine main(): void {

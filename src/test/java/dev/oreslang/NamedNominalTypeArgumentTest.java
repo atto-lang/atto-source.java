@@ -12,8 +12,6 @@ final class NamedNominalTypeArgumentTest {
     private static String withType(String type) {
         return """
                 define class Box<A, B> as
-                  A first
-                  B second
                 end
                 fnc take("""
                 + type + " value): int { return 1; }";

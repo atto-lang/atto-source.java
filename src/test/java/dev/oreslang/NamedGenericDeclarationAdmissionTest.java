@@ -74,9 +74,24 @@ final class NamedGenericDeclarationAdmissionTest {
     }
 
     @Test
-    void runtimeNamedArgumentsMustNotSilentlyBecomePositionalUntilTheirCompilerPlanIsEnabled() {
+    void namedValueArgumentsBindByDeclarationNameNotPosition() {
+        // Enabled by the checked named-call plan: labels select slots, so a
+        // reordered call type-checks against (string foo, int bar).
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc choose(string foo, int bar): string { return foo; }
+                fnc use(): string { return choose(bar: 5, foo: "ok"); }
+                """)));
+        // A label that would bind a string slot to an int must not fall back
+        // to positional binding.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc choose(string foo, int bar): string { return foo; }
+                fnc use(): string { return choose(foo: 5, bar: "ok"); }
+                """)));
+    }
+
+    @Test
+    void malformedNamedValueCallsAreParseErrors() {
         for (String call : List.of(
-                "choose(bar: 5, foo: \"ok\")",
                 "choose(foo: \"ok\", 5)",
                 "choose(foo: \"ok\", foo: \"again\")")) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("""

@@ -116,8 +116,8 @@ final class ProductValueBoundaryTest {
                   return record{x: 8, label: "record"};
                 }
 
-                fnc struct_result(): struct{x: int, label: string} {
-                  return struct{x: int, label: string}{x: 9, label: "struct"};
+                fnc struct_result(): struct{sx: int, slabel: string} {
+                  return struct{sx: int, slabel: string}{sx: 9, slabel: "struct"};
                 }
 
                 pub fnc main(): void {
@@ -167,8 +167,8 @@ final class ProductValueBoundaryTest {
                   return record{label: "record", x: 8};
                 }
 
-                fnc struct_result(): struct{x: int, label: string} {
-                  return struct{x: int, label: string}{label: "struct", x: 9};
+                fnc struct_result(): struct{sx: int, slabel: string} {
+                  return struct{sx: int, slabel: string}{slabel: "struct", sx: 9};
                 }
 
                 pub fnc main(): void {

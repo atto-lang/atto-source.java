@@ -1923,8 +1923,16 @@ public final class Parser {
     /** Type-level '?' is Option<T> sugar; only the name-level '?' permits omission. */
     private record FormalType(Ast.TypeRef type, boolean questionSugar) { }
 
+    /** Pipe-delimited parameters: a trailing `|` closes the list, not a union. */
+    private FormalType parsePipeFormalType() {
+        return optionSugar(parsePipeParameterType());
+    }
+
     private FormalType parseFormalType() {
-        Ast.TypeRef type = parseTypeRef();
+        return optionSugar(parseTypeRef());
+    }
+
+    private FormalType optionSugar(Ast.TypeRef type) {
         if (!match(QUESTION)) return new FormalType(type, false);
         if (type.name().equals("void") || type.name().equals("null")) {
             throw error(
@@ -1945,7 +1953,7 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                FormalType parsed = parseFormalType();
+                FormalType parsed = parsePipeFormalType();
                 boolean mutable = match(MUT);
                 boolean omittable = match(QUESTION);
                 params.add(new Ast.Param(
@@ -1958,7 +1966,7 @@ public final class Parser {
                 continue;
             }
 
-            FormalType parsed = parseFormalType();
+            FormalType parsed = parsePipeFormalType();
             boolean mutable = match(MUT);
             String name = consume(
                     IDENT,

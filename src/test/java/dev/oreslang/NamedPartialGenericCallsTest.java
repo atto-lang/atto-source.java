@@ -162,8 +162,9 @@ final class NamedPartialGenericCallsTest {
     }
 
     @Test
-    void rejectsUnsupportedNamedGenericArgumentsInTypePositions() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+    void namedGenericArgumentsInTypePositionsBindByDeclarationSlot() {
+        // Enabled by declaration-slot binding of nominal type arguments.
+        assertDoesNotThrow(
                 () -> TypeChecker.check(Parser.parse("""
                         define module app
                           define class Box<T> as
@@ -172,7 +173,16 @@ final class NamedPartialGenericCallsTest {
                           fnc use(Box<T=int> box): void { return; }
                         end
                         """)));
-        assertTrue(error.getMessage().contains("named generic type arguments"));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          define class Box<T> as
+                            pub val T value;
+                          end
+                          fnc use(Box<Q=int> box): void { return; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("no generic parameter named"), error.getMessage());
     }
 
     @Test

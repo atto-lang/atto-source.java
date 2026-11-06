@@ -705,12 +705,14 @@ final class TreeShakerTest {
     @Test
     void treeShakerScansDependenciesOfEveryRetainedOverload() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
-                fnc dependency(): int {
-                  return 40;
+                fnc dependency(int a): int {
+                  return 40 + a;
                 }
 
                 pub fnc choose(int a): int {
-                  return dependency() + a;
+                  // Non-constant argument: this tests dependency scanning,
+                  // not constant-call inlining (which may legally fold it).
+                  return dependency(a);
                 }
 
                 pub fnc choose(int a, int b): int {

@@ -1830,16 +1830,8 @@ public final class OwnershipChecker {
                         staticInputs.size(),
                         new LinkedHashSet<>());
                 if (staticFunction != null) {
-                    if (!staticFunction.genericParameters().isEmpty()
-                            && staticInputs.stream()
-                                    .anyMatch(slot -> slot.label() != null)) {
-                        throw error(
-                                "static function " + staticClass.name() + "."
-                                        + staticFunction.name()
-                                        + " named/record-spread binding with generic parameters "
-                                        + "is not enabled until ownership specialization consumes "
-                                        + "the checked source-to-ABI plan");
-                    }
+                    // Generic specialization below infers from the checked
+                    // source-to-formal plan, so labels need no separate gate.
                     CallSignature signature = specializeCall(
                             staticFunction.genericParameters(),
                             staticFunction.genericParameters(),
@@ -2028,16 +2020,8 @@ public final class OwnershipChecker {
                         target.owner().genericParameters(), target.ownerType().arguments());
                 List<String> allGenerics = new ArrayList<>(target.owner().genericParameters());
                 allGenerics.addAll(method.genericParameters());
-                if (!method.genericParameters().isEmpty()
-                        && methodInputs.stream()
-                                .anyMatch(slot -> slot.label() != null)) {
-                    throw error(
-                            "method " + target.owner().name() + "."
-                                    + method.name()
-                                    + " named/record-spread binding with generic parameters "
-                                    + "is not enabled until ownership specialization consumes "
-                                    + "the checked source-to-ABI plan");
-                }
+                // specializeCall binds generics through the checked
+                // source-to-formal plan; labeled calls need no separate gate.
                 CallSignature signature = specializeCall(
                         allGenerics,
                         method.genericParameters(),
@@ -2668,9 +2652,15 @@ public final class OwnershipChecker {
             CheckedCallPlan published =
                     CheckedCallPlan.lookup(callSite);
             if (published == null) {
-                throw error(
-                        callable
-                                + " is missing the TypeChecker-published call plan");
+                // Standalone ownership analysis (no TypeChecker pass) and
+                // unlabeled call paths may reconstruct only the trivial
+                // positional plan; labels and record packs fail closed.
+                if (!reconstructed.isTriviallyPositional()) {
+                    throw error(
+                            callable
+                                    + " is missing the TypeChecker-published call plan");
+                }
+                published = reconstructed;
             }
             if (!published.equals(reconstructed)) {
                 throw error(
@@ -2722,12 +2712,6 @@ public final class OwnershipChecker {
                             throw error(callable
                                     + " record spread exceeds checked parameter arity");
                         }
-                        if (fields.values().stream().anyMatch(
-                                type -> !isCopyType(type))) {
-                            throw error(callable
-                                    + " record spread must be Copy-only; move-only fields "
-                                    + "need explicit argument transfer");
-                        }
                         for (int i = 0; i < fields.size(); i++) {
                             Ast.Param target =
                                     sourceParameters.get(parameterIndex + i);
@@ -2744,6 +2728,14 @@ public final class OwnershipChecker {
                                 || containsMutexGuardType(aggregate.type)) {
                             throw error(callable
                                     + " record spread lost its readonly closed-record proof");
+                        }
+                        // Judge Copy-ness from the checked field types, not the
+                        // syntactic shape: a call-valued field is only known here.
+                        if (aggregate.type.recordMembers().values().stream().anyMatch(
+                                type -> !isCopyType(type))) {
+                            throw error(callable
+                                    + " record spread must be Copy-only; move-only fields "
+                                    + "need explicit argument transfer");
                         }
                         parameterIndex += fields.size();
                         continue;
@@ -4088,6 +4080,29 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.ListExpr list && !list.elements().isEmpty()) {
             return new Ast.TypeRef("Array", List.of(syntacticType(list.elements().getFirst(), scope)), false);
+        }
+        if (expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr callee
+                && scope.lookup(callee.name()) == null
+                && call.arguments().stream().noneMatch(a -> a instanceof Ast.SpreadExpr || a instanceof Ast.NamedArgExpr)) {
+            // `f(...g())`: the spread width comes from g's declared, non-generic
+            // tuple return type. Nothing is guessed from runtime values.
+            String familyKey = resolveUnqualifiedFunctionKey(callee.name());
+            Map<Integer, Ast.FunctionDecl> family = familyKey == null ? null : functions.get(familyKey);
+            Ast.FunctionDecl target = family == null ? null : family.get(call.arguments().size());
+            if (target != null && target.genericParameters().isEmpty()
+                    && target.returnType().isTupleType()) {
+                return target.returnType();
+            }
+        }
+        if (expr instanceof Ast.ObjectExpr object && object.structuralRecord()) {
+            // A direct `record{...}` literal is the only closed record pack a
+            // call may spread by label; its field order is source order.
+            LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            for (Ast.ObjectField field : object.fields()) {
+                members.put(field.name(), syntacticType(field.value(), scope));
+            }
+            return Ast.TypeRef.readonlyRecordType(members);
         }
         return Ast.TypeRef.inferred();
     }

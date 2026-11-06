@@ -21,10 +21,12 @@ final class CheckedMetadataTransferInvariantTest {
                         .anyMatch(method -> method.getName().equals("copy")
                                 && Modifier.isStatic(method.getModifiers())))
                 .map(Class::getSimpleName)
-                .collect(Collectors.toUnmodifiableSet());
+                .collect(Collectors.toCollection(java.util.TreeSet::new));
+        // CheckedCallPlan is identity-bound too but lives in dev.oreslang.types.
+        declaredTables.add("CheckedCallPlan");
 
         assertEquals(
-                declaredTables,
+                Set.copyOf(declaredTables),
                 Ast.checkedMetadataTransferPolicy(),
                 "every identity-bound Checked* side table with copy() needs an explicit transfer policy");
     }

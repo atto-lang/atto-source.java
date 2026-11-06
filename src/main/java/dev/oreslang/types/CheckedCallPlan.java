@@ -603,6 +603,25 @@ public record CheckedCallPlan(
                 List.of(abiToSource));
     }
 
+    /**
+     * True when the plan is the trivial positional identity: no label, no
+     * record projection, no omitted slot, and source order equals ABI order.
+     * Such a plan carries no binding decision that the TypeChecker alone
+     * could have made, so a consumer may reconstruct it when no plan was
+     * published (standalone ownership analysis, unlabeled legacy paths).
+     * Labeled, record-pack or omitted-slot plans must never be reconstructed.
+     */
+    public boolean isTriviallyPositional() {
+        if (omittedCount() != 0) return false;
+        for (BoundSlot slot : sourceOrder) {
+            if (slot.label() != null) return false;
+        }
+        for (int i = 0; i < abiToSource.size(); i++) {
+            if (abiToSource.get(i) != i) return false;
+        }
+        return true;
+    }
+
     public int suppliedCount() {
         return sourceOrder.size();
     }
