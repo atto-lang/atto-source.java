@@ -253,6 +253,26 @@ public final class InvertedColumnStore implements AutoCloseable {
         if (!valid) throw new IllegalArgumentException("invalid value for column " + spec.kind());
     }
 
+    // Never publish directly from a caller-owned row array. A second thread
+    // can rewrite Object[] cells after validation, even while this store's
+    // synchronized lock is held; that lock does not own the caller's array.
+    // Copy each RECORD payload too, before any backing column is modified.
+    private Object detachedValue(int field, Object value) {
+        validateValue(specs[field], value);
+        return kinds[field] == Kind.RECORD ? ((byte[]) value).clone() : value;
+    }
+
+    private Object[] detachedRow(Object[] values, String widthMessage) {
+        if (values == null || values.length != kinds.length) {
+            throw new IllegalArgumentException(widthMessage);
+        }
+        Object[] captured = values.clone();
+        for (int i = 0; i < captured.length; i++) {
+            captured[i] = detachedValue(i, captured[i]);
+        }
+        return captured;
+    }
+
     private int resolve(Handle handle) {
         open();
         if (handle == null || handle.authority != capability
@@ -298,10 +318,7 @@ public final class InvertedColumnStore implements AutoCloseable {
     public synchronized Handle push(Object... values) {
         open();
         unborrowed();
-        if (values == null || values.length != kinds.length) {
-            throw new IllegalArgumentException("row width must equal inverted column count");
-        }
-        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], values[i]);
+        Object[] captured = detachedRow(values, "row width must equal inverted column count");
         if (length == Integer.MAX_VALUE) throw new IllegalStateException("row capacity exhausted");
         // A retired generation-MAX slot is not reusable. Slot metadata can
         // therefore fill up even when live row count is below row capacity.
@@ -312,7 +329,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         int row = length;
         int slot = freeCount != 0 ? reusable[--freeCount] : slotCount++;
         if (generations[slot] == 0) generations[slot] = 1;
-        for (int i = 0; i < kinds.length; i++) store(i, row, values[i]);
+        for (int i = 0; i < kinds.length; i++) store(i, row, captured[i]);
         rowSlots[row] = slot;
         slotRows[slot] = row;
         live[slot] = true;
@@ -361,11 +378,11 @@ public final class InvertedColumnStore implements AutoCloseable {
     public synchronized void set(Handle handle, int field, Object value) {
         int row = resolve(handle);
         int i = column(field);
-        validateValue(specs[i], value);
         if (readers[i] != 0 || writers[i]) {
             throw new IllegalStateException("borrowed column");
         }
-        store(i, row, value);
+        Object captured = detachedValue(i, value);
+        store(i, row, captured);
     }
 
     public synchronized Object[] snapshot(Handle handle) {
@@ -380,12 +397,9 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     public synchronized void updateRow(Handle handle, Object... values) {
         int row = resolve(handle);
-        if (values == null || values.length != kinds.length) {
-            throw new IllegalArgumentException("row width mismatch");
-        }
         unborrowed();
-        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], values[i]);
-        for (int i = 0; i < kinds.length; i++) store(i, row, values[i]);
+        Object[] captured = detachedRow(values, "row width mismatch");
+        for (int i = 0; i < kinds.length; i++) store(i, row, captured[i]);
     }
 
     /**
@@ -424,8 +438,8 @@ public final class InvertedColumnStore implements AutoCloseable {
         if (updated == null || updated.length != kinds.length) {
             throw new IllegalStateException("invalid compiler row transform result");
         }
-        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], updated[i]);
-        for (int i = 0; i < kinds.length; i++) store(i, row, updated[i]);
+        Object[] captured = detachedRow(updated, "invalid compiler row transform result");
+        for (int i = 0; i < kinds.length; i++) store(i, row, captured[i]);
     }
 
     public synchronized ColumnLoan borrowRead(int field) {
@@ -480,8 +494,8 @@ public final class InvertedColumnStore implements AutoCloseable {
                 active();
                 if (!write) throw new IllegalStateException("read-only column loan");
                 if (row < 0 || row >= length) throw new IndexOutOfBoundsException();
-                validateValue(specs[field], value);
-                store(field, row, value);
+                Object captured = detachedValue(field, value);
+                store(field, row, captured);
             }
         }
 
