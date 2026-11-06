@@ -1356,6 +1356,11 @@ public final class OwnershipChecker {
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.GpuLaunchExpr) {
+            // Do not mint an ownership/capture proof for a device launch until
+            // async buffer loans and provider-authenticated quiescence exist.
+            throw error("GPU-LAUNCH-008: device loan/fence ownership lowering is unavailable; no implicit CPU fallback");
+        }
         if (expr instanceof Ast.TaskExpr task) {
             if (task.domain() == Ast.ExecutionDomain.GPU) {
                 throw error("gpu task cannot pass ownership lowering without a physical GPU provider");
