@@ -256,11 +256,28 @@ public final class TaskHandle<T> {
     private OresScheduler.Step<T> resumeAtCancellationBoundary(
             OresScheduler.Resume resume, OresScheduler.Task<T> task)
             throws Exception {
+        // A cleanup-aware task (SourceTask) owns lexical defers, finally
+        // blocks and lock guards. It must never be killed by throwing at a
+        // checkpoint: the scheduler injects one authenticated cancellation
+        // resume so the task unwinds itself, and cleanup turns run normally.
+        boolean cleanupAware = task instanceof OresScheduler.CleanupAwareTask<?>;
+        boolean cleanupTurn = OresScheduler.cancellationCleanupTurn();
+        boolean deferToScheduler = false;
         synchronized (resumeBoundaryLock) {
-            if (cancellation.isCancelled()) {
-                throw new CancelledAtResume(cancellation, OresScheduler.currentTaskDomain());
+            if (cancellation.isCancelled() && !cleanupTurn) {
+                if (!cleanupAware || resume.initial()) {
+                    throw new CancelledAtResume(cancellation, OresScheduler.currentTaskDomain());
+                }
+                deferToScheduler = true;
+            } else {
+                inResume = true;
             }
-            inResume = true;
+        }
+        if (deferToScheduler) {
+            // Do not enter guest code. Request the scheduler's deferred
+            // cancellation; the next turn delivers the authenticated unwind.
+            cancelResultIfBound();
+            return OresScheduler.cooperate();
         }
         // An OresScheduler Task can be resumed by an inline executor. Restore
         // the prior logical context so nested turns do not overwrite the
@@ -295,8 +312,14 @@ public final class TaskHandle<T> {
             // The scheduler will make the Future genuinely cancelled before
             // any next resume is admitted, and after Java finally cleanup.
             if (returnedNormally && cancellation.isCancelled()) {
-                throw new CancelledAtResume(
-                        cancellation, OresScheduler.currentTaskDomain());
+                if (cleanupAware) {
+                    // Hand the request to the scheduler's unwind lane. During
+                    // a cleanup turn the request already exists (idempotent).
+                    cancelResultIfBound();
+                } else {
+                    throw new CancelledAtResume(
+                            cancellation, OresScheduler.currentTaskDomain());
+                }
             }
         }
     }
@@ -392,9 +415,18 @@ public final class TaskHandle<T> {
         TaskHandle<T> handle = new TaskHandle<>(parent);
         OresFuture<T> source;
         try {
-            source = scheduler.start(
-                    resume -> handle.resumeAtCancellationBoundary(resume, task),
-                    handle::onQuiescent);
+            // Preserve the CleanupAwareTask marker: the scheduler only
+            // injects authenticated unwind resumes into cleanup-aware tasks.
+            OresScheduler.Task<T> bounded =
+                    task instanceof OresScheduler.CleanupAwareTask<?>
+                            ? new OresScheduler.CleanupAwareTask<T>() {
+                                @Override public OresScheduler.Step<T> resume(
+                                        OresScheduler.Resume resume) throws Exception {
+                                    return handle.resumeAtCancellationBoundary(resume, task);
+                                }
+                            }
+                            : resume -> handle.resumeAtCancellationBoundary(resume, task);
+            source = scheduler.start(bounded, handle::onQuiescent);
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");

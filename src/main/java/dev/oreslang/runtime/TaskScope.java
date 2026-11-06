@@ -117,7 +117,12 @@ public final class TaskScope implements AutoCloseable {
                 throw new IllegalStateException("TaskScope child accounting underflow");
             }
             releaseErrors.addAll(failedReleases);
-            if (firstNonSuccess == null) {
+            // A failure outranks an earlier cancellation: a deliberately
+            // cancelled child must never hide a sibling's real failure.
+            if (firstNonSuccess == null
+                    || (firstNonSuccess instanceof TaskHandle.Cancelled<?>
+                            && (observationFailure != null
+                                    || outcome instanceof TaskHandle.Failed<?>))) {
                 if (observationFailure != null) {
                     firstNonSuccess =
                             new TaskHandle.Failed<>(observationFailure);

@@ -7075,6 +7075,15 @@ public final class TypeChecker {
             case "onSuccess" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
+            // Task-handle members. Valid only on a Future produced by a
+            // `task { }` block; the runtime rejects borrowed producers.
+            case "cancel" -> new Function(List.of(), Primitive.BOOL);
+            case "cancel_with" -> new Function(
+                    List.of(new Named("$builtin$Symbol", List.of())), Primitive.BOOL);
+            case "is_cancel_requested" -> new Function(List.of(), Primitive.BOOL);
+            case "get_done" -> new Function(
+                    List.of(),
+                    new Named("Future", List.of(new Named("$builtin$Symbol", List.of()))));
             case "flatten" -> {
                 if (!(element instanceof Named inner)
                         || !inner.name().equals("Future")
