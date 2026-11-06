@@ -1,0 +1,7 @@
+fnc detached(borrow int value): int {
+  return rt copy value;
+}
+pub fnc main(): int {
+  val int original = 42;
+  return detached(rt borrow original);
+}
