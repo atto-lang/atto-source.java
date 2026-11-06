@@ -1,11 +1,11 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.AnnotationExpander;
-import dev.oreslang.ast.Ast;
-import dev.oreslang.imports.ImportRules;
-import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
-import dev.oreslang.types.OwnershipChecker;
+import dev.atto.ast.AnnotationExpander;
+import dev.atto.ast.Ast;
+import dev.atto.imports.ImportRules;
+import dev.atto.parser.Parser;
+import dev.atto.types.TypeChecker;
+import dev.atto.types.OwnershipChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;

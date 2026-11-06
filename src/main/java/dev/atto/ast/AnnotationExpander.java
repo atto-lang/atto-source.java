@@ -1,4 +1,4 @@
-package dev.oreslang.ast;
+package dev.atto.ast;
 
 import java.util.ArrayList;
 import java.util.HashMap;

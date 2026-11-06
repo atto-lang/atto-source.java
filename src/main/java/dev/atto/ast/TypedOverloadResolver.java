@@ -1,4 +1,4 @@
-package dev.oreslang.ast;
+package dev.atto.ast;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;

@@ -1,7 +1,7 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.Ast;
-import dev.oreslang.imports.ImportRules;
+import dev.atto.ast.Ast;
+import dev.atto.imports.ImportRules;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;

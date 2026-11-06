@@ -1,4 +1,4 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;

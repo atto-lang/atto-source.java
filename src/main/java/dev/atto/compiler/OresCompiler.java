@@ -1,11 +1,11 @@
-package dev.oreslang.compiler;
+package dev.atto.compiler;
 
-import dev.oreslang.ast.Ast;
-import dev.oreslang.parser.Parser;
-import dev.oreslang.runtime.CapabilityChecker;
-import dev.oreslang.runtime.IsolatePolicy;
-import dev.oreslang.types.TypeChecker;
-import dev.oreslang.types.OwnershipChecker;
+import dev.atto.ast.Ast;
+import dev.atto.parser.Parser;
+import dev.atto.runtime.CapabilityChecker;
+import dev.atto.runtime.IsolatePolicy;
+import dev.atto.types.TypeChecker;
+import dev.atto.types.OwnershipChecker;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {

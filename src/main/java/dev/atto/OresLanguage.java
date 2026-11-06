@@ -1,16 +1,16 @@
-package dev.oreslang;
+package dev.atto;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
-import dev.oreslang.ast.Ast;
-import dev.oreslang.compiler.OresCompiler;
-import dev.oreslang.nodes.OresEvalRootNode;
-import dev.oreslang.nodes.OresInteropRootNode;
-import dev.oreslang.runtime.ActorRuntime;
-import dev.oreslang.runtime.AsyncRuntime;
-import dev.oreslang.runtime.OresContext;
-import dev.oreslang.runtime.OresScheduler;
+import dev.atto.ast.Ast;
+import dev.atto.compiler.OresCompiler;
+import dev.atto.nodes.OresEvalRootNode;
+import dev.atto.nodes.OresInteropRootNode;
+import dev.atto.runtime.ActorRuntime;
+import dev.atto.runtime.AsyncRuntime;
+import dev.atto.runtime.OresContext;
+import dev.atto.runtime.OresScheduler;
 import org.graalvm.polyglot.SandboxPolicy;
 
 import java.nio.file.InvalidPathException;
