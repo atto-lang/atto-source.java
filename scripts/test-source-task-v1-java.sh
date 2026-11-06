@@ -34,3 +34,19 @@ for name in typed-int eager-before-await; do
   printf 'JAVA_FUTURE_TASK_ATTO_GUEST_PASS|head=%s|case=%s|guest_stdout=42|guest_exit=0|source_sha256=%s|launcher_sha256=%s\n' \
       "$EXPECTED_HEAD" "$name" "$source_sha" "$(sha256sum "$class_file" | cut -d' ' -f1)"
 done
+
+# Source-only compiler-negative checks. Never execute unsafe guest programs.
+for name in reject-live-guard reject-moved-capture; do
+  path="tests/fixtures/task-v1-java/$name.atto"
+  src="$root/$path"
+  [[ -f "$src" && ! -L "$src" ]] || { echo "Missing unsafe fixture $path" >&2; exit 78; }
+  [[ "$(git -C "$root" rev-parse "HEAD:$path")" == "$(git hash-object --no-filters "$src")" ]] || { echo "Unsafe fixture differs from HEAD" >&2; exit 78; }
+  result=0
+  timeout 90s "${jvm[@]}" --check "$src" > "$tmp/check-$name.out" 2> "$tmp/check-$name.err" || result=$?
+  [[ "$result" != 0 && "$result" != 124 ]] || { echo "Unsafe task admitted or timed out: $name" >&2; exit 1; }
+  case "$name" in
+    reject-live-guard) grep -Eiq "MutexGuard|mutex.?guard|live.*guard|guard.*capture" "$tmp/check-$name.err" ;;
+    reject-moved-capture) grep -Eiq "moved|capture" "$tmp/check-$name.err" ;;
+  esac || { echo "Wrong diagnostic for $name" >&2; cat "$tmp/check-$name.err" >&2; exit 1; }
+  printf "JAVA_TASK_CAPTURE_REJECT_PASS|head=%s|case=%s|no_guest_execution=yes\n" "$EXPECTED_HEAD" "$name"
+done
