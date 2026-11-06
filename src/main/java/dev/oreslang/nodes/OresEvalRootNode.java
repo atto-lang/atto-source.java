@@ -7612,6 +7612,10 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args, externalConstruction);
             }
+            if (expr instanceof Ast.GpuLaunchExpr) {
+                throw new IllegalStateException(
+                        "GPU-LAUNCH-008: direct evaluator cannot dispatch explicit GPU launches; no implicit CPU fallback");
+            }
             if (expr instanceof Ast.TaskExpr task) {
                 if (task.domain() == Ast.ExecutionDomain.GPU) {
                     throw new IllegalStateException(
