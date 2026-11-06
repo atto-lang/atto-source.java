@@ -1,6 +1,7 @@
 package dev.oreslang.config;
 
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.ImportPathInterpolation;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
@@ -32,6 +33,8 @@ import java.util.Optional;
 public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
+    public static final String ENV_ORES_PATHS = "ORES_PATHS";
+    public static final String ENV_ATTO_PATHS = "ATTO_PATHS";
     public static final String SCHEMA_VERSION = "1";
 
     /**
@@ -73,6 +76,7 @@ public final class OresProjectConfig {
     private final List<Path> sourceRoots;
     private final List<Path> importPaths;
     private final List<Path> environmentPaths;
+    private final Map<String, String> environment;
     private final Path mainEntrypoint;
     private final LibraryProfile libraryProfile;
 
@@ -84,6 +88,7 @@ public final class OresProjectConfig {
             List<Path> sourceRoots,
             List<Path> importPaths,
             List<Path> environmentPaths,
+            Map<String, String> environment,
             Path mainEntrypoint,
             LibraryProfile libraryProfile) {
         this.manifestPath = manifestPath;
@@ -93,6 +98,7 @@ public final class OresProjectConfig {
         this.sourceRoots = List.copyOf(sourceRoots);
         this.importPaths = List.copyOf(importPaths);
         this.environmentPaths = List.copyOf(environmentPaths);
+        this.environment = Map.copyOf(environment);
         this.mainEntrypoint = mainEntrypoint;
         this.libraryProfile = java.util.Objects.requireNonNull(libraryProfile, "libraryProfile");
     }
@@ -116,6 +122,7 @@ public final class OresProjectConfig {
                 List.of(root),
                 List.of(),
                 parseEnvironmentPaths(environment),
+                environment,
                 null,
                 LibraryProfile.STD);
     }
@@ -177,6 +184,7 @@ public final class OresProjectConfig {
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
+                environment,
                 mainEntrypoint,
                 libraryProfile);
     }
@@ -234,7 +242,14 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
-        String unix = importPath.replace('\\', '/');
+        // Expand only explicit ${NAME} placeholders from the caller-supplied
+        // compilation snapshot. $repo is NOT a magic root alias; +/ retains
+        // its existing independent project-root namespace.
+        String expanded = ImportPathInterpolation.expand(importPath, environment);
+        if (expanded.startsWith("https://") || expanded.startsWith("http://")) {
+            throw new IllegalArgumentException("remote source imports require locked Zed URL admission (not implemented)");
+        }
+        String unix = expanded.replace('\\', '/');
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
@@ -307,7 +322,13 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
+        // Canonical ATTO_PATHS wins when present, even when explicitly empty.
+        // ORES_PATHS and ORESLANG_PATH remain strictly ordered legacy fallbacks.
+        String raw = environment.containsKey(ENV_ATTO_PATHS)
+                ? environment.get(ENV_ATTO_PATHS)
+                : environment.containsKey(ENV_ORES_PATHS)
+                ? environment.get(ENV_ORES_PATHS)
+                : environment.get(ENV_ORESLANG_PATH);
         if (raw == null || raw.isBlank()) return List.of();
 
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
