@@ -31,6 +31,16 @@ final class DopInvertedGuestI64V1Test {
     }
 
     @Test
+    void immutableColumnRemainsAttachedToSurvivorAfterSwapDelete() throws Exception {
+        var plan = OresCompiler.compileInvertedI64Guest(
+                fixture("positive-immutable-column-swap.atto"));
+        assertEquals("Sample", plan.schemaName());
+        assertEquals(java.util.List.of("x", "id"), plan.columns());
+        assertEquals(42L, plan.execute(),
+                "immutable id column must follow the displaced surviving row");
+    }
+
+    @Test
     void canonicalFormerDenseIndexTrapsAfterSwapErase() throws Exception {
         var plan = OresCompiler.compileInvertedI64Guest(fixture("removed-index-trap.atto"));
         assertThrows(DopInvertedGuestI64V1.BoundsTrap.class, plan::execute);
