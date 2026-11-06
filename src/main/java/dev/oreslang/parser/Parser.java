@@ -1523,6 +1523,9 @@ public final class Parser {
 
     private List<Ast.Annotation> parseAnnotations() {
         List<Ast.Annotation> result = new ArrayList<>();
+        // The current compiler has no registered repeatable annotation schema.
+        // Reject duplicates before any target-specific transformation or AST retention.
+        java.util.Set<String> seen = new java.util.HashSet<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
             // These names claim code generation, target selection or ABI effects.
@@ -1557,7 +1560,12 @@ public final class Parser {
                 }
                 consume(close, "expected annotation terminator");
             }
-            result.add(new Ast.Annotation(name, canonicalizeNamedParameters(args)));
+            List<Ast.TypeRef> canonicalArgs = canonicalizeNamedParameters(args);
+            if (!seen.add(name)) {
+                throw error(previous(), "duplicate @" + name
+                        + " annotation; repeatable annotations require a registered schema");
+            }
+            result.add(new Ast.Annotation(name, canonicalArgs));
         }
         return result;
     }
