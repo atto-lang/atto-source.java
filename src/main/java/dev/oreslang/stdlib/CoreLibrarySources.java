@@ -27,7 +27,9 @@ public final class CoreLibrarySources {
     private static final String ATTO_CORE_IMPORT_PREFIX = "atto.core/";
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
     private static final String CORE_UNIT_PREFIX = "@ores.core/";
-    private static final String CORE_RESOURCE_PREFIX = "dev/oreslang/core/";
+    // Only canonical .atto resources are compiled; legacy .ores remains an
+    // identity-compatible import spelling, not a second active source.
+    private static final String CORE_RESOURCE_PREFIX = "dev/atto/core/";
 
     private static final String ATTO_STD_IMPORT_PREFIX = "atto.std/";
     private static final String STD_IMPORT_PREFIX = "ores.std/";
@@ -39,7 +41,7 @@ public final class CoreLibrarySources {
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
 
-    private static final Set<String> CORE_SOURCES = Set.of("numeric.ores");
+    private static final Set<String> CORE_SOURCES = Set.of("numeric.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -99,7 +101,9 @@ public final class CoreLibrarySources {
     }
 
     public static String oresCoreUnitId(String importPath) {
-        return CORE_UNIT_PREFIX + canonicalCoreRelativePath(importPath);
+        // Keep historical link/unit IDs stable while physical source becomes .atto.
+        String source = canonicalCoreRelativePath(importPath);
+        return CORE_UNIT_PREFIX + source.substring(0, source.length() - 5) + ".ores";
     }
 
     public static String oresCoreFileName(String importPath) {
@@ -143,14 +147,18 @@ public final class CoreLibrarySources {
 
     private static String canonicalCoreRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
+        String relative;
         if (importPath.startsWith(ATTO_CORE_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, ATTO_CORE_IMPORT_PREFIX);
+            relative = canonicalPathBody(importPath, ATTO_CORE_IMPORT_PREFIX);
+        } else if (importPath.startsWith(CORE_IMPORT_PREFIX)) {
+            relative = canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
+        } else {
+            throw new IllegalArgumentException(
+                    "canonical core imports must start with 'atto.core/': " + importPath);
         }
-        if (importPath.startsWith(CORE_IMPORT_PREFIX)) {
-            return canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
-        }
-        throw new IllegalArgumentException(
-                "canonical core imports must start with 'atto.core/': " + importPath);
+        // canonicalPathBody performs strict traversal/segment validation and
+        // historically normalizes to .ores. Physical Core source is .atto.
+        return relative.substring(0, relative.length() - 5) + ".atto";
     }
 
     private static String canonicalStdRelativePath(String importPath) {

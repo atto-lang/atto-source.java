@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/test/java/dev/oreslang/AttoLibraryNamespaceResolutionTest.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalCoreResourceTest.java'
+      - 'src/main/resources/dev/atto/core/**'
       - 'docs/ATTO_LIBRARY_JAVA_RESOLUTION_V1.md'
       - '.github/workflows/atto-library-java-guest.yml'
   workflow_dispatch:
@@ -30,6 +32,13 @@ jobs:
           git diff --quiet --exit-code
           echo "ATTO_JAVA_SOURCE_HEAD=$EXPECTED_HEAD"
           echo "ATTO_JAVA_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Check canonical Atto Core source blob and legacy compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/main/resources/dev/atto/core/numeric.atto)" = "5ced991f1d49b3c2a60fdd72b9003c0a4d18cd72"
+          cmp src/main/resources/dev/atto/core/numeric.atto src/main/resources/dev/oreslang/core/numeric.ores
+          echo "ATTO_JAVA_CORE_CANONICAL_SOURCE_BLOB=5ced991f1d49b3c2a60fdd72b9003c0a4d18cd72"
       - name: Install JDK 25
         uses: actions/setup-java@v4
         with:
@@ -40,12 +49,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=AttoLibraryNamespaceResolutionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=AttoLibraryNamespaceResolutionTest,AttoCanonicalCoreResourceTest -DfailIfNoTests=true test
           echo 'ATTO_JAVA_COMPILER_GUEST=TEST_EXECUTED_CHECK_JUNIT'
       - name: Retain JUnit report on success or failure
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: atto-java-library-guest-evidence
-          path: target/surefire-reports/*AttoLibraryNamespaceResolutionTest*
+          path: |
+            target/surefire-reports/*AttoLibraryNamespaceResolutionTest*
+            target/surefire-reports/*AttoCanonicalCoreResourceTest*
           if-no-files-found: warn
