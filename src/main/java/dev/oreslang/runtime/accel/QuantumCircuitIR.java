@@ -23,6 +23,9 @@ public final class QuantumCircuitIR {
             // traverses/allocates their entire contents.
             if (gates.size() > 1024) throw new IllegalArgumentException("circuit exceeds gate quota");
             gates = List.copyOf(gates);
+            // size() is caller-controlled and may understate the elements
+            // copyOf actually produced; enforce the quota on the copy too.
+            if (gates.size() > 1024) throw new IllegalArgumentException("circuit exceeds gate quota");
             boolean measuring = false;
             boolean[] consumedQubits = new boolean[qubits];
             boolean[] filledBits = new boolean[classicalBits];

@@ -532,6 +532,12 @@ public final class CapabilityChecker {
         }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.TaskExpr e) {
+            // The type checker and evaluator still reject gpu task outright;
+            // isolate policy must also deny device work independently, so
+            // enabling a GPU provider can never bypass the GPU capability.
+            if (e.domain() == Ast.ExecutionDomain.GPU) {
+                require(policy, IsolatePolicy.Capability.GPU, "gpu task");
+            }
             checkStatements(e.body(), policy);
         }
         else if (expr instanceof Ast.ChannelOpExpr e) {
