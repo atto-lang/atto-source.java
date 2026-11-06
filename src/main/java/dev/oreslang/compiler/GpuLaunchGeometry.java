@@ -68,8 +68,12 @@ public final class GpuLaunchGeometry {
         if (threads > limits.maxThreadsPerBlock())
             throw new IllegalArgumentException("GPU-LAUNCH-003: block exceeds threads-per-group budget");
 
-        long groups = checkedProduct(checkedProduct(grid.x(), grid.y(), "grid"),
-                grid.z(), "grid");
+        // Zero in ANY grid axis means zero groups, even when the other two
+        // extents would overflow if multiplied before the zero is observed.
+        boolean empty = grid.x() == 0 || grid.y() == 0 || grid.z() == 0;
+        long groups = empty ? 0
+                : checkedProduct(checkedProduct(grid.x(), grid.y(), "grid"),
+                        grid.z(), "grid");
         long total = checkedProduct(groups, threads, "total launch");
         // A zero grid is admitted but never becomes a zero-sized physical
         // command. The future provider should create an already-complete
