@@ -72,6 +72,11 @@ final class AttoImportEnvironmentTest {
         Files.createDirectories(source);
         Path helper = source.resolve("helper.atto");
         Path main = source.resolve("main.atto");
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                root = "."
+                """);
         Files.writeString(helper, """
                 pub fnc imported_message(): string {
                   return "braced-env-import-ran";
@@ -122,6 +127,151 @@ final class AttoImportEnvironmentTest {
         var ores = OresProjectConfig.discover(importer, Map.of(
                 OresProjectConfig.ENV_ORES_PATHS, legacy.toString()));
         assertEquals(legacy.resolve("module.atto"), ores.resolveImport(importer, "module").orElseThrow());
+    }
+
+
+    @Test
+    void canonicalRootAndRealEnvironmentVariableResolveIndependentlyInCompiledAttoGuest() throws Exception {
+        Path project = temp.resolve("both-kinds");
+        Files.createDirectories(project.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                root = "."
+                """);
+        Files.writeString(project.resolve("src/root_helper.atto"), """
+                pub fnc root_message(): string { return "root-selected"; }
+                """);
+        Files.writeString(project.resolve("src/env_helper.atto"), """
+                pub fnc env_message(): string { return "environment-selected"; }
+                """);
+        Path main = project.resolve("src/main.atto");
+        Files.writeString(main, """
+                import fnc root_message from "+/src/root_helper";
+                import fnc env_message from "${repo}/src/env_helper";
+                pub fnc main(): void {
+                  stdio.println(root_message());
+                  stdio.println(env_message());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(main,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of("repo", project.toString()), out,
+                new ByteArrayOutputStream());
+        assertEquals(3, result.units().size());
+        String printed = out.toString(StandardCharsets.UTF_8);
+        assertTrue(printed.contains("root-selected"));
+        assertTrue(printed.contains("environment-selected"));
+    }
+
+    @Test
+    void projectRootImportFollowsConfiguredManifestSubdirectory() throws Exception {
+        Path project = temp.resolve("configured-root");
+        Files.createDirectories(project.resolve("application/src"));
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                root = "application"
+                """);
+        Path entry = project.resolve("application/src/main.atto");
+        Path helper = project.resolve("application/src/helper.atto");
+        Files.writeString(helper, "pub fnc answer(): int { return 42; }");
+        var config = OresProjectConfig.discover(entry, Map.of());
+        assertEquals(helper.toRealPath(), config.resolveImport(entry, "+/src/helper").orElseThrow());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(entry, "+/../outside"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(entry, "+src/helper"));
+    }
+
+    @Test
+    void missingModernManifestNeverInfersCanonicalProjectRootFromCwd() throws Exception {
+        Path project = temp.resolve("no-root-manifest");
+        Files.createDirectories(project.resolve("src"));
+        Path main = project.resolve("src/main.atto");
+        Files.writeString(project.resolve("src/helper.atto"), "pub fnc x():int{return 1;}");
+        var config = OresProjectConfig.discover(main, Map.of("repo", project.toString()));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(main, "+/src/helper"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(main, "${repo}/src/helper"));
+    }
+
+    @Test
+    void modernManifestMarkerTakesPrecedenceAndInvalidMarkerCannotFallbackToLegacy() throws Exception {
+        Path project = temp.resolve("dual-manifest");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve(OresProjectConfig.MANIFEST_NAME), "schema_version = \"1\"\n");
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+                "schema_version = \"2\"\n");
+        Path entry = project.resolve("main.atto");
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(entry, Map.of()));
+        Files.delete(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME));
+        Files.createDirectory(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(entry, Map.of()));
+    }
+
+    @Test
+    void packageBoundariesCannotBeCrossedByEnvironmentOrRootImports() throws Exception {
+        Path project = temp.resolve("package-boundary");
+        Path nested = project.resolve("nested");
+        Files.createDirectories(nested);
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(nested.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(nested.resolve("secret.atto"), "pub fnc secret(): int { return 7; }");
+        Path main = project.resolve("main.atto");
+        var config = OresProjectConfig.discover(main, Map.of("repo", project.toString()));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(main, "+/nested/secret"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(main, "${repo}/nested/secret"));
+    }
+
+    @Test
+    void explicitProjectImportPathsCanAuthorizeExternalEnvRootButUnknownRootsCannot() throws Exception {
+        Path project = temp.resolve("import-policy");
+        Path external = temp.resolve("external-allowed");
+        Path outside = temp.resolve("outside-denied");
+        Files.createDirectories(project);
+        Files.createDirectories(external);
+        Files.createDirectories(outside);
+        Files.writeString(external.resolve("lib.atto"), "pub fnc answer(): int { return 42; }");
+        Files.writeString(outside.resolve("lib.atto"), "pub fnc answer(): int { return 7; }");
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+                "schema_version = \"1\"\n[source]\nimport_paths = [\""
+                + external.toString().replace('\\', '/') + "\"]\n");
+        Path main = project.resolve("main.atto");
+        var config = OresProjectConfig.discover(main,
+                Map.of("ALLOWED_ROOT", external.toString(), "OTHER_ROOT", outside.toString()));
+        assertEquals(external.resolve("lib.atto").toRealPath(),
+                config.resolveImport(main, "${ALLOWED_ROOT}/lib").orElseThrow().toRealPath());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(main, "${OTHER_ROOT}/lib"));
+    }
+
+    @Test
+    void canonicalRootImportCannotShadowModernAttoWithSymlinkedSource() throws Exception {
+        Path project = temp.resolve("symlink-root");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path source = project.resolve("real.atto");
+        Path alias = project.resolve("alias.atto");
+        Files.writeString(source, "pub fnc answer(): int { return 42; }");
+        try {
+            Files.createSymbolicLink(alias, source);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlink creation unavailable");
+        }
+        var config = OresProjectConfig.discover(project.resolve("main.atto"), Map.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.atto"), "+/alias"));
     }
 
     @Test
