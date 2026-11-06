@@ -1,0 +1,79 @@
+# Private source stays in its own source repository. This is actual linked .atto
+# JIT guest execution, not a host arithmetic checksum or parser-only test.
+name: AttoLang DOP Java scalar JIT guest exact-head
+on:
+  pull_request:
+    paths:
+      - 'contracts/dop-scalar-guest-v1/**'
+      - 'src/test/java/dev/oreslang/DopScalarGuestParityTest.java'
+      - 'scripts/ci/DopGuestJUnitReceiptVerifier.java'
+      - '.github/workflows/dop-scalar-java-guest.yml'
+      - 'src/main/java/**'
+      - 'pom.xml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scalar-dop-java-jit:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install JDK 25
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: checkout-head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          fixture='contracts/dop-scalar-guest-v1/soa-int-update.atto'
+          test -f "$fixture" && test ! -L "$fixture"
+          test "$(git hash-object "$fixture")" = 'aedc778e3e8dd2940600f047540c159b0129830a'
+          printf 'ATTO_DOP_JAVA_HEAD=%s TREE=%s FIXTURE_BLOB=%s\n' \
+            "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" "$(git hash-object "$fixture")"
+      - name: Run independent source-free JUnit evidence validator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dop-junit-verifier"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/dop-junit-verifier" \
+            scripts/ci/DopGuestJUnitReceiptVerifier.java
+          timeout 30s java -cp "$RUNNER_TEMP/dop-junit-verifier" \
+            DopGuestJUnitReceiptVerifier --self-test
+      - name: Compile source compiler and JUnit guest harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests test-compile
+      - name: Execute two actual compiled AttoLang JIT guest tests
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
+          mvn -B -ntp -Dtest=DopScalarGuestParityTest -DfailIfNoTests=true test
+          java -cp "$RUNNER_TEMP/dop-junit-verifier" \
+            DopGuestJUnitReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "ATTO_DOP_JAVA_JIT_GUEST_EXECUTED_WITH_VERIFIED_TWO_CASE_REPORT head=$EXPECTED_HEAD"
+      - name: Retain exact-case JUnit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-dop-java-jit-two-case-junit
+          path: target/surefire-reports/*DopScalarGuestParityTest*
+          if-no-files-found: warn
