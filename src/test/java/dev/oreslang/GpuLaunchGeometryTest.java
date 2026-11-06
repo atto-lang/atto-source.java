@@ -34,6 +34,18 @@ final class GpuLaunchGeometryTest {
     }
 
     @Test
+    void zeroInLastGridAxisSkipsBeforeOtherwiseOverflowingProduct() {
+        Limits limits = new Limits(
+                new Dim3(Long.MAX_VALUE, Long.MAX_VALUE, 1),
+                new Dim3(64, 1, 1), 64, 0);
+        var plan = GpuLaunchGeometry.validate(
+                new Dim3(Long.MAX_VALUE, Long.MAX_VALUE, 0),
+                new Dim3(64, 1, 1), 0, limits);
+        assertEquals(0, plan.totalGroups());
+        assertTrue(plan.emptyLaunch());
+    }
+
+    @Test
     void zeroAndNegativeBlockComponentsReject() {
         for (int axis = 0; axis < 3; axis++) {
             long[] zeros = {4, 2, 1};
