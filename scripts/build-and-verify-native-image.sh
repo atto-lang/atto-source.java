@@ -22,6 +22,23 @@ case "$refs" in
   *) echo "invalid reference mode: $refs" >&2; exit 2 ;;
 esac
 
+# Epsilon only disables collection; it does not reclaim Java-heap allocations.
+# Never silently advertise Epsilon as proof of bounded-memory / zero allocation.
+case "${ORES_NATIVE_GC_MODE:-serial}" in
+  serial) ;;
+  epsilon)
+    if [ "$mode" != aot ]; then
+      echo 'Epsilon GC is only admitted with full native AOT' >&2
+      exit 2
+    fi
+    profile="$profile,native-epsilon"
+    ;;
+  *)
+    echo 'ORES_NATIVE_GC_MODE must be serial or epsilon' >&2
+    exit 2
+    ;;
+esac
+
 # The Maven profile invokes JAVA_HOME/bin/native-image, not the JVM's javac.
 if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/native-image" ]; then
   echo "JAVA_HOME must point to a GraalVM JDK with bin/native-image" >&2
