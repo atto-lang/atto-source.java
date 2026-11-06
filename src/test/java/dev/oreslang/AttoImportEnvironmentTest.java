@@ -55,7 +55,7 @@ final class AttoImportEnvironmentTest {
     @Test
     void rejectsNestedExpansionControlBytesAndOverlargeValues() {
         for (String value : new String[] {
-                "${OTHER}", "line\nfeed", "tab\tpath", "\u0000",
+                "${OTHER}", "line\nfeed", "tab\tpath", String.valueOf((char) 0),
                 "x".repeat(4097), "é".repeat(2049)
         }) {
             assertThrows(IllegalArgumentException.class,
