@@ -115,7 +115,9 @@ class OresSymbolLiteralImageStoreTest {
                         store.liveGenerationCount());
                 assertThrows(IllegalStateException.class,
                         () -> store.publish(List.of(OresSymbol.process("overflow"))));
-                assertEquals(OresSymbol.process("gen7"), store.pinLatest().get(0));
+                try (var latest = store.pinLatest()) {
+                    assertEquals(OresSymbol.process("gen7"), latest.get(0));
+                }
             } finally {
                 for (var lease : pinned) lease.close();
             }
@@ -136,6 +138,54 @@ class OresSymbolLiteralImageStoreTest {
                 () -> store.publish(List.of(OresSymbol.process("no"))));
         pinned.close();
         assertEquals(0, store.liveGenerationCount());
+    }
+
+    @Test void hostileIteratorCannotRecursivelyPublish() {
+        try (var store = new OresSymbolLiteralImageStore()) {
+            long first = store.publish(List.of(OresSymbol.process("first")));
+            AbstractCollection<OresSymbol> reentrant = new AbstractCollection<>() {
+                @Override public int size() { return 1; }
+                @Override public Iterator<OresSymbol> iterator() {
+                    return new Iterator<>() {
+                        boolean next;
+                        @Override public boolean hasNext() { return !next; }
+                        @Override public OresSymbol next() {
+                            next = true;
+                            assertThrows(IllegalStateException.class, () ->
+                                    store.publish(List.of(OresSymbol.process("nested"))));
+                            return OresSymbol.process("second");
+                        }
+                    };
+                }
+            };
+            long second = store.publish(reentrant);
+            assertTrue(second > first);
+            try (var latest = store.pinLatest()) {
+                assertEquals(OresSymbol.process("second"), latest.get(0));
+                assertEquals(1, latest.size());
+            }
+        }
+    }
+
+    @Test void iteratorCloseDuringPublicationCannotResurrectStore() {
+        var store = new OresSymbolLiteralImageStore();
+        AbstractCollection<OresSymbol> closes = new AbstractCollection<>() {
+            @Override public int size() { return 1; }
+            @Override public Iterator<OresSymbol> iterator() {
+                return new Iterator<>() {
+                    boolean next;
+                    @Override public boolean hasNext() { return !next; }
+                    @Override public OresSymbol next() {
+                        next = true;
+                        store.close();
+                        return OresSymbol.process("ghost");
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> store.publish(closes));
+        assertEquals(0, store.liveGenerationCount());
+        assertThrows(IllegalStateException.class, store::pinLatest);
     }
 
     @Test void pinnedLiteralImagesAreReadableAcrossConcurrentHostThreads() throws Exception {
