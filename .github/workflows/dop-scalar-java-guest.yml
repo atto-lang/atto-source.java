@@ -62,6 +62,7 @@ jobs:
           compiler_tree_digest="$(find target/classes -type f -name '*.class' -print0 \
             | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')"
           test "${#compiler_tree_digest}" -eq 64
+          printf '%s\n' "$compiler_tree_digest" > "$RUNNER_TEMP/dop-junit-verifier/compiler-class-tree.sha256"
           printf 'DOP_JIT_COMPILER_CLASS_TREE_SHA256=%s\n' "$compiler_tree_digest"
       - name: compile-guest
         shell: bash
@@ -87,6 +88,11 @@ jobs:
           test -s "$RUNNER_TEMP/dop-junit-verifier/compile-guest.junit.xml"
           java -cp "$RUNNER_TEMP/dop-junit-verifier" \
             DopGuestJUnitReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
+          test -s "$RUNNER_TEMP/dop-junit-verifier/compiler-class-tree.sha256"
+          compiler_tree_after="$(find target/classes -type f -name '*.class' -print0 \
+            | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')"
+          test "$compiler_tree_after" = "$(cat "$RUNNER_TEMP/dop-junit-verifier/compiler-class-tree.sha256")"
+          printf 'DOP_JIT_COMPILER_CLASS_TREE_SHA256_FINAL=%s\n' "$compiler_tree_after"
           java_bin="$(readlink -f "$(command -v java)")"
           report='target/surefire-reports/TEST-dev.oreslang.DopScalarGuestParityTest.xml'
           test -f "$java_bin" && test -x "$java_bin" && test ! -L "$java_bin"
