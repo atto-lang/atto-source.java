@@ -56,7 +56,7 @@ final class DopInvertedGuestAdmissionTest {
     // a fixture must not preserve false cross-backend fixture equivalence.
     private static String gitBlobSha1(byte[] bytes) throws Exception {
         MessageDigest sha = MessageDigest.getInstance("SHA-1");
-        sha.update(("blob " + bytes.length + "\\0").getBytes(StandardCharsets.UTF_8));
+        sha.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.UTF_8));
         sha.update(bytes);
         return HexFormat.of().formatHex(sha.digest());
     }
