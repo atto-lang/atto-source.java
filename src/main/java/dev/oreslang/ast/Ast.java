@@ -1104,7 +1104,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, GpuLaunchExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -1502,6 +1502,28 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /**
+     * Host-side explicit GPU kernel launch syntax, distinct from gpu task and
+     * the historical gpu callable spelling. Parsing creates only an AST; the
+     * backend's type/effect/capability gate must reject until lowering exists.
+     * The three dimensions are grid workgroups and block work-items.
+     */
+    public record GpuLaunchExpr(
+            Expr kernel, List<Expr> arguments, Expr device,
+            List<Expr> grid, List<Expr> block, Expr queue, Expr sharedBytes) implements Expr {
+        public GpuLaunchExpr {
+            java.util.Objects.requireNonNull(kernel, "gpu launch kernel");
+            java.util.Objects.requireNonNull(device, "gpu launch device");
+            java.util.Objects.requireNonNull(queue, "gpu launch queue");
+            java.util.Objects.requireNonNull(sharedBytes, "gpu launch shared bytes");
+            arguments = List.copyOf(arguments);
+            grid = List.copyOf(grid);
+            block = List.copyOf(block);
+            if (grid.size() != 3 || block.size() != 3)
+                throw new IllegalArgumentException("GPU-LAUNCH-003: grid and block must be three-dimensional");
+        }
+    }
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
