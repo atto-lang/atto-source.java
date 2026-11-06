@@ -41,25 +41,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import pathlib
-          import subprocess
-          hashes = {
-              "swap-reuse.atto": "8f5599a9e0b11ded2929110b4936441fceb2ef21",
-              "removed-index-trap.atto": "c3c87cfd2515707932734e183bb5768436526a96",
-              "positive-immutable-column-swap.atto": "863b1f20137656a277fc7bc04415a6f001f76512",
-          }
-          for name, wanted in hashes.items():
-              path = pathlib.Path("contracts/dop-inverted-v1") / name
-              if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
-                  raise SystemExit(f"invalid canonical AttoLang source: {name}")
-              got = subprocess.check_output(
-                  ["git", "hash-object", "--no-filters", str(path)], text=True
-              ).strip()
-              if got != wanted:
-                  raise SystemExit(f"canonical AttoLang source mismatch: {name}")
-          print("DOP_CANONICAL_SOURCE_BLOBS_MATCHED=3")
-          PY
+          while read -r name expected; do
+            file="contracts/dop-inverted-v1/$name"
+            [[ -f "$file" && ! -L "$file" ]]
+            [[ "$(wc -c < "$file")" -le 65536 ]]
+            observed="$(git hash-object --no-filters -- "$file")"
+            if [[ "$observed" != "$expected" ]]; then
+              echo "FAIL: canonical AttoLang source blob mismatch: $name" >&2
+              exit 1
+            fi
+          done <<'DOP_EXPECTED_BLOBS'
+          swap-reuse.atto 8f5599a9e0b11ded2929110b4936441fceb2ef21
+          removed-index-trap.atto c3c87cfd2515707932734e183bb5768436526a96
+          positive-immutable-column-swap.atto 863b1f20137656a277fc7bc04415a6f001f76512
+          DOP_EXPECTED_BLOBS
+          echo "DOP_CANONICAL_SOURCE_BLOBS_MATCHED=3"
       - name: setup-graalvm
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -73,21 +69,4 @@ jobs:
       - name: execute-guest
         run: mvn -B -ntp -Dtest=DopInvertedGuestI64V1Test,DopInvertedGuestAdmissionTest test
       - name: verify-junit-report
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          path = Path("target/surefire-reports/TEST-dev.oreslang.compiler.DopInvertedGuestI64V1Test.xml")
-          if not path.is_file() or path.is_symlink():
-              raise SystemExit("missing trustworthy restricted guest JUnit XML")
-          tree = ET.parse(path).getroot()
-          tests = int(tree.attrib.get("tests", 0))
-          failures = int(tree.attrib.get("failures", -1))
-          errors = int(tree.attrib.get("errors", -1))
-          skipped = int(tree.attrib.get("skipped", -1))
-          if tests < 7 or failures != 0 or errors != 0 or skipped != 0:
-              raise SystemExit(f"restricted guest suite not fully executed: {tests}/{failures}/{errors}/{skipped}")
-          print(f"DOP_JAVA_RESTRICTED_GUEST_EXECUTED={tests}")
-          PY
+        run: java tools/VerifyDopInvertedJUnit.java
