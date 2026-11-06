@@ -14,18 +14,22 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Loads compiler-owned Oreslang library source from packaged resources.
+ * Loads compiler-owned AttoLang library source from packaged resources.
  *
- * <p>Oreslang exposes exactly two public library namespaces:
- * {@code ores.core/*} is freestanding/no-OS source and {@code ores.std/*}
- * is hosted/platform source. Legacy {@code std/*} remains a compatibility
- * spelling for {@code ores.std/*}; it is not a third library layer.</p>
+ * <p>Canonical public namespaces are {@code atto.core/*},
+ * {@code atto.alloc/*} and {@code atto.std/*}, with the actor runtime optional.
+ * Java currently implements only Core and hosted Std registry resolution;
+ * Alloc and actor namespace imports are reserved and fail closed until their
+ * dependency/effect/provider closure is compiled. Legacy ores.core, ores.std
+ * and std aliases keep existing module IDs for binary compatibility.</p>
  */
 public final class CoreLibrarySources {
+    private static final String ATTO_CORE_IMPORT_PREFIX = "atto.core/";
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
     private static final String CORE_UNIT_PREFIX = "@ores.core/";
     private static final String CORE_RESOURCE_PREFIX = "dev/oreslang/core/";
 
+    private static final String ATTO_STD_IMPORT_PREFIX = "atto.std/";
     private static final String STD_IMPORT_PREFIX = "ores.std/";
     private static final String LEGACY_STD_IMPORT_PREFIX = "std/";
     private static final String STD_UNIT_PREFIX = "@std/";
@@ -46,17 +50,20 @@ public final class CoreLibrarySources {
 
     private CoreLibrarySources() { }
 
-    /** Canonical freestanding library namespace. */
+    /** Canonical atto.core namespace, retaining the ores.core alias. */
     public static boolean isOresCoreImport(String importPath) {
         if (importPath == null) return false;
-        return importPath.replace('\\', '/').startsWith(CORE_IMPORT_PREFIX);
+        String normalized = importPath.replace('\\', '/');
+        return normalized.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                || normalized.startsWith(CORE_IMPORT_PREFIX);
     }
 
-    /** Canonical hosted namespace plus the temporary legacy std/* spelling. */
+    /** Canonical atto.std namespace and two legacy hosted aliases. */
     public static boolean isStdImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.startsWith(STD_IMPORT_PREFIX)
+        return normalized.startsWith(ATTO_STD_IMPORT_PREFIX)
+                || normalized.startsWith(STD_IMPORT_PREFIX)
                 || normalized.startsWith(LEGACY_STD_IMPORT_PREFIX);
     }
 
@@ -73,7 +80,15 @@ public final class CoreLibrarySources {
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.equals("ores.core")
+        return normalized.equals("atto.core")
+                || normalized.equals("atto.alloc")
+                || normalized.equals("atto.std")
+                || normalized.equals("atto.runtime.actor")
+                || normalized.startsWith(ATTO_CORE_IMPORT_PREFIX)
+                || normalized.startsWith("atto.alloc/")
+                || normalized.startsWith(ATTO_STD_IMPORT_PREFIX)
+                || normalized.startsWith("atto.runtime.actor/")
+                || normalized.equals("ores.core")
                 || normalized.equals("ores.std")
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
                 || normalized.startsWith(STD_IMPORT_PREFIX);
@@ -95,7 +110,7 @@ public final class CoreLibrarySources {
         String relative = canonicalCoreRelativePath(importPath);
         if (!CORE_SOURCES.contains(relative)) {
             throw new IllegalArgumentException(
-                    "unknown compiler-owned ores.core module: " + importPath);
+                    "unknown compiler-owned atto.core module (or legacy ores.core alias): " + importPath);
         }
         return readPackagedSource(CORE_RESOURCE_PREFIX + relative, importPath);
     }
@@ -117,7 +132,7 @@ public final class CoreLibrarySources {
                         "unknown Oreslang core-library module: " + importPath);
             }
             throw new IllegalArgumentException(
-                    "unknown compiler-owned ores.std module: " + importPath);
+                    "unknown compiler-owned atto.std module (or legacy ores.std alias): " + importPath);
         }
         return readPackagedSource(STD_RESOURCE_PREFIX + relative, importPath);
     }
@@ -128,15 +143,21 @@ public final class CoreLibrarySources {
 
     private static String canonicalCoreRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
-        if (!importPath.startsWith(CORE_IMPORT_PREFIX)) {
-            throw new IllegalArgumentException(
-                    "canonical core imports must start with 'ores.core/': " + importPath);
+        if (importPath.startsWith(ATTO_CORE_IMPORT_PREFIX)) {
+            return canonicalPathBody(importPath, ATTO_CORE_IMPORT_PREFIX);
         }
-        return canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
+        if (importPath.startsWith(CORE_IMPORT_PREFIX)) {
+            return canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
+        }
+        throw new IllegalArgumentException(
+                "canonical core imports must start with 'atto.core/': " + importPath);
     }
 
     private static String canonicalStdRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
+        if (importPath.startsWith(ATTO_STD_IMPORT_PREFIX)) {
+            return canonicalPathBody(importPath, ATTO_STD_IMPORT_PREFIX);
+        }
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
             return canonicalPathBody(importPath, STD_IMPORT_PREFIX);
         }
@@ -144,7 +165,7 @@ public final class CoreLibrarySources {
             return canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX);
         }
         throw new IllegalArgumentException(
-                "standard-library imports must start with 'ores.std/': " + importPath);
+                "standard-library imports must start with 'atto.std/': " + importPath);
     }
 
     private static String canonicalPathBody(String importPath, String prefix) {
@@ -160,8 +181,8 @@ public final class CoreLibrarySources {
         }
 
         String raw = importPath.substring(prefix.length());
-        if (raw.endsWith(".ores")) {
-            raw = raw.substring(0, raw.length() - ".ores".length());
+        if (raw.endsWith(".ores") || raw.endsWith(".atto")) {
+            raw = raw.substring(0, raw.length() - 5);
         }
         if (raw.isBlank()) {
             throw new IllegalArgumentException("Oreslang library import must name a module");
