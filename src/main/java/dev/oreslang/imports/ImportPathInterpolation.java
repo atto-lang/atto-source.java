@@ -55,8 +55,29 @@ public final class ImportPathInterpolation {
         if (result.getBytes(StandardCharsets.UTF_8).length > MAX_UTF8_BYTES) {
             throw new IllegalArgumentException("expanded import specifier exceeds 4096 bytes");
         }
-        if (result.chars().anyMatch(Character::isISOControl)) {
-            throw new IllegalArgumentException("expanded import specifier contains control characters");
+        if (result.codePoints().anyMatch(cp ->
+                Character.isISOControl(cp)
+                        || cp == 0x061C
+                        || cp == 0x200E || cp == 0x200F
+                        || cp == 0x2028 || cp == 0x2029
+                        || (cp >= 0x202A && cp <= 0x202E)
+                        || (cp >= 0x2066 && cp <= 0x2069))) {
+            throw new IllegalArgumentException(
+                    "expanded import specifier contains control or display-spoofing characters");
+        }
+        // A malformed surrogate would be replaced during UTF-8 encoding and
+        // could invalidate the path fingerprint used for source identities.
+        for (int i = 0; i < result.length(); ++i) {
+            char ch = result.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= result.length()
+                        || !Character.isLowSurrogate(result.charAt(i + 1))) {
+                    throw new IllegalArgumentException("invalid Unicode in import specifier");
+                }
+                ++i;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("invalid Unicode in import specifier");
+            }
         }
         return result;
     }
