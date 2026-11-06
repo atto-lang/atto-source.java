@@ -93,9 +93,8 @@ final class AttoGpuExplicitLaunchAdmissionTest {
 
     @Test
     void logicalOverGroupOneDimensionalLaunchPreservesLogicalExtent() {
-        String source = LAUNCH.replace(
-                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
-                "over: [n],\n                    group: [256]");
+        String source = LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "over: [n]")
+                .replace("block: [256, 1, 1]", "group: [256]");
         Ast.Program program = assertDoesNotThrow(() -> Parser.parse(source));
         String tree = program.toString();
         assertTrue(tree.contains("GpuOverGeometry"), tree);
@@ -110,9 +109,8 @@ final class AttoGpuExplicitLaunchAdmissionTest {
 
     @Test
     void twoDimensionalLogicalExtentPadsThirdAxisToOne() {
-        String source = LAUNCH.replace(
-                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
-                "over: [width, height],\n                    group: [16, 16]");
+        String source = LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "over: [width, height]")
+                .replace("block: [256, 1, 1]", "group: [16, 16]");
         String tree = assertDoesNotThrow(() -> Parser.parse(source)).toString();
         assertTrue(tree.contains("GpuOverGeometry"), tree);
         assertTrue(tree.contains("over=[NameExpr[name=width], NameExpr[name=height], LiteralExpr[value=1]]"), tree);
@@ -121,9 +119,8 @@ final class AttoGpuExplicitLaunchAdmissionTest {
 
     @Test
     void zeroAndNegativeLogicalGeometryIsRejectedAtTypeBoundary() {
-        String logical = LAUNCH.replace(
-                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
-                "over: [n],\n                    group: [256]");
+        String logical = LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "over: [n]")
+                .replace("block: [256, 1, 1]", "group: [256]");
         for (String invalid : List.of(
                 logical.replace("group: [256]", "group: [0]"),
                 logical.replace("group: [256]", "group: [-1]"),
@@ -137,9 +134,8 @@ final class AttoGpuExplicitLaunchAdmissionTest {
 
     @Test
     void logicalAndPhysicalGeometryCannotBeMixedOrSilentlyAutoTuned() {
-        String logical = LAUNCH.replace(
-                "grid: [ceil_div(n, 256), 1, 1],\n                    block: [256, 1, 1]",
-                "over: [n],\n                    group: [256]");
+        String logical = LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "over: [n]")
+                .replace("block: [256, 1, 1]", "group: [256]");
         for (String bad : List.of(
                 logical.replace("group: [256]", "block: [256, 1, 1]"),
                 logical.replace("over: [n]", "grid: [1, 1, 1]"),
