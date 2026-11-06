@@ -487,11 +487,12 @@ public final class Ast {
 
     /**
      * Checked source-schema AST for the first one-level two-i64 inverted
-     * struct slice. This is type metadata, NOT a runtime class or a
+     * struct slice. This preserves each field's explicit let writability
+     * independently of binding/referent runtime authority. It is type metadata, NOT a runtime class or a
      * guest-visible backing collection. It is rejected by TypeChecker until
      * ownership-checked MIR and the column ABI are implemented.
      */
-    public record InvertedColumnDecl(String name, TypeRef type) {
+    public record InvertedColumnDecl(String name, TypeRef type, boolean mutable) {
         public InvertedColumnDecl {
             java.util.Objects.requireNonNull(name, "inverted column name");
             java.util.Objects.requireNonNull(type, "inverted column type");
