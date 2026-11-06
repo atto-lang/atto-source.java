@@ -1160,6 +1160,7 @@ public final class TypeChecker {
     private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.TaskExpr
+                || expr instanceof Ast.GpuLaunchExpr
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
                 || expr instanceof Ast.AssignExpr) return true;
@@ -4320,6 +4321,30 @@ public final class TypeChecker {
                 }
             }
             return nominal;
+        }
+        if (expr instanceof Ast.GpuLaunchExpr launch) {
+            // A positive parse must never fall through to ordinary function
+            // invocation or CPU task lowering. Detect simple bad dimensions
+            // before the device-admission gate; dynamic dimensions will need
+            // checked runtime geometry after real backend lowering exists.
+            for (int axis = 0; axis < 3; axis++) {
+                Ast.Expr dimension = launch.block().get(axis);
+                if (dimension instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Long value && value <= 0) {
+                    throw new IllegalArgumentException(
+                            "GPU-LAUNCH-003: GPU block dimensions must be positive");
+                }
+                dimension = launch.grid().get(axis);
+                if (dimension instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Long value && value < 0) {
+                    throw new IllegalArgumentException(
+                            "GPU-LAUNCH-003: GPU grid dimensions cannot be negative");
+                }
+            }
+            throw new IllegalArgumentException(
+                    "GPU-LAUNCH-008: explicit GPU launch is parser-visible but "
+                            + "physical GPU dispatch and owned device-buffer "
+                            + "fence lowering are not enabled; no implicit CPU fallback");
         }
         if (expr instanceof Ast.TaskExpr task) {
             // A value-producing task needs contextual Future<T> information so
