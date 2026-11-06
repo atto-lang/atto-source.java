@@ -33,6 +33,12 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Static shell syntax and Bash expansion admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/test-source-task-v1-java.sh
+          if grep -Fq '\${' scripts/test-source-task-v1-java.sh; then echo 'Escaped Bash expansion detected' >&2; exit 1; fi
       - name: Execute actual .atto source guest (backend-specific slice only)
         shell: bash
         env:
@@ -41,6 +47,7 @@ jobs:
           set -euo pipefail
           bash scripts/test-source-task-v1-java.sh | tee target/task-v1-guest.log
           test "$(grep -c '^JAVA_FUTURE_TASK_ATTO_GUEST_PASS|' target/task-v1-guest.log)" = 2
+          test "$(grep -c '^JAVA_TASK_CAPTURE_REJECT_PASS|' target/task-v1-guest.log)" = 2
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
