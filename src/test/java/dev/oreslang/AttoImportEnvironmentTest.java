@@ -66,6 +66,22 @@ final class AttoImportEnvironmentTest {
     }
 
     @Test
+    void displaySpoofingAndMalformedUnicodeCannotSelectImportSources() {
+        for (String dangerous : new String[] {
+                "\u202E", "\u2028", "\u2029", "\u200F", "\u061C",
+                "\u2066", "\u2069", String.valueOf((char) 0xD800),
+                String.valueOf((char) 0xDC00)
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ImportPathInterpolation.expand("${repo}/helper",
+                            Map.of("repo", "/source/" + dangerous)));
+        }
+        assertEquals("/source/café/helper",
+                ImportPathInterpolation.expand("${repo}/helper",
+                        Map.of("repo", "/source/café")));
+    }
+
+    @Test
     void realAttoSourceImportCompilesAndExecutesUsingExplicitRepoVariable() throws Exception {
         Path project = temp.resolve("project");
         Path source = project.resolve("src");
