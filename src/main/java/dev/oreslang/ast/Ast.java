@@ -61,7 +61,24 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuKernelDecl { }
+
+    /**
+     * GPU declarations are intentionally NOT FunctionDecl entries. The host
+     * function registry, interpreter, reflection/interop and ordinary callable
+     * namespaces must never register a GPU kernel as a CPU function.
+     * A compiler-issued device proof is required before any backend may emit it.
+     */
+    public record GpuKernelDecl(FunctionDecl signature) implements Decl {
+        public GpuKernelDecl {
+            java.util.Objects.requireNonNull(signature, "GPU kernel signature");
+            if (signature.kind() != CallableKind.FNC
+                    || signature.actorKind() != ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "GPU-KERNEL-001: kernel must be an ordinary gpu fnc declaration");
+            }
+        }
+    }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {

@@ -205,7 +205,27 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * GPU kernels are source-typed separately and must never enter the CPU
+     * callable registry. Even a well-shaped kernel cannot be executed until
+     * device effects, owned memory loans and completion fences are verified.
+     */
+    private static void rejectGpuKernelExecutionUntilProviderProof(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.GpuKernelDecl kernel) {
+                    dev.oreslang.compiler.GpuKernelSourceHirV1.lower(kernel);
+                    throw new IllegalArgumentException(
+                            "GPU-KERNEL-008: typed GPU kernel source IR has no "
+                                    + "provider, device-memory ownership or fence proof; "
+                                    + "no implicit CPU fallback");
+                }
+            }
+        }
+    }
+
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectGpuKernelExecutionUntilProviderProof(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -251,6 +271,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectGpuKernelExecutionUntilProviderProof(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
             rejectUnloweredCheckedClassEffects(linked);

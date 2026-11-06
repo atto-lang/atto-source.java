@@ -92,11 +92,20 @@ public final class Parser {
                 // Only the scoped `on gpu(device)` spelling may reach the
                 // explicit-launch parser. Every malformed or out-of-context
                 // use still fails parsing; this is not device authority.
+                boolean kernelDeclaration = token.type() == GPU
+                        && i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == FNC;
+                boolean kernelBuiltin = token.type() == GPU
+                        && i + 2 < tokens.size()
+                        && tokens.get(i + 1).type() == DOT
+                        && tokens.get(i + 2).type() == IDENT
+                        && tokens.get(i + 2).lexeme().equals("global_id");
                 boolean launchPlacement = token.type() == GPU
                         && i > 0 && tokens.get(i - 1).type() == IDENT
                         && tokens.get(i - 1).lexeme().equals("on")
                         && i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
-                if (!canonicalTask && !legacyNbTask && !launchPlacement) {
+                if (!canonicalTask && !legacyNbTask && !launchPlacement
+                        && !kernelDeclaration && !kernelBuiltin) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
                             + " { ... }' is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
@@ -118,7 +127,7 @@ public final class Parser {
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
-            rejectUnsupportedAcceleratorSyntax();
+            if (!(check(GPU) && checkNext(FNC))) rejectUnsupportedAcceleratorSyntax();
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -349,7 +358,7 @@ public final class Parser {
     }
 
     private Ast.Decl parseModuleMember() {
-        rejectUnsupportedAcceleratorSyntax();
+        if (!(check(GPU) && checkNext(FNC))) rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
@@ -444,6 +453,20 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (match(GPU)) {
+            Token gpuKeyword = previous();
+            consume(FNC, "GPU-KERNEL-001: only 'gpu fnc' declarations are supported");
+            if (modifiers.async || modifiers.suspends || modifiers.generator
+                    || modifiers.structural || modifiers.nonLexical
+                    || modifiers.trapped || modifiers.isStatic
+                    || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                throw error(gpuKeyword,
+                        "GPU-KERNEL-006: gpu fnc rejects suspends, async, generator, "
+                                + "actor, static, structural and runtime modifiers");
+            }
+            return new Ast.GpuKernelDecl(
+                    parseFunction(annotations, modifiers, Ast.CallableKind.FNC));
+        }
         rejectUnsupportedAcceleratorSyntax();
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
@@ -4158,6 +4181,12 @@ public final class Parser {
             advance();
             return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false);
         }
+        if (check(GPU) && checkNext(DOT)) {
+            // The reserved gpu namespace is parsed only as an AST reference.
+            // A device-kernel checker admits gpu.global_id with a fixed axis;
+            // ordinary CPU TypeChecker contexts still reject this namespace.
+            return parsePostfix();
+        }
         if (match(CPU, GPU)) {
             Token domainToken = previous();
             Ast.ExecutionDomain domain = domainToken.type() == CPU
@@ -4515,6 +4544,10 @@ public final class Parser {
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
+        if (check(GPU) && checkNext(DOT)) {
+            advance();
+            return new Ast.NameExpr("gpu");
+        }
         // loop/block are contextual statement keywords: parseStatement only
         // consumes them when followed by '{'. In every expression position they
         // remain valid references to same-named callables, including first-class
