@@ -1,0 +1,4 @@
+pub fnc main(): int {
+  const int value = 41;
+  return (rt copy value) + 1;
+}
