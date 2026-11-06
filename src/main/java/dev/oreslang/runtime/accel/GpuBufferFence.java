@@ -12,7 +12,7 @@ public final class GpuBufferFence implements AutoCloseable {
     public record Identity(String tenant, String device, long allocationGeneration) {
         public Identity {
             if (tenant == null || tenant.isBlank() || device == null || device.isBlank()
-                    || allocationGeneration < 0) throw new IllegalArgumentException("invalid device identity");
+                    || allocationGeneration <= 0) throw new IllegalArgumentException("invalid device identity");
         }
     }
 
