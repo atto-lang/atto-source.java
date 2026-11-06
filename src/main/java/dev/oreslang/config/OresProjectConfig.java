@@ -157,9 +157,20 @@ public final class OresProjectConfig {
         }
 
         String schemaVersion = toml.getString("schema_version");
-        if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
+        // Zed's native AttoLang package marker is [package] name="...".
+        // Accept that form only for the modern manifest name; the compiler's
+        // explicit schema_version = "1" form remains valid. Never permit an
+        // absent schema without a validated package identity.
+        if (schemaVersion == null
+                && MODERN_MANIFEST_NAME.equals(absoluteManifest.getFileName().toString())) {
+            String packageName = toml.getString("package.name");
+            if (packageName == null || !packageName.matches("[a-z0-9][a-z0-9-]*")) {
+                throw new IllegalArgumentException(
+                        MODERN_MANIFEST_NAME + " requires schema_version = \"1\" or validated [package].name");
+            }
+        } else if (!SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    absoluteManifest.getFileName() + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Object rawBuild = toml.get("build");
