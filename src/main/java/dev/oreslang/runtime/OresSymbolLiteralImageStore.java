@@ -111,6 +111,7 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
     private Image current;
     private long nextGeneration = 1L;
     private boolean closed;
+    private boolean publishing;
 
     /**
      * Prepare a canonical immutable snapshot before modifying live state.
@@ -120,6 +121,11 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
     synchronized long publish(Collection<OresSymbol> source) {
         Objects.requireNonNull(source, "source");
         if (closed) throw new IllegalStateException("Symbol image store is closed");
+        // User-supplied Collection iterators can call back into this store.
+        // A monitor is reentrant: reject nested publication explicitly.
+        if (publishing) throw new IllegalStateException("recursive Symbol image publication");
+        publishing = true;
+        try {
 
         List<OresSymbol> values = new ArrayList<>();
         Map<OresSymbol, Integer> positions = new LinkedHashMap<>();
@@ -144,6 +150,9 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
         // Any exception during preparation leaves the old generation intact.
         List<OresSymbol> sealed = List.copyOf(values);
         Map<OresSymbol, Integer> lookup = Map.copyOf(positions);
+        // A malicious iterator could have called close() reentrantly during
+        // snapshot construction. Never resurrect a closed image store.
+        if (closed) throw new IllegalStateException("Symbol image store closed during publication");
         if (nextGeneration == Long.MAX_VALUE) {
             throw new IllegalStateException("Symbol generation counter exhausted");
         }
@@ -159,6 +168,9 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
         live.put(image.generation, image);
         retireIfUnused(previous);
         return image.generation;
+        } finally {
+            publishing = false;
+        }
     }
 
     synchronized Lease pinLatest() {
