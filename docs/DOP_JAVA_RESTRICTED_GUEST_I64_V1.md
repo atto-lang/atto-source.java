@@ -34,8 +34,8 @@ to live handles immediately before operations. A removed dense index produces
 produces `CapacityTrap`, without implicit store growth. Source `let`
 authorizes a column set in this restricted lane; bare columns cannot be set.
 
-The two canonical `.atto` fixtures under `contracts/dop-inverted-v1`
-match the LLVM and conformance Git blobs. Here the positive trace is expected
+The three canonical `.atto` fixtures under `contracts/dop-inverted-v1`
+match the LLVM and conformance Git blobs. The swap/reuse and immutable-column-swap positive traces are expected
 to return **42L**, while the negative trace is expected to throw the
 language-lane `BoundsTrap`. This does not claim that Java throws LLVM's native
 SIGILL/SIGTRAP: the two backends intentionally report target-specific failure
@@ -49,7 +49,7 @@ validates the narrow Java source's syntax/control structure. It does not
 replace executed JUnit tests against the real production Lexer and
 `InvertedColumnStore`.
 
-Release gate: source-local exact-head Java JUnit execution with real runtime,
+Release gate: source-local exact-head seven-case Java JUnit execution with real runtime,
 independent review, no unsupported fallback, plus complete compiler AST,
 ownership MIR and Graal/AOT support before any general guest-parity claim.
 Never qualify a workflow reporting `steps=[]` or `steps=null`.
