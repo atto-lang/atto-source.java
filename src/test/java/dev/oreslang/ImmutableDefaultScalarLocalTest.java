@@ -69,27 +69,32 @@ final class ImmutableDefaultScalarLocalTest {
         }) rejected(body);
     }
 
-    @Test void readonlyRuntimeInitializerFromHelperIsNotACopyOfConstSyntax()
+    @Test void runtimeHelperInitializerKeepsReadonlyBindingSeparateFromConstValueProof()
             throws Exception {
-        String source = """
-                fnc increment(int p): int { return p + 1; }
-                pub fnc main(): void {
-                    int computed = increment(41);
-                    stdio.println(computed);
-                    return;
-                }
-                """;
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
-        var program = Source.newBuilder(OresLanguage.ID, source,
-                "readonly-runtime-helper.ores")
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).build()) {
-            assertDoesNotThrow(() -> context.eval(program));
+        // Normative common-source #203: local const is a readonly binding,
+        // not a requirement that its initializer be compile-time evaluable.
+        // All three forms must actually execute the real helper in Graal.
+        for (String declaration : new String[] {
+                "int computed = increment(41);",
+                "const computed = increment(41);",
+                "const int computed = increment(41);"
+        }) {
+            String source = "fnc increment(int p): int { return p + 1; } "
+                    + "pub fnc main(): void { " + declaration
+                    + " stdio.println(computed); return; }";
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                    declaration);
+            var program = Source.newBuilder(OresLanguage.ID, source,
+                    "readonly-runtime-helper.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                assertDoesNotThrow(() -> context.eval(program), declaration);
+            }
+            assertEquals("42" + System.lineSeparator(),
+                    output.toString(StandardCharsets.UTF_8), declaration);
         }
-        assertEquals("42" + System.lineSeparator(),
-                output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void actualGraalGuestRunsImmutableDefaultBindings() throws Exception {
