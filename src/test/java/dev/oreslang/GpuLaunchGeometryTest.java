@@ -46,6 +46,55 @@ final class GpuLaunchGeometryTest {
     }
 
     @Test
+    void logicalExtentProducesCheckedPaddedPhysicalGrid() {
+        var p = GpuLaunchGeometry.validateLogical(
+                new Dim3(1000, 1, 1), new Dim3(256, 1, 1), 0, LIMITS);
+        assertEquals(1000, p.logicalWorkItems());
+        assertEquals(4, p.physical().grid().x());
+        assertEquals(1024, p.physical().totalLogicalThreads());
+        assertEquals(256, p.physical().threadsPerGroup());
+    }
+
+    @Test
+    void logical2dPadsAxesWithoutChangingWorkItemCount() {
+        var p = GpuLaunchGeometry.validateLogical(
+                new Dim3(35, 17, 1), new Dim3(16, 16, 1), 0, LIMITS);
+        assertEquals(595, p.logicalWorkItems());
+        assertEquals(3, p.physical().grid().x());
+        assertEquals(2, p.physical().grid().y());
+        assertEquals(1536, p.physical().totalLogicalThreads());
+    }
+
+    @Test
+    void logicalZeroExtentHasQuiescentCompletionWithoutMultiplicationOverflow() {
+        var p = GpuLaunchGeometry.validateLogical(
+                new Dim3(0, 65535, 65535),
+                new Dim3(1, 1, 1), 0, LIMITS);
+        assertEquals(0, p.logicalWorkItems());
+        assertEquals(0, p.physical().totalLogicalThreads());
+        assertTrue(p.physical().emptyLaunch());
+    }
+
+    @Test
+    void logicalZeroAndNegativeGroupAreDenied() {
+        assertThrows(IllegalArgumentException.class, () ->
+                GpuLaunchGeometry.validateLogical(
+                        new Dim3(8, 1, 1), new Dim3(0, 1, 1), 0, LIMITS));
+        assertThrows(IllegalArgumentException.class, () -> new Dim3(4, -1, 1));
+    }
+
+    @Test
+    void hugeLogicalExtentCannotWrapDuringCeilDivOrPhysicalSizing() {
+        Limits huge = new Limits(
+                new Dim3(Long.MAX_VALUE, 1, 1),
+                new Dim3(2, 1, 1), 2, 0);
+        assertThrows(IllegalArgumentException.class, () ->
+                GpuLaunchGeometry.validateLogical(
+                        new Dim3(Long.MAX_VALUE, 1, 1),
+                        new Dim3(2, 1, 1), 0, huge));
+    }
+
+    @Test
     void zeroAndNegativeBlockComponentsReject() {
         for (int axis = 0; axis < 3; axis++) {
             long[] zeros = {4, 2, 1};
