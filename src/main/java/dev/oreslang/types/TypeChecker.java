@@ -4,6 +4,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.compiler.GpuLaunchSourceHirV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -4323,37 +4324,11 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.GpuLaunchExpr launch) {
-            // The logical `over/group` source is not a precomputed grid:
-            // preserve the original extent for later tail/alias proof.
-            // No branch reaches the CPU evaluator while GPU lowering is absent.
-            List<Ast.Expr> group;
-            List<Ast.Expr> extent;
-            if (launch.geometry() instanceof Ast.GpuGridGeometry physical) {
-                group = physical.block();
-                extent = physical.grid();
-                // Exact physical grid and block geometry.
-            } else if (launch.geometry() instanceof Ast.GpuOverGeometry logicalGeometry) {
-                group = logicalGeometry.group();
-                extent = logicalGeometry.over();
-                // Distinct logical extent and physical workgroup shape.
-            } else {
-                throw new IllegalArgumentException("GPU-LAUNCH-003: unsupported launch geometry");
-            }
-            for (int axis = 0; axis < 3; axis++) {
-                Long groupSize = gpuConstantDimension(group.get(axis));
-                if (groupSize != null && groupSize <= 0) {
-                    throw new IllegalArgumentException(
-                            "GPU-LAUNCH-003: GPU block/group dimensions must be positive");
-                }
-                Long extentSize = gpuConstantDimension(extent.get(axis));
-                if (extentSize != null && (extentSize < 0
-                        || (launch.geometry() instanceof Ast.GpuGridGeometry && extentSize == 0))) {
-                    throw new IllegalArgumentException(
-                            "GPU-LAUNCH-003: physical grid axes must be positive; logical over axes nonnegative");
-                }
-            }
-            // Both modes stay fail-closed. Logical over/group additionally
-            // requires a verified padded-tail and barrier-convergence proof.
+            // Real parsed guest AST -> immutable symbolic integer launch HIR.
+            // This checks safe source geometry but never grants type, borrow,
+            // device, queue, or fence authority. Unsupported GPU dispatch
+            // must still fail closed without CPU fallback.
+            GpuLaunchSourceHirV1.lower(launch);
             throw new IllegalArgumentException(
                     "GPU-LAUNCH-008: explicit GPU launch is parser-visible but "
                             + "physical GPU dispatch, padded-tail proofs, and owned device-buffer "
