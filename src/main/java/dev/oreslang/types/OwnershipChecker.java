@@ -1251,6 +1251,15 @@ public final class OwnershipChecker {
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
                                         + "this current-main convergence patch fails closed instead of aliasing");
                     }
+                    // A computed expression may have a provisional COPY kind
+                    // but an unresolved result type. Do not authorize copying
+                    // an unknown value through arithmetic or another wrapper.
+                    // Borrowed primitive scalars are handled separately above
+                    // and already produce an independent detached Copy value.
+                    if (!isCopyType(source.type)) {
+                        throw error("rt copy requires a statically resolved Copy type; "
+                                + "an inferred or unknown result is not Copy proof");
+                    }
                     yield source;
                 }
                 case "share" -> {
