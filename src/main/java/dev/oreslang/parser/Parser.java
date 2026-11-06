@@ -4045,21 +4045,36 @@ public final class Parser {
     }
 
     private void expectGpuLaunchField(String expected) {
-        Token field = consume(IDENT, "GPU launch requires '" + expected + "' field");
+        // `over` already has a dedicated lexical token in the select grammar.
+        // Do not accidentally treat it as an IDENT or broaden the lexer.
+        Token field = expected.equals("over")
+                ? consume(OVER, "GPU launch requires 'over' field")
+                : consume(IDENT, "GPU launch requires '" + expected + "' field");
         if (!field.lexeme().equals(expected)) {
             throw error(field, "GPU-LAUNCH-003: expected GPU launch field '" + expected + "'");
         }
         consume(COLON, "GPU launch field '" + expected + "' requires ':'");
     }
 
-    private List<Ast.Expr> parseGpuLaunchDimensions(String field) {
-        consume(LBRACKET, "GPU-LAUNCH-003: " + field + " requires [x, y, z]");
+    private List<Ast.Expr> parseGpuLaunchDimensions(String field, boolean logical) {
+        consume(LBRACKET, "GPU-LAUNCH-003: " + field + " requires dimension array");
         List<Ast.Expr> dimensions = new ArrayList<>(3);
-        for (int axis = 0; axis < 3; axis++) {
-            dimensions.add(parseExpression());
-            if (axis < 2) consume(COMMA, "GPU-LAUNCH-003: expected next " + field + " dimension");
+        if (check(RBRACKET)) {
+            throw error(peek(), "GPU-LAUNCH-003: empty " + field + " dimensions");
         }
-        consume(RBRACKET, "GPU-LAUNCH-003: " + field + " requires three dimensions");
+        do {
+            if (dimensions.size() >= 3) {
+                throw error(peek(), "GPU-LAUNCH-003: " + field + " has more than three dimensions");
+            }
+            dimensions.add(parseExpression());
+        } while (match(COMMA));
+        consume(RBRACKET, "GPU-LAUNCH-003: " + field + " array requires ']'");
+        if (!logical && dimensions.size() != 3) {
+            throw error(previous(), "GPU-LAUNCH-003: " + field + " needs exactly three dimensions");
+        }
+        // Logical 1D/2D shorthand is normalized to 3D without losing the
+        // logical-vs-physical distinction in the AST geometry variant.
+        while (dimensions.size() < 3) dimensions.add(new Ast.LiteralExpr(1L));
         return List.copyOf(dimensions);
     }
 
@@ -4084,12 +4099,15 @@ public final class Parser {
         Ast.Expr device = parseExpression();
         consume(RPAREN, "GPU-LAUNCH-004: GPU placement requires ')'");
         consume(LBRACE, "GPU-LAUNCH-003: GPU launch requires configuration block");
-        expectGpuLaunchField("grid");
-        List<Ast.Expr> grid = parseGpuLaunchDimensions("grid");
-        consume(COMMA, "GPU-LAUNCH-003: grid and block must be separated by ','");
-        expectGpuLaunchField("block");
-        List<Ast.Expr> block = parseGpuLaunchDimensions("block");
-        consume(COMMA, "GPU-LAUNCH-003: block and queue must be separated by ','");
+        boolean logical = check(OVER);
+        String extentField = logical ? "over" : "grid";
+        String groupField = logical ? "group" : "block";
+        expectGpuLaunchField(extentField);
+        List<Ast.Expr> extent = parseGpuLaunchDimensions(extentField, logical);
+        consume(COMMA, "GPU-LAUNCH-003: geometry fields must be separated by ','");
+        expectGpuLaunchField(groupField);
+        List<Ast.Expr> group = parseGpuLaunchDimensions(groupField, logical);
+        consume(COMMA, "GPU-LAUNCH-003: workgroup and queue must be separated by ','");
         expectGpuLaunchField("queue");
         Ast.Expr queue = parseExpression();
         Ast.Expr sharedBytes = new Ast.LiteralExpr(0L);
@@ -4099,7 +4117,10 @@ public final class Parser {
             match(COMMA);
         }
         consume(RBRACE, "GPU-LAUNCH-003: GPU launch configuration must end with '}'");
-        return new Ast.GpuLaunchExpr(kernel, arguments, device, grid, block, queue, sharedBytes);
+        Ast.GpuLaunchGeometry geometry = logical
+                ? new Ast.GpuOverGeometry(extent, group)
+                : new Ast.GpuGridGeometry(extent, group);
+        return new Ast.GpuLaunchExpr(kernel, arguments, device, geometry, queue, sharedBytes);
     }
 
     private Ast.Expr parseUnary() {
