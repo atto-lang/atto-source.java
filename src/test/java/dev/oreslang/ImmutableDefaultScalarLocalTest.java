@@ -118,6 +118,43 @@ final class ImmutableDefaultScalarLocalTest {
         }
     }
 
+    @Test void readonlyAssignmentParsesBeforeSemanticRejection() {
+        // Failing the lexer/parser is not evidence that the compiler resolved
+        // an immutable binding and correctly denied its reassignment.
+        for (String body : new String[] {
+                "int x = 7; x = 8; return x;",
+                "const x = 7; x = 8; return x;",
+                "const int x = 7; x = 8; return x;",
+                "bool flag = true; flag = false; return 7;"
+        }) {
+            var ast = assertDoesNotThrow(() -> Parser.parse(program(body)),
+                    "readonly negative must pass parsing: " + body);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(ast),
+                    "readonly reassignment must fail at semantic checking: " + body);
+        }
+    }
+
+    @Test void actualGraalGuestMustExecuteExplicitMutableLetPositiveControl()
+            throws Exception {
+        // A compiler that rejects *all* assignment statements can falsely
+        // appear to enforce immutable defaults. This positive control must
+        // really execute the mutation and print 8 via the Graal guest.
+        String source = "pub fnc main(): void { "
+                + "let int x = 7; x = 8; stdio.println(x); return; }";
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        var program = Source.newBuilder(OresLanguage.ID, source,
+                "mutable-let-positive-control.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertDoesNotThrow(() -> context.eval(program));
+        }
+        assertEquals("8" + System.lineSeparator(),
+                output.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void explicitMutableLetSemanticsRemainSeparate() {
         accepted("let int x = 7; x = 8; return x;");
         rejected("const int x = 7; x = 8; return x;");
