@@ -1,0 +1,47 @@
+# Compiler-backed guest admission. This is NOT five-backend or production refinement.
+name: AttoLang application formal policies (Java guest)
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/AttoFormalPolicyGuestTest.java'
+      - 'src/test/resources/atto/formal-policies/**'
+      - '.github/workflows/atto-application-formal-guest.yml'
+      - 'src/main/java/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-guest-formal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact triggering source head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up pinned Java toolchain
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Verify exact head and execute real .atto guest policies
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "ATTO_FORMAL_GUEST_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_FORMAL_GUEST_TREE=$(git rev-parse 'HEAD^{tree}')"
+          mvn -B -ntp -Dtest=AttoFormalPolicyGuestTest -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.AttoFormalPolicyGuestTest.xml
+          grep -Eq 'tests="[1-9][0-9]*"' target/surefire-reports/TEST-dev.oreslang.AttoFormalPolicyGuestTest.xml
+      - name: Retain JUnit proof and source-review receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-application-formal-java-guest-junit
+          path: target/surefire-reports/*AttoFormalPolicyGuestTest*
+          if-no-files-found: error
