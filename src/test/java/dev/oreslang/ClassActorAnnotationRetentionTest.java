@@ -36,7 +36,7 @@ final class ClassActorAnnotationRetentionTest {
     void discardsNoActorMetadataWhenRetainingOtherFields() {
         Ast.ClassDecl actor = declaration("""
                 @Doc("actor metadata") define actor Worker as
-                    private int count = 0;
+                    let int count = 0;
                 end
                 """);
         assertNotEquals(Ast.ActorKind.NONE, actor.actorKind());
