@@ -4328,15 +4328,13 @@ public final class TypeChecker {
             // before the device-admission gate; dynamic dimensions will need
             // checked runtime geometry after real backend lowering exists.
             for (int axis = 0; axis < 3; axis++) {
-                Ast.Expr dimension = launch.block().get(axis);
-                if (dimension instanceof Ast.LiteralExpr literal
-                        && literal.value() instanceof Long value && value <= 0) {
+                Long blockSize = gpuConstantDimension(launch.block().get(axis));
+                if (blockSize != null && blockSize <= 0) {
                     throw new IllegalArgumentException(
                             "GPU-LAUNCH-003: GPU block dimensions must be positive");
                 }
-                dimension = launch.grid().get(axis);
-                if (dimension instanceof Ast.LiteralExpr literal
-                        && literal.value() instanceof Long value && value < 0) {
+                Long gridSize = gpuConstantDimension(launch.grid().get(axis));
+                if (gridSize != null && gridSize < 0) {
                     throw new IllegalArgumentException(
                             "GPU-LAUNCH-003: GPU grid dimensions cannot be negative");
                 }
@@ -4867,6 +4865,19 @@ public final class TypeChecker {
                     name + " scalar argument " + (i + 1));
         }
         return Primitive.BOOL;
+    }
+
+    /** Extract only statically evident signed GPU geometry without widening or overflow. */
+    private static Long gpuConstantDimension(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal && literal.value() instanceof Long value)
+            return value;
+        if (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value) {
+            // MIN_VALUE already has a special lexer representation; no wrap.
+            return value == Long.MIN_VALUE ? null : -value;
+        }
+        return null;
     }
 
     private Type checkTaskExpression(
