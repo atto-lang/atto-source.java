@@ -4346,9 +4346,10 @@ public final class TypeChecker {
                             "GPU-LAUNCH-003: GPU block/group dimensions must be positive");
                 }
                 Long extentSize = gpuConstantDimension(extent.get(axis));
-                if (extentSize != null && extentSize < 0) {
+                if (extentSize != null && (extentSize < 0
+                        || (launch.geometry() instanceof Ast.GpuGridGeometry && extentSize == 0))) {
                     throw new IllegalArgumentException(
-                            "GPU-LAUNCH-003: GPU grid/over dimensions cannot be negative");
+                            "GPU-LAUNCH-003: physical grid axes must be positive; logical over axes nonnegative");
                 }
             }
             // Both modes stay fail-closed. Logical over/group additionally

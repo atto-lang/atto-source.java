@@ -55,6 +55,15 @@ final class AttoGpuExplicitLaunchAdmissionTest {
     }
 
     @Test
+    void zeroPhysicalGridConstantRejectsBeforeDeviceFallback() {
+        String zeroGrid = LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "grid: [0, 1, 1]");
+        assertDoesNotThrow(() -> Parser.parse(zeroGrid));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(zeroGrid));
+        assertTrue(rejected.getMessage().contains("GPU-LAUNCH-003"), rejected::getMessage);
+    }
+
+    @Test
     void negativeGridAndBlockConstantsRejectAtTypeBoundary() {
         for (String source : List.of(
                 LAUNCH.replace("grid: [ceil_div(n, 256), 1, 1]", "grid: [-1, 1, 1]"),

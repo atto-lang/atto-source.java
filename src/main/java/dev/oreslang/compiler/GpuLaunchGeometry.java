@@ -32,7 +32,7 @@ public final class GpuLaunchGeometry {
 
     public record Plan(Dim3 grid, Dim3 block, long sharedBytes,
                        long totalGroups, long threadsPerGroup,
-                       long totalLogicalThreads, boolean emptyLaunch) { }
+                       long totalDispatchedLanes, boolean emptyLaunch) { }
 
     /** Logical work extent must remain distinct from rounded-up physical lanes. */
     public record LogicalPlan(Dim3 over, Dim3 group, long logicalWorkItems,
@@ -64,7 +64,8 @@ public final class GpuLaunchGeometry {
         Dim3 grid = new Dim3(checkedCeilDiv(over.x(), group.x()),
                 checkedCeilDiv(over.y(), group.y()),
                 checkedCeilDiv(over.z(), group.z()));
-        Plan physical = validate(grid, group, sharedBytes, limits);
+        // A zero logical domain is an admitted no-op, never a physical zero-grid dispatch.
+        Plan physical = validateInternal(grid, group, sharedBytes, limits, true);
         long logicalCount = (over.x() == 0 || over.y() == 0 || over.z() == 0)
                 ? 0 : checkedProduct(checkedProduct(over.x(), over.y(), "logical"),
                         over.z(), "logical");
@@ -86,12 +87,22 @@ public final class GpuLaunchGeometry {
      */
     public static Plan validate(Dim3 grid, Dim3 block,
                                 long sharedBytes, Limits limits) {
+        return validateInternal(grid, block, sharedBytes, limits, false);
+    }
+
+    // Empty grids are only representable as private quiescent plans derived
+    // from a zero logical 'over' extent. Exact 'grid/block' forbids them.
+    private static Plan validateInternal(Dim3 grid, Dim3 block,
+                                         long sharedBytes, Limits limits,
+                                         boolean allowEmptyLogicalGrid) {
         Objects.requireNonNull(grid, "GPU launch grid");
         Objects.requireNonNull(block, "GPU launch block");
         Objects.requireNonNull(limits, "GPU launch limits");
 
         if (block.x() == 0 || block.y() == 0 || block.z() == 0)
             throw new IllegalArgumentException("GPU-LAUNCH-003: block dimensions must be positive");
+        if (!allowEmptyLogicalGrid && (grid.x() == 0 || grid.y() == 0 || grid.z() == 0))
+            throw new IllegalArgumentException("GPU-LAUNCH-003: physical grid dimensions must be positive");
         if (grid.x() > limits.maxGrid().x() || grid.y() > limits.maxGrid().y()
                 || grid.z() > limits.maxGrid().z()
                 || block.x() > limits.maxBlock().x() || block.y() > limits.maxBlock().y()
@@ -112,9 +123,8 @@ public final class GpuLaunchGeometry {
                 : checkedProduct(checkedProduct(grid.x(), grid.y(), "grid"),
                         grid.z(), "grid");
         long total = checkedProduct(groups, threads, "total launch");
-        // A zero grid is admitted but never becomes a zero-sized physical
-        // command. The future provider should create an already-complete
-        // quiescent completion after normal capability/ownership admission.
+        // Only a zero logical extent may create this empty, non-dispatching
+        // quiescent plan; exact physical launches reject zero grid axes.
         return new Plan(grid, block, sharedBytes, groups, threads, total, groups == 0);
     }
 }
