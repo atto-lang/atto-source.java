@@ -68,8 +68,10 @@ final class AttoImportEnvironmentTest {
     @Test
     void displaySpoofingAndMalformedUnicodeCannotSelectImportSources() {
         for (String dangerous : new String[] {
-                "\u202E", "\u2028", "\u2029", "\u200F", "\u061C",
-                "\u2066", "\u2069", String.valueOf((char) 0xD800),
+                String.valueOf((char) 0x202E), String.valueOf((char) 0x2028),
+                String.valueOf((char) 0x2029), String.valueOf((char) 0x200F),
+                String.valueOf((char) 0x061C), String.valueOf((char) 0x2066),
+                String.valueOf((char) 0x2069), String.valueOf((char) 0xD800),
                 String.valueOf((char) 0xDC00)
         }) {
             assertThrows(IllegalArgumentException.class,
