@@ -1,0 +1,93 @@
+name: AttoLang DOP inverted Java restricted guest exact-head
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/DopInvertedGuestI64V1.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/main/java/dev/oreslang/runtime/InvertedColumnStore.java'
+      - 'src/test/java/dev/oreslang/compiler/DopInvertedGuestI64V1Test.java'
+      - 'src/test/java/dev/oreslang/DopInvertedGuestAdmissionTest.java'
+      - 'contracts/dop-inverted-v1/**'
+      - '.github/workflows/dop-inverted-java-guest-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restricted-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: checkout-head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: verify-head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_HEAD" ]]
+          git diff --quiet --exit-code
+          [[ -z "$(git ls-files --others --exclude-standard)" ]]
+          echo "DOP_EXACT_HEAD=$EXPECTED_HEAD"
+          echo "DOP_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: verify-fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import subprocess
+          hashes = {
+              "swap-reuse.atto": "8f5599a9e0b11ded2929110b4936441fceb2ef21",
+              "removed-index-trap.atto": "c3c87cfd2515707932734e183bb5768436526a96",
+              "positive-immutable-column-swap.atto": "863b1f20137656a277fc7bc04415a6f001f76512",
+          }
+          for name, wanted in hashes.items():
+              path = pathlib.Path("contracts/dop-inverted-v1") / name
+              if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+                  raise SystemExit(f"invalid canonical AttoLang source: {name}")
+              got = subprocess.check_output(
+                  ["git", "hash-object", "--no-filters", str(path)], text=True
+              ).strip()
+              if got != wanted:
+                  raise SystemExit(f"canonical AttoLang source mismatch: {name}")
+          print("DOP_CANONICAL_SOURCE_BLOBS_MATCHED=3")
+          PY
+      - name: setup-graalvm
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: compile-guest
+        run: mvn -B -ntp -DskipTests package
+      - name: execute-guest
+        run: mvn -B -ntp -Dtest=DopInvertedGuestI64V1Test,DopInvertedGuestAdmissionTest test
+      - name: verify-junit-report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path("target/surefire-reports/TEST-dev.oreslang.compiler.DopInvertedGuestI64V1Test.xml")
+          if not path.is_file() or path.is_symlink():
+              raise SystemExit("missing trustworthy restricted guest JUnit XML")
+          tree = ET.parse(path).getroot()
+          tests = int(tree.attrib.get("tests", 0))
+          failures = int(tree.attrib.get("failures", -1))
+          errors = int(tree.attrib.get("errors", -1))
+          skipped = int(tree.attrib.get("skipped", -1))
+          if tests < 7 or failures != 0 or errors != 0 or skipped != 0:
+              raise SystemExit(f"restricted guest suite not fully executed: {tests}/{failures}/{errors}/{skipped}")
+          print(f"DOP_JAVA_RESTRICTED_GUEST_EXECUTED={tests}")
+          PY
