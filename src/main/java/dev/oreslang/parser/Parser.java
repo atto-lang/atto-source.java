@@ -4047,9 +4047,11 @@ public final class Parser {
     private void expectGpuLaunchField(String expected) {
         // `over` already has a dedicated lexical token in the select grammar.
         // Do not accidentally treat it as an IDENT or broaden the lexer.
-        Token field = expected.equals("over")
-                ? consume(OVER, "GPU launch requires 'over' field")
-                : consume(IDENT, "GPU launch requires '" + expected + "' field");
+        Token field = switch (expected) {
+            case "over" -> consume(OVER, "GPU launch requires 'over' field");
+            case "block" -> consume(BLOCK, "GPU launch requires 'block' field");
+            default -> consume(IDENT, "GPU launch requires '" + expected + "' field");
+        };
         if (!field.lexeme().equals(expected)) {
             throw error(field, "GPU-LAUNCH-003: expected GPU launch field '" + expected + "'");
         }
