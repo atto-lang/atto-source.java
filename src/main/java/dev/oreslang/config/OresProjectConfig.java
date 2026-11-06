@@ -32,6 +32,7 @@ import java.util.Optional;
  */
 public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String MODERN_MANIFEST_NAME = ".ores.pkg.toml";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String ENV_ORES_PATHS = "ORES_PATHS";
     public static final String ENV_ATTO_PATHS = "ATTO_PATHS";
@@ -109,8 +110,20 @@ public final class OresProjectConfig {
 
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
-            Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            Path modern = cursor.resolve(MODERN_MANIFEST_NAME);
+            if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) {
+                if (Files.isSymbolicLink(modern) || !Files.isRegularFile(modern, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IllegalArgumentException("invalid modern project manifest marker");
+                }
+                return load(modern, environment);
+            }
+            Path legacy = cursor.resolve(MANIFEST_NAME);
+            if (Files.exists(legacy, LinkOption.NOFOLLOW_LINKS)) {
+                if (Files.isSymbolicLink(legacy) || !Files.isRegularFile(legacy, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IllegalArgumentException("invalid legacy project manifest marker");
+                }
+                return load(legacy, environment);
+            }
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -132,8 +145,9 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(absoluteManifest)) {
-            throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+        if (!Files.isRegularFile(absoluteManifest, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(absoluteManifest)) {
+            throw new IllegalArgumentException("not a regular project manifest: " + absoluteManifest);
         }
 
         TomlParseResult toml = Toml.parse(absoluteManifest);
@@ -249,9 +263,28 @@ public final class OresProjectConfig {
         if (expanded.startsWith("https://") || expanded.startsWith("http://")) {
             throw new IllegalArgumentException("remote source imports require locked Zed URL admission (not implemented)");
         }
+        if (expanded.startsWith("+")) {
+            if (!expanded.startsWith("+/")) {
+                throw new IllegalArgumentException("project-root source imports require canonical +/ prefix");
+            }
+            return Optional.of(resolveProjectRootSource(importer, expanded));
+        }
         String unix = expanded.replace('\\', '/');
         Path raw = Path.of(unix);
-        if (raw.isAbsolute()) return existingSource(raw);
+        if (raw.isAbsolute()) {
+            Optional<Path> selected = existingSource(raw);
+            if (importPath.contains("${")) {
+                // Env-derived absolute paths are NOT unrestricted reads.
+                // The source must be owned by the importing project, or by an
+                // explicit manifest import path. Never let ambient paths grant
+                // package authority to an environment-variable substitution.
+                if (selected.isEmpty()) {
+                    throw new IllegalArgumentException("expanded absolute import source not found");
+                }
+                requireAuthorizedEnvironmentSource(selected.get());
+            }
+            return selected;
+        }
 
         if (unix.startsWith(".")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
@@ -269,7 +302,107 @@ public final class OresProjectConfig {
             Optional<Path> resolved = existingSource(candidate);
             if (resolved.isPresent()) return resolved;
         }
+        if (importPath.contains("${")) {
+            throw new IllegalArgumentException("expanded import source not found");
+        }
         return Optional.empty();
+    }
+
+    private Path resolveProjectRootSource(Path importer, String expanded) {
+        if (manifestPath == null || !MODERN_MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+            throw new IllegalArgumentException("canonical +/ source imports require nearest .ores.pkg.toml");
+        }
+        String suffix = expanded.substring(2);
+        if (suffix.isEmpty() || expanded.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 4096) {
+            throw new IllegalArgumentException("invalid canonical project-root import length");
+        }
+        for (String component : suffix.split("/", -1)) {
+            if (component.isEmpty() || component.equals(".") || component.equals("..")
+                    || !component.matches("[A-Za-z0-9_.-]+")) {
+                throw new IllegalArgumentException("invalid canonical project-root import component");
+            }
+        }
+        Path root = checkedPhysicalRoot(projectRoot);
+        Path manifestDirectory = checkedPhysicalRoot(manifestPath.getParent());
+        if (!root.startsWith(manifestDirectory)) {
+            throw new IllegalArgumentException("configured project.root escapes physical manifest directory");
+        }
+        Path spelled = projectRoot.resolve(suffix);
+        if (!spelled.normalize().startsWith(projectRoot)) {
+            throw new IllegalArgumentException("project-root import escapes selected root");
+        }
+        Optional<Path> found = existingSource(spelled);
+        if (found.isEmpty()) throw new IllegalArgumentException("project-root import source not found");
+        Path target = checkedPhysicalSource(found.get());
+        requireWithinPackage(root, target);
+        requireNoNestedManifest(root, spelled);
+        requireNoNestedManifest(root, target);
+        return target;
+    }
+
+    private void requireAuthorizedEnvironmentSource(Path candidate) {
+        if (manifestPath == null) {
+            throw new IllegalArgumentException(
+                    "environment-derived absolute imports require an explicit project manifest");
+        }
+        Path target = checkedPhysicalSource(candidate);
+        // This is the package root or the manifest's explicitly configured
+        // import paths ONLY. ATTO_PATHS/ORES_PATHS are search hints, not an
+        // authorization to read arbitrary env-selected absolute files.
+        LinkedHashSet<Path> authorized = new LinkedHashSet<>();
+        authorized.add(projectRoot);
+        authorized.addAll(importPaths);
+        for (Path root : authorized) {
+            if (!Files.isDirectory(root)) continue;
+            Path physicalRoot = checkedPhysicalRoot(root);
+            if (target.startsWith(physicalRoot) && !target.equals(physicalRoot)) {
+                requireNoNestedManifest(physicalRoot, candidate);
+                requireNoNestedManifest(physicalRoot, target);
+                return;
+            }
+        }
+        throw new IllegalArgumentException(
+                "environment-derived absolute import is outside authorized project source roots");
+    }
+
+    private static Path checkedPhysicalRoot(Path root) {
+        try {
+            return root.toRealPath();
+        } catch (IOException error) {
+            throw new IllegalArgumentException("cannot resolve verified import root", error);
+        }
+    }
+
+    private static Path checkedPhysicalSource(Path source) {
+        try {
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("import source must be a regular non-symlink file");
+            }
+            return source.toRealPath();
+        } catch (IOException error) {
+            throw new IllegalArgumentException("cannot resolve verified import source", error);
+        }
+    }
+
+    private static void requireWithinPackage(Path root, Path target) {
+        if (!target.startsWith(root) || target.equals(root)) {
+            throw new IllegalArgumentException("import escapes physical package root");
+        }
+    }
+
+    private static void requireNoNestedManifest(Path root, Path candidate) {
+        Path normalized = candidate.toAbsolutePath().normalize();
+        requireWithinPackage(root, normalized);
+        for (Path cursor = normalized.getParent(); !cursor.equals(root); cursor = cursor.getParent()) {
+            if (cursor == null || cursor.equals(cursor.getRoot())) {
+                throw new IllegalArgumentException("import escapes package boundary");
+            }
+            for (String name : List.of(MODERN_MANIFEST_NAME, MANIFEST_NAME)) {
+                if (Files.exists(cursor.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IllegalArgumentException("import crosses nested package boundary");
+                }
+            }
+        }
     }
 
     private static Optional<Path> existingSource(Path candidate) {
