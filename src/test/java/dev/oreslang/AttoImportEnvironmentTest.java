@@ -339,10 +339,19 @@ final class AttoImportEnvironmentTest {
     void unsupportedRemoteImportsAreRejectedBeforeAnyFetch() throws Exception {
         Path project = temp.resolve("project");
         Files.createDirectories(project);
-        var config = OresProjectConfig.discover(project, Map.of("REMOTE", "https://example.test/src"));
+        var config = OresProjectConfig.discover(project, Map.of(
+                "REMOTE", "https://example.test/src",
+                "FILE_URI", "file:///tmp/untrusted",
+                "JAVA_URI", "java:java.lang.Runtime"));
         assertThrows(IllegalArgumentException.class,
                 () -> config.resolveImport(project.resolve("main.atto"), "${REMOTE}/foo"));
         assertThrows(IllegalArgumentException.class,
                 () -> config.resolveImport(project.resolve("main.atto"), "https://example.test/foo"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.atto"), "${FILE_URI}/foo"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.atto"), "${JAVA_URI}"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.atto"), "file:///tmp/untrusted"));
     }
 }
