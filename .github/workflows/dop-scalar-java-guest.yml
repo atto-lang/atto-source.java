@@ -57,14 +57,28 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -DskipTests test-compile
-      - name: Execute two actual compiled AttoLang JIT guest tests
+      - name: compile-guest
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
-          mvn -B -ntp -Dtest=DopScalarGuestParityTest -DfailIfNoTests=true test
+          mvn -B -ntp             '-Dtest=DopScalarGuestParityTest#canonicalSoaGuestCompilerAdmissionDoesNotRequireExecuting'             -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.DopScalarGuestParityTest.xml
+          cp target/surefire-reports/TEST-dev.oreslang.DopScalarGuestParityTest.xml             "$RUNNER_TEMP/dop-junit-verifier/compile-guest.junit.xml"
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
+      - name: execute-guest
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
+          mvn -B -ntp \
+            '-Dtest=DopScalarGuestParityTest#identicalScalarSoaSourceCompilesAndReturnsZeroFromRealJitGuest+incorrectGuestChecksumIsDetectedByActualCompiledExecution' \
+            -DfailIfNoTests=true test
+          test -s "$RUNNER_TEMP/dop-junit-verifier/compile-guest.junit.xml"
           java -cp "$RUNNER_TEMP/dop-junit-verifier" \
             DopGuestJUnitReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
           test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
