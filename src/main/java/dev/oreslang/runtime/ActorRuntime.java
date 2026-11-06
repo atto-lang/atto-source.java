@@ -474,6 +474,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
+    // Root is depth 0; child-supervisor admission permits at most 64 edges.
+    private static final int MAX_SUPERVISOR_DEPTH = 64;
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
             new ConcurrentHashMap<>(Map.of(rootSupervisor.id(), rootSupervisor));
@@ -3130,6 +3133,16 @@ public final class ActorRuntime implements AutoCloseable {
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
+            // Every link is immutable, but a client could otherwise construct a
+            // very deep chain up to maxActors. Check BEFORE publishing any new
+            // identity, so subtree enumeration/shutdown stays bounded by depth.
+            int prospectiveDepth = 0;
+            for (ActorSupervisor ancestor = parent; ancestor != null; ancestor = ancestor.parent) {
+                if (++prospectiveDepth > MAX_SUPERVISOR_DEPTH)
+                    throw new IllegalStateException(
+                            "ActorSupervisor hierarchy depth limit exceeded: maximum "
+                                    + MAX_SUPERVISOR_DEPTH);
+            }
             if (supervisors.size() >= dispatcherConfig.maxActors())
                 throw new IllegalStateException(
                         "ActorSupervisor runtime limit exceeded: maximum "
