@@ -14,6 +14,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -57,6 +58,15 @@ final class DopScalarGuestParityTest {
                 stdout, stderr);
         assertEquals(1, result.build().units().size(), "one linked source unit");
         return result.exitStatus();
+    }
+
+    @Test
+    void canonicalSoaGuestCompilerAdmissionDoesNotRequireExecuting() throws Exception {
+        Path entry = temp.resolve("compile-only-soa-int-update.atto");
+        Files.write(entry, pinnedSource());
+        var build = LinkedProgramRunner.validate(entry, Map.of());
+        assertNotNull(build, "real linked-source compiler must accept canonical guest");
+        assertEquals(1, build.units().size(), "one exactly pinned .atto source unit");
     }
 
     @Test
