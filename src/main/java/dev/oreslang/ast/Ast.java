@@ -1504,24 +1504,49 @@ public final class Ast {
     public record AwaitExpr(Expr expression) implements Expr { }
 
     /**
-     * Host-side explicit GPU kernel launch syntax, distinct from gpu task and
-     * the historical gpu callable spelling. Parsing creates only an AST; the
-     * backend's type/effect/capability gate must reject until lowering exists.
-     * The three dimensions are grid workgroups and block work-items.
+     * GPU execution geometry has two distinct meanings. Do not erase logical
+     * work-item bounds when lowering over/group to physical grid/block counts.
+     * Both forms remain parser-only until the borrow/effect and GPU backend
+     * admission gates prove actual execution.
      */
-    public record GpuLaunchExpr(
-            Expr kernel, List<Expr> arguments, Expr device,
-            List<Expr> grid, List<Expr> block, Expr queue, Expr sharedBytes) implements Expr {
-        public GpuLaunchExpr {
-            java.util.Objects.requireNonNull(kernel, "gpu launch kernel");
-            java.util.Objects.requireNonNull(device, "gpu launch device");
-            java.util.Objects.requireNonNull(queue, "gpu launch queue");
-            java.util.Objects.requireNonNull(sharedBytes, "gpu launch shared bytes");
-            arguments = List.copyOf(arguments);
+    public sealed interface GpuLaunchGeometry permits GpuGridGeometry, GpuOverGeometry { }
+
+    /** Expert geometry: exact physical workgroup count and work-items/group. */
+    public record GpuGridGeometry(List<Expr> grid, List<Expr> block)
+            implements GpuLaunchGeometry {
+        public GpuGridGeometry {
             grid = List.copyOf(grid);
             block = List.copyOf(block);
             if (grid.size() != 3 || block.size() != 3)
-                throw new IllegalArgumentException("GPU-LAUNCH-003: grid and block must be three-dimensional");
+                throw new IllegalArgumentException("GPU-LAUNCH-003: grid/block require exactly three dimensions");
+        }
+    }
+
+    /**
+     * Logical geometry: 1–3D logical work-item extent and per-group work-items.
+     * The compiler must derive physical grid with checked ceiling division and
+     * prove padded-tail safety, especially for kernels containing barriers.
+     */
+    public record GpuOverGeometry(List<Expr> over, List<Expr> group)
+            implements GpuLaunchGeometry {
+        public GpuOverGeometry {
+            over = List.copyOf(over);
+            group = List.copyOf(group);
+            if (over.size() != 3 || group.size() != 3)
+                throw new IllegalArgumentException("GPU-LAUNCH-003: normalized over/group must be three-dimensional");
+        }
+    }
+
+    public record GpuLaunchExpr(
+            Expr kernel, List<Expr> arguments, Expr device,
+            GpuLaunchGeometry geometry, Expr queue, Expr sharedBytes) implements Expr {
+        public GpuLaunchExpr {
+            java.util.Objects.requireNonNull(kernel, "gpu launch kernel");
+            java.util.Objects.requireNonNull(device, "gpu launch device");
+            java.util.Objects.requireNonNull(geometry, "gpu launch geometry");
+            java.util.Objects.requireNonNull(queue, "gpu launch queue");
+            java.util.Objects.requireNonNull(sharedBytes, "gpu launch shared bytes");
+            arguments = List.copyOf(arguments);
         }
     }
 
