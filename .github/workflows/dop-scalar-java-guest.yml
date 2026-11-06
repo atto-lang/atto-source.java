@@ -57,6 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -DskipTests test-compile
+          test -f target/classes/dev/oreslang/compiler/IncrementalCompiler.class
+          test -f target/classes/dev/oreslang/runtime/LinkedProgramRunner.class
+          compiler_tree_digest="$(find target/classes -type f -name '*.class' -print0 \
+            | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print $1}')"
+          test "${#compiler_tree_digest}" -eq 64
+          printf 'DOP_JIT_COMPILER_CLASS_TREE_SHA256=%s\n' "$compiler_tree_digest"
       - name: compile-guest
         shell: bash
         env:
