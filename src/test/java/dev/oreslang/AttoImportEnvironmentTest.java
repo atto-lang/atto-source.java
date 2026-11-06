@@ -200,6 +200,49 @@ final class AttoImportEnvironmentTest {
     }
 
     @Test
+    void nativeZedPackageManifestIsAnIndependentCanonicalProjectRoot() throws Exception {
+        Path project = temp.resolve("zed-native-marker");
+        Files.createDirectories(project.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+                [package]
+                name = "consumer"
+                """);
+        Files.writeString(project.resolve("src/helper.atto"), """
+                pub fnc result_from_root(): string { return "zed-package-root-verified"; }
+                """);
+        Path entry = project.resolve("src/main.atto");
+        Files.writeString(entry, """
+                import fnc result_from_root from "+/src/helper";
+                pub fnc main(): void {
+                  stdio.println(result_from_root());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("zed-package-root-verified"));
+    }
+
+    @Test
+    void missingAndMalformedModernPackageIdentityNeverCreateRootAuthority() throws Exception {
+        Path project = temp.resolve("zed-invalid-marker");
+        Files.createDirectories(project);
+        Path marker = project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME);
+        Path entry = project.resolve("main.atto");
+        for (String invalid : new String[] {
+                "[package]\\n", "[package]\\nname = \"../escape\"\\n",
+                "[package]\\nname = \"\"\\n",
+                "[package]\\nname = \"BadUppercase\"\\n"
+        }) {
+            Files.writeString(marker, invalid.replace("\\n", "\n"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresProjectConfig.discover(entry, Map.of()), invalid);
+        }
+    }
+
+    @Test
     void modernManifestMarkerTakesPrecedenceAndInvalidMarkerCannotFallbackToLegacy() throws Exception {
         Path project = temp.resolve("dual-manifest");
         Files.createDirectories(project);
