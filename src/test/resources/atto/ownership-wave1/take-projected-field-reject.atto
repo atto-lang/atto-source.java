@@ -1,0 +1,8 @@
+define class Payload as
+  pub let int count = 42;
+end
+pub fnc main(): int {
+  let Payload owner = new Payload();
+  val int invalid = rt take owner.count;
+  return invalid;
+}
