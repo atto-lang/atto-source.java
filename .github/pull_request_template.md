@@ -1,17 +1,27 @@
-## Summary
+# Change summary
 
-Describe the implementation and any compatibility/security impact.
+Describe changed behavior, affected Oreslang language/runtime surfaces, and why the change is necessary. Link relevant upstream/compiler PRs.
 
-## AttoLang-first implementation disclosure
+## Compatibility and safety
 
-Fill the following **three single-line fields** for PRs that add or modify `.java` files. The gate runs on PRs created after the November 4, 2026 policy merge. Do not leave TODO placeholders. Explain which changed `.atto` modules contain the guest functionality. For a legitimate Java-only compiler/host change, write `none: [specific technical reason]` after the first field; justify the Java scope explicitly.
+- [ ] Native `.ores` semantics remain the source of truth for backend-neutral behavior, or the host-only boundary is explained.
+- [ ] Java/Graal, LLVM, .NET, Wasm, Cranelift, Forge and other relevant backend implications are stated; unsupported features fail closed.
+- [ ] Relevant actor isolation, non-reentrancy, async cancellation, borrow lifetimes, and bounded resource/real-time constraints are tested.
+- [ ] No implicit conversion, user-defined operator overloading, or Future/Option auto-flattening is assumed.
+- [ ] Not-applicable items are identified, not falsely marked as verified.
 
-AttoLang guest implementation:
+## Verification evidence
 
-Java host/compiler exception:
+- **Exact PR head SHA / root Git tree:**
+- **Executed commands / workflow run and job IDs:**
+- **Nonzero runner steps and pass/fail/skip counts:**
+- **Compiled `.ores` guest evidence vs host-only evidence:**
+- **Backend differences, rejected cases, and follow-up issues:**
 
-Guest test evidence:
+Queued, skipped, or zero-step jobs are not executed CI. Host-only tests are not proof of compiled guest behavior. Disclose any gaps.
 
-## Verification and parity
+## Review and source handling
 
-Report the exact-head AttoLang compiler/guest test invocation and output, or `NOT EXECUTED: [reason]`. Note cross-backend Java/LLVM/Wasm/Forge/.NET follow-up. Source-only assertions, synthetic runners, and zero-step CI never establish guest execution.
+- [ ] Existing CODEOWNERS, required reviews, branch protections, and publication gates are respected; this change does not bypass them.
+- [ ] Any private-source external CI transfer has separate explicit source/destination authorization, exact-tree verification, and no cross-org checkout credentials. Otherwise, no private-source export occurs.
+- [ ] Stacked PR dependencies and post-merge checks are described as applicable.

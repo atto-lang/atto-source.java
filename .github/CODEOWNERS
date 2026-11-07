@@ -24,6 +24,15 @@
 /tools/test-verify-exact-source-tree.sh @ORESoftware
 /tests/private-ci-v3-codeowners.test.mjs @ORESoftware
 
+# Formal proofs, guest tests, packaging, diagnostics and CLI permission configuration.
+/formal/ @ORESoftware
+/packaging/ @ORESoftware
+/tests/ @ORESoftware
+/tools/ @ORESoftware
+/verification/ @ORESoftware
+/docs/security/ @ORESoftware
+/.cli-flags.toml @ORESoftware
+
 # Must remain the final CODEOWNERS rules: privileged private-source exporter
 # verifies this exact order and sole independent @ORESoftware ownership.
 # GitHub applies last matching CODEOWNERS rule, so keep these after broad rules.
