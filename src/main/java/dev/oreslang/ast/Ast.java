@@ -942,7 +942,9 @@ public final class Ast {
         }
     }
 
+    /** errorName == null means {@code try { } finally { }} with no catch. */
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
+        public boolean hasCatch() { return errorName != null; }
         public TryStmt {
             body = List.copyOf(body);
             catchBody = List.copyOf(catchBody);

@@ -2251,10 +2251,13 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> normalExit = env.initializationSnapshot();
 
             env.restoreInitialization(before);
-            Env caught = new Env(env);
-            caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
-            checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
-            Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
+            Map<Env.Binding, Set<String>> caughtExit = before;
+            if (attempted.hasCatch()) {
+                Env caught = new Env(env);
+                caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
+                checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
+                caughtExit = env.initializationSnapshot();
+            }
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
@@ -10110,7 +10113,9 @@ public final class TypeChecker {
                     && definitelyReturns(switched.defaultBody())) return true;
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
-                if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
+                // Without catch, the exceptional path rethrows rather than falling through.
+                if (definitelyReturns(attempted.body())
+                        && (!attempted.hasCatch() || definitelyReturns(attempted.catchBody()))) return true;
             }
         }
         return false;
