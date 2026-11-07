@@ -8,6 +8,8 @@ on:
       - 'tools/atto_static_actor_aot.py'
       - 'fixtures/actor_counter.atto'
       - 'tests/test_static_actor_aot.py'
+      - 'tests/test_static_actor_aot_hardening.py'
+      - 'tests/AttoGeneratedAtomicityProbe.java'
       - 'ci/verify-static-actor-native-image.sh'
       - '.github/workflows/static-actor-graal-aot.yml'
 permissions:
