@@ -7,6 +7,8 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
@@ -186,6 +188,105 @@ class OresSymbolLiteralImageStoreTest {
         assertThrows(IllegalStateException.class, () -> store.publish(closes));
         assertEquals(0, store.liveGenerationCount());
         assertThrows(IllegalStateException.class, store::pinLatest);
+    }
+
+    @Test void slowOrHostileIteratorCannotBlockPinnedReadersOrOtherPublishers() throws Exception {
+        try (var store = new OresSymbolLiteralImageStore()) {
+            long old = store.publish(List.of(OresSymbol.process("old")));
+            var enteredIterator = new CountDownLatch(1);
+            var allowFinish = new CountDownLatch(1);
+            AbstractCollection<OresSymbol> slow = new AbstractCollection<>() {
+                @Override public int size() { return 1; }
+                @Override public Iterator<OresSymbol> iterator() {
+                    return new Iterator<>() {
+                        boolean consumed;
+                        @Override public boolean hasNext() { return !consumed; }
+                        @Override public OresSymbol next() {
+                            consumed = true;
+                            enteredIterator.countDown();
+                            try {
+                                if (!allowFinish.await(5, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException("test iterator timed out");
+                                }
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(interrupted);
+                            }
+                            return OresSymbol.process("staged");
+                        }
+                    };
+                }
+            };
+            try (var workers = Executors.newFixedThreadPool(3)) {
+                Future<Long> pending = workers.submit(() -> store.publish(slow));
+                try {
+                    assertTrue(enteredIterator.await(3, TimeUnit.SECONDS));
+                    Future<Boolean> reader = workers.submit(() -> {
+                        try (var pin = store.pinExpected(old)) {
+                            return pin.get(0).equals(OresSymbol.process("old"));
+                        }
+                    });
+                    assertTrue(reader.get(2, TimeUnit.SECONDS),
+                            "a publisher iterator must not hold the image monitor");
+                    Future<Long> otherPublisher = workers.submit(
+                            () -> store.publish(List.of(OresSymbol.process("other"))));
+                    assertTrue(otherPublisher.get(2, TimeUnit.SECONDS) > old,
+                            "other publishers must not block on hostile iteration");
+                } finally {
+                    allowFinish.countDown();
+                }
+                assertTrue(pending.get(3, TimeUnit.SECONDS) > old);
+            }
+            assertEquals(1, store.liveGenerationCount());
+        }
+    }
+
+    @Test void closingDuringConcurrentStagingCannotResurrectAClosedStore() throws Exception {
+        var store = new OresSymbolLiteralImageStore();
+        long old = store.publish(List.of(OresSymbol.process("old")));
+        var pinned = store.pinExpected(old);
+        var entered = new CountDownLatch(1);
+        var finish = new CountDownLatch(1);
+        AbstractCollection<OresSymbol> slow = new AbstractCollection<>() {
+            @Override public int size() { return 1; }
+            @Override public Iterator<OresSymbol> iterator() {
+                return new Iterator<>() {
+                    boolean consumed;
+                    @Override public boolean hasNext() { return !consumed; }
+                    @Override public OresSymbol next() {
+                        consumed = true;
+                        entered.countDown();
+                        try {
+                            if (!finish.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("iterator wait timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                        return OresSymbol.process("ghost");
+                    }
+                };
+            }
+        };
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            Future<Long> pending = executor.submit(() -> store.publish(slow));
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                Future<?> closer = executor.submit(store::close);
+                closer.get(2, TimeUnit.SECONDS);
+            } finally {
+                finish.countDown();
+            }
+            var thrown = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> pending.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, thrown.getCause());
+        } finally {
+            assertEquals(OresSymbol.process("old"), pinned.get(0));
+            pinned.close();
+            store.close();
+        }
+        assertEquals(0, store.liveGenerationCount());
     }
 
     @Test void pinnedLiteralImagesAreReadableAcrossConcurrentHostThreads() throws Exception {
