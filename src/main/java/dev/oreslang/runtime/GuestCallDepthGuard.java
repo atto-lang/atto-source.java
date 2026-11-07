@@ -12,9 +12,12 @@ import java.util.ArrayDeque;
  * locals, return continuations, or suspended SourceTask state. The JVM carrier
  * still executes the interpreter and requires a separate native stack guard.
  *
- * <p>Call-chain identities are new for each outermost guarded synchronous
- * call and never travel through await. Actor migration and continuation
- * ownership remain separate compiler/scheduler obligations.
+ * <p>A synchronous call outside a source task mints a fresh guard-chain
+ * identity. Inside an actor-bound SourceTask the guard uses the existing
+ * scheduler execution ID, stacking call frames above its suspended-task
+ * root frame and sharing one actor byte quota. Guarded call frames always
+ * unwind before await; only the SourceTask root lease crosses suspension.
+ * The JVM native carrier stack is still not independently actor-owned.
  */
 public final class GuestCallDepthGuard {
     public static final int MAX_SYNCHRONOUS_GUEST_CALLS = 64;
@@ -31,7 +34,25 @@ public final class GuestCallDepthGuard {
         Scope(ActorGuestStack actorStack, ActorFrameArena arena) {
             this.actorStack = actorStack;
             this.arena = arena;
-            this.execution = arena == null ? null : arena.newSynchronousExecution();
+            if (arena == null) {
+                this.execution = null;
+            } else {
+                ExecutionContext taskExecution = OresScheduler.currentExecutionContext();
+                if (taskExecution == null
+                        || taskExecution.allocationDomain().kind()
+                            == ExecutionContext.AllocationKind.NONE) {
+                    this.execution = arena.newSynchronousExecution();
+                } else if (arena.allocationDomain().equals(
+                        taskExecution.allocationDomain())) {
+                    // Same owner and generation, same logical SourceTask.
+                    // The suspended root frame remains beneath our calls.
+                    this.execution = taskExecution;
+                } else {
+                    arena.poisonFromGuestGuard();
+                    throw new SecurityException(
+                            "guest invocation source-task allocation domain mismatch");
+                }
+            }
         }
     }
 
@@ -118,6 +139,12 @@ public final class GuestCallDepthGuard {
         ActorFrameArena.FrameRef frame = scope.frames.peekLast();
         if (frame == null) throw new IllegalStateException("missing guest invocation frame");
         scope.arena.write(scope.execution, frame, 0, descriptor);
+    }
+
+    /** Host-runtime diagnostic identity; never made available to guest source. */
+    static ExecutionContext currentInvocationExecutionContext() {
+        Scope scope = CURRENT.get();
+        return scope == null ? null : requireInvocationScope(scope.depth).execution;
     }
 
     /** Package-private read returns a defensive copy, never frame backing bytes. */
