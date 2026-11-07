@@ -1356,10 +1356,15 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null
                                         ? function.parameters()
                                         : method.parameters();
+                        // M3.1: for a bounded all-scalar actor source task,
+                        // read the actual formal-argument values from its
+                        // authenticated actor-owned frame before binding Env.
+                        // Object roots / wide arguments explicitly fall back
+                        // to the existing JVM source interpreter path.
                         bindCallableArguments(
                                 params,
                                 parameters,
-                                arguments,
+                                OresScheduler.bindCompilerSourceArguments(arguments),
                                 function != null
                                         ? "function " + function.name()
                                         : "method " + method.name());
@@ -1391,6 +1396,14 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopGuardEnv = null;
                     unwindCancelledSource();
                 } else {
+                    // Do not rebind lexical Env locals from the stale JVM
+                    // argument list. Before running the heap continuation,
+                    // validate the exact type/byte image retained by the
+                    // actor's SourceTask frame across await or cooperate.
+                    // Cancellation cleanup takes its dedicated unwind path.
+                    if (blockBody == null) {
+                        OresScheduler.verifyCompilerSourceArguments(arguments);
+                    }
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
                     if (continuation == null) {
