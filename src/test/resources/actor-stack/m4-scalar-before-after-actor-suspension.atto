@@ -1,0 +1,41 @@
+fnc fibonacci(int n): int {
+  if n <= 1; do
+    return n;
+  else
+    return fibonacci(n - 1) + fibonacci(n - 2);
+  fi
+}
+
+fnc tail_count(int n, int accumulated): int {
+  if n == 0; do
+    return accumulated;
+  else
+    return tail_count(n - 1, accumulated + 1);
+  fi
+}
+
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    // The first synchronous call chain must unwind before the task yields.
+    self.send(fibonacci(8));
+    rt cooperate;
+    // After scheduler resumption, a NEW guarded call-chain enters while
+    // the stable SourceTask execution remains owned by this actor.
+    self.send(tail_count(100000, 0));
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn Worker();
+  await worker.get_ready();
+  worker.send("go");
+  val first = (await worker.outputs.next()).value.unwrap();
+  val second = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(first.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.value);
+  await worker.get_done();
+  return;
+}
