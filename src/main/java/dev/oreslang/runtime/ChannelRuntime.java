@@ -653,6 +653,32 @@ public final class ChannelRuntime {
      * invocations. Persistent waiter reuse is a separate optimization that
      * would require a stronger generation/winner protocol.</p>
      */
+    /**
+     * Persistent writes must never retain a mutable guest/host payload.
+     * This deliberately conservative Copy gate is not a substitute for
+     * compile-time ownership and lifetime checking.
+     */
+    private static void requireReusableCase(SelectCase selectCase) {
+        if (selectCase instanceof WriteCase<?> write) {
+            Object value = write.value();
+            if (!(value instanceof String
+                    || value instanceof Boolean
+                    || value instanceof Character
+                    || value instanceof Byte
+                    || value instanceof Short
+                    || value instanceof Integer
+                    || value instanceof Long
+                    || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof OresSymbol)) {
+                throw new IllegalArgumentException(
+                        "reusable select write requires an immutable Copy payload");
+            }
+        }
+    }
+
     public static final class SelectPlan {
         private final SelectSet set;
 
@@ -662,6 +688,9 @@ public final class ChannelRuntime {
 
         private SelectPlan(SelectSet set) {
             this.set = Objects.requireNonNull(set, "set");
+            for (SelectCase selectCase : set.cases()) {
+                requireReusableCase(selectCase);
+            }
         }
 
         public static SelectPlan of(SelectCase... cases) {
@@ -678,6 +707,11 @@ public final class ChannelRuntime {
 
         public List<SelectCase> cases() {
             return set.cases();
+        }
+
+        /** The descriptor is reusable, but selection registrations never are. */
+        public SelectSet selectSetSnapshot() {
+            return set;
         }
 
         public OresFuture<SelectResult> selectAsync() {
@@ -727,6 +761,22 @@ public final class ChannelRuntime {
 
         public DynamicSelectPlan() { }
 
+        /** Lists become stable zero-based keyed dynamic cases. */
+        public static DynamicSelectPlan<Integer> fromList(
+                Iterable<? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            DynamicSelectPlan<Integer> plan = new DynamicSelectPlan<>();
+            int index = 0;
+            for (SelectCase selectCase : initial) {
+                if (index == MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
+                plan.put(index++, Objects.requireNonNull(selectCase, "selectCase"));
+            }
+            return plan;
+        }
+
         public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
             Objects.requireNonNull(initial, "initial");
             for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
@@ -740,7 +790,7 @@ public final class ChannelRuntime {
          */
         public synchronized void put(K key, SelectCase selectCase) {
             Objects.requireNonNull(key, "key");
-            Objects.requireNonNull(selectCase, "selectCase");
+            requireReusableCase(Objects.requireNonNull(selectCase, "selectCase"));
             if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
                 throw new SelectAdmissionException(
                         "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
