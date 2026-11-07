@@ -93,6 +93,17 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
                 language, plan, sourceLease, parsedContextId).getCallTarget();
     }
 
+    /**
+     * The expected UUID comes from OresLanguage.parse, not from this root's
+     * first caller. Exposed only to sibling compiler-package regression tests.
+     */
+    static void requireParsedContext(java.util.UUID expected, java.util.UUID actual) {
+        if (expected == null || actual == null || !expected.equals(actual)) {
+            throw new SecurityException(
+                    "DOP_VERIFIED_CONTEXT_MISMATCH: root cannot cross isolate context");
+        }
+    }
+
     @Override public String getName() { return "atto-dop-inverted-i64-v1"; }
     @Override public boolean isInternal() { return true; }
 
@@ -107,10 +118,7 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
             // general actor/tenant or adversarial-isolate execution.
             OresLanguage.requireLiveVerifiedDopLease(sourceLease);
             OresContext context = OresContext.get(this);
-            if (!context.contextId().equals(parsedContextId)) {
-                throw new SecurityException(
-                        "DOP_VERIFIED_CONTEXT_MISMATCH: root cannot cross isolate context");
-            }
+            requireParsedContext(parsedContextId, context.contextId());
             if (context.isolatePolicy().adversarial()) {
                 throw new SecurityException(
                         "DOP_VERIFIED_TENANT_UNSUPPORTED: adversarial isolate admission remains closed");
