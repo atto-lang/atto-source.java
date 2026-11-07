@@ -40,8 +40,28 @@ final class CriticalActorGuestExecutionTest {
         assertEquals("returned", runGuest("critical-actor-early-return-v1.atto"));
     }
 
+    @Test void canonicalAttoGuestOutputTracksARealSourceMutation()
+            throws Exception {
+        // Compiler-backed mutation control: a Java stub that always emits "42"
+        // cannot satisfy both observations. This is NOT a two-reader borrow proof.
+        String canonical = Files.readString(
+                Path.of("examples", "critical-actor-checked-v1.atto"));
+        String before = "let int value = 40;";
+        String after = "let int value = 41;";
+        assertEquals(1, canonical.split(java.util.regex.Pattern.quote(before), -1).length - 1,
+                "canonical scalar initialization must occur exactly once");
+        String mutated = canonical.replace(before, after);
+        assertNotEquals(canonical, mutated, "mutant must change actual .atto source");
+        assertEquals("42", runGuestSource(canonical, "critical-actor-checked-v1.atto"));
+        assertEquals("43", runGuestSource(mutated, "critical-actor-checked-v1-mutant.atto"));
+    }
+
     private static String runGuest(String file) throws Exception {
         String source = Files.readString(Path.of("examples", file));
+        return runGuestSource(source, file);
+    }
+
+    private static String runGuestSource(String source, String file) throws Exception {
         OresCompiler.parseAndTypeCheck(source);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
