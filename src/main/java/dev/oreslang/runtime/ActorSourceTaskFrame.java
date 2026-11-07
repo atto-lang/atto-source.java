@@ -14,8 +14,10 @@ import java.nio.ByteOrder;
  * <p>Installed only by an actor-owned OresScheduler.TaskRunner. Admission,
  * suspension and resumption are performed by the scheduler on the owning
  * actor carrier; the frame remains charged while the task is waiting. The
- * underlying payload is reserved managed bytes, NOT lowered guest locals or
- * a native-stack replacement. This object never escapes into guest code.
+ * underlying payload now contains a bounded subset of compiler-authoritative
+ * scalar parameters and lexical locals, NOT arbitrary source values, return
+ * PCs, operand roots, or a native-stack replacement. This capability never
+ * escapes into guest code.
  */
 final class ActorSourceTaskFrame {
     static final int FRAME_CHARGE_BYTES = 64;
@@ -91,7 +93,8 @@ final class ActorSourceTaskFrame {
      * allocated or charged. Unsupported references and oversized snapshots
      * are rejected, never converted to pointers or lexical closure captures.
      *
-     * This is host runtime support, NOT automatic lowering of .atto locals.
+     * This entrypoint is used for trusted host snapshots; compiler lexical
+     * scalars are separately bound via bindLexicalScalar and cannot alias it.
      */
     synchronized void saveTypedScalars(List<?> values) {
         requireOwnerTurn();
@@ -101,7 +104,7 @@ final class ActorSourceTaskFrame {
             // Compiler parameter state must never be overwritten by a host
             // callback masquerading as an unrelated source continuation.
             throw new IllegalStateException(
-                    "source parameter snapshot is already compiler-owned");
+                    "scalar frame region is already compiler-owned");
         }
         byte[] encoded = GuestScalarFrameCodec.encode(values);
         if (encoded == null || encoded.length > FRAME_CHARGE_BYTES - SCALAR_HEADER_BYTES) {
@@ -156,7 +159,8 @@ final class ActorSourceTaskFrame {
      * against the actor-owned payload. Fail-stop if it was altered, evicted,
      * or overwritten; never silently rebind from stale JVM values.
      *
-     * No mutable source Env slots or return PCs are lowered by this method.
+     * The bounded local-slot region follows the parameter slots; return PCs
+     * and general reference-valued Env bindings remain unlowered.
      */
     synchronized void verifySourceParameters(List<?> arguments) {
         requireOwnerTurn();
