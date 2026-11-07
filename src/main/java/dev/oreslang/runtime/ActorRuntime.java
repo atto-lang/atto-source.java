@@ -8044,7 +8044,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "ores-actor-" + ref.id(),
                         1,
                         mailboxExecutor,
-                        Runnable::run);
+                        Runnable::run,
+                        frameArena);
                 return sourceScheduler;
             }
         }
