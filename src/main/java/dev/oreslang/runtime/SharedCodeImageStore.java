@@ -171,6 +171,12 @@ public final class SharedCodeImageStore implements AutoCloseable {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(immutableProgram, "immutableProgram");
         Objects.requireNonNull(literalCatalog, "literalCatalog");
+        // Reject invalid code-unit authority before iterating a potentially
+        // malicious catalog. Normal source paths are OS-bounded in practice;
+        // this protects host/integration APIs with arbitrary logical IDs.
+        if (codeUnitId.isBlank() || codeUnitId.length() > 8_192) {
+            throw new IllegalArgumentException("invalid or oversized linked code unit id");
+        }
         if (closed.get()) throw new IllegalStateException("shared code store is closed");
         if (Boolean.TRUE.equals(staging.get())) {
             throw new IllegalStateException("recursive linked code-image publication");
