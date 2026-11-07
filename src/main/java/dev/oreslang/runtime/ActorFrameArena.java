@@ -80,6 +80,10 @@ final class ActorFrameArena {
         if (retired) throw new IllegalStateException("retired actor frame arena");
     }
 
+    private void requireExecutable() {
+        if (poisoned) throw new BudgetExceeded("poisoned actor frame arena");
+    }
+
     private ArrayDeque<Frame> requireStack(ExecutionContext execution) {
         var stack = stacks.get(execution.id());
         if (stack == null || stack.isEmpty())
@@ -122,6 +126,7 @@ final class ActorFrameArena {
     }
 
     synchronized void write(ExecutionContext execution, FrameRef ref, int offset, byte[] bytes) {
+        requireExecutable();
         Frame frame = requireTop(execution, ref, true);
         Objects.requireNonNull(bytes, "bytes");
         if (offset < 0 || offset > frame.bytes.length || bytes.length > frame.bytes.length - offset)
@@ -130,6 +135,7 @@ final class ActorFrameArena {
     }
 
     synchronized byte[] read(ExecutionContext execution, FrameRef ref, int offset, int length) {
+        requireExecutable();
         Frame frame = requireTop(execution, ref, true);
         if (offset < 0 || length < 0 || offset > frame.bytes.length || length > frame.bytes.length - offset)
             throw new IndexOutOfBoundsException("frame read exceeds capacity");
@@ -138,6 +144,7 @@ final class ActorFrameArena {
 
     /** Suspend a whole logical execution: parent frames stay allocated and charged. */
     synchronized void suspend(ExecutionContext execution, FrameRef top) {
+        requireExecutable();
         requireTop(execution, top, true);
         suspended.put(execution.id(), top);
     }
