@@ -123,10 +123,15 @@ synchronous call-chain ID is deliberately NOT a stable await continuation
 identity: only a scheduler-minted `SourceTask` execution ID may survive
 suspension, with explicit frame retention and generation-fenced resume.
 
-Four additional authored JUnit methods cover nested guard-frame charge/unwind,
+Four additional authored host/runtime JUnit methods cover nested guard-frame charge/unwind,
 suppressed recursion-budget failure and sibling-carrier reuse, non-reused
-logical call-chain identities, and wrapped guest trap denial (20 total in
-`ActorFrameArenaTest`). These tests are **not full Maven/JUnit executed evidence**.
+logical call-chain identities, and wrapped guest trap denial (20 host/runtime methods in
+`ActorFrameArenaTest`). A further **authored, not executed** JUnit test
+invokes legacy `.ores` recursive guest source through a real GraalVM polyglot
+context inside actor A's mailbox callback, requires its guard failure to
+poison actor A's frame arena, and then compiles/runs a healthy legacy guest
+program on sibling B using the one-worker SHARED carrier. That is 21 JUnit
+methods total. No passing Maven/Graal/JUnit or canonical `.atto` receipt exists.
 
 Next integration: introduce typed compiler frame layouts for every guest call,
 replace the fixed reservation with actual root/local/continuation accounting,
