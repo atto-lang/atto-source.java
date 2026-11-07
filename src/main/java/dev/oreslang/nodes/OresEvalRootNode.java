@@ -1084,8 +1084,8 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl checked = findClass(checkedClassName);
             Evaluator checkedOwner = this;
             if (checked == null) {
-                Object imported = importedValue(checkedClassName);
-                if (imported instanceof ClassFacade facade) {
+                ClassFacade facade = importedConstructibleClass(checkedClassName);
+                if (facade != null) {
                     checkedOwner = facade.owner();
                     checked = facade.klass();
                 }
@@ -4185,6 +4185,10 @@ public final class OresEvalRootNode extends RootNode {
                     new java.util.concurrent.atomic.AtomicBoolean();
             SourceValueCont continuation = (resumedTask, value, failure) -> {
                 if (!delivered.compareAndSet(false, true)) {
+                    // A failure raised by the first delivery reaches here through a nested
+                    // catch. Rethrow it: the downstream already owns it, and an ISE would mask it.
+                    if (failure instanceof RuntimeException runtime) throw runtime;
+                    if (failure instanceof Error error) throw error;
                     throw new IllegalStateException(
                             "suspendable expression completed more than once");
                 }
@@ -6199,8 +6203,8 @@ public final class OresEvalRootNode extends RootNode {
             Evaluator owner = this;
             boolean externalConstruction = false;
             if (klass == null) {
-                Object imported = importedValue(created.type().name());
-                if (imported instanceof ClassFacade externalClass) {
+                ClassFacade externalClass = importedConstructibleClass(created.type().name());
+                if (externalClass != null) {
                     owner = externalClass.owner();
                     klass = externalClass.klass();
                     externalConstruction = true;
@@ -8433,12 +8437,26 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
                                 "fs." + name, () -> fs.readText(values));
                     };
+                    case "read_text_bounded_async" -> (Invokable) args -> {
+                        requireTwo(args, "fs.read_text_bounded_async");
+                        // Capture immutable validated scalar arguments before
+                        // handing the I/O operation to the descriptor worker.
+                        String path = requireString(args.get(0), "fs.read_text_bounded_async path");
+                        if (!(args.get(1) instanceof Number limit) || !isIntegral(limit)) {
+                            throw new IllegalArgumentException(
+                                    "fs.read_text_bounded_async requires integer max_bytes");
+                        }
+                        long maxBytes = limit.longValue();
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs.read_text_bounded_async",
+                                () -> dev.oreslang.runtime.NativeIo.readTextBounded(context, path, maxBytes));
+                    };
                     case "write_text", "write_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
                                 "fs." + name, () -> fs.writeText(values));
                     };
-                    case "write_text_atomic", "write_text_atomic_blocking" -> (Invokable) args -> {
+                    case "write_text_atomic", "write_text_atomic_blocking", "write_text_atomic_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
                                 "fs." + name, () -> fs.writeTextAtomic(values));
@@ -8467,6 +8485,11 @@ public final class OresEvalRootNode extends RootNode {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
                                 "fs." + name, () -> fs.exists(values));
+                    };
+                    case "file_size", "file_size_blocking", "file_size_async" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.fileSize(values));
                     };
                     case "remove", "remove_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
@@ -9552,6 +9575,42 @@ public final class OresEvalRootNode extends RootNode {
             @Override public Object call(List<Object> arguments) {
                 return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
+        }
+
+        /**
+         * Resolve a checked class import by its exact binding, or an explicitly
+         * imported module's public class. A dotted constructor type is NOT a
+         * local class name and must never fall through to an unrelated class
+         * in the current unit or another imported module.
+         *
+         * Qualified resolution deliberately permits one imported module
+         * boundary only: this does not invent new nested namespace aliases,
+         * turn type-only imports into runtime values, or bypass visibility.
+         */
+        private ClassFacade importedConstructibleClass(String name) {
+            Object direct = importedValue(name);
+            if (direct instanceof ClassFacade klass) return klass;
+
+            int separator = name.indexOf('.');
+            if (separator <= 0 || separator != name.lastIndexOf('.')
+                    || separator == name.length() - 1) {
+                return null;
+            }
+            String binding = name.substring(0, separator);
+            String className = name.substring(separator + 1);
+            Object namespace = importedValue(binding);
+            Object exported;
+            if (namespace instanceof ModuleFacade module) {
+                // moduleMember enforces public export visibility by declaration
+                // identity inside the owning (already linked) code unit.
+                exported = module.owner().moduleMember(module.module(), className);
+            } else if (namespace instanceof ImportedNamespace star
+                    && star.kind() == Ast.ImportKind.ALL) {
+                exported = star.owner().exportValue(Ast.ImportKind.ALL, className);
+            } else {
+                return null;
+            }
+            return exported instanceof ClassFacade klass ? klass : null;
         }
 
         private Object importedValue(String name) {
@@ -11946,6 +12005,9 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object exists(List<Object> args) {
             return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+        }
+        private Object fileSize(List<Object> args) {
+            return NativeIo.fileSize(context, requireStringArg(args, "fs.file_size"));
         }
         private Object listDir(List<Object> args) {
             return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));

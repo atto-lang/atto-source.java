@@ -673,7 +673,7 @@ final class ReturnedDestructuringTest {
                   return;
                 }
 
-                fnc inspect(&Holder holder): void {
+                fnc inspect(borrow Holder holder): void {
                   const [first, ...rest] = holder.values;
                   acceptsInts(rest);
                   stdio.println(first);
@@ -682,7 +682,7 @@ final class ReturnedDestructuringTest {
 
                 pub fnc main(): void {
                   val Holder holder = new Holder([1, 2, 3]);
-                  inspect(&holder);
+                  inspect(rt borrow holder);
                   return;
                 }
                 """)));

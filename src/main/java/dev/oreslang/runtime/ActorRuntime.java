@@ -474,6 +474,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
+    // Root is depth 0; child-supervisor admission permits at most 64 edges.
+    private static final int MAX_SUPERVISOR_DEPTH = 64;
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
             new ConcurrentHashMap<>(Map.of(rootSupervisor.id(), rootSupervisor));
@@ -3130,6 +3133,16 @@ public final class ActorRuntime implements AutoCloseable {
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
+            // Every link is immutable, but a client could otherwise construct a
+            // very deep chain up to maxActors. Check BEFORE publishing any new
+            // identity, so subtree enumeration/shutdown stays bounded by depth.
+            int prospectiveDepth = 0;
+            for (ActorSupervisor ancestor = parent; ancestor != null; ancestor = ancestor.parent) {
+                if (++prospectiveDepth > MAX_SUPERVISOR_DEPTH)
+                    throw new IllegalStateException(
+                            "ActorSupervisor hierarchy depth limit exceeded: maximum "
+                                    + MAX_SUPERVISOR_DEPTH);
+            }
             if (supervisors.size() >= dispatcherConfig.maxActors())
                 throw new IllegalStateException(
                         "ActorSupervisor runtime limit exceeded: maximum "
@@ -8418,7 +8431,10 @@ public final class ActorRuntime implements AutoCloseable {
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if ((stopped.get() && !gracefulTeardownPending) || forceKillFenced || closed.get() || scheduled.get()) return;
+                // A stopped actor still dispatches graceful teardown AND the
+                // authenticated cleanup turns of its suspended source Tasks.
+                if ((stopped.get() && !gracefulTeardownPending && !sourceStopCleanupActive)
+                        || forceKillFenced || closed.get() || scheduled.get()) return;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -8475,7 +8491,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if ((stopped.get() && !gracefulTeardownPending) || closed.get() || forceKillFenced) return;
+                    if ((stopped.get() && !gracefulTeardownPending && !sourceStopCleanupActive)
+                            || closed.get() || forceKillFenced) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -8567,7 +8584,10 @@ public final class ActorRuntime implements AutoCloseable {
                             reschedule = !forceKillFenced
                                     && !closed.get()
                                     && !finalized
-                                    && (stopped.get() ? gracefulTeardownPending : hasQueuedWorkLocked());
+                                    && (stopped.get()
+                                            ? gracefulTeardownPending
+                                                    || (sourceStopCleanupActive && hasQueuedWorkLocked())
+                                            : hasQueuedWorkLocked());
                         }
                         lifecycleLock.notifyAll();
                     }
@@ -8630,10 +8650,13 @@ public final class ActorRuntime implements AutoCloseable {
 
                 teardownContext = context;
                 // External stop may have sealed the user mailbox before this
-                // reserved lifecycle turn began. Never initialize or receive.
-                if (stopped.get()) return;
+                // reserved lifecycle turn began. Never initialize or receive
+                // ordinary mail. The one exception is the authenticated
+                // cleanup lane: suspended source Tasks must still unwind
+                // their defers/guards. The loop below admits only those.
+                if (stopped.get() && !sourceStopCleanupActive) return;
 
-                if (behavior == null && codeActorState == null) {
+                if (!stopped.get() && behavior == null && codeActorState == null) {
                     if (codeExecutor != null) {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =

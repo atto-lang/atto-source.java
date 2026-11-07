@@ -380,6 +380,12 @@ public final class LinkedProgramRunner {
             SourceAdmissionBudget budget,
             int depth) throws IOException {
         Path normalized = unit.toAbsolutePath().normalize();
+        // Do not admit an Atto source-file symlink alias as a trusted
+        // entrypoint or transitive import; read the reviewed path directly.
+        if (normalized.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".atto")
+                && Files.isSymbolicLink(normalized)) {
+            throw new SecurityException("symlinked .atto source is not allowed: " + normalized);
+        }
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
         // Fail before any file I/O or parsing when import recursion is too deep.

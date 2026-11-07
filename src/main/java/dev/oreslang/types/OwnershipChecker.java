@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,6 +41,9 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    /** Imported layouts are type-only metadata; their private fields remain inaccessible. */
+    private final Set<Ast.ClassDecl> linkedClassLayouts =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -115,7 +119,7 @@ public final class OwnershipChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (name == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
             }
@@ -127,17 +131,29 @@ public final class OwnershipChecker {
                     == Ast.ActorKind.NONE
                     ? Ast.ImportKind.CLASS
                     : Ast.ImportKind.ACTOR;
-            boolean imported = program.imports().stream().anyMatch(use ->
+            boolean directlyNamed = name.equals(declaration.name());
+            boolean imported = directlyNamed && program.imports().stream().anyMatch(use ->
                     use.kind() == expectedKind && !use.wildcard()
                             && use.names().contains(name)
                             && (use.namespace() == null
                                     || use.namespace().equals(name)));
+            if (!directlyNamed && declaration.actorKind() == Ast.ActorKind.NONE) {
+                // An import of module M only authorizes the exact M.Class
+                // name exposed by that import, not Class or another module's
+                // identically named class. The linker validates source identity.
+                imported = program.imports().stream().anyMatch(use ->
+                        use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                                && use.names().stream().anyMatch(moduleName ->
+                                        name.equals(ImportRules.localName(use, moduleName)
+                                                + "." + declaration.name())));
+            }
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
                         "linked ownership class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
+            checker.linkedClassLayouts.add(declaration);
         }
         try (CheckedCallPlan.ValidationScope proof = CheckedCallPlan.beginValidation()) {
             checker.validate(program);
@@ -554,13 +570,15 @@ public final class OwnershipChecker {
                 defineConditionAliases(branch.condition(), branchScope, scope);
                 checkBlock(branch.body(), branchScope, returnType);
                 branchScope.close();
-                exits.add(stateSnapshot(scope));
+                // A branch that always returns never reaches the code after
+                // this statement, so its moves must not poison later uses.
+                if (!definitelyReturns(branch.body())) exits.add(stateSnapshot(scope));
             }
 
             restoreState(base);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyReturns(conditional.elseBody())) exits.add(stateSnapshot(scope));
             } else {
                 exits.add(base); // condition may be false with no else
             }
@@ -580,7 +598,7 @@ public final class OwnershipChecker {
                 if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
                 checkBlock(arm.body(), armScope, returnType);
                 armScope.close();
-                exits.add(stateSnapshot(scope));
+                if (!definitelyReturns(arm.body())) exits.add(stateSnapshot(scope));
             }
             mergeBranchState(base, exits);
             return;
@@ -593,11 +611,13 @@ public final class OwnershipChecker {
                 restoreState(entry);
                 for (Ast.Expr constant : arm.constants()) checkExpr(constant, scope, false);
                 checkBlock(arm.body(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyReturns(arm.body())) exits.add(stateSnapshot(scope));
             }
             restoreState(entry);
             checkBlock(switched.defaultBody(), scope, returnType);
-            exits.add(stateSnapshot(scope));
+            if (switched.defaultBody().isEmpty() || !definitelyReturns(switched.defaultBody())) {
+                exits.add(stateSnapshot(scope));
+            }
             // Missing/default-empty cases retain the original owner state.
             // Moving in any case poisons post-switch use, but not other cases.
             mergeBranchState(entry, exits);
@@ -2304,7 +2324,10 @@ public final class OwnershipChecker {
             roots.add(ownershipRoot(root));
         } else if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
             Ast.Expr base = projectionBase(value);
-            if (base instanceof Ast.NameExpr) {
+            if (isBuiltinProcessNamespace(base, scope)) {
+                // The runtime owns `process`, so there is no guest owner to pin. A local
+                // named process is still in scope and takes the checked branch below.
+            } else if (base instanceof Ast.NameExpr) {
                 // Only a stable, checked projection may borrow an existing owner.
                 roots.add(ownershipRoot(borrowPlace(value, scope, true).owner()));
             } else {
@@ -2328,6 +2351,12 @@ public final class OwnershipChecker {
                 // privilege merely by spelling a VM protocol type's name.
                 && findClass(type.name()) == null
                 && !hasLocalTypeAliasNamed(type.name());
+    }
+
+    private static boolean isBuiltinProcessNamespace(Ast.Expr base, Scope scope) {
+        return base instanceof Ast.NameExpr name
+                && name.name().equals("process")
+                && scope.lookup("process") == null;
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Scope scope) {
@@ -3097,6 +3126,11 @@ public final class OwnershipChecker {
                     ResolvedField target = findFieldTarget(
                             klass, type, member.member(), new LinkedHashSet<>());
                     if (target != null) {
+                        if (linkedClassLayouts.contains(klass)
+                                && target.field().visibility() != Ast.Visibility.PUBLIC) {
+                            throw error("cannot project private imported class field '"
+                                    + member.member() + "'");
+                        }
                         fieldType = substituteType(ownershipFieldType(target.field()),
                                 genericBindings(target.owner().genericParameters(),
                                         target.ownerType().arguments()));
@@ -3915,10 +3949,24 @@ public final class OwnershipChecker {
     }
 
     private Map<String, Ast.TypeRef> genericBindings(List<String> names, List<Ast.TypeRef> arguments) {
-        Map<String, Ast.TypeRef> result = new HashMap<>();
-        if (names.size() != arguments.size()) return result;
-        for (int i = 0; i < names.size(); i++) result.put(names.get(i), arguments.get(i));
-        return result;
+        if (names.size() != arguments.size()) return Map.of();
+        if (arguments.stream().noneMatch(Ast.TypeRef::isNamedParameter)) {
+            // Preserve the ownership representation for ordinary positional types.
+            Map<String, Ast.TypeRef> positional = new HashMap<>();
+            for (int i = 0; i < names.size(); i++)
+                positional.put(names.get(i), arguments.get(i));
+            return positional;
+        }
+        // Do not let raw named wrappers silently bind to the wrong inherited
+        // field/owner in a different source order from the type checker.
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(names, arguments, "owned nominal type");
+        if (!bound.inferenceHoles().isEmpty()
+                || bound.explicitTypes().size() != names.size()) {
+            throw new IllegalArgumentException(
+                    "owned nominal type requires concrete generic arguments");
+        }
+        return bound.explicitTypes();
     }
 
     private Ast.TypeRef substituteType(Ast.TypeRef type, Map<String, Ast.TypeRef> bindings) {
@@ -4574,6 +4622,33 @@ public final class OwnershipChecker {
             state.immutableBorrows = saved.immutableBorrows();
             state.mutableBorrowed = saved.mutableBorrowed();
         }
+    }
+
+    /**
+     * True when every path through {@code body} ends in {@code return}, so
+     * control cannot fall through to the statement after it. Mirrors
+     * TypeChecker#definitelyReturns. Break/continue do not count: they still
+     * reach code after the enclosing loop.
+     */
+    private static boolean definitelyReturns(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional
+                    && !conditional.branches().isEmpty()
+                    && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
+                    && !conditional.elseBody().isEmpty()
+                    && definitelyReturns(conditional.elseBody())) return true;
+            if (stmt instanceof Ast.MatchStmt matched
+                    && !matched.arms().isEmpty()
+                    && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
+            if (stmt instanceof Ast.SwitchStmt switched
+                    && !switched.defaultBody().isEmpty()
+                    && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
+                    && definitelyReturns(switched.defaultBody())) return true;
+        }
+        return false;
     }
 
     private void mergeBranchState(Map<VarState, StateSnapshot> base, List<Map<VarState, StateSnapshot>> exits) {

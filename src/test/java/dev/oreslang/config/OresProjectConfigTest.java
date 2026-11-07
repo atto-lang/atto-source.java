@@ -1,6 +1,7 @@
 package dev.oreslang.config;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
@@ -104,6 +105,88 @@ final class OresProjectConfigTest {
                 Map.of(OresProjectConfig.ENV_ORESLANG_PATH, ambient.toString()));
 
         assertTrue(config.resolveImport(importer, "./missing").isEmpty());
+    }
+
+    @Test
+    void canonicalAttoImportsWinWithoutBreakingExplicitLegacyImports() throws Exception {
+        Path src = temp.resolve("atto-src");
+        Path pkg = src.resolve("pkg");
+        Files.createDirectories(pkg);
+        Path importer = src.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Path canonical = pkg.resolve("value.atto");
+        Path legacy = pkg.resolve("value.ores");
+        Files.writeString(canonical, "pub fnc value() => int { return 1; }");
+        Files.writeString(legacy, "pub fnc value() => int { return 2; }");
+
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(canonical.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value").orElseThrow());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value.ores").orElseThrow());
+        assertEquals(canonical.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value.atto").orElseThrow());
+
+        Path uppercase = pkg.resolve("upper.ATTO");
+        Files.writeString(uppercase, "pub fnc value(): int { return 3; }");
+        assertEquals(uppercase.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/upper.ATTO").orElseThrow());
+
+        Files.delete(canonical);
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./pkg/value").orElseThrow());
+    }
+
+
+    @Test
+    void nonRegularCanonicalAttoEntryDoesNotFallBackToLegacySibling() throws Exception {
+        Path src = temp.resolve("directory-atto-src");
+        Files.createDirectories(src);
+        Path importer = src.resolve("main.atto");
+        Path canonicalDirectory = src.resolve("helper.atto");
+        Path legacy = src.resolve("helper.ores");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Files.createDirectory(canonicalDirectory);
+        Files.writeString(legacy, "pub fnc helper() => int { return 41; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        Path selected = config.resolveImport(importer, "./helper").orElseThrow();
+        assertEquals(canonicalDirectory.toAbsolutePath().normalize(), selected);
+        assertTrue(Files.isDirectory(selected),
+                "canonical .atto directory must be selected for later non-regular-file rejection");
+    }
+
+    @Test
+    void danglingCanonicalAttoEntryDoesNotFallBackToLegacySibling() throws Exception {
+        Path src = temp.resolve("dangling-atto-src");
+        Files.createDirectories(src);
+        Path importer = src.resolve("main.atto");
+        Path dangling = src.resolve("helper.atto");
+        Path legacy = src.resolve("helper.ores");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Files.writeString(legacy, "pub fnc helper() => int { return 41; }");
+        try {
+            Files.createSymbolicLink(dangling, Path.of("missing-atto-target"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            Assumptions.assumeTrue(false, "filesystem does not permit symlink fixtures: " + unsupported);
+        }
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(dangling.toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./helper").orElseThrow());
+    }
+
+    @Test
+    void foreignFilesAreNeverAcceptedAsLanguageImports() throws Exception {
+        Path src = temp.resolve("foreign-src");
+        Files.createDirectories(src);
+        Path importer = src.resolve("main.atto");
+        Files.writeString(importer, "pub fnc main() => void { return; }");
+        Files.writeString(src.resolve("payload.py"), "print('unsafe')\n");
+        Files.writeString(src.resolve("payload.txt"), "not source\n");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertTrue(config.resolveImport(importer, "./payload.py").isEmpty());
+        assertTrue(config.resolveImport(importer, "./payload.txt").isEmpty());
+        assertTrue(config.resolveImport(importer, "./payload").isEmpty());
+        assertTrue(config.resolveImport(importer, "./missing.atto").isEmpty());
     }
 
     @Test
