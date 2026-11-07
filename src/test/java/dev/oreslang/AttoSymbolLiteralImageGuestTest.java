@@ -60,14 +60,14 @@ final class AttoSymbolLiteralImageGuestTest {
                 """));
     }
 
-    @Test void quotedLiteralPatternPreservesStringSymbolSeparation() throws Exception {
-        assertEquals("string-distinct", execute("""
+    @Test void literalPatternUsesCanonicalNfcNameIdentity() throws Exception {
+        assertEquals("nfc-pattern", execute("""
                 pub routine main(): void {
-                  const string tag = "ready";
-                  if tag matches #ready then
-                    stdio.stdout.write("bad");
+                  const Symbol tag = #"cafe\u0301";
+                  if tag matches #"caf\u00e9" then
+                    stdio.stdout.write("nfc-pattern");
                   else
-                    stdio.stdout.write("string-distinct");
+                    stdio.stdout.write("miss");
                   fi
                   return;
                 }
