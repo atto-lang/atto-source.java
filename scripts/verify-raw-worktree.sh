@@ -41,7 +41,7 @@ while IFS= read -r -d '' item; do
   count=$((count+1))
 done < <(git ls-files --stage -z)
 [[ "$count" -gt 0 ]] || { echo 'empty tracked source tree' >&2; exit 2; }
-# Ignore only explicitly ignored build/cache outputs; disallow untracked inputs.
-extra_bytes="$(git ls-files --others --exclude-standard -z | wc -c)"
+# Admission occurs before compilation; even ignored untracked files can shadow inputs.
+extra_bytes="$(git ls-files --others -z | wc -c)"
 [[ "$extra_bytes" -eq 0 ]] || { echo 'untracked source files present' >&2; exit 2; }
 echo "EXACT_TREE_RAW_WORKTREE_VERIFIED head=$actual tree=$head_tree tracked=$count"

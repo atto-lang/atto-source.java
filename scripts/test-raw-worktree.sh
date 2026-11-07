@@ -28,6 +28,13 @@ echo bad > untracked.tmp
 if "$checker" "$head" >/dev/null 2>&1; then echo 'FAIL: untracked file admitted'; exit 1; fi
 rm untracked.tmp
 echo 'PASS: untracked file denied'
+printf '*.cache\n' > .gitignore
+git add .gitignore && git commit -qm ignored-path-admission
+head="$(git rev-parse HEAD)"
+echo bad > hidden.cache
+if "$checker" "$head" >/dev/null 2>&1; then echo 'FAIL: ignored untracked file admitted'; exit 1; fi
+rm hidden.cache
+echo 'PASS: ignored untracked file denied'
 git config filter.corrupt.smudge "sed 's/stable source/modified by smudge/'"
 printf 'source.atto filter=corrupt\n' > .gitattributes
 git add .gitattributes && git commit -qm attributes
