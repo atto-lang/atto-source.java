@@ -850,8 +850,21 @@ public final class OresEvalRootNode extends RootNode {
                     && initial.arguments().stream().allMatch(v ->
                             v instanceof Byte || v instanceof Short
                                     || v instanceof Integer || v instanceof Long)) {
-                ScalarFrameMachine.Plan plan =
-                        ScalarFrameMachine.compile(scalar, this::findFunction);
+                // Only resolve direct functions from the current source
+                // module. Named imports, host symbols and ambiguous overloads
+                // retain the original dynamic evaluator's selection rules.
+                String scalarModule = declarationModules.get(scalar);
+                ScalarFrameMachine.Plan plan = scalarModule == null ? null :
+                        ScalarFrameMachine.compile(scalar, (name, arity) -> {
+                            if (namedImports.containsKey(name)
+                                    || namespaceImports.containsKey(name)
+                                    || hostFunctions.containsKey(name)
+                                    || ambiguousFunctions.contains(name)) return null;
+                            Ast.FunctionDecl target = findFunction(name, arity);
+                            if (target == null || !scalarModule.equals(
+                                    declarationModules.get(target))) return null;
+                            return target;
+                        });
                 if (plan != null) {
                     try {
                         return ScalarFrameMachine.execute(
