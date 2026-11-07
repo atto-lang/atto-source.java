@@ -66,6 +66,18 @@ final class LogicalWordOperatorTest {
     }
 
     @Test
+    void sameByteScalarParityFixtureRuns() throws Exception {
+        String program = fixture("scalar-parity.atto");
+        TypeChecker.check(Parser.parse(program));
+        Source source = Source.newBuilder(OresLanguage.ID, program, "scalar-parity.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42, context.eval(source).asInt());
+        }
+    }
+
+    @Test
     void eachOperatorRequiresBooleanOperandsAndKeywordsCannotBeNames() throws Exception {
         for (String name : List.of("reject-int-and.atto", "reject-int-or.atto",
                 "reject-int-xor.atto")) {
