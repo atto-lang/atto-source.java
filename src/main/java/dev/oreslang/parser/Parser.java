@@ -1,6 +1,7 @@
 package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.StaticProxySynthesis;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,6 +20,8 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    /** Closed-world proxy requests; no dynamic proxy descriptors survive compilation. */
+    private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -252,7 +255,8 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        return StaticProxySynthesis.expand(
+                new Ast.Program(namespace, imports, modules), staticProxyTargets);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -5004,6 +5008,24 @@ public final class Parser {
             consume(LPAREN, "expected '(' after new type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
+            if (type.name().equals("Proxy")) {
+                // Compile-time-only, exact single-construction v1. In particular,
+                // no runtime reflection, arbitrary expression inference, actor
+                // reference transport or unqualified fallback is permitted.
+                if (!type.arguments().isEmpty() || type.inferArguments()
+                        || args.size() != 1
+                        || !(args.getFirst() instanceof Ast.NewExpr wrapped)
+                        || !wrapped.type().arguments().isEmpty()
+                        || wrapped.type().inferArguments()
+                        || !wrapped.type().name().matches("[A-Za-z_][A-Za-z_0-9]*")) {
+                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: expected new Proxy(new LocalClass(...)); "
+                            + "runtime target inference is forbidden");
+                }
+                staticProxyTargets.add(wrapped.type().name());
+                return new Ast.NewExpr(
+                        Ast.TypeRef.simple(wrapped.type().name() + "Proxy"),
+                        List.of(wrapped));
+            }
             return new Ast.NewExpr(type, args);
         }
         if (match(OBJ)) {
