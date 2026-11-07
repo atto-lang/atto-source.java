@@ -107,6 +107,59 @@ final class AutoTraitRulesTest {
     }
 
     @Test
+    void shareNeverBypassesMissingSendOrSyncProofs() {
+        assertFalse(new AutoTraitRules.Capabilities(false, true, true).share());
+        assertFalse(new AutoTraitRules.Capabilities(true, false, true).share());
+        assertFalse(new AutoTraitRules.Capabilities(false, false, true).share());
+        assertTrue(new AutoTraitRules.Capabilities(true, true, true).share());
+
+        for (var bounds : java.util.List.of(Set.of(SHARE), Set.of(SEND, SHARE),
+                Set.of(SYNC, SHARE))) {
+            var caps = AutoTraitRules.infer(AutoTraitRules.TypeModel.dyn(bounds, true));
+            assertFalse(caps.share(), "dyn Share must not imply Send or Sync");
+        }
+
+        var scalar = AutoTraitRules.TypeModel.scalar();
+        var nominal = AutoTraitRules.TypeModel.nominal(true, scalar);
+        var noSend = AutoTraitRules.infer(nominal.denying(SEND));
+        assertFalse(noSend.send());
+        assertFalse(noSend.share());
+        var noSync = AutoTraitRules.infer(nominal.denying(SYNC));
+        assertFalse(noSync.sync());
+        assertFalse(noSync.share());
+        assertTrue(AutoTraitRules.infer(nominal).share());
+    }
+
+    @Test
+    void exhaustiveDynBoundsAndNegativeTraitsNeverGrantUnsafeShare() {
+        var allTraits = new AutoTraitRules.AutoTrait[]{SEND, SYNC, SHARE};
+        for (int bounds = 0; bounds < 8; bounds++) {
+            var positive = java.util.EnumSet.noneOf(AutoTraitRules.AutoTrait.class);
+            for (int index = 0; index < 3; index++) {
+                if ((bounds & (1 << index)) != 0) positive.add(allTraits[index]);
+            }
+            for (int domain = 0; domain < 2; domain++) {
+                for (int negatives = 0; negatives < 8; negatives++) {
+                    var denied = java.util.EnumSet.noneOf(AutoTraitRules.AutoTrait.class);
+                    for (int index = 0; index < 3; index++) {
+                        if ((negatives & (1 << index)) != 0) denied.add(allTraits[index]);
+                    }
+                    var type = new AutoTraitRules.TypeModel(DYN,
+                            java.util.List.of(), positive, domain != 0, denied);
+                    var caps = AutoTraitRules.infer(type);
+                    boolean expectedSend = (bounds & 1) != 0 && (negatives & 1) == 0;
+                    boolean expectedSync = (bounds & 2) != 0 && (negatives & 2) == 0;
+                    boolean expectedShare = domain != 0 && (bounds & 4) != 0
+                            && (negatives & 4) == 0 && expectedSend && expectedSync;
+                    assertEquals(expectedSend, caps.send());
+                    assertEquals(expectedSync, caps.sync());
+                    assertEquals(expectedShare, caps.share());
+                }
+            }
+        }
+    }
+
+    @Test
     void nominalCapabilitiesComposeAndNegativeTraitsWin() {
         var scalar = AutoTraitRules.TypeModel.scalar();
         var nested = AutoTraitRules.TypeModel.nominal(true, scalar, scalar);
