@@ -186,6 +186,19 @@ final class ExplicitLambdaReturnContractTest {
     }
 
     @Test
+    void inferredMultiStatementDeferMustNotHideValueReturningCleanup() {
+        for (String body : new String[] {
+                "stdio.println(1); return 42;",
+                "if true { return 42; } fi"
+        }) {
+            String guest = "fnc f(): void { defer || -> { " + body
+                    + " }; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), body);
+        }
+    }
+
+    @Test
     void malformedReturnTypeHeadersCannotBecomeExpressions() {
         for (String head : new String[] {
                 "|| -> void",
