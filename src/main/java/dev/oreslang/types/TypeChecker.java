@@ -2669,7 +2669,13 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
-            return commonType(left, right);
+            Type joined = commonType(left, right);
+            // Unknown is assignable everywhere, so returning it for mismatched arms would
+            // let a String pass as an int. Their union is checked at each use instead.
+            if (joined == Unknown.INSTANCE && !containsUnknown(left) && !containsUnknown(right)) {
+                return Types.unionOf(left, right);
+            }
+            return joined;
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
@@ -7617,7 +7623,7 @@ public final class TypeChecker {
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
             for (Type element : tuple.elements()) {
-                result = result == Unknown.INSTANCE ? element : commonType(result, element);
+                result = result == Unknown.INSTANCE ? element : collectionElementJoin(result, element);
             }
             return result;
         }
