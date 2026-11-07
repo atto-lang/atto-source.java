@@ -69,6 +69,34 @@ public final class SharedCodeImageStore implements AutoCloseable {
             return ordinal < 0 ? value : literalLease.get(ordinal);
         }
 
+        /**
+         * Sharing an immutable JVM value is permitted only on the trusted
+         * SHARED/root domain. PRIVATE/UNTRUSTED actors get separate scalar
+         * values, not references into the VM-owned literal pool.
+         *
+         * This first version has only the sealed public-core untrusted
+         * manifest; tenant-scoped authenticated exports require a separate
+         * destination-bound authorization proof.
+         */
+        public OresSymbol literalForActor(
+                OresSymbol value, ActorRuntime.ActorKind actorKind) {
+            OresSymbol pooled = staticLiteralValue(value);
+            if (actorKind == ActorRuntime.ActorKind.UNTRUSTED) {
+                if (!pooled.publicToUntrustedCoreV1()) {
+                    throw new SecurityException(
+                            "Symbol literal is not visible to an untrusted actor");
+                }
+                return OresSymbol.process(pooled.name());
+            }
+            if (actorKind == ActorRuntime.ActorKind.PRIVATE) {
+                return pooled.kind() == OresSymbol.Kind.PROCESS
+                        ? OresSymbol.process(pooled.name())
+                        : OresSymbol.stable(pooled.name());
+            }
+            // Root and SHARED actors use the same deeply immutable scalar.
+            return pooled;
+        }
+
         private void close() {
             literalLease.close();
             literalStore.close();
