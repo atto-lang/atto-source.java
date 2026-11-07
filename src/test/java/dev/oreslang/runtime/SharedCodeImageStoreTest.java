@@ -179,6 +179,99 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void compiledLiteralAbsentFromCheckedImageFailsClosedOnEveryActorKind() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var image = store.publish("strict.atto", program,
+                    List.of(OresSymbol.process("ready")));
+            for (ActorRuntime.ActorKind kind : ActorRuntime.ActorKind.values()) {
+                assertThrows(IllegalStateException.class,
+                        () -> image.requireGuestStaticLiteral(
+                                OresSymbol.process("hidden"), kind));
+            }
+            assertEquals(OresSymbol.process("ready"),
+                    image.requireGuestStaticLiteral(
+                            OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+        }
+    }
+
+    @Test
+    void canonicalEquivalentSourceLiteralIsResolvedWithoutSlotBypass() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var image = store.publish("nfc.atto", program,
+                    List.of(OresSymbol.process("caf\u00e9")));
+            OresSymbol symbol = image.requireGuestStaticLiteral(
+                    OresSymbol.process("cafe\u0301"), ActorRuntime.ActorKind.SHARED);
+            assertSame(image.staticLiteralValue(OresSymbol.process("caf\u00e9")), symbol);
+        }
+    }
+
+    @Test
+    void untrustedStaticImageAllowsOnlyDeclaredCoreSymbols() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        var all = List.of(OresSymbol.process("ready"), OresSymbol.process("error"),
+                OresSymbol.process("Symbol.iterator"), OresSymbol.process("internal"),
+                OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000"));
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var image = store.publish("policy.atto", program, all);
+            for (String name : List.of("ready", "error", "Symbol.iterator")) {
+                var pooled = image.requireGuestStaticLiteral(
+                        OresSymbol.process(name), ActorRuntime.ActorKind.SHARED);
+                var detached = image.requireGuestStaticLiteral(
+                        OresSymbol.process(name), ActorRuntime.ActorKind.UNTRUSTED);
+                assertEquals(pooled, detached);
+                assertNotSame(pooled, detached);
+            }
+            assertThrows(SecurityException.class, () -> image.requireGuestStaticLiteral(
+                    OresSymbol.process("internal"), ActorRuntime.ActorKind.UNTRUSTED));
+            assertThrows(SecurityException.class, () -> image.requireGuestStaticLiteral(
+                    all.get(4), ActorRuntime.ActorKind.UNTRUSTED));
+        }
+    }
+
+    @Test
+    void duplicateCanonicalInputIsRejectedBeforePublicationWithoutLeakingImage() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            assertThrows(IllegalArgumentException.class, () -> store.publish(
+                    "duplicate.atto", program, List.of(
+                            OresSymbol.process("cafe\u0301"),
+                            OresSymbol.process("caf\u00e9"))));
+            assertEquals(0, store.imageCount());
+            assertNull(store.get("duplicate.atto"));
+        }
+    }
+
+    @Test
+    void failedReplacementCannotReplaceOrRevokeAnExistingGuestImage() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var original = store.publish("stable.atto", program,
+                    List.of(OresSymbol.process("ready")));
+            assertThrows(IllegalStateException.class, () -> store.publish(
+                    "stable.atto", program, List.of(OresSymbol.process("different"))));
+            assertSame(original, store.get("stable.atto"));
+            assertEquals(OresSymbol.process("ready"), original.requireGuestStaticLiteral(
+                    OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+            assertEquals(1, store.imageCount());
+        }
+    }
+
+    @Test
+    void releasedCodeImagesCannotBeUsedAsActiveGuestImageLeases() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        SharedCodeImageStore store = new SharedCodeImageStore();
+        var image = store.publish("retired.atto", program,
+                List.of(OresSymbol.process("ready")));
+        store.close();
+        assertThrows(IllegalStateException.class, () -> image.requireGuestStaticLiteral(
+                OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+        store.close();
+        assertEquals(0, store.imageCount());
+    }
+
+    @Test
     void concurrentReadersNeverConstructANewCodeImage() throws Exception {
         Ast.Program parsedOnce = Parser.parse("pub routine main(): void { return; }");
         try (SharedCodeImageStore store = new SharedCodeImageStore()) {
