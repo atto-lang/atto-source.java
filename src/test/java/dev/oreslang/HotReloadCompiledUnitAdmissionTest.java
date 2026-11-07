@@ -82,6 +82,43 @@ final class HotReloadCompiledUnitAdmissionTest {
         }
     }
 
+
+    @Test
+    void rejectedReplacementCannotReplaceOrRetirePreviouslyAdmittedGeneration() {
+        var base = fixture();
+        String imported = "import fnc {b_value} from \"./b.ores\";\\n"
+                + GOOD;
+        // The public CompiledUnit record permits a counterfeit AST, digest,
+        // dependency list or executable source. None may mutate live state.
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var original = manager.load(base);
+            assertFalse(original.started(), "staging must not execute a guest");
+
+            var badDigest = counterfeit(base, INVALID, base.sourceDigest(), Set.of());
+            var badSource = counterfeit(base, INVALID, digest(INVALID), Set.of());
+            var badDependencies = counterfeit(base, GOOD, digest(GOOD), Set.of("missing.ores"));
+            var badImport = counterfeit(base, imported, digest(imported), Set.of());
+            assertFalse(dev.oreslang.parser.Parser.parse(imported).imports().isEmpty());
+
+            for (var attack : java.util.List.of(badDigest, badSource, badDependencies, badImport)) {
+                assertThrows(RuntimeException.class, () -> manager.load(attack),
+                        "counterfeit source must fail closed");
+                assertSame(original, manager.active(base.unitId()));
+                assertSame(original, manager.active());
+                assertEquals(1, manager.liveGenerations(),
+                        "failed admission must reserve no generation");
+                assertFalse(original.started(), "failed admission must not execute the staged guest");
+                assertFalse(original.closed(), "failed admission must not retire an existing guest");
+            }
+
+            var next = manager.load(base);
+            assertEquals(original.id() + 1, next.id(),
+                    "rejected upgrades must not consume generation IDs");
+            assertEquals(2, manager.liveGenerations());
+        }
+    }
+
     @Test
     void rejectsUnverifiedDependencyClosureBeforeStaging() {
         var base = fixture();
