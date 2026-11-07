@@ -65,6 +65,14 @@ final class ActorFrameArena {
         this.maxBytes = maxBytes;
     }
 
+    /** Runtime-only domain for minting a matching logical ExecutionContext. */
+    ExecutionContext.AllocationDomain allocationDomain() { return owner; }
+
+    private IllegalStateException invalidProtocol(String reason) {
+        poisoned = true;
+        return new IllegalStateException(reason);
+    }
+
     private void requireOwner(ExecutionContext execution) {
         Objects.requireNonNull(execution, "execution");
         if (!owner.equals(execution.allocationDomain()))
@@ -75,7 +83,7 @@ final class ActorFrameArena {
     private ArrayDeque<Frame> requireStack(ExecutionContext execution) {
         var stack = stacks.get(execution.id());
         if (stack == null || stack.isEmpty())
-            throw new IllegalStateException("missing or retired logical execution frames");
+            throw invalidProtocol("missing or retired logical execution frames");
         return stack;
     }
 
@@ -87,10 +95,10 @@ final class ActorFrameArena {
         var stack = requireStack(execution);
         Frame frame = stack.peekLast();
         if (frame.ref != ref)
-            throw new IllegalStateException("non-LIFO or stale frame capability");
+            throw invalidProtocol("non-LIFO or stale frame capability");
         boolean asleep = suspended.containsKey(execution.id());
         if (requireRunning && asleep)
-            throw new IllegalStateException("suspended execution cannot access frames");
+            throw invalidProtocol("suspended execution cannot access frames");
         return frame;
     }
 
@@ -98,7 +106,7 @@ final class ActorFrameArena {
         requireOwner(execution);
         if (poisoned) throw new BudgetExceeded("poisoned actor frame arena");
         if (suspended.containsKey(execution.id()))
-            throw new IllegalStateException("cannot push onto a suspended logical stack");
+            throw invalidProtocol("cannot push onto a suspended logical stack");
         if (byteCount <= 0) throw new IllegalArgumentException("frame must have positive byte size");
         if (frames >= maxFrames || byteCount > maxBytes - usedBytes || nonce == Long.MAX_VALUE) {
             poisoned = true;
@@ -139,7 +147,7 @@ final class ActorFrameArena {
         requireTop(execution, top, false);
         if (poisoned) throw new BudgetExceeded("poisoned actor frame arena");
         if (suspended.get(execution.id()) != top)
-            throw new IllegalStateException("continuation resume without exact suspension");
+            throw invalidProtocol("continuation resume without exact suspension");
         suspended.remove(execution.id());
     }
 
