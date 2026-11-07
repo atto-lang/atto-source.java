@@ -13,8 +13,10 @@ if [[ -n "$expected" && "$head" != "$expected" ]]; then
 fi
 
 source_path="src/main/java/dev/oreslang/compiler/GpuLaunchFootprints.java"
+capacity_path="src/main/java/dev/oreslang/compiler/GpuKernelCapacityPreflightV1.java"
 smoke_path="tests/gpu-launch-footprints/GpuLaunchFootprintsSmoke.java"
-for path in "$source_path" "$smoke_path"; do
+capacity_smoke_path="tests/gpu-launch-footprints/GpuKernelIntegratedCapacitySmoke.java"
+for path in "$source_path" "$capacity_path" "$smoke_path" "$capacity_smoke_path"; do
   expected_blob="$(git rev-parse "HEAD:$path")"
   actual_blob="$(git hash-object "$path")"
   if [[ "$expected_blob" != "$actual_blob" ]]; then
@@ -34,6 +36,7 @@ echo "source_head $head"
 echo "source_tree $tree"
 java -version 2>&1
 javac -version
-javac -encoding UTF-8 -d "$temp_dir" "$source_path" "$smoke_path"
+javac -encoding UTF-8 -d "$temp_dir" "$source_path" "$capacity_path" "$smoke_path" "$capacity_smoke_path"
 java -ea -cp "$temp_dir" GpuLaunchFootprintsSmoke
-echo "GPU_HOST_PREFLIGHT_PASS: compiled exact checkout source and ran host oracle; NOT GPU execution"
+java -ea -cp "$temp_dir" GpuKernelIntegratedCapacitySmoke
+echo "GPU_HOST_PREFLIGHT_PASS: executed exact checkout host footprint and capacity oracles; NOT compiler guest or GPU execution"
