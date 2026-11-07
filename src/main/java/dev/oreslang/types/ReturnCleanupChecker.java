@@ -162,6 +162,11 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.BlockStmt block) {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.CriticalStmt guarded) {
+                statements(guarded.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.TryCriticalStmt immediate) {
+                statements(immediate.body(), scope, inFinally, inDefer, trackReturns, state);
+                statements(immediate.elseBody(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
                 statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {

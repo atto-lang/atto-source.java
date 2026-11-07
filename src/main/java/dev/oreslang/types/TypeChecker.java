@@ -135,6 +135,83 @@ public final class TypeChecker {
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
 
+    /*
+     * A critical AST node needs a successful, exact-Program type proof in
+     * addition to the independent ownership epoch. Public ownership-check
+     * entry points cannot mint typing authority from a parsed/untyped AST.
+     *
+     * Weak identity keys are deliberate: Program is a record with value
+     * equality, which must never authorize a distinct but equal AST.
+     * Negative tokens denote in-progress/failed rechecks. The success
+     * transition is conditional so an older concurrent check cannot
+     * resurrect proof after a later check began.
+     */
+    private static final java.lang.ref.ReferenceQueue<Ast.Program> CRITICAL_TYPES_CLEARED =
+            new java.lang.ref.ReferenceQueue<>();
+    private static final java.util.Map<CriticalTypeProofKey, Long> CRITICAL_TYPE_PROOFS =
+            new java.util.HashMap<>();
+    private static long criticalTypeSequence;
+
+    private static final class CriticalTypeProofKey
+            extends java.lang.ref.WeakReference<Ast.Program> {
+        private final int hash;
+
+        CriticalTypeProofKey(Ast.Program program, boolean track) {
+            super(java.util.Objects.requireNonNull(program, "critical type Program"),
+                    track ? CRITICAL_TYPES_CLEARED : null);
+            hash = System.identityHashCode(program);
+        }
+
+        @Override public int hashCode() { return hash; }
+
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            return other instanceof CriticalTypeProofKey key
+                    && get() != null && get() == key.get();
+        }
+    }
+
+    private static synchronized void expungeCriticalTypeProofs() {
+        java.lang.ref.Reference<? extends Ast.Program> cleared;
+        while ((cleared = CRITICAL_TYPES_CLEARED.poll()) != null) {
+            CRITICAL_TYPE_PROOFS.remove(cleared);
+        }
+    }
+
+    private static synchronized long beginCriticalTypeCheck(Ast.Program program) {
+        expungeCriticalTypeProofs();
+        if (criticalTypeSequence == Long.MAX_VALUE) {
+            throw new IllegalStateException("critical type proof sequence exhausted");
+        }
+        long token = ++criticalTypeSequence;
+        CRITICAL_TYPE_PROOFS.put(new CriticalTypeProofKey(program, true), -token);
+        return token;
+    }
+
+    private static synchronized void finishCriticalTypeCheck(Ast.Program program, long token) {
+        expungeCriticalTypeProofs();
+        CriticalTypeProofKey key = new CriticalTypeProofKey(program, false);
+        Long pending = CRITICAL_TYPE_PROOFS.get(key);
+        if (pending == null || pending.longValue() != -token) {
+            throw new IllegalStateException("critical typing was superseded during analysis");
+        }
+        CRITICAL_TYPE_PROOFS.put(key, token);
+    }
+
+    /** Validate typing independently of the ownership epoch and AST identity. */
+    public static synchronized long requireCriticalTypeProof(Ast.Program program) {
+        expungeCriticalTypeProofs();
+        Long proof = CRITICAL_TYPE_PROOFS.get(new CriticalTypeProofKey(program, false));
+        if (proof == null || proof <= 0) {
+            throw new IllegalStateException(
+                    "critical execution requires successfully type-checked exact Program");
+        }
+        // The numeric generation is not itself an admission capability.
+        // The AST permit must match it so successful subsequent retyping
+        // cannot resurrect permissions from an earlier ownership pass.
+        return proof;
+    }
+
     public static Ast.Program check(Ast.Program program) {
         TypeCheckResult checked = checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
@@ -193,8 +270,13 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        long criticalTypingToken = beginCriticalTypeCheck(program);
         rejectUnloweredCheckedEffects(program);
-        program = AnnotationExpander.expand(program);
+        Ast.Program expanded = AnnotationExpander.expand(program);
+        if (expanded != program) {
+            criticalTypingToken = beginCriticalTypeCheck(expanded);
+        }
+        program = expanded;
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
@@ -203,7 +285,13 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        // No typing proof escapes unless even the immutable diagnostic result
+        // has been assembled successfully. Failure at any earlier stage stays
+        // in the negative (revoked) proof state.
+        TypeCheckResult validated = new TypeCheckResult(
+                program, checker.warnings, checker.shortInferredTypeNames);
+        finishCriticalTypeCheck(program, criticalTypingToken);
+        return validated;
     }
 
     /**
@@ -232,6 +320,7 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        long criticalTypingToken = beginCriticalTypeCheck(program);
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -245,7 +334,11 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
-        program = AnnotationExpander.expand(program);
+        Ast.Program expanded = AnnotationExpander.expand(program);
+        if (expanded != program) {
+            criticalTypingToken = beginCriticalTypeCheck(expanded);
+        }
+        program = expanded;
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
@@ -318,7 +411,13 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        // No typing proof escapes unless even the immutable diagnostic result
+        // has been assembled successfully. Failure at any earlier stage stays
+        // in the negative (revoked) proof state.
+        TypeCheckResult validated = new TypeCheckResult(
+                program, checker.warnings, checker.shortInferredTypeNames);
+        finishCriticalTypeCheck(program, criticalTypingToken);
+        return validated;
     }
 
     private void validateImports(Ast.Program program) {
@@ -1945,6 +2044,28 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.CriticalStmt critical) {
+            // Admission is limited to suspending actor methods; a free
+            // function has no protected resource identity, and a plain
+            // synchronous callable cannot queue on an actor-owned gate.
+            CriticalEffectPreflight.verify(critical.body());
+            if (!currentMaySuspend)
+                throw new IllegalArgumentException(
+                        "critical block may suspend on entry; enclosing callable must be suspends");
+            if (currentActorKind == Ast.ActorKind.NONE || currentGenerator)
+                throw new IllegalArgumentException(
+                        "critical block requires a suspending actor method with actor-owned gate");
+            // Perform the ordinary type pass on the body. Syntactic effect
+            // preflight alone cannot authorize unchecked field/return types.
+            checkBlock(critical.body(), env, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.TryCriticalStmt attempted) {
+            CriticalEffectPreflight.verify(attempted.body());
+            CriticalEffectPreflight.verify(attempted.elseBody());
+            throw new IllegalArgumentException(
+                    "try critical requires immediate nonblocking ticket and guarded fallback lowering");
+        }
         // Parse into a dedicated lexical node, but do not authorize execution
         // until RequestHandle provenance, scoped-loan fencing, suspension,
         // cancellation and unwind behavior have all been implemented. This
@@ -10309,6 +10430,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.CriticalStmt critical && definitelyReturns(critical.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
@@ -10337,6 +10459,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.CriticalStmt critical && containsBreakForCurrentLoop(critical.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope
                     && containsBreakForCurrentLoop(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {

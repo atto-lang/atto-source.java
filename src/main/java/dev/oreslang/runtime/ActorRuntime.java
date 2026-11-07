@@ -209,6 +209,34 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /**
+     * Runtime-only critical state gate owned by the exact active actor cell.
+     *
+     * This is NEVER indexed by the shared AST, carrier thread, ActorKind, or
+     * tenant name. Each incarnated ActorCell owns its own gate and lifecycle.
+     * Gate admission must still be validated separately by the source compiler:
+     * obtaining this host capability does not authorize guest critical source.
+     */
+    public CriticalGate currentActorCriticalGate() {
+        ActorCell<?> cell = currentActor.get();
+        ActorExecutionContext execution = CURRENT_ACTOR_EXECUTION.get();
+        if (cell == null || execution == null
+                || execution.runtime() != this
+                || !execution.actorId().equals(cell.ref.id())) {
+            throw new IllegalStateException(
+                    "critical actor gate requires an authenticated current actor turn");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized
+                    || cell.forceKillFenced || closed.get()) {
+                throw new IllegalStateException(
+                        "actor critical gate cannot admit after STOP or retirement");
+            }
+            if (cell.criticalGate == null) cell.criticalGate = new CriticalGate();
+            return cell.criticalGate;
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
@@ -7564,6 +7592,14 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private final IdentityHashMap<Object, Long> staticSelectCursors =
                 new IdentityHashMap<>();
+        /**
+         * Lazily created only during authenticated actor execution. One gate
+         * protects the actor-owned critical state across all source call sites;
+         * a subsequent actor incarnation gets a distinct gate, even when it
+         * uses the exact same immutable code image.
+         * Guarded by lifecycleLock when created or retired.
+         */
+        private CriticalGate criticalGate;
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport for ordinary user messages. */
@@ -8062,6 +8098,20 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                     return;
                 }
+            }
+            // Critical bodies are never preemptively revoked mid-mutation.
+            // Finalize only after source scheduler physical quiescence and
+            // exactly-once lexical release. A leaked owner is a quarantine
+            // incident, not permission to reclaim an actor heap.
+            if (criticalGate != null && !criticalGate.retireIfQuiescent()) {
+                // Check and retire are one atomic gate-metadata operation.
+                // An externally retained host reference cannot acquire a
+                // ticket in the gap between an idle check and STOP fencing.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor critical ticket or waiter outlived source cleanup; quarantine actor state"));
+                lifecycleLock.notifyAll();
+                return;
             }
             finalized = true;
             sourceScheduler = null;

@@ -1,0 +1,530 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Critical/suspends v1 source-admission contract.
+ *
+ * These are compiler admission tests, NOT proof of critical runtime lowering.
+ * A critical source is rejected until admission, scoped guard release and
+ * transitive no-suspension checking are wired to the executable AST.
+ */
+final class CriticalSuspendsV1SyntaxTest {
+    private static void rejectsWith(String source, String message) {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source), source);
+        assertTrue(error.getMessage().contains(message), error::toString);
+    }
+
+    @Test void canonicalPubSubSyntaxBridgeRetainsSuspendingEntrypoint() throws Exception {
+        // This proves source-parser admission ONLY. ActorGroup/Topic type
+        // checking and guest execution belong to the separate pub-sub branch.
+        byte[] bytes = java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of("examples", "actor-pubsub-canonical-suspends-v1.atto"));
+        java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-1");
+        sha.update(("blob " + bytes.length + "\0")
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        sha.update(bytes);
+        assertEquals("fe10d9e5018a3f030a10bc31586e851198aaa4a3",
+                java.util.HexFormat.of().formatHex(sha.digest()),
+                "canonical pub-sub fixture Git blob drifted");
+        String source = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(source.contains("pub suspends fnc main(): void {"));
+        assertFalse(source.contains("pub async routine main()"));
+        Ast.Program parsed = Parser.parse(source);
+        Ast.FunctionDecl main = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getLast());
+        assertEquals("main", main.name());
+        assertEquals(Ast.CallableKind.FNC, main.kind());
+        assertTrue(main.suspends());
+        assertFalse(main.async());
+    }
+
+    @Test void canonicalSynchronousAndSuspendingFunctionsRemainAccepted() {
+        assertDoesNotThrow(() -> Parser.parse("pub fnc sync(): int { return 7; }"));
+        assertDoesNotThrow(() -> Parser.parse("pub suspends fnc work(): int { return 7; }"));
+        assertDoesNotThrow(() -> Parser.parse("pub suspends routine work(): int { return 7; }"));
+    }
+
+    @Test void asyncIsNotAnAliasOfSuspends() {
+        rejectsWith("async fnc work(): int { return 7; }", "'async' callable modifier is removed");
+        rejectsWith("pub async routine work(): int { return 7; }", "'async' callable modifier is removed");
+        rejectsWith("suspends async fnc work(): int { return 7; }", "'async' callable modifier is removed");
+    }
+
+    @Test void criticalAndSuspendsCannotBothModifyACallable() {
+        rejectsWith("critical suspends fnc work(): void { return; }",
+                "'critical suspends' is forbidden");
+        rejectsWith("suspends critical fnc work(): void { return; }",
+                "'critical suspends' is forbidden");
+        rejectsWith("pub critical suspends routine work(): void { return; }",
+                "'critical suspends' is forbidden");
+    }
+
+    @Test void forbiddenModifierPairsHaveStableCriticalEffectDiagnostic() {
+        // This is parser/semantic admission only. A diagnostics match is NOT
+        // evidence of executable actor gates, cancellation or guest runtime.
+        for (String source : java.util.List.of(
+                "critical suspends fnc work(): void { return; }",
+                "suspends critical fnc work(): void { return; }",
+                "pub critical suspends routine work(): void { return; }",
+                "pub suspends critical routine work(): void { return; }")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(rejected.getMessage().contains("E_CRITICAL_SUSPENDS_DECL"),
+                    rejected::toString);
+            assertTrue(rejected.getMessage().contains("critical bodies cannot suspend"),
+                    rejected::toString);
+        }
+    }
+
+    @Test void unloweredCriticalCallableNeverExecutesWithoutExclusion() {
+        rejectsWith("pub critical fnc work(): void { return; }",
+                "critical callable requires");
+    }
+
+    @Test void criticalBlockHasDistinctAstAndRequiresActorOwnedGate() {
+        String async = "pub suspends fnc work(): void { critical { return; } }";
+        Ast.FunctionDecl parsed = (Ast.FunctionDecl) Parser.parse(async)
+                .modules().getFirst().declarations().getFirst();
+        Ast.CriticalStmt critical = assertInstanceOf(
+                Ast.CriticalStmt.class, parsed.body().getFirst());
+        assertEquals(1, critical.body().size());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(async));
+        assertTrue(failure.getMessage().contains(
+                "critical block requires a suspending actor method with actor-owned gate"), failure::toString);
+
+        String sync = "pub fnc work(): void { critical { return; } }";
+        assertInstanceOf(Ast.CriticalStmt.class,
+                ((Ast.FunctionDecl) Parser.parse(sync).modules().getFirst()
+                        .declarations().getFirst()).body().getFirst());
+        failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(sync));
+        assertTrue(failure.getMessage().contains(
+                "critical block may suspend on entry"), failure::toString);
+    }
+
+    @Test void checkedActorCriticalBodyRequiresSuspendingMethodAndNoUnverifiedEffects() {
+        String actor = """
+                define actor Worker as
+                  suspends receive(ActorMail<String> mail): void {
+                    let int value = 40;
+                    critical { value = value + 2; }
+                    return;
+                  }
+                end
+                """;
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck(actor));
+        Ast.ClassDecl worker = (Ast.ClassDecl) checked.modules().getFirst()
+                .declarations().getFirst();
+        Ast.CriticalStmt block = assertInstanceOf(Ast.CriticalStmt.class,
+                worker.methods().getFirst().body().get(1));
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertDoesNotThrow(
+                () -> Ast.CheckedCriticalBlocks.require(checked, block, epoch));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        checked, new Ast.CriticalStmt(block.body()), epoch));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        Parser.parse(actor), block, epoch));
+
+        Ast.Program rechecked = dev.oreslang.types.OwnershipChecker.check(checked);
+        assertSame(checked, rechecked);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(checked, block, epoch),
+                "recheck must revoke old critical permissions");
+    }
+
+    @Test void actorCriticalRejectsSuspensionAndUnknownHostEffects() {
+        for (String unsafe : java.util.List.of(
+                "await task;",
+                "unknown();",
+                "rt io_read();",
+                "critical { return; }")) {
+            String actor = """
+                    define actor Worker as
+                      suspends receive(ActorMail<String> mail): void {
+                        critical {
+                          %s
+                        }
+                        return;
+                      }
+                    end
+                    """.formatted(unsafe);
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(actor), unsafe);
+        }
+    }
+
+    @Test void tryCriticalIsDistinctFromTryCatchAndRequiresElse() {
+        String source = "pub fnc work(): void { try critical { return; } else { return; } }";
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        Ast.TryCriticalStmt guarded = assertInstanceOf(
+                Ast.TryCriticalStmt.class, fn.body().getFirst());
+        assertEquals(1, guarded.body().size());
+        assertEquals(1, guarded.elseBody().size());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains(
+                "try critical requires immediate nonblocking ticket"), failure::toString);
+        rejectsWith("pub fnc work(): void { try critical { return; } }",
+                "try critical requires 'else");
+    }
+
+    private static final String TYPED_CRITICAL_ACTOR = """
+            define actor Worker as
+              suspends receive(ActorMail<String> mail): void {
+                let int value = 40;
+                critical { value = value + 2; }
+                return;
+              }
+            end
+            """;
+
+    private static Ast.CriticalStmt actorCritical(Ast.Program program) {
+        Ast.ClassDecl worker = (Ast.ClassDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        return (Ast.CriticalStmt) worker.methods().getFirst().body().get(1);
+    }
+
+    @Test void rawOwnershipPassCannotMintExecutableCriticalTypePermission() {
+        Ast.Program raw = Parser.parse(TYPED_CRITICAL_ACTOR);
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(raw));
+        assertTrue(failure.getMessage().contains(
+                "successfully type-checked exact Program"), failure::toString);
+
+        // A denied ownership-only pass must not publish even the shared
+        // Task execution epoch before failing the critical typing gate.
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(raw));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.publish(
+                        raw, 1L, java.util.Set.of(actorCritical(raw)), null));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        raw, actorCritical(raw), 1L));
+    }
+
+    @Test void noCriticalOwnershipOnlyProgramsRemainSupported() {
+        Ast.Program nonCritical = Parser.parse(
+                "pub fnc one(): int { return 1; }");
+        assertDoesNotThrow(
+                () -> dev.oreslang.types.OwnershipChecker.check(nonCritical));
+        assertTrue(Ast.CheckedTaskCaptures.requireProgramEpoch(nonCritical) > 0);
+    }
+
+    @Test void criticalPublisherAuthorityCannotBeConstructedByHostApis() {
+        for (var constructor : dev.oreslang.types.OwnershipChecker
+                .CriticalPublishAuthority.class.getDeclaredConstructors()) {
+            assertTrue(java.lang.reflect.Modifier.isPrivate(
+                    constructor.getModifiers()));
+        }
+        IllegalStateException bypass = assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.publish(
+                        Parser.parse(TYPED_CRITICAL_ACTOR), 1L,
+                        java.util.Set.of(), null));
+        assertTrue(bypass.getMessage().contains(
+                "full cross-ledger transaction locks"), bypass::toString);
+        IllegalStateException unguardedPreflight = assertThrows(
+                IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.preparePublish(
+                        Parser.parse(TYPED_CRITICAL_ACTOR), 1L,
+                        java.util.Set.of(), null));
+        assertTrue(unguardedPreflight.getMessage().contains(
+                "full cross-ledger transaction locks"), unguardedPreflight::toString);
+    }
+
+    @Test void failedOrdinaryTypeCheckCannotBeReplacedByStandaloneOwnership() {
+        String invalidSource = TYPED_CRITICAL_ACTOR
+                + "\npub fnc invalid(): int { return \"not-an-int\"; }\n";
+        Ast.Program raw = Parser.parse(invalidSource);
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(raw));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.TypeChecker.requireCriticalTypeProof(raw));
+        // Regardless of which checker catches the unrelated source error,
+        // the critical AST from this Program must never receive permission.
+        assertThrows(RuntimeException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(raw));
+    }
+
+    @Test void successfulTypingAndOwnershipPermitExactProgramOnly() {
+        Ast.Program parsed = Parser.parse(TYPED_CRITICAL_ACTOR);
+        Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(parsed);
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(typed));
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(typed);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                typed, actorCritical(typed), epoch));
+
+        Ast.Program equivalentButUntyped = Parser.parse(TYPED_CRITICAL_ACTOR);
+        assertNotSame(typed, equivalentButUntyped);
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(equivalentButUntyped));
+        assertTrue(failure.getMessage().contains(
+                "successfully type-checked exact Program"), failure::toString);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        typed, actorCritical(equivalentButUntyped), epoch));
+    }
+
+    @Test void sharedCriticalAstNodeCannotEscapeItsCheckedProgramIdentity() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(TYPED_CRITICAL_ACTOR);
+        Ast.CriticalStmt exactNode = actorCritical(checked);
+        long checkedEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                checked, exactNode, checkedEpoch));
+
+        // Retain *every* module and AST node object. Only the enclosing
+        // immutable Program identity changes: equality and shared children
+        // must not confer an executable typing/ownership proof.
+        Ast.Program alias = new Ast.Program(
+                checked.namespace(), checked.imports(), checked.modules());
+        assertNotSame(checked, alias);
+        assertEquals(checked, alias);
+        assertSame(exactNode, actorCritical(alias));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.TypeChecker.requireCriticalTypeProof(alias));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(alias));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(alias, exactNode, checkedEpoch));
+        // The rejected alias must not revoke the original Program's authority.
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                checked, exactNode, checkedEpoch));
+    }
+
+    @Test void successfulTypeRecheckAlsoRevokesOldCriticalOwnershipPermit() {
+        Ast.Program first = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        dev.oreslang.types.OwnershipChecker.check(first);
+        long firstEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(first);
+        long firstTypingGeneration =
+                dev.oreslang.types.TypeChecker.requireCriticalTypeProof(first);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                first, actorCritical(first), firstEpoch));
+
+        // Even a SUCCESSFUL second type analysis must not silently restore
+        // permissions published by the earlier ownership epoch. Expansion
+        // may preserve the Program object or return another immutable one.
+        Ast.Program retyped = dev.oreslang.types.TypeChecker.checkTypes(first);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        first, actorCritical(first), firstEpoch));
+        if (retyped == first) {
+            assertNotEquals(firstTypingGeneration,
+                    dev.oreslang.types.TypeChecker.requireCriticalTypeProof(first));
+        }
+
+        // Only a new complete ownership pass can authorize the retyped AST.
+        dev.oreslang.types.OwnershipChecker.check(retyped);
+        long newEpoch = Ast.CheckedTaskCaptures.requireProgramEpoch(retyped);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                retyped, actorCritical(retyped), newEpoch));
+    }
+
+    @Test void criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation()
+            throws InterruptedException {
+        Ast.Program program = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        java.util.concurrent.atomic.AtomicReference<Throwable> outcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread ownership;
+
+        // This is a deliberate monitor barrier, not a probabilistic race:
+        // the ownership pass must reach its transaction's first monitor
+        // while that monitor is held by the test. Retyping then invalidates
+        // the precise type generation before the publisher can commit.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            ownership = Thread.ofPlatform().start(() -> {
+                try {
+                    dev.oreslang.types.OwnershipChecker.check(program);
+                } catch (Throwable failure) {
+                    outcome.set(failure);
+                }
+            });
+
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+            boolean atPublicationBarrier = false;
+            while (System.nanoTime() < deadline) {
+                if (ownership.getState() == Thread.State.BLOCKED) {
+                    for (StackTraceElement frame : ownership.getStackTrace()) {
+                        if (frame.getMethodName().equals("publishTaskAdmissions")) {
+                            atPublicationBarrier = true;
+                            break;
+                        }
+                    }
+                }
+                if (atPublicationBarrier) break;
+                Thread.sleep(2);
+            }
+            assertTrue(atPublicationBarrier,
+                    "ownership checker never reached critical publish barrier");
+            assertThrows(IllegalStateException.class,
+                    () -> Ast.CheckedTaskCaptures.requireProgramEpoch(program),
+                    "pending owner check must not expose a positive Task epoch");
+            // A validation failure after the transaction is staged must
+            // revoke the proof before either ledger becomes executable.
+            assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker
+                            .checkTypesWithLinkedMetadataWithDiagnostics(
+                                    program, java.util.Map.of(), java.util.Map.of(), null));
+        }
+
+        ownership.join(10_000);
+        assertFalse(ownership.isAlive(), "ownership publish was deadlocked");
+        assertInstanceOf(IllegalStateException.class, outcome.get(),
+                "a revoked type proof must reject the entire publication");
+        // Crucially, an aborted critical commit cannot expose the positive
+        // Task epoch (and therefore cannot expose Task capture admission).
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(program));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        program, actorCritical(program), 1L));
+    }
+
+    @Test void failedLinkedTypeRecheckRevokesPreviouslyExecutablePermit() {
+        Ast.Program typed = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        dev.oreslang.types.OwnershipChecker.check(typed);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(typed);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                typed, actorCritical(typed), epoch));
+
+        // Even early linked-metadata validation failures revoke old typing;
+        // a stale ownership epoch alone cannot recover executable authority.
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker
+                        .checkTypesWithLinkedMetadataWithDiagnostics(
+                                typed, java.util.Map.of(), java.util.Map.of(), null));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(
+                        typed, actorCritical(typed), epoch));
+        assertThrows(IllegalStateException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(typed));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission()
+            throws Exception {
+        Ast.Program program = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        java.util.concurrent.atomic.AtomicReference<Throwable> outcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread ownership = new Thread(() -> {
+            try {
+                dev.oreslang.types.OwnershipChecker.check(program);
+            } catch (Throwable failure) {
+                outcome.set(failure);
+            }
+        }, "critical-ownership-publication-race");
+
+        // Old publication ordering committed the positive Task epoch before
+        // blocking on this critical monitor. With atomic publication it cannot.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            ownership.start();
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (ownership.isAlive()
+                    && ownership.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(2L);
+            }
+            assertEquals(Thread.State.BLOCKED, ownership.getState(),
+                    "ownership must reach the blocked critical publication gate");
+            // A successful retyping of the same immutable Program must
+            // invalidate the in-flight ownership pass before publication.
+            dev.oreslang.types.TypeChecker.checkTypes(program);
+        }
+        ownership.join(5_000L);
+        assertFalse(ownership.isAlive(), "ownership publication must finish");
+        assertInstanceOf(IllegalStateException.class, outcome.get(),
+                "superseded typing must reject the ownership attempt");
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(program),
+                "no Task epoch may leak from a failed critical commit");
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedCriticalBlocks.require(program, actorCritical(program), 1L));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt()
+            throws Exception {
+        Ast.Program program = dev.oreslang.types.TypeChecker.checkTypes(
+                Parser.parse(TYPED_CRITICAL_ACTOR));
+        java.util.concurrent.atomic.AtomicReference<Throwable> olderFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> newerFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread older = new Thread(() -> {
+            try {
+                dev.oreslang.types.OwnershipChecker.check(program);
+            } catch (Throwable failure) {
+                olderFailure.set(failure);
+            }
+        }, "older-critical-ownership");
+        Thread newer = new Thread(() -> {
+            try {
+                dev.oreslang.types.OwnershipChecker.check(program);
+            } catch (Throwable failure) {
+                newerFailure.set(failure);
+            }
+        }, "newer-critical-ownership");
+
+        // Both checkers must reach the final publication monitor while it is
+        // held. The second check has a newer epoch and revokes the first.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            older.start();
+            long firstDeadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (older.isAlive() && older.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < firstDeadline)
+                Thread.sleep(2L);
+            assertEquals(Thread.State.BLOCKED, older.getState(),
+                    "older pass must reach the critical publication monitor");
+
+            newer.start();
+            long secondDeadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (newer.isAlive() && newer.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < secondDeadline)
+                Thread.sleep(2L);
+            assertEquals(Thread.State.BLOCKED, newer.getState(),
+                    "newer pass must reach the critical publication monitor");
+        }
+        older.join(5_000L);
+        newer.join(5_000L);
+        assertFalse(older.isAlive(), "older ownership attempt must terminate");
+        assertFalse(newer.isAlive(), "newer ownership attempt must terminate");
+        assertInstanceOf(IllegalStateException.class, olderFailure.get(),
+                "older pending epoch must be rejected");
+        assertNull(newerFailure.get(), "latest ownership attempt must succeed");
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        assertDoesNotThrow(() -> Ast.CheckedCriticalBlocks.require(
+                program, actorCritical(program), epoch));
+    }
+
+    @Test void CriticalWordsInCommentsDoNotChangeExecution() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                // async fnc and critical suspends are deprecated source spellings
+                pub suspends fnc work(): int {
+                    // critical { await read() }
+                    return 1;
+                }
+                """));
+    }
+}

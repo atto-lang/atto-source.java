@@ -1,0 +1,100 @@
+name: Critical suspends Java compiler and guest verification
+
+on:
+  push:
+    branches: [main, feat/critical-suspends-v1-20261101]
+  pull_request:
+    paths:
+      - 'scripts/verify-raw-worktree.sh'
+      - 'scripts/test-raw-worktree.sh'
+      - 'src/main/java/dev/oreslang/ast/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/nodes/CriticalTicketCleanup.java'
+      - 'src/test/java/dev/oreslang/nodes/CriticalTicketCleanupTest.java'
+      - 'src/main/java/dev/oreslang/runtime/CriticalGate.java'
+      - 'src/test/java/dev/oreslang/Critical*Test.java'
+      - 'src/test/java/dev/oreslang/TaskCaptureAdmissionIdentityTest.java'
+      - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorCriticalGateIdentityTest.java'
+      - 'src/test/java/dev/oreslang/CriticalActorGuestExecutionTest.java'
+      - 'examples/critical-actor-checked-v1.ores'
+      - 'examples/critical-actor-checked-v1.atto'
+      - 'examples/critical-actor-early-return-v1.ores'
+      - 'examples/critical-actor-early-return-v1.atto'
+      - 'examples/actor-pubsub-canonical-suspends-v1.atto'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - '.github/workflows/critical-suspends-java-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  critical-guest-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind tested Git tree to exact requested PR head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          bash scripts/test-raw-worktree.sh
+          bash scripts/verify-raw-worktree.sh "$EXPECTED"
+          echo "SOURCE_COMMIT=$EXPECTED"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile critical AST, Task authority and .ores Truffle guest tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=java \
+            -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,TaskCaptureAdmissionIdentityTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest \
+            clean test
+          test -s target/classes/dev/oreslang/compiler/OresCompiler.class
+          sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
+          # A compiled class alone is not guest-execution evidence. Require
+          # Surefire's concrete JUnit XML and both real guest test cases.
+          guest_report=target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml
+          syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
+          capture_report=target/surefire-reports/TEST-dev.oreslang.TaskCaptureAdmissionIdentityTest.xml
+          cleanup_report=target/surefire-reports/TEST-dev.oreslang.nodes.CriticalTicketCleanupTest.xml
+          for report in "$guest_report" "$syntax_report" "$capture_report" "$cleanup_report" \
+            target/surefire-reports/TEST-dev.oreslang.CriticalBodyEffectsTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
+            test -s "$report"
+            # A file created by a skipped or empty suite is not test evidence.
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            ! grep -Eq '(skipped|failures|errors)="[1-9][0-9]*"' "$report"
+          done
+          grep -Fq 'name="actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop' "$guest_report"
+          grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
+          grep -Fq 'name="canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput' "$guest_report"
+          grep -Fq 'name="canonicalAttoEarlyReturnGuestReleasesBeforeStop' "$guest_report"
+          grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
+          grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
+          grep -Fq 'name="criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation' "$syntax_report"
+          grep -Fq 'name="rawHostAstAndForgedEpochCannotPublishTaskCaptures' "$capture_report"
+          grep -Fq 'name="untypedNoncriticalTaskCannotAcquireExecutableOwnership' "$capture_report"
+          grep -Fq 'name="successfulTypeRecheckRevokesPreviouslyExecutableNoncriticalTask' "$capture_report"
+          grep -Fq 'name="failedTypeRecheckRevokesPreviouslyExecutableNoncriticalTask' "$capture_report"
+          grep -Fq 'name="publicStagedCapturePublisherCannotMintTaskTransferAuthority' "$capture_report"
+          grep -Fq 'name="immediateTicketIsReleasedAfterFailedSchedulerTransition' "$cleanup_report"
+          grep -Fq 'name="queuedTicketIsRetractedWithoutReleasingAnotherOwner' "$cleanup_report"
+          grep -Fq 'name="retiredAdmissionIsSafeToUnwind' "$cleanup_report"
+          grep -Fq 'name="cancellationRacingWithPromotionCannotLeakActorOwnedTicket' "$cleanup_report"
+      - name: Mark evidence scope
+        run: |
+          echo "Scoped Java admission/host-ticket tests plus Truffle polyglot actor-critical guest fixture."
+          echo "JVM-hosted Graal/Truffle guest suite included; Native Image/AOT and cross-backend parity remain unverified."
