@@ -130,6 +130,12 @@ public final class SharedCodeImageStore implements AutoCloseable {
 
     private final Map<String, CodeImage> images = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // A caller-provided List may execute arbitrary iterator callbacks during
+    // snapshotting. Do not permit recursive publication on the same thread:
+    // it could insert an unexpected code unit before the outer transaction
+    // checks its name and immutable source identity. Other threads can still
+    // stage independently and trusted readers remain lock-free.
+    private final ThreadLocal<Boolean> staging = new ThreadLocal<>();
 
     public CodeImage publish(String codeUnitId, Ast.Program immutableProgram) {
         return publish(codeUnitId, immutableProgram, List.of());
@@ -140,24 +146,33 @@ public final class SharedCodeImageStore implements AutoCloseable {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(immutableProgram, "immutableProgram");
         Objects.requireNonNull(literalCatalog, "literalCatalog");
-        // Even a host-supplied List can lie about size(), mutate, or block
-        // inside iterator(); never invoke it with the VM code registry locked.
-        List<OresSymbol> sealedCatalog = prepareLiteralCatalog(literalCatalog);
-        synchronized (images) {
-            if (closed.get()) throw new IllegalStateException("shared code store is closed");
-            CodeImage prior = images.get(codeUnitId);
-            if (prior != null) {
-                if (prior.program() != immutableProgram
-                        || !prior.staticLiterals.equals(sealedCatalog)) {
-                    throw new IllegalStateException(
-                            "attempted to replace already-linked code unit '" + codeUnitId
-                                    + "' without starting a new versioned code generation");
+        if (closed.get()) throw new IllegalStateException("shared code store is closed");
+        if (Boolean.TRUE.equals(staging.get())) {
+            throw new IllegalStateException("recursive linked code-image publication");
+        }
+        staging.set(Boolean.TRUE);
+        try {
+            // Even a host-supplied List can lie about size(), mutate, or block
+            // inside iterator(); never invoke it with the VM code registry locked.
+            List<OresSymbol> sealedCatalog = prepareLiteralCatalog(literalCatalog);
+            synchronized (images) {
+                if (closed.get()) throw new IllegalStateException("shared code store is closed");
+                CodeImage prior = images.get(codeUnitId);
+                if (prior != null) {
+                    if (prior.program() != immutableProgram
+                            || !prior.staticLiterals.equals(sealedCatalog)) {
+                        throw new IllegalStateException(
+                                "attempted to replace already-linked code unit '" + codeUnitId
+                                        + "' without starting a new versioned code generation");
+                    }
+                    return prior;
                 }
-                return prior;
+                CodeImage image = new CodeImage(codeUnitId, immutableProgram, sealedCatalog);
+                images.put(codeUnitId, image);
+                return image;
             }
-            CodeImage image = new CodeImage(codeUnitId, immutableProgram, sealedCatalog);
-            images.put(codeUnitId, image);
-            return image;
+        } finally {
+            staging.remove();
         }
     }
 
