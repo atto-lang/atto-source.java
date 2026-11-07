@@ -368,6 +368,105 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void vmCodeImageCountQuotaRejectsNewUnitsButAllowsExactExistingReuse() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore(2, 100)) {
+            var first = store.publish("first.atto", program, List.of(OresSymbol.process("ready")));
+            store.publish("second.atto", program, List.of(OresSymbol.process("error")));
+            assertEquals(2, store.imageCount());
+            assertEquals(10L, store.activeLiteralPayloadBytes());
+            assertSame(first, store.publish("first.atto", program,
+                    List.of(OresSymbol.process("ready"))));
+            assertThrows(IllegalStateException.class, () ->
+                    store.publish("third.atto", program, List.of()));
+            assertNull(store.get("third.atto"));
+            assertEquals(2, store.imageCount());
+            assertEquals(10L, store.activeLiteralPayloadBytes());
+        }
+    }
+
+    @Test
+    void vmAggregateStaticSymbolPayloadQuotaIsTransactionalAndReclaimsOnClose() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        SharedCodeImageStore store = new SharedCodeImageStore(5, 8);
+        var first = store.publish("one.atto", program, List.of(OresSymbol.process("ready")));
+        assertEquals(5L, store.activeLiteralPayloadBytes());
+        assertThrows(IllegalStateException.class, () ->
+                store.publish("two.atto", program, List.of(OresSymbol.process("error"))));
+        assertEquals(1, store.imageCount());
+        assertNull(store.get("two.atto"));
+        assertEquals(5L, store.activeLiteralPayloadBytes());
+        assertSame(first, store.publish("one.atto", program,
+                List.of(OresSymbol.process("ready"))));
+        var second = store.publish("three.atto", program, List.of(OresSymbol.process("abc")));
+        assertEquals(8L, store.activeLiteralPayloadBytes());
+        assertEquals(OresSymbol.process("abc"), second.requireGuestStaticLiteral(
+                OresSymbol.process("abc"), ActorRuntime.ActorKind.SHARED));
+        store.close();
+        assertEquals(0L, store.activeLiteralPayloadBytes());
+        assertEquals(0, store.imageCount());
+        assertThrows(IllegalStateException.class,
+                () -> first.requireGuestStaticLiteral(
+                        OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+    }
+
+    @Test
+    void zeroBudgetAllowsCodeOnlyImageButRejectsAnySymbolPayload() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore(2, 0)) {
+            var codeOnly = store.publish("empty.atto", program, List.of());
+            assertEquals(0, store.activeLiteralPayloadBytes());
+            assertSame(codeOnly, store.publish("empty.atto", program, List.of()));
+            assertThrows(IllegalStateException.class, () ->
+                    store.publish("symbol.atto", program,
+                            List.of(OresSymbol.process("ready"))));
+            assertEquals(1, store.imageCount());
+            assertEquals(0L, store.activeLiteralPayloadBytes());
+        }
+    }
+
+    @Test
+    void invalidVmSymbolQuotasFailBeforeAnyImagePublication() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new SharedCodeImageStore(0, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SharedCodeImageStore(SharedCodeImageStore.MAX_CODE_IMAGES + 1, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SharedCodeImageStore(1, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SharedCodeImageStore(1, SharedCodeImageStore.MAX_TOTAL_LITERAL_BYTES + 1));
+    }
+
+    @Test
+    void competingPublishersCannotExceedAggregateVmBudgets() throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore(3, 6);
+             var pool = Executors.newFixedThreadPool(8)) {
+            var start = new CountDownLatch(1);
+            List<java.util.concurrent.Future<Boolean>> attempts = new ArrayList<>();
+            for (int i = 0; i < 10; i++) {
+                final int ordinal = i;
+                attempts.add(pool.submit(() -> {
+                    assertTrue(start.await(5, TimeUnit.SECONDS));
+                    try {
+                        store.publish("unit" + ordinal + ".atto", program,
+                                List.of(OresSymbol.process("s" + ordinal)));
+                        return true;
+                    } catch (IllegalStateException quota) {
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+            int successful = 0;
+            for (var attempt : attempts) if (attempt.get(8, TimeUnit.SECONDS)) successful++;
+            assertEquals(3, successful);
+            assertEquals(3, store.imageCount());
+            assertEquals(6L, store.activeLiteralPayloadBytes());
+        }
+    }
+
+    @Test
     void cannotOverwriteActiveCodeUnitOrUseStoreAfterClose() {
         SharedCodeImageStore store = new SharedCodeImageStore();
         Ast.Program one = Parser.parse("pub routine main(): void { return; }");
