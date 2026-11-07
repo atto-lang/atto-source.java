@@ -97,35 +97,41 @@ final class GpuKernelTypedSourceArgsV1Test {
 
     @Test void wrongHostReadBufferCapabilityMustFailSourceBinding() {
         String bad = HOST.replace("GpuReadBuffer<f32> x", "GpuWriteBuffer<f32> x");
+        var c = candidate(bad);
         var error = assertThrows(IllegalArgumentException.class,
-                () -> typed(candidate(bad)));
+                () -> typed(c));
         assertTrue(error.getMessage().contains("GPU-LAUNCH-002"), error::getMessage);
     }
 
     @Test void wrongHostWriteBufferCapabilityMustFailSourceBinding() {
         String bad = HOST.replace("GpuWriteBuffer<f32> out", "GpuReadBuffer<f32> out");
-        assertThrows(IllegalArgumentException.class, () -> typed(candidate(bad)));
+        var c = candidate(bad);
+        assertThrows(IllegalArgumentException.class, () -> typed(c));
     }
 
     @Test void differentBufferElementTypeCannotImplicitlyConvert() {
         String bad = HOST.replace("GpuReadBuffer<f32> x", "GpuReadBuffer<i64> x");
-        assertThrows(IllegalArgumentException.class, () -> typed(candidate(bad)));
+        var c = candidate(bad);
+        assertThrows(IllegalArgumentException.class, () -> typed(c));
     }
 
     @Test void f64ScalarIsNotSilentlyConvertedToKernelF32() {
         String bad = HOST.replace("f32 alpha", "f64 alpha");
-        assertThrows(IllegalArgumentException.class, () -> typed(candidate(bad)));
+        var c = candidate(bad);
+        assertThrows(IllegalArgumentException.class, () -> typed(c));
     }
 
     @Test void unresolvedHostNameFailsEvenIfLaunchLinkHasMatchingArity() {
         String bad = HOST.replace("saxpy(alpha, x, y, out, n)",
                                   "saxpy(alpha, unknown, y, out, n)");
-        assertThrows(IllegalArgumentException.class, () -> typed(candidate(bad)));
+        var c = candidate(bad);
+        assertThrows(IllegalArgumentException.class, () -> typed(c));
     }
 
     @Test void declaredNMustMatchKernelIntegerType() {
         String bad = HOST.replace("int n", "bool n");
-        assertThrows(IllegalArgumentException.class, () -> typed(candidate(bad)));
+        var c = candidate(bad);
+        assertThrows(IllegalArgumentException.class, () -> typed(c));
     }
 
     @Test void literalNUsesAnExactI64SourceArgument() {
@@ -159,8 +165,9 @@ final class GpuKernelTypedSourceArgsV1Test {
                     return;
                 }
                 """;
+        var c = candidate(kernel, host);
         var error = assertThrows(IllegalArgumentException.class,
-                () -> typed(candidate(kernel, host)));
+                () -> typed(c));
         assertTrue(error.getMessage().contains("writable device buffer alias"),
                 error::getMessage);
     }
@@ -180,6 +187,46 @@ final class GpuKernelTypedSourceArgsV1Test {
     @Test void unknownGenericOrNestedBufferTypeFailsClosed() {
         String bad = HOST.replace("GpuReadBuffer<f32> x",
                 "GpuReadBuffer<GpuReadBuffer<f32>> x");
-        assertThrows(IllegalArgumentException.class, () -> typed(candidate(bad)));
+        var c = candidate(bad);
+        assertThrows(IllegalArgumentException.class, () -> typed(c));
+    }
+
+    @Test void forgedLinkFromDifferentCallerCannotBorrowSourceArgumentTypes() {
+        var c = candidate(HOST);
+        var parsed = Parser.parse(KERNEL + HOST.replace(
+                "launch saxpy(alpha, x, y, out, n)",
+                "launch someOtherKernel(alpha, x, y, out, n)"));
+        var unrelated = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> GpuKernelTypedSourceArgsV1.audit(unrelated, c.kernel(), c.link()));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-002"), error::getMessage);
+    }
+
+    @Test void forgedArgumentNameCannotBeReattachedToAnUnrelatedSlot() {
+        var c = candidate(HOST);
+        var values = new java.util.ArrayList<>(c.link().arguments());
+        values.set(1, new GpuKernelSourceLinkV1.BoundArgument(
+                GpuKernelSourceLinkV1.ArgumentKind.LEXICAL_NAME_UNTYPED,
+                GpuKernelSourceHirV1.Type.BUFFER_READ_F32, "y"));
+        var forged = new GpuKernelSourceLinkV1.Link(
+                c.link().module(), c.link().kernel(), values,
+                GpuKernelSourceLinkV1.Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE);
+        assertThrows(IllegalArgumentException.class,
+                () -> GpuKernelTypedSourceArgsV1.audit(c.caller(), c.kernel(), forged));
+    }
+
+    @Test void hostParameterDeclarationsWithoutALaunchCannotMintLinkEvidence() {
+        var c = candidate(HOST);
+        var parsed = Parser.parse(KERNEL + """
+                pub fnc submit(
+                    f32 alpha, GpuReadBuffer<f32> x, GpuReadBuffer<f32> y,
+                    GpuWriteBuffer<f32> out, int n
+                ): void { return; }
+                """);
+        var noLaunch = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        assertThrows(IllegalArgumentException.class,
+                () -> GpuKernelTypedSourceArgsV1.audit(noLaunch, c.kernel(), c.link()));
     }
 }

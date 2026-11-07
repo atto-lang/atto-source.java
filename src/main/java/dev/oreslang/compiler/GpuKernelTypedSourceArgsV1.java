@@ -88,6 +88,58 @@ public final class GpuKernelTypedSourceArgsV1 {
     }
 
     /**
+     * Only an actual direct source launch in the specified host callable may
+     * supply lexical argument binding evidence. Nested source call sites are
+     * deliberately unproved by this small stage (fail closed).
+     */
+    private static void requireMatchingCallSite(Ast.FunctionDecl caller,
+                                                GpuKernelSourceLinkV1.Link link) {
+        int matched = 0;
+        for (Ast.Stmt statement : caller.body()) {
+            Ast.Expr expression = null;
+            if (statement instanceof Ast.BindingStmt binding)
+                expression = binding.initializer();
+            else if (statement instanceof Ast.ExprStmt evaluated)
+                expression = evaluated.expression();
+            else if (statement instanceof Ast.ReturnStmt returned)
+                expression = returned.value();
+            if (!(expression instanceof Ast.GpuLaunchExpr launch))
+                continue;
+            var candidate = GpuLaunchSourceHirV1.lower(launch);
+            String target = candidate.kernelSymbol();
+            if (!target.equals(link.kernel())
+                    && !target.equals(link.module() + "." + link.kernel()))
+                continue;
+            if (++matched != 1 || candidate.orderedArguments().size() != link.arguments().size())
+                throw reject("ambiguous direct GPU launch source binding");
+            for (int i = 0; i < link.arguments().size(); i++) {
+                Ast.Expr raw = candidate.orderedArguments().get(i);
+                var bound = link.arguments().get(i);
+                GpuKernelSourceLinkV1.ArgumentKind kind;
+                String text;
+                if (raw instanceof Ast.NameExpr name) {
+                    kind = GpuKernelSourceLinkV1.ArgumentKind.LEXICAL_NAME_UNTYPED;
+                    text = name.name();
+                } else if (raw instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Long n) {
+                    kind = GpuKernelSourceLinkV1.ArgumentKind.I64_LITERAL;
+                    text = Long.toString(n);
+                } else if (raw instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof Boolean value) {
+                    kind = GpuKernelSourceLinkV1.ArgumentKind.BOOL_LITERAL;
+                    text = value.toString();
+                } else {
+                    throw reject("unsupported source expression in GPU call-site");
+                }
+                if (kind != bound.kind() || !text.equals(bound.name()))
+                    throw reject("GPU link arguments are not attached to caller source");
+            }
+        }
+        if (matched != 1)
+            throw reject("GPU link has no unique direct launch in caller source");
+    }
+
+    /**
      * A source-only function signature may prove declaration shape, never
      * runtime value provenance or equality of the value named n to launch over.
      * Resolve no unspecified local/captured symbols: fail closed instead.
@@ -106,6 +158,7 @@ public final class GpuKernelTypedSourceArgsV1 {
             throw reject("kernel link and source signature mismatch");
         if (caller.parameters().size() > 64 || link.arguments().size() > 64)
             throw reject("source argument ABI quota exceeded");
+        requireMatchingCallSite(caller, link);
 
         Map<String, Type> hostParams = new HashMap<>();
         for (Ast.Param param : caller.parameters()) {
