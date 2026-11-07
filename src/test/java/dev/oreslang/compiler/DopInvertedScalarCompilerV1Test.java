@@ -71,7 +71,8 @@ final class DopInvertedScalarCompilerV1Test {
     }
 
     @Test
-    void immutableFieldRemainsReadableButCannotBeWrittenOrMutablyBorrowed() {
+    void immutableFieldRemainsReadableButCannotBeWrittenOrMutablyBorrowed() throws Exception {
+        rejectCompilation(contract("immutable-write-rejected.atto"));
         assertEquals(100L, OresCompiler.compileDopInvertedScalarI64(source(
                 "rows.push(7, 100); return rows.get(0, token);"
         )).executeHostReference());
