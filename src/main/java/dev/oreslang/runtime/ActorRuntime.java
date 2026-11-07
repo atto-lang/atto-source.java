@@ -2188,6 +2188,25 @@ public final class ActorRuntime implements AutoCloseable {
      * is serialized with ordinary actor messages and uses no second concurrency
      * identity or carrier pool.
      */
+    /**
+     * Trusted runtime hook for actor-owned source task resource retirement.
+     * The callback executes after physical SourceTask quiescence, before its
+     * actor frame is zeroized. It may revoke host/FFI loans but MUST NOT run
+     * guest continuations, block a carrier, or synthesize completion receipts.
+     * Untrusted task lifetimes use their separately bounded quota path.
+     */
+    <T> OresFuture<T> startActorTaskWithQuiescence(
+            OresScheduler.Task<T> task, Runnable onQuiescent) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onQuiescent, "onQuiescent");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "trusted actor source task retirement requires an active actor turn");
+        }
+        return cell.sourceScheduler().start(task, onQuiescent);
+    }
+
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
         ActorCell<?> cell = currentActor.get();
