@@ -222,6 +222,198 @@ final class ActorPhysicalTurnGateTest {
     }
 
     @Test
+    void pinnedTurnWaitsForPhysicalCompletionEvenAfterCancellationAndGateClose() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 2);
+        var region = new ReusableLongStateRegion(1);
+        region.insert(17);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch releasePhysicalTurn = new CountDownLatch(1);
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            gate.dispatchPinned(region, () -> {
+                entered.countDown();
+                try {
+                    assertTrue(releasePhysicalTurn.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }, worker::execute, error -> fail(error));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(1, region.activePins());
+            region.beginRetire();
+            gate.close();
+            assertFalse(region.tryClose(), "STOP is not a physical completion");
+            releasePhysicalTurn.countDown();
+            worker.submit(() -> {}).get(5, TimeUnit.SECONDS);
+            assertEquals(0, region.activePins());
+            assertTrue(region.tryClose());
+        } finally {
+            releasePhysicalTurn.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
+    void pinnedPendingTurnIsReleasedOnClosureWithoutGuestExecution() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 2);
+        var region = new ReusableLongStateRegion(2);
+        region.insert(1);
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch finishFirst = new CountDownLatch(1);
+        AtomicInteger rejected = new AtomicInteger();
+        AtomicInteger unexpected = new AtomicInteger();
+        try (var workers = Executors.newSingleThreadExecutor()) {
+            gate.dispatchPinned(region, () -> {
+                firstEntered.countDown();
+                try {
+                    assertTrue(finishFirst.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }, workers::execute, failure -> fail(failure));
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            gate.dispatchPinned(region, unexpected::incrementAndGet,
+                    workers::execute, failure -> rejected.incrementAndGet());
+            assertEquals(2, region.activePins());
+            region.beginRetire();
+            assertFalse(region.tryClose());
+            gate.close();
+            assertEquals(1, rejected.get());
+            assertEquals(1, region.activePins());
+            assertEquals(0, unexpected.get());
+            assertFalse(region.tryClose());
+            finishFirst.countDown();
+            workers.submit(() -> {}).get(5, TimeUnit.SECONDS);
+            assertEquals(0, region.activePins());
+            assertTrue(region.tryClose());
+        } finally {
+            finishFirst.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
+    void executorThrowsAfterPhysicalEntryCannotReleaseLivePin() throws Exception {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 2);
+        var region = new ReusableLongStateRegion(1);
+        region.insert(5);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            assertThrows(RejectedExecutionException.class, () ->
+                    gate.dispatchPinned(region, () -> {
+                        entered.countDown();
+                        try {
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                    }, task -> {
+                        worker.execute(task);
+                        try {
+                            assertTrue(entered.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        throw new RejectedExecutionException("submitter threw after entry");
+                    }, failure -> fail("already-running guest must not be rejected")));
+            assertEquals(1, region.activePins(),
+                    "submitter exception must not release physically active guest");
+            region.beginRetire();
+            assertFalse(region.tryClose());
+            release.countDown();
+            worker.submit(() -> {}).get(5, TimeUnit.SECONDS);
+            assertEquals(0, region.activePins());
+            assertTrue(region.tryClose());
+        } finally {
+            release.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
+    void acceptedPhysicalTurnReplayDoesNotReenterGuestOrDoubleReleasePermit() {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        var region = new ReusableLongStateRegion(1);
+        java.util.concurrent.atomic.AtomicReference<Runnable> accepted =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        gate.dispatchPinned(region, executions::incrementAndGet,
+                accepted::set, failure -> fail("accepted turn unexpectedly rejected"));
+        assertEquals(1, region.activePins());
+        accepted.get().run();
+        assertEquals(1, executions.get());
+        assertEquals(0, region.activePins());
+        accepted.get().run(); // duplicate executor invocation is inert
+        assertEquals(1, executions.get());
+        assertEquals(0, region.activePins());
+        assertTrue(region.tryClose());
+        gate.close();
+    }
+
+    @Test
+    void queuedPinnedTurnCannotEnterGuestAfterRegionStop() {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        var region = new ReusableLongStateRegion(1);
+        java.util.concurrent.atomic.AtomicReference<Runnable> delayed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger enteredGuest = new AtomicInteger();
+        AtomicInteger rejected = new AtomicInteger();
+        gate.dispatchPinned(region, enteredGuest::incrementAndGet,
+                delayed::set, error -> {
+                    assertInstanceOf(RejectedExecutionException.class, error);
+                    rejected.incrementAndGet();
+                });
+        assertEquals(1, region.activePins());
+        assertNotNull(delayed.get());
+        region.beginRetire();
+        assertFalse(region.tryClose(), "queued Task retains a lifetime pin");
+        delayed.get().run(); // physical start linearizes AFTER region STOP
+        assertEquals(0, enteredGuest.get());
+        assertEquals(1, rejected.get());
+        assertEquals(0, region.activePins());
+        assertTrue(region.tryClose());
+        gate.close();
+    }
+
+    @Test
+    void pinnedSubmissionRejectsAndInlineGuestFailureDoNotLeakOrDoubleRelease() {
+        ActorPhysicalTurnGate gate = new ActorPhysicalTurnGate(1, 1);
+        try (var region = new ReusableLongStateRegion(1)) {
+            AtomicInteger rejected = new AtomicInteger();
+            assertThrows(IllegalArgumentException.class,
+                    () -> gate.dispatchPinned(region,
+                            () -> { throw new IllegalArgumentException("guest"); },
+                            Runnable::run, ignored -> rejected.incrementAndGet()));
+            assertEquals(0, rejected.get());
+            assertEquals(0, region.activePins());
+
+            java.util.concurrent.atomic.AtomicReference<Runnable> late =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            gate.dispatchPinned(region, () -> fail("rejected runnable executed"),
+                    runnable -> {
+                        late.set(runnable);
+                        throw new RejectedExecutionException("executor rejected after enqueue");
+                    }, ignored -> rejected.incrementAndGet());
+            assertEquals(1, rejected.get());
+            assertEquals(0, region.activePins());
+            late.get().run(); // stale replay cannot release someone else's pin
+            assertEquals(0, region.activePins());
+
+            gate.close();
+            assertThrows(RejectedExecutionException.class,
+                    () -> gate.dispatchPinned(region, () -> fail("closed"), Runnable::run,
+                            ignored -> fail("must reject before invocation")));
+            assertEquals(0, region.activePins());
+        } finally {
+            gate.close();
+        }
+    }
+
+    @Test
     void actorRuntimeGateSerializesDifferentSchedulerDomains() throws Exception {
         String key = "ores.runtime.actor.max-active-turns";
         String prior = System.getProperty(key);
