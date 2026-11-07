@@ -1046,9 +1046,12 @@ public final class OwnershipChecker {
     // identifies this limited place. Stable heap/tenant origin IDs and layout
     // alias proofs remain separate typed-MIR obligations.
     private record ResolvedOwnershipPlace(
-            String rootName, VarState root, List<String> projections,
+            String rootName, VarState root, BindingId bindingId,
+            OriginId allocationOriginId, List<String> projections,
             boolean includesIndex) {
         boolean projected() { return !projections.isEmpty(); }
+        // Different lexical BindingIds are not independent heap origins.
+        boolean hasProvenAllocation() { return allocationOriginId.value() != 0L; }
     }
 
     private ResolvedOwnershipPlace resolveOwnershipPlace(Ast.Expr argument, Scope scope) {
@@ -1076,9 +1079,19 @@ public final class OwnershipChecker {
                 || name.name().indexOf('.') >= 0) return null;
         VarState state = scope.lookup(name.name());
         if (state == null) return null;
+        // A lexical alias forwards its source owner identity; it cannot
+        // acquire a new one by copying the source name or value kind.
+        java.util.Set<VarState> visited = java.util.Collections.newSetFromMap(
+                new IdentityHashMap<>());
+        while (state.aliasSource != null) {
+            if (!visited.add(state) || visited.size() > 64) return null;
+            state = state.aliasSource;
+        }
+        if (!visited.add(state) || state.bindingId.value() == 0L) return null;
         java.util.Collections.reverse(reversed);
         return new ResolvedOwnershipPlace(
-                name.name(), state, List.copyOf(reversed), includesIndex);
+                name.name(), state, state.bindingId, state.allocationOriginId,
+                List.copyOf(reversed), includesIndex);
     }
 
     private void rejectBorrowedShareProjection(Ast.Expr argument, Scope scope) {
@@ -5377,6 +5390,9 @@ public final class OwnershipChecker {
         }
     }
 
+    private record BindingId(long value) {}
+    private record OriginId(long value) {}
+
     private static final class VarState {
         private Ast.TypeRef type;
         private final boolean mutable;
@@ -5393,8 +5409,8 @@ public final class OwnershipChecker {
         // One compiler-checked lexical declaration, never a source-chosen ID.
         // Zero denotes unminted. Allocation/heap origin remains unknown (0)
         // until a separate typed-MIR constructor/move proof is implemented.
-        private long bindingId;
-        private long allocationOriginId;
+        private BindingId bindingId = new BindingId(0L);
+        private OriginId allocationOriginId = new OriginId(0L);
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
@@ -5443,10 +5459,10 @@ public final class OwnershipChecker {
         private void define(String name, VarState state) {
             if (locals.containsKey(name))
                 throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");
-            if (state.bindingId == 0L) {
+            if (state.bindingId.value() == 0L) {
                 if (identityRoot.nextBindingId <= 0L)
                     throw new IllegalArgumentException("Oreslang ownership error: exhausted compiler binding identities");
-                state.bindingId = identityRoot.nextBindingId++;
+                state.bindingId = new BindingId(identityRoot.nextBindingId++);
             }
             // Existing alias states may keep their identity, but a fresh
             // syntactic name is never proof of an independent allocation.
