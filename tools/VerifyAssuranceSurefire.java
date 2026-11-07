@@ -105,6 +105,7 @@ final class VerifyAssuranceSurefire {
                 throw new IllegalStateException("Valid Surefire fixture was not accepted");
             }
             expectRejected(report, expected, good.replace("failures=\"0\"", "failures=\"1\""));
+            expectRejected(report, expected, good.replace("errors=\"0\"", "errors=\"1\""));
             expectRejected(report, expected, good.replace("skipped=\"0\"", "skipped=\"1\""));
             expectRejected(report, expected, good.replace("name=\"mustExecute\"", "name=\"wrong\""));
             expectRejected(report, expected, good.replace("tests=\"1\"", "tests=\"2\""));
