@@ -9642,7 +9642,15 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (pattern instanceof Ast.LiteralPattern literal) {
-                return valueEquals(literal.value(), value);
+                Object patternValue = literal.value();
+                if (patternValue instanceof dev.oreslang.runtime.OresSymbol symbol) {
+                    // A #literal used as a match pattern has the same checked
+                    // code-image provenance as a #literal in an expression.
+                    // Never bypass image admission via AST pattern lowering.
+                    patternValue = codeImage().requireGuestStaticLiteral(
+                            symbol, ActorRuntime.currentActorKind());
+                }
+                return valueEquals(patternValue, value);
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
