@@ -23,8 +23,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
 "$JAVA_HOME/bin/javac" -d "$work/classes" \
   src/main/java/dev/oreslang/runtime/ActorNativeArena.java \
   src/main/java/dev/oreslang/runtime/ActorLinearMemory.java \
+  src/main/java/dev/oreslang/runtime/OresSymbol.java \
+  src/main/java/dev/oreslang/runtime/NativeCarrierExecutor.java \
   src/test/java/dev/oreslang/runtime/ActorNativeArenaSoak.java
-"$JAVA_HOME/bin/java" -cp "$work/classes" \
+"$JAVA_HOME/bin/java" -Dores.thread.native.path="$work/liboresarena.so" -cp "$work/classes" \
   dev.oreslang.runtime.ActorNativeArenaSoak "$work/liboresarena.so" | tee "$work/soak.txt"
 grep -Fx 'ATTO_NATIVE_ARENA_SOAK=PASS' "$work/soak.txt"
 grep -Fx 'actor_operations=102400' "$work/soak.txt"
