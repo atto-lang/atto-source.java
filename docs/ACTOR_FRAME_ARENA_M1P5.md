@@ -93,9 +93,11 @@ runner compiles the full source repository:
 mvn -Dtest=ActorFrameArenaTest,ActorGuestStackTest,GuestCallDepthGuardTest,GuestCallDepthLanguageTest,GuestCallDepthActorHostModelTest,ProperTailCallTest test
 ```
 
-An isolated JDK 21 smoke model compiled locally with `javac -Xlint:all
--Werror` and passed 19 assertions for the frame API. That is **not**
-a Maven/JUnit pass and **not** compiled `.atto` guest evidence.
+An isolated JDK 21 frame-api smoke model compiled locally with `javac -Xlint:all
+-Werror` and passed 19 assertions. The local test used a minimal stand-in
+for the existing `ExecutionContext` types rather than the full repository
+build. This is **not** full Java compilation, a Maven/JUnit pass, or
+compiled `.atto` guest evidence.
 
 Cross-backend parity is tracked in conformance PR #562 and issue #341;
 all five backend guest-stack evidence lanes remain `NOT_EXECUTED`.
