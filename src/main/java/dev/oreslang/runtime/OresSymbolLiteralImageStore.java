@@ -110,74 +110,84 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
     private final Map<Long, Image> live = new HashMap<>();
     private Image current;
     private long nextGeneration = 1L;
-    private boolean closed;
-    private boolean publishing;
+    private volatile boolean closed;
+    // Reentrancy is per publisher thread, not a process-wide staging lock:
+    // iterating a host collection can execute arbitrary callbacks and must
+    // NEVER hold the registry monitor or strand actor readers/carriers.
+    private final ThreadLocal<Boolean> staging = new ThreadLocal<>();
 
     /**
-     * Prepare a canonical immutable snapshot before modifying live state.
-     * The input Collection is never retained and its reported size is not
-     * trusted. Bounds apply while actually walking its iterator.
+     * Prepare a bounded immutable snapshot OUTSIDE the registry lock.
+     * Input collections (and iterator callbacks) are untrusted: never retain
+     * them, trust size(), or invoke them while holding the store monitor.
      */
-    synchronized long publish(Collection<OresSymbol> source) {
+    long publish(Collection<OresSymbol> source) {
         Objects.requireNonNull(source, "source");
         if (closed) throw new IllegalStateException("Symbol image store is closed");
-        // User-supplied Collection iterators can call back into this store.
-        // A monitor is reentrant: reject nested publication explicitly.
-        if (publishing) throw new IllegalStateException("recursive Symbol image publication");
-        publishing = true;
+        if (Boolean.TRUE.equals(staging.get())) {
+            throw new IllegalStateException("recursive Symbol image publication");
+        }
+        staging.set(Boolean.TRUE);
         try {
-
-        List<OresSymbol> values = new ArrayList<>();
-        Map<OresSymbol, Integer> positions = new LinkedHashMap<>();
-        long bytes = 0L;
-        for (OresSymbol symbol : source) {
-            Objects.requireNonNull(symbol, "null Symbol literal");
-            if (values.size() >= MAX_LITERALS) {
-                throw new IllegalArgumentException("Symbol image literal-count quota exceeded");
+            List<OresSymbol> values = new ArrayList<>();
+            Map<OresSymbol, Integer> positions = new LinkedHashMap<>();
+            long bytes = 0L;
+            for (OresSymbol symbol : source) {
+                Objects.requireNonNull(symbol, "null Symbol literal");
+                if (values.size() >= MAX_LITERALS) {
+                    throw new IllegalArgumentException("Symbol image literal-count quota exceeded");
+                }
+                if (positions.containsKey(symbol)) {
+                    throw new IllegalArgumentException("duplicate canonical Symbol literal");
+                }
+                bytes = Math.addExact(bytes,
+                        symbol.name().getBytes(StandardCharsets.UTF_8).length);
+                if (bytes > MAX_PAYLOAD_UTF8_BYTES) {
+                    throw new IllegalArgumentException("Symbol image UTF-8 payload quota exceeded");
+                }
+                positions.put(symbol, values.size());
+                values.add(symbol);
             }
-            if (positions.containsKey(symbol)) {
-                throw new IllegalArgumentException("duplicate canonical Symbol literal");
-            }
-            bytes = Math.addExact(bytes,
-                    symbol.name().getBytes(StandardCharsets.UTF_8).length);
-            if (bytes > MAX_PAYLOAD_UTF8_BYTES) {
-                throw new IllegalArgumentException("Symbol image UTF-8 payload quota exceeded");
-            }
-            positions.put(symbol, values.size());
-            values.add(symbol);
-        }
 
-        // Any exception during preparation leaves the old generation intact.
-        List<OresSymbol> sealed = List.copyOf(values);
-        Map<OresSymbol, Integer> lookup = Map.copyOf(positions);
-        // A malicious iterator could have called close() reentrantly during
-        // snapshot construction. Never resurrect a closed image store.
-        if (closed) throw new IllegalStateException("Symbol image store closed during publication");
-        if (nextGeneration == Long.MAX_VALUE) {
-            throw new IllegalStateException("Symbol generation counter exhausted");
-        }
-        int afterPublication = live.size() + 1
-                - (current != null && current.pins == 0 ? 1 : 0);
-        if (afterPublication > MAX_LIVE_GENERATIONS) {
-            throw new IllegalStateException("too many pinned Symbol image generations");
-        }
+            List<OresSymbol> sealed = List.copyOf(values);
+            Map<OresSymbol, Integer> lookup = Map.copyOf(positions);
 
-        Image image = new Image(nextGeneration++, sealed, lookup, bytes);
-        Image previous = current;
-        current = image;
-        live.put(image.generation, image);
-        retireIfUnused(previous);
-        return image.generation;
+            // Commit is brief, serialized and transactional: no source
+            // callbacks occur here. Close and competing publishers serialize.
+            synchronized (this) {
+                if (closed) {
+                    throw new IllegalStateException("Symbol image store closed during publication");
+                }
+                if (nextGeneration == Long.MAX_VALUE) {
+                    throw new IllegalStateException("Symbol generation counter exhausted");
+                }
+                int afterPublication = live.size() + 1
+                        - (current != null && current.pins == 0 ? 1 : 0);
+                if (afterPublication > MAX_LIVE_GENERATIONS) {
+                    throw new IllegalStateException("too many pinned Symbol image generations");
+                }
+                // Allocate the image and reserve the map entry before changing
+                // the visible current generation. Neither map nor Image may
+                // call host callbacks during this commit.
+                Image image = new Image(nextGeneration, sealed, lookup, bytes);
+                live.put(image.generation, image);
+                Image previous = current;
+                current = image;
+                ++nextGeneration;
+                retireIfUnused(previous);
+                return image.generation;
+            }
         } finally {
-            publishing = false;
+            staging.remove();
         }
     }
 
     synchronized Lease pinLatest() {
         if (closed) throw new IllegalStateException("Symbol image store is closed");
         if (current == null) throw new IllegalStateException("no Symbol image published");
+        Lease lease = new Lease(this, current);
         current.pins = Math.addExact(current.pins, 1);
-        return new Lease(this, current);
+        return lease;
     }
 
     /** Reject stale expected generations; never reinterpret an old ordinal. */
