@@ -88,6 +88,34 @@ public final class GpuKernelTypedSourceArgsV1 {
     }
 
     /**
+     * Match exactly the 1D kernel-tail/capacity domain: over: [n],
+     * positive literal group size, trailing axes 1 and no dynamic/shared
+     * scratch. This does NOT prove runtime n, resource admission, geometry
+     * limits, actual device lanes, or a provider allocation's capacity.
+     */
+    private static void requireCanonical1dGeometry(GpuLaunchSourceHirV1.Candidate candidate) {
+        var geometry = candidate.geometry();
+        if (geometry.mode() != GpuLaunchSourceHirV1.Mode.LOGICAL_OVER_GROUP)
+            throw reject("canonical G1e kernel requires logical over/group, not physical grid");
+        if (!(geometry.extent().get(0) instanceof GpuLaunchSourceHirV1.Symbol n)
+                || !"n".equals(n.name()))
+            throw reject("canonical G1e over extent must use source parameter n");
+        for (int axis = 1; axis < 3; axis++) {
+            if (!(geometry.extent().get(axis) instanceof GpuLaunchSourceHirV1.Constant extent)
+                    || extent.value() != 1
+                    || !(geometry.group().get(axis) instanceof GpuLaunchSourceHirV1.Constant group)
+                    || group.value() != 1)
+                throw reject("G1e only proves one-dimensional padded launch geometry");
+        }
+        if (!(geometry.group().get(0) instanceof GpuLaunchSourceHirV1.Constant group)
+                || group.value() <= 0)
+            throw reject("G1e needs a static positive group size");
+        if (!(candidate.sharedBytes() instanceof GpuLaunchSourceHirV1.Constant shared)
+                || shared.value() != 0)
+            throw reject("shared GPU bytes need separate typed device-memory proof");
+    }
+
+    /**
      * G1e cannot prove host function SSA, local shadowing, early exit or
      * effects yet. Admit ONLY one direct launch (assignment to a fresh
      * binding or expression statement) and optionally a trailing bare return.
@@ -132,6 +160,7 @@ public final class GpuKernelTypedSourceArgsV1 {
                 throw reject("multiple source GPU launches require ownership effect proof");
 
             var candidate = GpuLaunchSourceHirV1.lower(launch);
+            requireCanonical1dGeometry(candidate);
             String target = candidate.kernelSymbol();
             if (!target.equals(link.kernel())
                     && !target.equals(link.module() + "." + link.kernel()))
