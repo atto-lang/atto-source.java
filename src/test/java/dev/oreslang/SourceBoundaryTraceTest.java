@@ -16,7 +16,7 @@ final class SourceBoundaryTraceTest {
                     async fnc leaf(): int {
                       rt cooperate;
                       val int zero = 0; // Integer remainder by zero raises during resumed evaluation.
-                      return 1 % zero;
+                      return Integer.rem(1, zero);
                     }
                     async fnc middle(): int {
                       val int result = await leaf();

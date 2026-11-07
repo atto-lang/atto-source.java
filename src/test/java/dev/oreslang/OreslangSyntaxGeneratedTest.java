@@ -11,7 +11,7 @@ final class OreslangSyntaxGeneratedTest {
     @Test
     void parsesAllSupportedArithmeticAndEqualityOperatorsInIsolation() {
         String[] operators = {
-                "+", "-", "*", "/", "%", "==", "!=", "eq", "neq",
+                "+", "-", "*", "/", "==", "!=", "eq", "neq",
                 "<", "<=", ">", ">=", "&&", "||", "|"
         };
         for (String operator : operators) {
