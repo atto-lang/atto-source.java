@@ -65,9 +65,9 @@ jobs:
           java --version
           mvn -B -ntp \
             -DfailIfNoTests=true \
-            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest \
+            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest,DopInvertedSharedEnvelopeTest \
             test
-      - name: Verify complete five-class executed JUnit XML inventory
+      - name: Verify complete six-class executed JUnit XML inventory
         shell: bash
         run: |
           set -euo pipefail
@@ -81,11 +81,13 @@ jobs:
               "DopInvertedScalarCompilerV1Test",
               "DopInvertedScalarAdmissionHardeningTest",
               "DopInvertedScalarStateMachineTest",
+              "DopInvertedSharedEnvelopeTest",
           }
           reports = sorted(Path("target/surefire-reports").glob("TEST-*.xml"))
           if not reports:
               raise SystemExit("DOP_JAVA_JUNIT_NO_EXECUTED_REPORTS")
           observed = set()
+          identities = set()
           cases = 0
           for report in reports:
               raw = report.read_bytes()
@@ -96,10 +98,21 @@ jobs:
               if not suites:
                   raise SystemExit("DOP_JAVA_JUNIT_INVALID_SUITE")
               for suite in suites:
-                  for testcase in suite.findall("testcase"):
+                  suite_cases = suite.findall("testcase")
+                  if (suite.get("tests") is None or
+                          int(suite.get("tests")) != len(suite_cases) or
+                          any(int(suite.get(key, "-1")) != 0
+                              for key in ("failures", "errors", "skipped"))):
+                      raise SystemExit("DOP_JAVA_JUNIT_BAD_SUITE_COUNTS")
+                  for testcase in suite_cases:
                       full_name = testcase.get("classname", "")
-                      if not full_name or not testcase.get("name"):
+                      name = testcase.get("name", "")
+                      if not full_name or not name:
                           raise SystemExit("DOP_JAVA_JUNIT_MISSING_IDENTITY")
+                      identity = (full_name, name)
+                      if identity in identities:
+                          raise SystemExit("DOP_JAVA_JUNIT_DUPLICATE_CASE")
+                      identities.add(identity)
                       if testcase.find("failure") is not None or (
                               testcase.find("error") is not None or
                               testcase.find("skipped") is not None):
