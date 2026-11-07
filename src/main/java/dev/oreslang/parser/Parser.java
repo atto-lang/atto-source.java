@@ -4061,10 +4061,17 @@ public final class Parser {
         if (match(MINUS)) {
             if (check(INT)) {
                 String literal = peek().lexeme();
-                if (!literal.endsWith("_") && !literal.contains("__")
-                        && literal.replace("_", "").equals("9223372036854775808")) {
-                    advance();
-                    return new Ast.LiteralExpr(Long.MIN_VALUE);
+                // Leading zeros are legal in decimal runs. Compare the
+                // numeric magnitude, not one canonical textual spelling.
+                // Malformed separators must never be normalized into validity.
+                if (!literal.endsWith("_") && !literal.contains("__")) {
+                    String digits = literal.replace("_", "");
+                    int first = 0;
+                    while (first < digits.length() && digits.charAt(first) == '0') first++;
+                    if (digits.substring(first).equals("9223372036854775808")) {
+                        advance();
+                        return new Ast.LiteralExpr(Long.MIN_VALUE);
+                    }
                 }
             }
             return new Ast.UnaryExpr("-", parseUnary());
