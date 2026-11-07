@@ -115,4 +115,24 @@ final class GpuKernelTailGuardV1Test {
         assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelTailGuardV1.audit(forged));
     }
+
+    @Test void aDifferentIntegerParameterCannotStandInForCapacityBoundN() {
+        String changed = SAXPY.replace("int n", "int n, int m")
+                .replace("if i < n", "if i < m");
+        var error = assertThrows(IllegalArgumentException.class, () -> kernel(changed));
+        assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
+    }
+
+    @Test void aConstantGuardCannotClaimSourceCapacityProof() {
+        String changed = SAXPY.replace("if i < n", "if i < 1024");
+        var error = assertThrows(IllegalArgumentException.class, () -> kernel(changed));
+        assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
+    }
+
+    @Test void inversionMustUseTheSameCanonicalNBound() {
+        String changed = SAXPY.replace("int n", "int n, int m")
+                .replace("if i < n", "if i >= m { return; } if i < n");
+        var plan = kernel(changed);
+        assertFalse(plan.executable());
+    }
 }

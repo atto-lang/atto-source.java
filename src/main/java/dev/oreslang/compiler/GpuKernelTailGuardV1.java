@@ -9,7 +9,7 @@ import java.util.Objects;
  * G1c source-only 1D tail-guard verifier for a restricted AttoLang GPU kernel.
  *
  * A successful result proves only a syntactic domination relation between the
- * lane-zero index and one integer source bound. It does NOT prove the bound is
+ * lane-zero index and the canonical integer kernel parameter n. It does NOT prove n is
  * <= any actual device allocation, that lanes execute with the claimed geometry,
  * provider/kernel identity, loan lifetime, or device completion. No returned
  * object is authority to dispatch. Non-1D or non-canonical indexed access
@@ -59,17 +59,14 @@ public final class GpuKernelTailGuardV1 {
     private static boolean bound(GpuKernelSourceHirV1.Value v, Context ctx) {
         if (v == null || v.type() != GpuKernelSourceHirV1.Type.I64
                 || !v.operands().isEmpty()) return false;
-        if (v.opcode().equals("local")) {
-            return ctx.parameters.get(v.symbol()) == GpuKernelSourceHirV1.Type.I64;
-        }
-        if (v.opcode().equals("i64.literal")) {
-            try {
-                return Long.parseLong(v.symbol()) >= 0;
-            } catch (NumberFormatException | NullPointerException ignored) {
-                return false;
-            }
-        }
-        return false;
+        // The accompanying capacity preflight is defined for the canonical
+        // kernel parameter n. A different integer parameter m or a literal
+        // constant might be larger than the validated view capacity. Do not
+        // let such a guard masquerade as the same bound proof. This remains
+        // source-shape evidence, not an authenticated device allocation proof.
+        return v.opcode().equals("local")
+                && "n".equals(v.symbol())
+                && ctx.parameters.get("n") == GpuKernelSourceHirV1.Type.I64;
     }
 
     private static boolean comparison(GpuKernelSourceHirV1.Value v,
