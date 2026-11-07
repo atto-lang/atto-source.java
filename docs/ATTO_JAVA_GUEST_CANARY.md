@@ -72,6 +72,15 @@ This parser is a safeguard against accidental/malformed test XML and misleading
 grep matches; it is not a cryptographic attestation and does not make a
 compromised compiler, malicious test suite, or CI runner trustworthy.
 
+## Evidence artifact publication hardening
+
+The Java guest workflow now pins `actions/upload-artifact` to the audited
+immutable commit `ea165f8d65b6e75b540449e92b4886f43607fa02` rather than a
+floating `@v4` tag. Evidence uploaded with `if: always()` is candidate-only
+on failure: the independent gate must use the separate
+`suite-gate-completed.json` written only after successful Maven, XML
+inspection, exact-tree readback and compiler/fixture hashes.
+
 ## Independent receipt readback integration
 
 The pass-only `target/atto-guest-evidence/suite-gate-completed.json` now includes
