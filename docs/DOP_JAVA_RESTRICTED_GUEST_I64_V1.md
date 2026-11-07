@@ -53,3 +53,24 @@ Release gate: source-local exact-head seven-case Java JUnit execution with real 
 independent review, no unsupported fallback, plus complete compiler AST,
 ownership MIR and Graal/AOT support before any general guest-parity claim.
 Never qualify a workflow reporting `steps=[]` or `steps=null`.
+
+## Source-org CI admission hardening
+
+The dedicated workflow now runs the pinned source/fixture verifier before
+compilation and **again after** the seven-case guest JUnit suite. The final
+verifier is streamed from `HEAD:tools/verify-dop-inverted-atto-contract.sh`
+rather than from the mutable working tree. Both stages require the immutable
+PR head, untouched tracked source, and matching Git-tree **and** on-disk
+SHA-1 blob IDs for all three canonical `.atto` fixtures.
+
+The workflow's path filter covers the production lexer, token definitions,
+parser, nominal AST, TypeChecker, OwnershipChecker, runtime store, compiler
+entry points, Maven build, JUnit report checker and source-verification scripts.
+The no-Python policy is preserved: the gate uses Bash, Git and a hardened
+JDK XML parser. A throwaway-Git-repository mutation harness exercises one
+valid case plus five fail-closed changes (worktree, index, checker, symlink,
+head revision), without altering the actual checked-out source tree.
+
+These gates are **authored, not yet CI-executed** while source-org runner
+admission is blocked. A passing checksum alone cannot attest that Maven,
+GraalVM or an independent exact-head guest actually ran.
