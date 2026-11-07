@@ -20,15 +20,29 @@ for f in "${required[@]}"; do
     git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 ||
     { echo "REQUIRED_INPUT_MISSING: $f" >&2; exit 1; }
 done
+# Capture both enumerations and require a complete index/tree path match.
+# Process substitution alone would discard a failed enumerator's exit status.
+index_manifest="$(mktemp)"
+tree_manifest="$(mktemp)"
+walk_manifest="$(mktemp)"
+trap 'rm -f -- "$index_manifest" "$tree_manifest" "$walk_manifest"' EXIT
+git ls-files -z -- "${roots[@]}" "${required[@]}" > "$index_manifest" ||
+  { echo INDEX_ENUMERATION_FAILED >&2; exit 1; }
+git ls-tree -r --name-only -z HEAD -- "${roots[@]}" "${required[@]}" > "$tree_manifest" ||
+  { echo COMMITTED_TREE_ENUMERATION_FAILED >&2; exit 1; }
+cmp -s "$index_manifest" "$tree_manifest" ||
+  { echo INDEX_TREE_PATH_MISMATCH >&2; exit 1; }
 for root in "${roots[@]}"; do
   if [[ -e "$root" || -L "$root" ]]; then
     [[ -d "$root" && ! -L "$root" ]] ||
       { echo "BAD_SOURCE_ROOT: $root" >&2; exit 1; }
+    find -P "$root" \( -type f -o -type l \) -print0 > "$walk_manifest" ||
+      { echo WALK_ENUMERATION_FAILED >&2; exit 1; }
     while IFS= read -r -d '' f; do
       [[ ! -L "$f" ]] &&
         git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 ||
         { echo "UNTRACKED_INPUT: $f" >&2; exit 1; }
-    done < <(find -P "$root" \( -type f -o -type l \) -print0)
+    done < "$walk_manifest"
   fi
 done
 n=0
@@ -42,7 +56,7 @@ while IFS= read -r -d '' f; do
   [[ "$expected" == "$actual" ]] ||
     { echo "HEAD_BLOB_MISMATCH: $f" >&2; exit 1; }
   n=$((n+1))
-done < <(git ls-files -z -- "${roots[@]}" "${required[@]}")
+done < "$index_manifest"
 [[ "$n" -ge "${#required[@]}" ]] ||
   { echo INCOMPLETE_INPUT_SCAN >&2; exit 1; }
 echo "SCOPED_JAVA_INPUTS_MATCH_HEAD head=$EXPECTED_SOURCE_HEAD count=$n guest=NOT_EXECUTED"
