@@ -22,7 +22,7 @@ This does **not** prove actor isolation, simultaneous readers, borrow exclusivit
 ```sh
 mvn -B -ntp -Dores.runtime.carriers=java -DfailIfNoTests=true \
   -DskipTests=false -Dmaven.test.skip=false \
-  -Dtest=CriticalActorGuestExecutionTest test
+  -Dtest=CriticalActorGuestExecutionTest,ActorBorrowCompilerAdmissionTest test
 ```
 
 The existing workflow `.github/workflows/critical-suspends-java-admission.yml` pins original PR-head checkout, records the Git root tree, and requires the new test name inside a nonempty Surefire XML report with no failures, skips or errors. A separate artifact carries the original source SHA, tree, canonical fixture digests, and compiled `OresCompiler.class` hash when present.
@@ -31,6 +31,16 @@ These artifacts are explicitly candidate-only until another verifier binds their
 
 If GitHub reports `steps=null` or `steps=[]`, classify it as runner-admission failure, **not** a compiler failure or a passed guest test.
 
+## Compiler-owned borrow admission
+
+The added `ActorBorrowCompilerAdmissionTest` defines five source/compiler admission checks: two shared borrows coexist; an exclusive borrow is admitted alone; a writer is rejected with two live readers; `rt take` is rejected while borrowed; and a stale owner use after move is rejected. These use canonical `rt borrow`, `rt mut borrow`, and `rt take` syntax already supported by the Java parser and OwnershipChecker. The tests are authored, but **have not yet executed** under hosted CI.
+
+Run with the above guest test by setting:
+
+    -Dtest=CriticalActorGuestExecutionTest,ActorBorrowCompilerAdmissionTest
+
+These are compiler ownership checks, not actor heap generation-fencing runtime evidence.
+
 ## Follow-up formal refinement
 
-Complete ACT-BORROW-001..005 on the actual canonical compiler with positive read/read overlap, compile-negative writer/read overlap, `rt take` generation fencing and cancellation. Apply the same canonical .atto fixture blob to LLVM, .NET NativeAOT, Wasm and Forge. These requirements are **not implemented or satisfied** by this restricted critical-actor canary.
+Complete ACT-BORROW-001..005 with actual actor-owned runtime tests for read/write exclusion, transfer generation fencing, cancellation and actor termination. An ordinary `rt take` of an array is a compile-time move; it does not prove a supervisor-mediated actor transfer. Execute identical canonical .atto blobs on LLVM, .NET NativeAOT, Wasm and Forge, retaining backend-specific guest receipts. These requirements remain **NOT_EXECUTED**.
