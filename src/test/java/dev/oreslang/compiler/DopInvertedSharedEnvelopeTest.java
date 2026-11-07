@@ -1,6 +1,8 @@
 package dev.oreslang.compiler;
 
 import org.junit.jupiter.api.Test;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -20,6 +22,26 @@ final class DopInvertedSharedEnvelopeTest {
             () -> OresCompiler.compileDopInvertedScalarI64(source(capacity,body)));
         assertTrue(error.getMessage().contains("DOP_INVERTED_V1_REJECTED"),
             "unsupported program must fail during typed compilation");
+    }
+
+    private static String fixture(String name) throws Exception {
+        return Files.readString(Path.of("contracts", "dop-inverted-v1", name));
+    }
+
+    @Test
+    void byteIdenticalSharedCapacitySourcesHaveExpectedTypedAdmission() throws Exception {
+        var allowed = OresCompiler.compileDopInvertedScalarI64(
+                fixture("capacity-256-42.atto"));
+        assertEquals(256, allowed.capacity());
+        assertEquals(42L, allowed.executeHostReference());
+
+        for (String rejected : new String[]{
+                "capacity-257-rejected.atto", "capacity-zero-rejected.atto"}) {
+            var denied = assertThrows(IllegalArgumentException.class, () ->
+                    OresCompiler.compileDopInvertedScalarI64(fixture(rejected)));
+            assertTrue(denied.getMessage().contains("DOP_INVERTED_V1_REJECTED"));
+            assertTrue(denied.getMessage().contains("capacity"));
+        }
     }
 
     @Test
