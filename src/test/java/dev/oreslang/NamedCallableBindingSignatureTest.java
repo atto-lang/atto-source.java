@@ -142,6 +142,24 @@ final class NamedCallableBindingSignatureTest {
     }
 
     @Test
+    void genericTypeFirstBindingsDoNotBecomeCallableAscriptions() {
+        Ast.Program parsed = Parser.parse("""
+                fnc main(): void {
+                    const Option<int> local = Some(42);
+                    return;
+                }
+                const Option<int> global = Some(7);
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) parsed.modules().getFirst()
+                .declarations().getFirst();
+        Ast.BindingStmt local = (Ast.BindingStmt) fn.body().getFirst();
+        assertEquals("local", local.name());
+        assertEquals("Option", local.declaredType().name());
+        assertEquals("int", local.declaredType().arguments().getFirst().name());
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
+    @Test
     void namedSignatureRejectsMalformedAndNonCallableHeaders() {
         for (String signature : new String[] {
                 "int",
