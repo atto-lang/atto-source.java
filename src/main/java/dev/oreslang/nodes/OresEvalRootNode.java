@@ -8474,6 +8474,10 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Future.race");
                         return OresFutures.race(asSequence(args.getFirst()));
                     };
+                    case "first" -> (Invokable) args -> {
+                        requireOne(args, "Future.first");
+                        return SourceTaskHandles.first(asSequence(args.getFirst()));
+                    };
                     default -> throw new IllegalArgumentException("unknown Future member " + name);
                 };
             }

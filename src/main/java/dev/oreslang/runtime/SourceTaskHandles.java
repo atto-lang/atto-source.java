@@ -112,6 +112,25 @@ public final class SourceTaskHandles {
         return TaskHandle.currentCancellationRequested();
     }
 
+    /**
+     * {@code Future.first([...])} (Loom {@code ShutdownOnSuccess}): settles with
+     * the first child to settle, like {@code race}, then cancels every losing
+     * child that is an owned {@code task { }} handle. Borrowed Futures are
+     * only unsubscribed, never cancelled.
+     */
+    public static OresFuture<Object> first(java.util.List<?> children) {
+        OresFuture<Object> winner = OresFutures.race(children);
+        winner.whenCompleteRuntime((value, failure) -> {
+            for (Object child : children) {
+                if (child instanceof OresFuture<?> future && !future.isDone()) {
+                    TaskHandle<?> loser = lookup(future);
+                    if (loser != null) loser.cancel("lost Future.first");
+                }
+            }
+        });
+        return winner;
+    }
+
     /** {@code task scope deadline(ms)}: cancel the scope's children on expiry. */
     public static java.util.concurrent.ScheduledFuture<?> cancelScopeAfter(
             TaskScope scope, long millis) {

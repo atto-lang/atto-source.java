@@ -3124,7 +3124,8 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr futureCall
                     && futureCall.receiver() instanceof Ast.NameExpr futureFactory
                     && futureFactory.name().equals("Future")
-                    && (futureCall.member().equals("all") || futureCall.member().equals("race"))) {
+                    && (futureCall.member().equals("all") || futureCall.member().equals("race")
+                        || futureCall.member().equals("first"))) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
                             "Future." + futureCall.member() + " does not accept call-site type arguments");

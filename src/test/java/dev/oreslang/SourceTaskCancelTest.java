@@ -142,7 +142,7 @@ final class SourceTaskCancelTest {
                   val mutex = SharedMutex.new(new Counter());
                   let Future<void> child = task {
                     val lock_guard = mutex.lock();
-                    lock_lock_guard.value = 7;
+                    lock_guard.value = 7;
                     rt cooperate;
                     return;
                   };
@@ -166,7 +166,7 @@ final class SourceTaskCancelTest {
                     loop {
                       block {
                         val lock_guard = mutex.lock();
-                        lock_lock_guard.value = 7;
+                        lock_guard.value = 7;
                       }
                       rt cooperate;
                     }
@@ -407,6 +407,34 @@ final class SourceTaskCancelTest {
                   val outcome = await child.get_done();
                   stdio.stdout.write("|");
                   stdio.stdout.write(outcome);
+                  return;
+                }
+                """));
+    }
+
+    /** Future.first: the winner is returned and losing task handles are cancelled. */
+    @Test
+    void futureFirstCancelsTheLosingTask() throws Exception {
+        // If the loser were not cancelled the scope could never exit. The
+        // winner prints after the scope has joined, so output order is fixed.
+        assertEquals("|slow-cleanup|winner=1", run("""
+                pub async fnc main(): void {
+                  let mut int winner = 0;
+                  task scope {
+                    let Future<int> fast = task {
+                      return 1;
+                    };
+                    let Future<int> slow = task {
+                      defer stdio.stdout.write("|slow-cleanup");
+                      loop {
+                        rt cooperate;
+                      }
+                      return 2;
+                    };
+                    winner = await Future.first([fast, slow]);
+                  }
+                  stdio.stdout.write("|winner=");
+                  stdio.stdout.write(winner);
                   return;
                 }
                 """));
