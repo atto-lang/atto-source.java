@@ -54,3 +54,10 @@ At exact PR head `2897d19750b6bfffc865b7db9a6ca669a0512af6`, Java Actions `fast-
 `OresProjectConfig` now checks canonical `.atto` entries with `BasicFileAttributes` and `NOFOLLOW_LINKS`. A regular file, directory, symlink (including a dangling symlink), or other existing entry occupies the canonical name. Only `NoSuchFileException` means absence; other metadata errors fail closed. The selected path is handed to the bounded source reader, which rejects non-regular/symlink input. `.ores` and `.java` explicit-path behavior remains unchanged.
 
 Regressions cover both a dangling `.atto` symlink and a directory named `.atto` beside a valid `.ores` sibling. The directory/symlink must be selected as canonical rather than triggering legacy fallback. An isolated JDK 21 resolver harness compiled and passed six cases: canonical precedence, explicit legacy, legacy fallback, directory shadow, dangling-link shadow, and foreign-extension rejection. This is isolated resolver evidence only; it does not substitute for the exact-head Maven/JUnit or compiler guest suite.
+
+
+## Reconciled canonical AttoLang manifest admission
+
+The nearest `.atto.pkg.toml` or legacy `.oreslangc.cfg.toml` controls the source project; two manifests in the same directory are ambiguous and are rejected. Unreadable manifest metadata cannot silently fall through to a different project. This merge preserves current main's canonical `.atto` suffix precedence, mixed-source interop gates, stronger imported-class ownership resolution, and null-safe pattern/condition evaluation.
+
+The older pinned `SecureDirectoryStream` source-reader experiment is NOT silently substituted for current main's root-owned alias portability policy. Its stronger race-fencing claim needs distinct portability/security review and executed native tests before promotion. Java full-source tests are not executed while private Actions runner admission is blocked.

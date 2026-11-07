@@ -68,6 +68,10 @@ public final class TypeChecker {
     // Foreign aliases are visible only while expanding a public field in
     // their declaring class, never as names available to importer source.
     private final IdentityHashMap<Ast.ClassDecl, Map<String, Ast.TypeAliasDecl>> linkedClassAliases = new IdentityHashMap<>();
+    // Qualified class names admitted through an explicitly imported module alias.
+    // Kept separate from classOwners so foreign class bodies are not revalidated
+    // in the importing compilation unit.
+    private final IdentityHashMap<Ast.ClassDecl, String> linkedClassNames = new IdentityHashMap<>();
     private Map<String, Ast.TypeAliasDecl> resolvingLinkedFieldAliases = Map.of();
     private final Set<String> hiddenLinkedAliasNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -292,29 +296,55 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (name == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+
+            String linkedModuleAlias = null;
+            boolean importedDirectly = declaration.actorKind() == Ast.ActorKind.NONE
+                    && program.imports().stream().anyMatch(use ->
+                            use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
+                                    && use.names().stream().anyMatch(sourceName ->
+                                            sourceName.equals(declaration.name())
+                                                    && ImportRules.localName(use, sourceName).equals(name)));
+            if (!importedDirectly && declaration.actorKind() == Ast.ActorKind.NONE) {
+                int separator = name.lastIndexOf('.');
+                if (separator > 0 && separator < name.length() - 1
+                        && name.substring(separator + 1).equals(declaration.name())) {
+                    String prefix = name.substring(0, separator);
+                    boolean importedModule = program.imports().stream().anyMatch(use ->
+                            use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                                    && use.names().stream().anyMatch(sourceName ->
+                                            ImportRules.localName(use, sourceName).equals(prefix)));
+                    if (importedModule) linkedModuleAlias = prefix;
+                }
+            }
+
             // A checked actor signature is transport/protocol metadata, not
-            // a transferable actor instance. Link it only through an exact
-            // named actor import; class imports cannot silently reclassify
-            // actor objects as mailbox-safe references (or vice versa).
+            // a transferable actor instance. Actor declarations require an
+            // exact actor import; module namespaces never turn them into classes.
             Ast.ImportKind expectedKind = declaration.actorKind()
-                    == Ast.ActorKind.NONE
-                    ? Ast.ImportKind.CLASS
-                    : Ast.ImportKind.ACTOR;
-            boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == expectedKind && !use.wildcard()
-                            && use.names().contains(name)
-                            && (use.namespace() == null
-                                    || use.namespace().equals(name)));
-            if (!imported || checker.classes.containsKey(name)
+                    == Ast.ActorKind.NONE ? Ast.ImportKind.CLASS : Ast.ImportKind.ACTOR;
+            boolean importedActor = declaration.actorKind() != Ast.ActorKind.NONE
+                    && name.equals(declaration.name())
+                    && program.imports().stream().anyMatch(use ->
+                            use.kind() == expectedKind && !use.wildcard()
+                                    && use.names().contains(name)
+                                    && ImportRules.localName(use, name).equals(name));
+            if ((!importedDirectly && linkedModuleAlias == null && !importedActor)
+                    || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
                         "linked public class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
+            String previousName = checker.linkedClassNames.putIfAbsent(declaration, name);
+            if (previousName != null && !previousName.equals(name)) {
+                throw new IllegalArgumentException(
+                        "the same linked class cannot be imported through multiple names: "
+                                + declaration.name());
+            }
             Map<String, Ast.TypeAliasDecl> aliases =
                     linkedAliases.getOrDefault(name, Map.of());
             for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
@@ -4418,6 +4448,12 @@ public final class TypeChecker {
 
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
+                if (linkedClassAliases.containsKey(klass)
+                        && constructor.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "constructor for imported class '" + qualifiedClassName(klass)
+                                    + "' is private to its declaring module");
+                }
                 if (created.arguments().size() != constructor.arity()) {
                     throw new IllegalArgumentException(
                             "constructor for " + klass.name() + " expects "
@@ -10065,6 +10101,8 @@ public final class TypeChecker {
     }
 
     private String qualifiedClassName(Ast.ClassDecl klass) {
+        String linkedName = linkedClassNames.get(klass);
+        if (linkedName != null) return linkedName;
         String owner = classOwners.get(klass);
         return owner == null || owner.equals("__root__") ? klass.name() : owner + "." + klass.name();
     }
