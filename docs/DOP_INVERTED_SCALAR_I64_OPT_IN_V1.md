@@ -141,7 +141,7 @@ subset; it does **not** enable arbitrary user-provided inverted source,
 general `OresLanguage` AST/ownership analysis, an actor runtime, native AOT,
 an untrusted tenant, or Java/LLVM guest parity. No compiler-backed
 GraalVM/polyglot JUnit run is claimed until actual source-org CI executes.
-The dedicated `OresLanguageVerifiedDopLeaseTest` contains nine regression
+The dedicated `OresLanguageVerifiedDopLeaseTest` contains ten regression
 methods covering normal Context eval, cached-source/replayed parsed values,
 source/name mismatch, thread ownership, lease coexistence and fail-closed
 admission; they are authored but not executed.
