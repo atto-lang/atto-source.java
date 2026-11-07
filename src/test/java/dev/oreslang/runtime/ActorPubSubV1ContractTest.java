@@ -80,6 +80,80 @@ final class ActorPubSubV1ContractTest {
     }
 
     @Test
+    void failedReliableAdmissionCannotCommitReductionOrConsumeSequence()
+            throws Exception {
+        // Mutation guard: deliberately inject a reduction commit callback into
+        // the real delivery path. Backpressure must abort before the callback,
+        // sequence assignment, or recipient fanout.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "deny-before-commit", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            CountDownLatch ready = new CountDownLatch(1);
+            AtomicReference<Throwable> actorFailure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> subscriber =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            join.join();
+                            topic.subscribe();
+                        } catch (Throwable problem) {
+                            actorFailure.compareAndSet(null, problem);
+                        } finally {
+                            ready.countDown();
+                        }
+                    });
+            subscriber.send("subscribe");
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            assertNull(actorFailure.get());
+
+            ActorEventBus.PublishReceipt first =
+                    group.events().publishSystem("deny-before-commit", "first");
+            ActorEventBus.PublishReceipt second =
+                    group.events().publishSystem("deny-before-commit", "second");
+            assertEquals(1L, first.sequence());
+            assertEquals(2L, second.sequence());
+            assertTrue(first.completion().isDone());
+            assertFalse(second.completion().isDone());
+
+            java.lang.reflect.Field topicsField =
+                    ActorEventBus.class.getDeclaredField("topics");
+            topicsField.setAccessible(true);
+            java.util.Map<?, ?> states =
+                    (java.util.Map<?, ?>) topicsField.get(group.events());
+            java.lang.reflect.Method withCommit = java.util.Arrays.stream(
+                    ActorEventBus.class.getDeclaredMethods())
+                    .filter(method -> method.getName().equals("publishFrozen")
+                            && method.getParameterCount() == 4)
+                    .findFirst().orElseThrow();
+            withCommit.setAccessible(true);
+            java.util.concurrent.atomic.AtomicInteger commits =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.lang.reflect.InvocationTargetException denied =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            java.lang.reflect.InvocationTargetException.class,
+                            () -> withCommit.invoke(
+                                    group.events(), states.get("deny-before-commit"),
+                                    runtime.freezeActorGroupEventPayload("rejected"),
+                                    null, (Runnable) commits::incrementAndGet));
+            assertTrue(denied.getCause()
+                            instanceof ActorEventBus.EventBackpressureException,
+                    () -> "expected RELIABLE admission denial, got " + denied.getCause());
+            assertEquals(0, commits.get(),
+                    "rejected publication must never invoke reduction callback");
+
+            assertTrue(second.completion().cancel(false));
+            subscriber.stop();
+            assertTrue(subscriber.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(3L, group.events()
+                    .publishSystem("deny-before-commit", "after-retirement").sequence(),
+                    "rejection must not burn a sequence or leave phantom delivery");
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "rejected and cancelled events must release frozen reservations");
+        }
+    }
+
+    @Test
     void admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText() {
         ActorEventBus.PublishReceipt legacy = new ActorEventBus.PublishReceipt(
                 0, 0, 0, 0, OresFuture.completed(java.util.List.of()));
