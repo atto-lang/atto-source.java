@@ -1364,7 +1364,7 @@ public final class Parser {
             throw error(previous(), "lambda binding shorthand requires 'const fnc'");
         }
         if (functionShorthand) name = consume(IDENT, "expected function binding name").lexeme();
-        else if (check(IDENT) && checkNext(LT)) {
+        else if (looksLikeNamedCallableBindingSignature()) {
             name = advance().lexeme();
             type = parseNamedCallableBindingSignature();
         } else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -2254,6 +2254,29 @@ public final class Parser {
     }
 
     /**
+     * Distinguish 'const name<(Args) => Result> = expression' from a
+     * conventional type-first binding such as 'const Option<int> x = ...'.
+     * Commit only after the entire signature and '=' have been recognized.
+     */
+    private boolean looksLikeNamedCallableBindingSignature() {
+        if (!check(IDENT) || !checkNext(LT)
+                || current + 2 >= tokens.size()
+                || tokens.get(current + 2).type() != LPAREN) {
+            return false;
+        }
+        int mark = current;
+        try {
+            advance(); // candidate binding name
+            parseNamedCallableBindingSignature();
+            return check(EQUAL);
+        } catch (IllegalArgumentException malformed) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    /**
      * Named binding signatures are type ascriptions, not generic declaration
      * parameters. 'const callback<(int, int) => int> = ...' is equivalent to
      * a typed Fnc<int, int, int> binding. The RHS must be compatible with this
@@ -3091,7 +3114,7 @@ public final class Parser {
         }
         if (functionShorthand) {
             name = consume(IDENT, "expected function binding name").lexeme();
-        } else if (check(IDENT) && checkNext(LT)) {
+        } else if (looksLikeNamedCallableBindingSignature()) {
             name = advance().lexeme();
             type = parseNamedCallableBindingSignature();
         } else if (check(IDENT) && checkNext(COLON)) {
