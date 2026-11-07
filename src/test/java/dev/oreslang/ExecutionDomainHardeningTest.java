@@ -94,21 +94,47 @@ final class ExecutionDomainHardeningTest {
     }
 
     @Test
-    void quantumGateQuotaHoldsWhenSizeUnderstatesTheCopy() {
+    void quantumGateQuotaRejectsUnderstatedIteratorBeforeUnboundedCopy() {
         var x = new QuantumCircuitIR.Gate(QuantumCircuitIR.Op.X, 0, -1, -1);
         var measure = new QuantumCircuitIR.Gate(QuantumCircuitIR.Op.MEASURE, 0, -1, 0);
+        final int[] consumed = {0};
         List<QuantumCircuitIR.Gate> understated = new AbstractList<>() {
             @Override public int size() { return 1; }
             @Override public QuantumCircuitIR.Gate get(int index) { return measure; }
+            @Override public java.util.Iterator<QuantumCircuitIR.Gate> iterator() {
+                return new java.util.Iterator<>() {
+                    private int cursor;
+                    @Override public boolean hasNext() { return cursor < 5000; }
+                    @Override public QuantumCircuitIR.Gate next() {
+                        consumed[0]++;
+                        return ++cursor == 5000 ? measure : x;
+                    }
+                };
+            }
             @Override public Object[] toArray() {
-                Object[] gates = new Object[5000];
-                java.util.Arrays.fill(gates, x);
-                gates[gates.length - 1] = measure;
-                return gates;
+                throw new AssertionError("untrusted toArray must never be called");
             }
         };
-        assertThrows(IllegalArgumentException.class,
+        var error = assertThrows(IllegalArgumentException.class,
                 () -> new QuantumCircuitIR.Circuit(1, 1, understated));
+        assertTrue(error.getMessage().contains("gate quota"), error::getMessage);
+        assertEquals(1024, consumed[0], "must stop before consuming a 1,025th gate");
+    }
+
+    @Test
+    void quantumGateSnapshotDoesNotInvokeUntrustedToArray() {
+        var measure = new QuantumCircuitIR.Gate(QuantumCircuitIR.Op.MEASURE, 0, -1, 0);
+        List<QuantumCircuitIR.Gate> input = new AbstractList<>() {
+            @Override public int size() { return 1; }
+            @Override public QuantumCircuitIR.Gate get(int index) {
+                if (index != 0) throw new IndexOutOfBoundsException(index);
+                return measure;
+            }
+            @Override public Object[] toArray() {
+                throw new AssertionError("untrusted toArray must never be called");
+            }
+        };
+        assertEquals(List.of(measure), new QuantumCircuitIR.Circuit(1, 1, input).gates());
     }
 
     @Test
