@@ -53,6 +53,7 @@ jobs:
       - name: Compile critical AST, Task authority and .ores Truffle guest tests
         run: |
           set -euo pipefail
+          java tools/VerifyAssuranceSurefire.java --self-test
           mvn -B -ntp -Dores.runtime.carriers=java \
             -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
             -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,TaskCaptureAdmissionIdentityTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest,ActorBorrowCompilerAdmissionTest \
