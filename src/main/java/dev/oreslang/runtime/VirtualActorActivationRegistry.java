@@ -101,7 +101,11 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 if (slots.size() == maxIdentities)
                     throw new IllegalStateException("virtual actor identity capacity exhausted");
                 slot = new Slot(identity, this);
+                // Build the outward capability before consuming a bounded
+                // identity slot, so allocation failure leaves no orphan entry.
+                LogicalRef reference = new LogicalRef(slot);
                 slots.put(identity, slot);
+                return reference;
             }
             return new LogicalRef(slot);
         }
@@ -144,14 +148,20 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Slot slot = logical.slot;
             if (slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
             boolean initializer = !slot.active;
+            if (initializer && nextIncarnation == Long.MAX_VALUE)
+                throw new IllegalStateException("virtual actor incarnation budget exhausted");
+            long candidateIncarnation = initializer ? nextIncarnation + 1 : slot.incarnation;
+            // Never mark an activation live before its capability is allocated.
+            // Out-of-memory or constructor failure must not strand a slot as
+            // active-but-unpublished with no initializer able to recover it.
+            Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
-                if (nextIncarnation == Long.MAX_VALUE)
-                    throw new IllegalStateException("virtual actor incarnation budget exhausted");
-                slot.incarnation = ++nextIncarnation;
+                nextIncarnation = candidateIncarnation;
+                slot.incarnation = candidateIncarnation;
                 slot.active = true;
                 slot.published = false;
             }
-            return new Activation(slot, slot.incarnation, initializer);
+            return candidate;
         }
     }
 
@@ -224,8 +234,12 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                     slot.incarnation != activation.incarnation)
                 throw new IllegalStateException("inactive virtual actor activation");
             if (slot.outstanding == mailboxCapacity) return null;
+            // Construct the admission receipt BEFORE incrementing the accepted
+            // count. An allocation failure must not strand an unobservable
+            // outstanding credit that blocks shutdown and reincarnation.
+            Admission receipt = new Admission(slot, slot.incarnation);
             slot.outstanding++;
-            return new Admission(slot, slot.incarnation);
+            return receipt;
         }
     }
 

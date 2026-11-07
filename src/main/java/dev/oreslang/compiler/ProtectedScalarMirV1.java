@@ -67,8 +67,17 @@ public final class ProtectedScalarMirV1 {
                     maxIdentities, mailboxCapacity,
                     identity -> {
                         ScalarStateContainer state = new ScalarStateContainer(initialValue, 1);
-                        return message -> state.tryAddChecked(message).orElseThrow(
-                                () -> new IllegalStateException("virtual state writer unavailable"));
+                        return new LocalVirtualActorI64.Turn() {
+                            @Override public void on_message(long message) {
+                                state.tryAddChecked(message).orElseThrow(
+                                        () -> new IllegalStateException("virtual state writer unavailable"));
+                            }
+                            @Override public void close() {
+                                state.close();
+                                if (!state.readyForReclamation())
+                                    throw new IllegalStateException("virtual state lease not quiescent");
+                            }
+                        };
                     }, supervisorControl);
         }
 
