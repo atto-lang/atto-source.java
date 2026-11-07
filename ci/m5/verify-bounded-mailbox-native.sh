@@ -13,6 +13,7 @@ test -z "$(git ls-files --others --exclude-standard)" || {
 test -x "${JAVA_HOME:-}/bin/native-image" && test -x "$JAVA_HOME/bin/javac" || {
   echo 'M5_NOT_EXECUTED: real GraalVM Native Image JDK25 unavailable' >&2; exit 2
 }
+python3 -m unittest discover -s tests -p test_m5_checked_actor_ir.py -v
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes"
