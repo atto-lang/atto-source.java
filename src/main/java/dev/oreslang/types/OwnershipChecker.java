@@ -4414,6 +4414,10 @@ public final class OwnershipChecker {
                     : none;
         }
 
+        // The builtin Mutex is confined to its creating domain, so a task can never
+        // capture it; see TypeAutoTraits. A user class named Mutex is handled below.
+        if (name.equals("Mutex") && declaredClass == null) return none;
+
         // User classes with builtin-looking names follow their declared class
         // layout where TypeChecker permits that shadowing (Box/Arc/etc.).
         AutoTraitRules.Kind wrapperKind = switch (name) {

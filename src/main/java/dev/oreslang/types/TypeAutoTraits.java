@@ -104,7 +104,12 @@ public final class TypeAutoTraits {
             case "Weak" -> Optional.of(wrapped(named, Kind.WEAK, true, nested));
             case "Rc" -> Optional.of(wrapped(named, Kind.RC, false, nested));
             case "RefCell" -> Optional.of(wrapped(named, Kind.REFCELL, false, nested));
-            case "Mutex" -> Optional.of(wrapped(named, Kind.MUTEX, false, nested));
+            // Mutex<T> is pinned to the actor/execution domain that created it: the
+            // runtime refuses to move one across an async task boundary and throws
+            // WrongMutexDomainException on foreign access. Rust's "Send if T is Send"
+            // would admit programs that can only fail at runtime. SharedMutex is the
+            // shareable form.
+            case "Mutex" -> Optional.of(NONE);
             case "RwLock" -> Optional.of(wrapped(named, Kind.RWLOCK, false, nested));
             case "SharedMutex" -> {
                 if (named.arguments().size() != 1) yield Optional.of(NONE);
