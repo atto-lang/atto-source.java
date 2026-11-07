@@ -2,8 +2,12 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -117,23 +121,49 @@ public final class SharedCodeImageStore implements AutoCloseable {
 
     public CodeImage publish(
             String codeUnitId, Ast.Program immutableProgram, List<OresSymbol> literalCatalog) {
+        Objects.requireNonNull(codeUnitId, "codeUnitId");
+        Objects.requireNonNull(immutableProgram, "immutableProgram");
         Objects.requireNonNull(literalCatalog, "literalCatalog");
+        // Even a host-supplied List can lie about size(), mutate, or block
+        // inside iterator(); never invoke it with the VM code registry locked.
+        List<OresSymbol> sealedCatalog = prepareLiteralCatalog(literalCatalog);
         synchronized (images) {
             if (closed.get()) throw new IllegalStateException("shared code store is closed");
             CodeImage prior = images.get(codeUnitId);
             if (prior != null) {
                 if (prior.program() != immutableProgram
-                        || !prior.staticLiterals.equals(literalCatalog)) {
+                        || !prior.staticLiterals.equals(sealedCatalog)) {
                     throw new IllegalStateException(
                             "attempted to replace already-linked code unit '" + codeUnitId
                                     + "' without starting a new versioned code generation");
                 }
                 return prior;
             }
-            CodeImage image = new CodeImage(codeUnitId, immutableProgram, literalCatalog);
+            CodeImage image = new CodeImage(codeUnitId, immutableProgram, sealedCatalog);
             images.put(codeUnitId, image);
             return image;
         }
+    }
+
+    private static List<OresSymbol> prepareLiteralCatalog(List<OresSymbol> input) {
+        List<OresSymbol> values = new ArrayList<>();
+        Set<OresSymbol> keys = new HashSet<>();
+        long bytes = 0L;
+        for (OresSymbol value : input) {
+            Objects.requireNonNull(value, "null Symbol literal");
+            if (values.size() == OresSymbolLiteralImageStore.MAX_LITERALS) {
+                throw new IllegalArgumentException("linked Symbol image entry quota exceeded");
+            }
+            if (!keys.add(value)) {
+                throw new IllegalArgumentException("duplicate logical Symbol image entry");
+            }
+            bytes += value.name().getBytes(StandardCharsets.UTF_8).length;
+            if (bytes > OresSymbolLiteralImageStore.MAX_PAYLOAD_UTF8_BYTES) {
+                throw new IllegalArgumentException("linked Symbol image UTF-8 quota exceeded");
+            }
+            values.add(value);
+        }
+        return List.copyOf(values);
     }
 
     /** VM/internal lookup only. Never expose this reference to untrusted source code. */
