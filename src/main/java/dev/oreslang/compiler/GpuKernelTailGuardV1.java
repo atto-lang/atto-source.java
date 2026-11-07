@@ -203,8 +203,14 @@ public final class GpuKernelTailGuardV1 {
             Objects.requireNonNull(instruction, "GPU-KERNEL-010: null instruction");
             switch (instruction.opcode()) {
                 case "LET" -> {
-                    if (instruction.target() == null || instruction.value() == null)
+                    if (instruction.target() == null || instruction.target().isBlank()
+                            || instruction.value() == null || !instruction.body().isEmpty())
                         throw error("malformed scalar binding in tail-guard audit");
+                    var bindingType = instruction.value().type();
+                    if (bindingType != GpuKernelSourceHirV1.Type.I64
+                            && bindingType != GpuKernelSourceHirV1.Type.F32
+                            && bindingType != GpuKernelSourceHirV1.Type.BOOL)
+                        throw error("GPU local source binding must have a scalar type");
                     memoryOps = Math.addExact(memoryOps,
                             inspectValue(instruction.value(), context, guarded, depth + 1));
                     if (context.parameters.containsKey(instruction.target())
@@ -234,8 +240,10 @@ public final class GpuKernelTailGuardV1 {
                 }
                 case "IF" -> {
                     GpuKernelSourceHirV1.Value condition = instruction.value();
-                    if (condition == null || condition.type() != GpuKernelSourceHirV1.Type.BOOL)
-                        throw error("GPU branch predicate missing typed boolean");
+                    if (instruction.target() != null
+                            || condition == null
+                            || condition.type() != GpuKernelSourceHirV1.Type.BOOL)
+                        throw error("GPU branch predicate or target has invalid typed shape");
                     memoryOps = Math.addExact(memoryOps,
                             inspectValue(condition, context, guarded, depth + 1));
                     boolean guardedIfTrue = guarded
@@ -253,7 +261,8 @@ public final class GpuKernelTailGuardV1 {
                     }
                 }
                 case "RETURN_VOID" -> {
-                    if (instruction.value() != null || !instruction.body().isEmpty())
+                    if (instruction.target() != null || instruction.value() != null
+                            || !instruction.body().isEmpty())
                         throw error("unexpected return operands");
                     return memoryOps; // unreachable following instructions
                 }
@@ -271,6 +280,8 @@ public final class GpuKernelTailGuardV1 {
         Objects.requireNonNull(plan, "GPU source plan");
         if (plan.evidence() != GpuKernelSourceHirV1.Evidence.TYPED_SOURCE_ONLY_NOT_EXECUTABLE)
             throw error("missing source-only kernel evidence");
+        if (plan.returnType() != GpuKernelSourceHirV1.Type.VOID)
+            throw error("source GPU kernel plan cannot return non-void values");
         Map<String, GpuKernelSourceHirV1.Type> params = new HashMap<>();
         for (GpuKernelSourceHirV1.Parameter p : plan.parameters()) {
             if (params.putIfAbsent(p.name(), p.type()) != null)
