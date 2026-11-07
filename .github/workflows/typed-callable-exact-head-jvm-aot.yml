@@ -1,9 +1,12 @@
 name: Typed callable return exact-head JVM and AOT
 on:
   pull_request:
+    branches:
+      - main
     paths:
       - '.github/workflows/typed-callable-exact-head-jvm-aot.yml'
       - 'pom.xml'
+      - 'tools/ci/VerifyTypedCallableSurefire.java'
       - 'src/main/java/dev/oreslang/ast/**'
       - 'src/main/java/dev/oreslang/parser/**'
       - 'src/main/java/dev/oreslang/types/**'
@@ -11,8 +14,8 @@ on:
       - 'src/test/java/dev/oreslang/*Lambda*Test.java'
       - 'src/test/java/dev/oreslang/*Callable*Test.java'
       - 'src/test/java/dev/oreslang/*TreeShaker*Test.java'
-  workflow_dispatch:
-
+# Re-run this PR event after runner admission; do not mislabel manual main runs
+# as executed proof for a particular PR head.
 permissions:
   contents: read
 
@@ -46,7 +49,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
       - name: Execute exact-source official JUnit engine, not synthetic probes
         shell: bash
         run: |
@@ -54,43 +56,25 @@ jobs:
           mvn -B -ntp \
             -Dtest=ExplicitLambdaReturnContractTest,NamedCallableBindingSignatureTest,CallableReturnParserBoundaryTest,TypedLambdaTreeShakerContractTest \
             -DfailIfNoTests=true test
-      - name: Require all 38 JUnit tests executed without failures or skips
+      - name: Exercise the report guard against adversarial synthetic reports
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          from xml.etree import ElementTree
-          expected_minimum = {
-              "ExplicitLambdaReturnContractTest": 16,
-              "NamedCallableBindingSignatureTest": 10,
-              "CallableReturnParserBoundaryTest": 8,
-              "TypedLambdaTreeShakerContractTest": 4,
-          }
-          totals = dict.fromkeys(("tests", "errors", "failures", "skipped"), 0)
-          for name, minimum in expected_minimum.items():
-              path = Path("target/surefire-reports") / f"TEST-dev.oreslang.{name}.xml"
-              if not path.is_file() or path.is_symlink():
-                  raise SystemExit(f"NOT_EXECUTED: missing official JUnit report for {name}")
-              root = ElementTree.parse(path).getroot()
-              if root.tag != "testsuite":
-                  raise SystemExit(f"NOT_CERTIFIED: invalid Surefire XML root for {name}")
-              reported = int(root.attrib["tests"])
-              cases = root.findall("testcase")
-              identities = [(case.get("classname"), case.get("name")) for case in cases]
-              if (reported < minimum or len(cases) != reported
-                      or any(not cls or not method for cls, method in identities)
-                      or len(set(identities)) != len(cases)):
-                  raise SystemExit(f"NOT_CERTIFIED: incomplete or duplicate JUnit cases for {name}")
-              for key in totals:
-                  totals[key] += int(root.attrib[key])
-          print("OFFICIAL_JUNIT_COUNTS", totals)
-          if totals["tests"] < 38 or any(totals[key] != 0 for key in ("errors", "failures", "skipped")):
-              raise SystemExit("NOT_CERTIFIED: missing, failed or skipped JUnit cases")
-          PY
+          java tools/ci/VerifyTypedCallableSurefire.java --self-test
+      - name: Require official JUnit XML, exact suites and at least 38 executed cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Do not accept a verifier rewritten by a build/test step.
+          test "$(git hash-object tools/ci/VerifyTypedCallableSurefire.java)" = \
+               "$(git rev-parse HEAD:tools/ci/VerifyTypedCallableSurefire.java)"
+          java tools/ci/VerifyTypedCallableSurefire.java target/surefire-reports
       - name: Execute full Maven verification against same exact tree
         shell: bash
-        run: mvn -B -ntp verify
+        run: |
+          set -euo pipefail
+          mvn -B -ntp verify
+          java tools/ci/VerifyTypedCallableSurefire.java target/surefire-reports
       - name: Verify exact source head after Maven
         shell: bash
         env:
@@ -98,6 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet HEAD --
           printf 'JVM_VERIFIED_HEAD=%s TREE=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
 
   native-aot:
@@ -125,7 +110,6 @@ jobs:
           version: '25.3'
           java-version: '25'
           distribution: graalvm
-          cache: maven
       - name: Build real AOT launcher with no fallback
         shell: bash
         run: |
@@ -187,5 +171,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet HEAD --
           printf 'AOT_GUEST_HEAD=%s TREE=%s RUN=%s\n' \
             "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" "$GITHUB_RUN_ID"
