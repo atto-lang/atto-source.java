@@ -859,7 +859,7 @@ final class PointerlessFncOwnershipTest {
         // existing named source binding to invalidate.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Box as
-                  pub val int value = 42;
+                  pub let int value = 42;
                 end
                 fnc valid(): int {
                   val Box owner = rt take new Box();
