@@ -43,6 +43,7 @@ instructions.
 - 16-byte scalar slots (type tag and 64-bit payload) for parameters,
   locals and operand values;
 - LIFO, single-active-top access; byte-for-byte zeroization on pop;
+- failstop actor poisoning on caught stale leases and corrupted frame tags;
 - actor-generation and logical execution identity fencing by
   `ActorFrameArena`, with the current SourceTask execution used where
   available. No guest pointers, closures or host objects are stored in
@@ -66,9 +67,10 @@ No raw JVM/native stack switching is attempted.
   bounded root-depth negative; unsupported routine/defer/dynamic
   call/nonprimitive/ownership mutation rejection; mutable/shadowed
   binding rejection.
-- Four `ScalarFrameStorageTest` host/runtime JUnit tests: typed
+- Five `ScalarFrameStorageTest` host/runtime JUnit tests: typed
   slot/PC/LIFO/stale handles; type-tag negatives; actor byte charging
-  and zeroization; quota-overflow actor failure with sibling survival
+  and zeroization; quota-overflow actor failure, caught-stale lease
+  poisoning with sibling survival
   on a shared one-worker carrier.
 - Three `ScalarFrameLanguageTest` true .atto frontend/evaluator
   acceptance tests with source files:
