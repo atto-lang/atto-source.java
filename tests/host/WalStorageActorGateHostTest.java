@@ -35,8 +35,9 @@ public final class WalStorageActorGateHostTest {
         ActorRuntime otherRuntime=new ActorRuntime();
         var ref=new ActorRuntime.ActorRef<String>(new ActorRuntime.ActorId("owner"),5);
         var foreign=new ActorRuntime.ActorRef<String>(new ActorRuntime.ActorId("foreign"),5);
-        var scope=new WalStorageFileOwner.Scope(7,9,3,11,5);
-        var staleScope=new WalStorageFileOwner.Scope(7,9,3,11,4);
+        var scope=new WalStorageFileOwner.Scope(7,9,3,ref.storageActorOrdinal(),5);
+        var staleScope=new WalStorageFileOwner.Scope(7,9,3,ref.storageActorOrdinal(),4);
+        var misboundScope=new WalStorageFileOwner.Scope(7,9,3,foreign.storageActorOrdinal(),5);
         var ctx=new OresContext(runtime);
         var domain=new Object();
         Path root=Files.createTempDirectory("wal-gate-");
@@ -51,6 +52,7 @@ public final class WalStorageActorGateHostTest {
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(
                     ctx,forgedSameId,scope,root));
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,ref,staleScope,root));
+            reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,ref,misboundScope,root));
             ctx.writeAllowed=false;
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,ref,scope,root));
             ctx.writeAllowed=true;

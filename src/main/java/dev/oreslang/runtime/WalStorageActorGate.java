@@ -61,7 +61,8 @@ final class WalStorageActorGate {
     /**
      * Call only from a trusted compiler/runtime actor turn. Scope comes from a
      * supervisor registry, NOT a WAL header or guest message. This proves the
-     * live actor incarnation, not independent tenant registry custody.
+     * live actor incarnation and scheduler-minted numeric storage slot,
+     * not independent tenant registry custody.
      */
     static Capture captureOnActorTurn(OresContext context,
                                       ActorRuntime.ActorRef<?> expectedActor,
@@ -76,7 +77,8 @@ final class WalStorageActorGate {
         ActorRuntime.StorageActorProof proof = ActorRuntime.mintStorageActorProof();
         if (proof.runtime() != context.actors()
                 || proof.actor() != expectedActor
-                || proof.actor().generation() != trustedScope.generation()) {
+                || proof.actor().generation() != trustedScope.generation()
+                || proof.storageActorOrdinal() != trustedScope.actor()) {
             throw new SecurityException("WAL storage capture has foreign runtime/actor/generation");
         }
         context.requirePermission(RuntimePermissions.Permission.WRITE, root.toString(),

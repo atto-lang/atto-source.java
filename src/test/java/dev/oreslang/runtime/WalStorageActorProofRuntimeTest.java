@@ -28,6 +28,7 @@ final class WalStorageActorProofRuntimeTest {
                         ActorRuntime.StorageActorProof proof = ActorRuntime.mintStorageActorProof();
                         assertSame(runtime, proof.runtime());
                         assertSame(context.self(), proof.actor());
+                        assertTrue(proof.storageActorOrdinal() > 0);
                         assertTrue(proof.actorStillAlive());
                         assertTrue(proof.validOnCurrentTurn());
                         first.set(proof);
@@ -36,7 +37,9 @@ final class WalStorageActorProofRuntimeTest {
                         ActorRuntime.StorageActorProof proof = first.get();
                         assertNotNull(proof);
                         assertTrue(proof.validOnCurrentTurn());
-                        assertSame(proof.actor(), ActorRuntime.mintStorageActorProof().actor());
+                        var reminted = ActorRuntime.mintStorageActorProof();
+                        assertSame(proof.actor(), reminted.actor());
+                        assertEquals(proof.storageActorOrdinal(), reminted.storageActorOrdinal());
                         resumed.countDown();
                         context.self().stop();
                     } else {

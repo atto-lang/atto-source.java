@@ -19,3 +19,19 @@
 5. Register a typed async, non-DATA-sendable `.ores` storage builtin; connect `DbWalActor`, replay/idempotency/index and verified sync-before-ACK semantics. Guest, crash/restart and LLVM differential evidence are separately required.
 
 Do not merge until complete real runtime/guest gates execute and independent review/branch protection are present. `steps=[]` means runner admission failure, not a compiler result. No private cross-org transfer was performed.
+
+## Stage 5 — runtime-local scheduler slot binding
+
+ActorCell mints a positive monotonically increasing `storageActorOrdinal` in the owning
+ActorRuntime, and the runtime-minted StorageActorProof carries that exact ordinal.
+WAL capture rejects any claimed `Scope.actor` not equal to the scheduler-minted slot.
+The slot is **NOT a persisted actor UUID**, tenant/isolate grant, or recovery identity.
+A new runtime must authorize a new generation and reconcile existing WAL through
+trusted recovery before writes can resume.
+
+Local isolated Java 21 `javac -Xlint:all -Werror` host-shim: 29/29 checks, five
+repeats. The new negative regression rejects an otherwise matching capture
+with a foreign numeric actor slot; the real-runtime JUnit now checks positive,
+stable slots across turns but remains **NOT_EXECUTED** without Maven/Truffle.
+This source change does NOT establish confined FDs, exclusive leases, supervisor
+tenant mapping, guest native builtins, or crash durability. Keep draft.
