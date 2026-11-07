@@ -139,3 +139,16 @@ until the private runner-allocation incident is resolved. This gate does
 not claim comprehensive integrity of arbitrary host environment/toolchain
 inputs outside the selected source and Maven surfaces.
 
+
+## Eight-suite Java Surefire evidence
+
+The Java workflow preserves **all eight** suites checked by
+`tools/VerifyAssuranceSurefire.java` and emits
+`target/atto-guest-evidence/surefire-xml-sha256.txt`.
+The companion independent [assurance artifact verifier](https://github.com/ores-truffle-oreslang/compiler-parity-website/pull/7)
+rejects missing or duplicate XML, altered manifest digests, suite count
+mismatches, forged names, failed/skipped testcase elements, and XXE.
+The `suite-gate-completed.json` receipt remains pass-only and explicitly
+**NOT_INDEPENDENTLY_VERIFIED**. An `if: always()` artifact, including a
+partial suite ZIP from failed CI, cannot be independently promoted to proof.
+
