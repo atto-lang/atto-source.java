@@ -162,6 +162,12 @@ public final class GuestCallDepthGuard {
                 || scope.actorStack != ActorRuntime.currentActorGuestStack()
                 || scope.arena != ActorRuntime.currentActorFrameArena()) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
+            ActorGuestStack currentStack = ActorRuntime.currentActorGuestStack();
+            ActorFrameArena currentArena = ActorRuntime.currentActorFrameArena();
+            if (currentStack != null) currentStack.poison();
+            if (currentArena != null) currentArena.poisonFromGuestGuard();
+            CURRENT.remove();
             throw new IllegalStateException("guest invocation descriptor outside active frame");
         }
         return scope;
