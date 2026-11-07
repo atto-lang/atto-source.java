@@ -1,0 +1,5 @@
+pub suspends fnc main(): void {
+  val group = actor.group("typed");
+  val topic = group.topic<Option<Fnc<int, int>>>("nested-closures", "latest", 1);
+  return;
+}

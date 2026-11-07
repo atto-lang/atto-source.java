@@ -49,9 +49,65 @@ public final class OwnershipChecker {
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /** Exact immutable Program identity checked by this ownership pass. */
+    /**
+     * Opaque compiler-owned publishing capability. External host embeddings
+     * cannot construct a token or publish an arbitrary critical AST set just
+     * by knowing the checked Program and ownership epoch.
+     */
+    public static final class CriticalPublishAuthority {
+        private final Ast.Program program;
+        private final long epoch;
+        private final long typingGeneration;
+
+        private CriticalPublishAuthority(
+                Ast.Program program, long epoch, long typingGeneration) {
+            this.program = program;
+            this.epoch = epoch;
+            this.typingGeneration = typingGeneration;
+        }
+
+        public boolean permits(
+                Ast.Program expectedProgram, long expectedEpoch,
+                long expectedTypingGeneration) {
+            return program == expectedProgram
+                    && epoch > 0 && epoch == expectedEpoch
+                    && typingGeneration == expectedTypingGeneration;
+        }
+    }
+
+    /**
+     * Compiler-owned Task publication authority. Public ledger state and
+     * epoch numbers are observations, never sufficient privileges to mint
+     * capture-transfer ownership from a host-supplied AST.
+     */
+    public static final class TaskPublishAuthority {
+        private final Ast.Program program;
+        private final long epoch;
+        private final long typingGeneration;
+
+        private TaskPublishAuthority(
+                Ast.Program program, long epoch, long typingGeneration) {
+            this.program = program;
+            this.epoch = epoch;
+            this.typingGeneration = typingGeneration;
+        }
+
+        public boolean permits(Ast.Program expectedProgram, long expectedEpoch,
+                long expectedTypingGeneration) {
+            return program == expectedProgram && epoch > 0
+                    && epoch == expectedEpoch
+                    && typingGeneration == expectedTypingGeneration;
+        }
+    }
+
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    /** Typing generation captured before ownership validation begins. */
+    private final long criticalTypingGenerationAtStart;
+    private final Set<Ast.CriticalStmt> pendingCriticalAdmissions =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private boolean insideSuspendingActorMethod;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -81,6 +137,15 @@ public final class OwnershipChecker {
         // Rechecking an existing immutable Program immediately invalidates
         // older executable Task proofs. A failed check must fail closed.
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
+        // Ownership-only programs without critical statements stay supported.
+        // A critical checker must not acquire a proof minted during analysis.
+        long initialTypingGeneration;
+        try {
+            initialTypingGeneration = TypeChecker.requireCriticalTypeProof(checkedProgram);
+        } catch (IllegalStateException noSuccessfulProof) {
+            initialTypingGeneration = 0L;
+        }
+        this.criticalTypingGenerationAtStart = initialTypingGeneration;
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
@@ -156,10 +221,50 @@ public final class OwnershipChecker {
     }
 
     private void publishTaskAdmissions() {
-        Ast.CheckedTaskCaptures.publish(
-                checkedProgram,
-                taskCheckEpoch,
-                pendingTaskCaptures);
+        // Global monitor order: critical -> Task -> type.
+        // Readers of critical admission already enter the critical monitor
+        // first. An enclosing critical monitor keeps them from observing a
+        // positive Task epoch before its critical permits are committed.
+        synchronized (Ast.CheckedCriticalBlocks.class) {
+            synchronized (Ast.CheckedTaskCaptures.class) {
+                synchronized (TypeChecker.class) {
+                    // Any Task boundary, even without critical statements,
+                    // needs independent successful typing. Ownership-only
+                    // programs without Tasks or critical blocks stay supported.
+                    boolean needsTyping = !pendingCriticalAdmissions.isEmpty()
+                            || !pendingTaskCaptures.isEmpty();
+                    long typingGeneration = needsTyping
+                            ? TypeChecker.requireCriticalTypeProof(checkedProgram) : 0L;
+                    if (needsTyping
+                            && (criticalTypingGenerationAtStart <= 0L
+                                || typingGeneration != criticalTypingGenerationAtStart)) {
+                        throw new IllegalStateException(
+                                "critical typing changed during ownership analysis");
+                    }
+                    // Prove the pending epoch, exact typing generation and
+                    // complete critical node set BEFORE Task publication.
+                    // This prevents a rejected critical publish from leaving
+                    // behind a positive Task epoch.
+                    CriticalPublishAuthority authority =
+                            new CriticalPublishAuthority(
+                                    checkedProgram, taskCheckEpoch, typingGeneration);
+                    Ast.CheckedCriticalBlocks.preparePublish(
+                            checkedProgram, taskCheckEpoch,
+                            pendingCriticalAdmissions, authority);
+                    // New type/ownership checks cannot supersede either
+                    // admission between these two commits while all three
+                    // monitors remain held.
+                    Ast.CheckedTaskCaptures.publish(
+                            checkedProgram, taskCheckEpoch, pendingTaskCaptures,
+                            new TaskPublishAuthority(
+                                    checkedProgram, taskCheckEpoch,
+                                    pendingTaskCaptures.isEmpty() ? 0L : typingGeneration));
+                    Ast.CheckedCriticalBlocks.publish(
+                            checkedProgram, taskCheckEpoch,
+                            pendingCriticalAdmissions, authority);
+                }
+            }
+        }
     }
 
     private void index(Ast.Program program) {
@@ -353,8 +458,15 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            boolean previousActorMethod = insideSuspendingActorMethod;
+            insideSuspendingActorMethod = klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic() && method.suspends();
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                insideSuspendingActorMethod = previousActorMethod;
+                scope.close();
+            }
         }
     }
 
@@ -412,6 +524,25 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (stmt instanceof Ast.CriticalStmt critical) {
+            CriticalEffectPreflight.verify(critical.body());
+            if (!insideSuspendingActorMethod)
+                throw new IllegalArgumentException(
+                        "critical ownership admission requires a suspending actor method");
+            // Verify ownership/loans for every binding in the protected body.
+            // Never treat it as an opaque statement after the type pass.
+            checkBlock(critical.body(), scope, returnType);
+            if (!pendingCriticalAdmissions.add(critical))
+                throw new IllegalArgumentException(
+                        "critical AST node reused in multiple ownership scopes");
+            return;
+        }
+        if (stmt instanceof Ast.TryCriticalStmt attempted) {
+            CriticalEffectPreflight.verify(attempted.body());
+            CriticalEffectPreflight.verify(attempted.elseBody());
+            throw new IllegalArgumentException(
+                    "try critical requires verified immediate guard ownership and fallback lowering");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -1197,8 +1328,8 @@ public final class OwnershipChecker {
                     ValueInfo source = checkExpr(argument, scope, false);
                     if (source.kind != ValueKind.COPY) {
                         throw error(
-                                "rt share of move-only values requires the owning Shared<T> convergence; "
-                                        + "this current-main patch fails closed instead of manufacturing shared mutable aliasing");
+                                "E_SHARE_MOVE_ONLY: rt share of move-only values requires the owning Shared<T> convergence; "
+                                        + "the compiler refuses to manufacture shared mutable aliasing");
                     }
                     yield source;
                 }
@@ -1422,13 +1553,18 @@ public final class OwnershipChecker {
             Scope taskScope = deferredSelectArmScope(captured);
             int savedLoopDepth = loopDepth;
             boolean savedDiscard = discardingSelectReturn;
+            boolean savedActorCritical = insideSuspendingActorMethod;
             loopDepth = 0;
             discardingSelectReturn = false;
+            // A detached Task is not a continuation of the actor mailbox
+            // handler and cannot borrow its actor-owned gate authority.
+            insideSuspendingActorMethod = false;
             try {
                 checkBlock(task.body(), taskScope, Ast.TypeRef.inferred());
             } finally {
                 loopDepth = savedLoopDepth;
                 discardingSelectReturn = savedDiscard;
+                insideSuspendingActorMethod = savedActorCritical;
                 taskScope.close();
             }
             LinkedHashMap<String, Ast.TaskCaptureTransfer> admitted =
@@ -3017,9 +3153,14 @@ public final class OwnershipChecker {
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
+        boolean previousActorCritical = insideSuspendingActorMethod;
         Ast.ClassDecl previousInitializingClass = initializingClass;
         loopDepth = 0;
         discardingSelectReturn = false;
+        // A closure can escape into a different Task/actor turn. It never
+        // inherits critical admission just because it was defined inside an
+        // actor's suspending method.
+        insideSuspendingActorMethod = false;
         // Closures may execute after the class constructor returns; their
         // bodies cannot write fixed slots through the ctor-only exception.
         initializingClass = null;
@@ -3039,6 +3180,7 @@ public final class OwnershipChecker {
         } finally {
             loopDepth = previousLoopDepth;
             discardingSelectReturn = previousDiscard;
+            insideSuspendingActorMethod = previousActorCritical;
             initializingClass = previousInitializingClass;
             closure.close();
         }

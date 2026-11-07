@@ -18,6 +18,8 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.CriticalGate;
+import dev.oreslang.types.CriticalEffectPreflight;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -29,6 +31,7 @@ import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.TaskHandle;
 import dev.oreslang.runtime.SourceTaskHandles;
 import dev.oreslang.runtime.SourceCooperationQuantum;
+import dev.oreslang.runtime.SourceActorPubSub;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -155,6 +158,20 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        /**
+         * Critical source is actor-owned only in this stage. The actor cell,
+         * never the shared code/AST or carrier thread, owns its gate.
+         * Outside actors, an explicit protected-resource capability must be
+         * added to the language before guest critical source may execute.
+         */
+        private CriticalGate actorCriticalGate() {
+            ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+            if (runtime == null) {
+                throw new IllegalStateException(
+                        "critical in a free function requires an explicit protected-resource capability");
+            }
+            return runtime.currentActorCriticalGate();
+        }
 
         private int checkedOptionDepth(Ast.CallExpr call) {
             synchronized (optionDepthCache) {
@@ -1920,6 +1937,9 @@ public final class OresEvalRootNode extends RootNode {
         private boolean statementContainsPotentialSuspension(
                 Ast.Stmt stmt,
                 Set<Object> seen) {
+            // Critical admission may park even when its body is synchronous.
+            if (stmt instanceof Ast.CriticalStmt || stmt instanceof Ast.TryCriticalStmt)
+                return true;
             if (stmt instanceof Ast.SelectStmt select) {
                 return select.mode() != Ast.WaitMode.IMMEDIATE
                         || select.arms().stream()
@@ -2494,6 +2514,157 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Require the exact typed+ownership checked Program, AST identity
+         * and current check epoch. No raw/host-constructed AST can mint a
+         * ticket merely by spelling a critical statement. Actor incarnation,
+         * cancellation and gate ownership are rechecked at runtime.
+         */
+        private boolean criticalGuestLoweringAdmitted(Ast.CriticalStmt critical) {
+            Ast.CheckedCriticalBlocks.require(program, critical, taskAdmissionEpoch);
+            return true;
+        }
+
+        /**
+         * Scheduler-facing lowering substrate for a bounded non-suspending
+         * lexical critical body. Only the compiler's restricted actor-owned,
+         * independently typed and ownership-checked critical subset is
+         * executable; transitive effects and guest acceptance remain separate
+         * verification gates.
+         *
+         * No guest body executes from a Future settlement callback. A queued
+         * admission resumes through SourceTask.suspend/OresScheduler only.
+         */
+        private void runCriticalSuspendable(
+                SourceTask task,
+                Ast.CriticalStmt critical,
+                Env env,
+                SourceFlowCont continuation) {
+            // The parser is not an authorization capability. Host embeddings
+            // can supply an AST directly, so no guest critical executes until
+            // a separate identity-bound checked admission token exists.
+            if (!criticalGuestLoweringAdmitted(critical)) {
+                throw new IllegalStateException(
+                        "critical source requires checked resource-bound admission");
+            }
+            CriticalEffectPreflight.verify(critical.body());
+            ActorRuntime ownerRuntime = ActorRuntime.currentActorRuntime();
+            ActorRuntime.ActorId ownerId = ActorRuntime.currentActorId().orElseThrow(
+                    () -> new IllegalStateException("critical entry lost actor execution identity"));
+            CriticalGate gate = actorCriticalGate();
+            OresFuture<CriticalGate.Ticket> admission = gate.requestAwaitable();
+            // Ticket admission precedes cleanup registration. If registration
+            // itself fails, the ticket must not escape without an unwind owner.
+            final SourceCleanupFrame cleanup;
+            try {
+                cleanup = task.registerSourceCleanup((owner, finished) -> {
+                    // This is an authenticated cancellation-unwind turn; it
+                    // reclaims an already-granted but not-yet-resumed ticket.
+                    CriticalTicketCleanup.revoke(gate, admission);
+                    finished.accept(owner, SourceFlow.normal());
+                });
+            } catch (RuntimeException | Error registrationFailure) {
+                try {
+                    CriticalTicketCleanup.revoke(gate, admission);
+                } catch (RuntimeException | Error releaseFailure) {
+                    suppressCleanupFailure(registrationFailure, releaseFailure);
+                }
+                throw registrationFailure;
+            }
+            SourceValueCont afterAdmission = (owner, value, failure) -> {
+                if (failure != null) {
+                    owner.disarmSourceCleanup(cleanup);
+                    continuation.accept(owner, SourceFlow.throwing(
+                            OresFuture.unwrap(failure)));
+                    return;
+                }
+                if (!(value instanceof CriticalGate.Ticket ticket) || !gate.holds(ticket)) {
+                    owner.disarmSourceCleanup(cleanup);
+                    continuation.accept(owner, SourceFlow.throwing(
+                            new IllegalStateException(
+                                    "critical admission ticket was revoked before execution")));
+                    return;
+                }
+                // The scheduler may resume this source Task on another
+                // carrier. A ticket alone cannot establish which actor
+                // incarnation owns the resumed continuation.
+                Throwable staleOwnership = null;
+                try {
+                    if (ActorRuntime.currentActorRuntime() != ownerRuntime
+                            || ActorRuntime.currentActorId().isEmpty()
+                            || !ownerId.equals(ActorRuntime.currentActorId().orElseThrow())
+                            || ownerRuntime.currentActorCriticalGate() != gate) {
+                        staleOwnership = new IllegalStateException(
+                                "critical ticket resumed in wrong actor/runtime incarnation");
+                    }
+                } catch (RuntimeException | Error failedActorAdmission) {
+                    staleOwnership = failedActorAdmission;
+                }
+                if (staleOwnership != null) {
+                    try {
+                        gate.release(ticket);
+                    } catch (RuntimeException | Error releaseFailure) {
+                        suppressCleanupFailure(staleOwnership, releaseFailure);
+                    } finally {
+                        owner.disarmSourceCleanup(cleanup);
+                    }
+                    continuation.accept(owner, SourceFlow.throwing(staleOwnership));
+                    return;
+                }
+                boolean[] delivered = { false };
+                try {
+                    runBlock(owner, critical.body(), env, (completedTask, flow) -> {
+                        delivered[0] = true;
+                        SourceFlow completed = flow;
+                        try {
+                            gate.release(ticket);
+                        } catch (RuntimeException | Error failed) {
+                            completed = mergeCleanupFailure(completed, failed);
+                        } finally {
+                            completedTask.disarmSourceCleanup(cleanup);
+                        }
+                        continuation.accept(completedTask, completed);
+                    });
+                } catch (RuntimeException | Error failed) {
+                    if (delivered[0]) throw failed; // downstream owner handles it
+                    try {
+                        gate.release(ticket);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        suppressCleanupFailure(failed, cleanupFailure);
+                    } finally {
+                        owner.disarmSourceCleanup(cleanup);
+                    }
+                    continuation.accept(owner, SourceFlow.throwing(failed));
+                }
+            };
+            if (admission.isDone()) {
+                Object value = null;
+                Throwable failure = null;
+                try {
+                    value = admission.join();
+                } catch (RuntimeException | Error failed) {
+                    failure = failed;
+                }
+                afterAdmission.accept(task, value, failure);
+            } else {
+                try {
+                    task.suspend(admission, afterAdmission);
+                } catch (RuntimeException | Error suspensionFailure) {
+                    // suspend() can reject a second terminal step. That error
+                    // must not leave a queued or already-promoted ticket alive
+                    // until a cancellation unwind that may never execute.
+                    try {
+                        CriticalTicketCleanup.revoke(gate, admission);
+                    } catch (RuntimeException | Error releaseFailure) {
+                        suppressCleanupFailure(suspensionFailure, releaseFailure);
+                    } finally {
+                        task.disarmSourceCleanup(cleanup);
+                    }
+                    throw suspensionFailure;
+                }
+            }
+        }
+
         private void runSuspendableStatement(
                 SourceTask task,
                 Ast.Stmt stmt,
@@ -2501,6 +2672,14 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.CriticalStmt critical) {
+                    runCriticalSuspendable(task, critical, env, continuation);
+                    return;
+                }
+                if (stmt instanceof Ast.TryCriticalStmt) {
+                    throw new IllegalStateException(
+                            "try critical requires immediate nonblocking ticket and fallback lowering");
+                }
                 if (stmt instanceof Ast.UsingBorrowStmt) {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
@@ -6318,6 +6497,10 @@ public final class OresEvalRootNode extends RootNode {
             // Defense in depth: source can reach this evaluator through host
             // adapters that do not run the normal TypeChecker on every call.
             // Never silently ignore an unlowered scoped resource statement.
+            if (stmt instanceof Ast.CriticalStmt || stmt instanceof Ast.TryCriticalStmt) {
+                throw new IllegalStateException(
+                        "critical source requires scheduler-owned admission and lexical guard unwind");
+            }
             if (stmt instanceof Ast.UsingBorrowStmt) {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
@@ -8363,7 +8546,115 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ActorFacade actor) {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
+                    case "group" -> (Invokable) actor::group;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Group group) {
+                return switch (name) {
+                    case "name" -> group.name();
+                    case "join" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.join");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.join expects ActorRef<T>");
+                        }
+                        group.join(ref);
+                        return null;
+                    };
+                    case "leave" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.leave");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.leave expects ActorRef<T>");
+                        }
+                        group.leave(ref);
+                        return null;
+                    };
+                    case "contains" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.contains");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.contains expects ActorRef<T>");
+                        }
+                        return group.contains(ref);
+                    };
+                    case "member_count" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.member_count");
+                        return (long) group.memberCount();
+                    };
+                    case "topic" -> (Invokable) args -> {
+                        if (args.size() == 1) {
+                            return group.topic(
+                                    requireString(args.getFirst(), "ActorGroup.topic name"));
+                        }
+                        if (args.size() != 3) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic<T> expects name or name, policy, capacity");
+                        }
+                        String topicName =
+                                requireString(args.get(0), "ActorGroup.topic name");
+                        String policy =
+                                requireString(args.get(1), "ActorGroup.topic policy");
+                        if (!(args.get(2) instanceof Number number) || !isIntegral(number)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic capacity must be an integer");
+                        }
+                        long capacity = number.longValue();
+                        if (capacity < 1 || capacity > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic capacity must be 1..2147483647");
+                        }
+                        return group.topic(topicName, policy, (int) capacity);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.close");
+                        group.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorGroup member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Topic topic) {
+                return switch (name) {
+                    case "name" -> topic.name();
+                    case "publish" -> (Invokable) args -> {
+                        requireOne(args, "Topic.publish");
+                        return topic.publish(args.getFirst());
+                    };
+                    case "subscribe" -> (Invokable) args -> {
+                        requireZero(args, "Topic.subscribe");
+                        return topic.subscribe();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Topic member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Subscription subscription) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.next");
+                        return subscription.next();
+                    };
+                    case "try_read" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.try_read");
+                        java.util.Optional<Object> value = subscription.tryRead();
+                        return value.isPresent()
+                                ? new OptionValue(true, value.get())
+                                : new OptionValue(false, null);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.close");
+                        subscription.close();
+                        return null;
+                    };
+                    case "closed" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.closed");
+                        return subscription.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Subscription member " + name);
                 };
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
@@ -11806,6 +12097,9 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+        private Object group(List<Object> args){
+            return context.actorPubSub().group(requireStringArg(args, "actor.group"));
+        }
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
         if(value instanceof List<?> list)return new ArrayList<>(list);

@@ -734,7 +734,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, CriticalStmt, TryCriticalStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
 
     /** Compile-time declaration within a lexical callable/block scope.
@@ -838,6 +838,28 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+
+    /**
+     * May suspend only while entering the scheduler-owned gate. Every statement
+     * in the body must be proved non-suspending (including indirect calls).
+     * This is NOT a BlockStmt: generic block execution must never lose the
+     * critical admission and lexical cleanup semantics.
+     */
+    public record CriticalStmt(List<Stmt> body) implements Stmt {
+        public CriticalStmt { body = List.copyOf(body); }
+    }
+
+    /**
+     * Immediate non-queuing critical attempt. If no ticket can be acquired,
+     * the else branch runs without ownership; neither branch may suspend.
+     * Requires a true scheduler ticket/guard and is not executable by default.
+     */
+    public record TryCriticalStmt(List<Stmt> body, List<Stmt> elseBody) implements Stmt {
+        public TryCriticalStmt {
+            body = List.copyOf(body);
+            elseBody = List.copyOf(elseBody);
+        }
     }
 
     /**
@@ -1710,6 +1732,10 @@ public final class Ast {
                 new java.util.HashMap<>();
         private static final java.util.Map<ProgramIdentityKey, Long> PROGRAM_EPOCHS =
                 new java.util.HashMap<>();
+        // Task capture execution requires the exact successful typing
+        // generation from the same complete ownership transaction.
+        private static final java.util.Map<ProgramIdentityKey, Long>
+                TASK_TYPE_GENERATIONS = new java.util.HashMap<>();
 
         private static final class PairIdentityKey
                 extends java.lang.ref.WeakReference<TaskExpr> {
@@ -1779,6 +1805,7 @@ public final class Ast {
             java.lang.ref.Reference<? extends Program> clearedProgram;
             while ((clearedProgram = CLEARED_PROGRAMS.poll()) != null) {
                 PROGRAM_EPOCHS.remove(clearedProgram);
+                TASK_TYPE_GENERATIONS.remove(clearedProgram);
             }
             // Pair keys are queued by TaskExpr lifetime. A deliberately shared
             // TaskExpr can outlive one Program, so opportunistically retire
@@ -1819,17 +1846,68 @@ public final class Ast {
                         "Task ownership check epoch is not newer than the latest attempt");
             }
             CAPTURES.keySet().removeIf(key -> key.program() == program);
+            TASK_TYPE_GENERATIONS.keySet().removeIf(key -> key.get() == program);
             PROGRAM_EPOCHS.put(
                     new ProgramIdentityKey(program, CLEARED_PROGRAMS),
                     -checkEpoch);
         }
 
+        /**
+         * The exact Program must still be in this ownership attempt's
+         * unpublished state. Called under the cross-ledger publication locks,
+         * before a positive Task epoch can become visible.
+         */
+        private static synchronized void requirePendingEpoch(
+                Program program, long checkEpoch) {
+            java.util.Objects.requireNonNull(program, "pending ownership Program");
+            if (checkEpoch <= 0)
+                throw new IllegalArgumentException("pending ownership epoch must be positive");
+            expunge();
+            Long pending = PROGRAM_EPOCHS.get(new ProgramIdentityKey(program, null));
+            if (pending == null || pending.longValue() != -checkEpoch)
+                throw new IllegalStateException(
+                        "critical ownership attempt superseded before Task publication");
+        }
+
+        /**
+         * Legacy host-callable publisher retained for binary/source
+         * compatibility but intentionally unable to mint Task authority.
+         * Only the complete OwnershipChecker pass may publish a new epoch.
+         */
+        @Deprecated
         public static synchronized void publish(
                 Program program,
                 long checkEpoch,
                 java.util.Map<
                         TaskExpr,
                         java.util.Map<String, TaskCaptureTransfer>> staged) {
+            throw new IllegalStateException(
+                    "Task capture publication requires compiler-owned ownership authority");
+        }
+
+        /**
+         * Ownership-checked Task transfers may be committed only by the
+         * complete checker under the same Critical -> Task -> Type lock order
+         * as critical-body permissions. Epochs or staged maps alone cannot
+         * authorize a host-injected Task AST.
+         */
+        public static synchronized void publish(
+                Program program,
+                long checkEpoch,
+                java.util.Map<
+                        TaskExpr,
+                        java.util.Map<String, TaskCaptureTransfer>> staged,
+                dev.oreslang.types.OwnershipChecker.TaskPublishAuthority authority) {
+            long typingGeneration = staged == null || staged.isEmpty()
+                    ? 0L : dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            if (authority == null
+                    || !authority.permits(program, checkEpoch, typingGeneration)
+                    || !Thread.holdsLock(CheckedCriticalBlocks.class)
+                    || !Thread.holdsLock(CheckedTaskCaptures.class)
+                    || !Thread.holdsLock(dev.oreslang.types.TypeChecker.class)) {
+                throw new IllegalStateException(
+                        "Task capture publication requires compiler-owned authority and cross-ledger locks");
+            }
             java.util.Objects.requireNonNull(program, "checked Task program");
             java.util.Objects.requireNonNull(staged, "staged Task admissions");
             if (checkEpoch <= 0) {
@@ -1882,6 +1960,12 @@ public final class Ast {
                         new PairIdentityKey(
                                 program, entry.getKey(), CLEARED_TASKS),
                         entry.getValue());
+            }
+            TASK_TYPE_GENERATIONS.keySet().removeIf(key -> key.get() == program);
+            if (!normalized.isEmpty()) {
+                TASK_TYPE_GENERATIONS.put(
+                        new ProgramIdentityKey(program, CLEARED_PROGRAMS),
+                        typingGeneration);
             }
             PROGRAM_EPOCHS.put(
                     new ProgramIdentityKey(program, CLEARED_PROGRAMS),
@@ -1952,7 +2036,167 @@ public final class Ast {
                         "Task execution requires the exact Program/TaskExpr ownership admission; "
                                 + "reparsed, cloned, unchecked, or stale Tasks are not executable");
             }
+            Long admittedTyping = TASK_TYPE_GENERATIONS.get(
+                    new ProgramIdentityKey(program, null));
+            if (admittedTyping == null || admittedTyping <= 0
+                    || dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program)
+                            != admittedTyping.longValue()) {
+                throw new IllegalStateException(
+                        "Task execution requires the exact successful typing generation");
+            }
             return admission;
+        }
+    }
+
+    /**
+     * Critical execution authority for the exact source Program, exact AST
+     * node and current successful ownership-check epoch. A parser-produced
+     * equivalent/cloned node has no permission.
+     *
+     * Only the compiler/ownership pass may stage candidates. The scheduler
+     * must independently validate actor incarnation and runtime gate tickets.
+     */
+    public static final class CheckedCriticalBlocks {
+        private CheckedCriticalBlocks() { }
+
+        private static final java.lang.ref.ReferenceQueue<CriticalStmt> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private record CriticalAdmission(long ownershipEpoch, long typingGeneration) { }
+
+        private static final java.util.Map<CriticalKey, CriticalAdmission> ADMISSIONS =
+                new java.util.HashMap<>();
+
+        private static final class CriticalKey
+                extends java.lang.ref.WeakReference<CriticalStmt> {
+            private final java.lang.ref.WeakReference<Program> program;
+            private final int hash;
+
+            private CriticalKey(Program program, CriticalStmt critical,
+                    java.lang.ref.ReferenceQueue<CriticalStmt> queue) {
+                super(java.util.Objects.requireNonNull(critical, "critical AST"), queue);
+                this.program = new java.lang.ref.WeakReference<>(
+                        java.util.Objects.requireNonNull(program, "critical Program"));
+                this.hash = 31 * System.identityHashCode(program)
+                        + System.identityHashCode(critical);
+            }
+
+            private Program program() { return program.get(); }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof CriticalKey key)) return false;
+                Program leftProgram = program();
+                CriticalStmt leftCritical = get();
+                return leftProgram != null && leftProgram == key.program()
+                        && leftCritical != null && leftCritical == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CriticalStmt> cleared;
+            while ((cleared = CLEARED.poll()) != null) ADMISSIONS.remove(cleared);
+            ADMISSIONS.keySet().removeIf(key ->
+                    key.program() == null || key.get() == null);
+        }
+
+        /**
+         * The static synchronized critical publisher is only one side of the
+         * transaction. Fail closed if a later caller omits either enclosing
+         * Task or Type monitor and could expose a partial positive epoch or
+         * race a typing-generation change. The caller acquires locks in
+         * Critical -> Task -> Type order, never the reverse.
+         */
+        private static void requireCrossLedgerPublicationLocks() {
+            if (!Thread.holdsLock(CheckedCriticalBlocks.class)
+                    || !Thread.holdsLock(CheckedTaskCaptures.class)
+                    || !Thread.holdsLock(dev.oreslang.types.TypeChecker.class)) {
+                throw new IllegalStateException(
+                        "critical publication requires the full cross-ledger transaction locks");
+            }
+        }
+
+        /**
+         * Validate the complete pending critical transaction BEFORE publishing
+         * any positive Task epoch. The caller must hold Critical -> Task ->
+         * Type monitors through this validation and both publications.
+         * This method only checks proof/candidates; it grants no authority.
+         */
+        public static synchronized void preparePublish(
+                Program program, long epoch, java.util.Set<CriticalStmt> checked,
+                dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
+            requireCrossLedgerPublicationLocks();
+            java.util.Objects.requireNonNull(program, "critical Program");
+            if (epoch <= 0)
+                throw new IllegalArgumentException("critical check epoch must be positive");
+            java.util.Objects.requireNonNull(checked, "critical admissions");
+            long typingGeneration = checked.isEmpty()
+                    ? 0L : dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            if (authority == null || !authority.permits(program, epoch, typingGeneration))
+                throw new IllegalStateException(
+                        "critical publish requires compiler-owned ownership authority");
+            for (CriticalStmt node : checked)
+                java.util.Objects.requireNonNull(node, "critical admission node");
+            CheckedTaskCaptures.requirePendingEpoch(program, epoch);
+        }
+
+        /**
+         * Publish after BOTH typing and ownership succeed. Rechecking the
+         * same Program invalidates older permissions through the shared Task
+         * ownership epoch, even if a critical node object was reused.
+         */
+        public static synchronized void publish(Program program, long epoch,
+                java.util.Set<CriticalStmt> checked,
+                dev.oreslang.types.OwnershipChecker.CriticalPublishAuthority authority) {
+            requireCrossLedgerPublicationLocks();
+            java.util.Objects.requireNonNull(program, "critical Program");
+            if (epoch <= 0) throw new IllegalArgumentException(
+                    "critical check epoch must be positive");
+            java.util.Objects.requireNonNull(checked, "critical admissions");
+            // Validate the complete candidate set before revoking or altering
+            // previously published per-node permissions.
+            for (CriticalStmt node : checked)
+                java.util.Objects.requireNonNull(node, "critical admission node");
+            // Record the exact typing generation, rather than only testing
+            // that some successful type proof happens to exist now. Otherwise
+            // a later successful recheck could reactivate an old ownership
+            // permit without a fresh ownership pass.
+            long typingGeneration = checked.isEmpty()
+                    ? 0L : dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            if (authority == null || !authority.permits(program, epoch, typingGeneration))
+                throw new IllegalStateException(
+                        "critical publish requires compiler-owned ownership authority");
+            if (CheckedTaskCaptures.requireProgramEpoch(program) != epoch)
+                throw new IllegalStateException("critical ownership epoch mismatch");
+            expunge();
+            ADMISSIONS.keySet().removeIf(key -> key.program() == program);
+            for (CriticalStmt node : checked) {
+                java.util.Objects.requireNonNull(node, "critical admission node");
+                ADMISSIONS.put(new CriticalKey(program, node, CLEARED),
+                        new CriticalAdmission(epoch, typingGeneration));
+            }
+        }
+
+        /** Throws unless this exact checked node remains admitted at this epoch. */
+        public static synchronized void require(
+                Program program, CriticalStmt node, long expectedEpoch) {
+            if (expectedEpoch <= 0) throw new IllegalStateException(
+                    "critical execution requires a checked epoch");
+            long actualEpoch = CheckedTaskCaptures.requireProgramEpoch(program);
+            if (actualEpoch != expectedEpoch)
+                throw new IllegalStateException(
+                        "critical Program ownership proof was revoked or superseded");
+            // Rechecking typing invalidates old permits even if ownership
+            // was not rerun. The type proof is an independent safety gate.
+            long actualTypingGeneration =
+                    dev.oreslang.types.TypeChecker.requireCriticalTypeProof(program);
+            expunge();
+            CriticalAdmission admitted =
+                    ADMISSIONS.get(new CriticalKey(program, node, null));
+            if (admitted == null
+                    || admitted.ownershipEpoch() != expectedEpoch
+                    || admitted.typingGeneration() != actualTypingGeneration)
+                throw new IllegalStateException(
+                        "critical execution requires exact checked Program/AST and typing generation admission");
         }
     }
 
