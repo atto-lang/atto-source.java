@@ -30,6 +30,18 @@ public final class OresCompiler {
         return DopInvertedScalarCompilerV1.lower(Parser.parseDopInvertedScalarV1(source));
     }
 
+    /**
+     * Restricted typed-source -> Truffle RootCallTarget, with private
+     * host-backed SoA per invocation. The ordinary OresLanguage/TypeChecker
+     * parser remains fail-closed until actor/tenant and owner permissions
+     * are verified end to end.
+     */
+    public static com.oracle.truffle.api.RootCallTarget compileDopInvertedScalarI64TruffleRoot(
+            String source) {
+        return DopInvertedScalarTruffleRootV1.lowerVerified(
+                compileDopInvertedScalarI64(source));
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
