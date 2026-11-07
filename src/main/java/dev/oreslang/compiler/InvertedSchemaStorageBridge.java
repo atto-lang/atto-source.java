@@ -78,7 +78,9 @@ public final class InvertedSchemaStorageBridge implements AutoCloseable {
         return mutable[fieldIndex(field)];
     }
 
-    public InvertedColumnStore.Handle push(long first, long second) {
+    public synchronized InvertedColumnStore.Handle push(long first, long second) {
+        // The bounds decision and allocation must share the bridge monitor.
+        // The underlying store's lock cannot make two separate calls atomic.
         if (store.size() >= rowLimit) {
             throw new IllegalStateException("DOP v1 inverted row capacity exceeded");
         }
