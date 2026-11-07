@@ -73,5 +73,26 @@ git checkout -q -- .mvn/settings.xml
 printf '<extension/>\n' > .mvn/extensions.xml
 reject UNTRACKED_INPUT
 rm .mvn/extensions.xml
+# A successful Git command that silently truncates its NUL-delimited output
+# must not allow a partial source manifest to pass.
+mkdir -p "$tmp/gitshim"
+real_git="$(command -v git)"
+cat > "$tmp/gitshim/git" <<SHIM
+#!/usr/bin/env bash
+if [[ "\$1" == ls-files && "\$2" == -z ]]; then
+  "$real_git" "\$@" | head -c -1
+else
+  exec "$real_git" "\$@"
+fi
+SHIM
+chmod +x "$tmp/gitshim/git"
+PATH="$tmp/gitshim:$PATH" reject INDEX_TREE_PATH_MISMATCH
+mkdir -p "$tmp/findshim"
+cat > "$tmp/findshim/find" <<'SHIM'
+#!/usr/bin/env bash
+exit 7
+SHIM
+chmod +x "$tmp/findshim/find"
+PATH="$tmp/findshim:$PATH" reject WALK_ENUMERATION_FAILED
 pass
 printf 'PASS scoped original-head input integrity controls: %d\n' "$count"
