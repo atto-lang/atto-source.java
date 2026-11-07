@@ -42,7 +42,7 @@ reject 'staged fixture mutation'
 git -C "$scratch/repo" reset --hard -q "$head"
 
 printf '\n# forged checker\n' >> "$scratch/repo/tools/verify-dop-inverted-atto-contract.sh"
-if (cd "$scratch/repo" && EXPECTED_HEAD="$head" \
+if (cd "$scratch/repo" && export EXPECTED_HEAD="$head" && \
     git show HEAD:tools/verify-dop-inverted-atto-contract.sh | \
     bash) >/dev/null 2>&1; then
     echo 'FAIL: immutable committed checker accepted a rewritten on-disk checker' >&2
