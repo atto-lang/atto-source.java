@@ -5,9 +5,12 @@ import org.junit.jupiter.api.Timeout;
 import dev.oreslang.parser.Parser;
 
 import java.util.AbstractMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -53,6 +56,49 @@ final class ActorSymbolSnapshotAdmissionTest {
             actor.send("probe");
             actor.done().join();
         }
+    }
+
+    @Test void actualPrivateActorMailboxReceivesDetachedSymbolsAcrossNestedGraph() {
+        OresSymbol processKey = OresSymbol.process("ready");
+        OresSymbol stableValue = OresSymbol.stable(
+                "550e8400-e29b-41d4-a716-446655440000");
+        Map<Object, Object> original = new LinkedHashMap<>();
+        original.put(processKey, new Object[]{stableValue, processKey});
+        AtomicReference<Map<Object, Object>> observed = new AtomicReference<>();
+
+        try (var runtime = new ActorRuntime()) {
+            // Trusted host-only capture is used to inspect the received graph,
+            // NOT as a compiler/guest source actor isolation proof.
+            ActorRuntime.ActorRef<Map<Object, Object>> ref =
+                    runtime.spawnPrivateTrusted(context -> (message, turn) -> {
+                        assertEquals(ActorRuntime.ActorKind.PRIVATE, context.kind());
+                        observed.set(message);
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            ref.send(original);
+            ref.done().join();
+        }
+
+        Map<Object, Object> snapshot = observed.get();
+        assertNotNull(snapshot, "the PRIVATE actor must run a real handler");
+        assertNotSame(original, snapshot);
+        OresSymbol copiedKey = (OresSymbol) snapshot.keySet().iterator().next();
+        assertEquals(processKey, copiedKey);
+        assertNotSame(processKey, copiedKey,
+                "private mailbox keys must not borrow sender Symbols");
+        assertInstanceOf(List.class, snapshot.get(processKey));
+        List<?> copiedArray = (List<?>) snapshot.get(processKey);
+        assertEquals(2, copiedArray.size());
+        assertEquals(stableValue, copiedArray.get(0));
+        assertNotSame(stableValue, copiedArray.get(0),
+                "STABLE Symbol payload must be detached");
+        assertEquals(processKey, copiedArray.get(1));
+        assertNotSame(processKey, copiedArray.get(1));
+        assertNotSame(copiedKey, copiedArray.get(1),
+                "each occurrence of a Symbol is copied independently");
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.put("smuggled", "mutation"));
     }
 
     @Test void untrustedMailboxRejectsHiddenSymbolIntroducedDuringCopy() {
