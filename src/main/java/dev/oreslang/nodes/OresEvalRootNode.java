@@ -839,25 +839,38 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            // Count non-tail guest invocation nesting before pushing another
-            // interpreter frame. Tail hops stay in this single guarded entry.
-            // This is an early budget check, not recovery from StackOverflowError.
-            int guestCallDepth = dev.oreslang.runtime.GuestCallDepthGuard.enter();
-            try {
+            // Shared compiler/interpreter call entry for functions, methods,
+            // static methods and invokables. A source actor charges one
+            // generation-fenced 16-byte frame descriptor to its own arena
+            // AND reserves native-carrier recursion headroom transactionally.
+            // Proper tail transfers rewrite the same actor-owned frame.
+            try (dev.oreslang.runtime.GuestInvocationFrame frame =
+                    dev.oreslang.runtime.GuestInvocationFrame.enterWithArguments(
+                            initial.kind().ordinal(), initial.arguments())) {
                 Invocation current = initial;
-                int tailHops = 0;
+                long tailHops = 0;
                 while (true) {
+                    // For exact primitive-wrapper calls, bind values decoded
+                    // from actor-owned bytes instead of the original JVM
+                    // argument list. Objects/closures stay on the legacy
+                    // path until root-safe lowering is implemented.
+                    List<Object> fromActorFrame =
+                            frame.restoreScalarArguments(current.arguments());
+                    if (fromActorFrame != current.arguments()) {
+                        current = new Invocation(
+                                current.owner(), current.kind(), current.receiver(),
+                                current.target(), fromActorFrame);
+                    }
                     Object result = current.owner().executeRaw(current);
                     if (!(result instanceof TailCall tail)) return result;
                     current = tail.invocation();
                     tailHops++;
+                    frame.tailTransferWithArguments(
+                            current.kind().ordinal(), current.arguments(), tailHops);
                     if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
                         current.owner().context.schedulerSafepoint();
                     }
                 }
-            } finally {
-                // Carrier reuse must not inherit a prior actor's call budget.
-                dev.oreslang.runtime.GuestCallDepthGuard.leave(guestCallDepth);
             }
         }
 
