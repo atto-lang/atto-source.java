@@ -10,6 +10,7 @@ on:
       - 'src/test/java/dev/oreslang/StaticBorrowEscapeBoundaryTest.java'
       - 'src/test/java/dev/oreslang/ProjectedMethodReceiverLoanTest.java'
       - 'src/test/java/dev/oreslang/PrimitiveBorrowCopyTest.java'
+      - 'src/test/java/dev/oreslang/OwnershipComputedPlaceMatrixTest.java'
       - 'src/test/java/dev/oreslang/SharedBorrowContractTest.java'
       - 'src/test/java/dev/oreslang/AttoOwnershipWave1GuestTest.java'
       - 'src/test/resources/atto/ownership-wave1/**'
@@ -55,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native -DfailIfNoTests=true \
-            -Dtest=PointerlessFncOwnershipTest,StaticBorrowEscapeBoundaryTest,ProjectedMethodReceiverLoanTest,PrimitiveBorrowCopyTest,SharedBorrowContractTest,AttoOwnershipWave1GuestTest \
+            -Dtest=PointerlessFncOwnershipTest,StaticBorrowEscapeBoundaryTest,ProjectedMethodReceiverLoanTest,PrimitiveBorrowCopyTest,OwnershipComputedPlaceMatrixTest,SharedBorrowContractTest,AttoOwnershipWave1GuestTest \
             test
       - name: Full project Maven regression
         shell: bash
