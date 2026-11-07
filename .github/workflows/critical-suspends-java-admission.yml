@@ -1,8 +1,12 @@
 name: Critical suspends Java compiler and guest verification
 
 on:
+  push:
+    branches: [main, feat/critical-suspends-v1-20261101]
   pull_request:
     paths:
+      - 'scripts/verify-raw-worktree.sh'
+      - 'scripts/test-raw-worktree.sh'
       - 'src/main/java/dev/oreslang/ast/**'
       - 'src/main/java/dev/oreslang/parser/**'
       - 'src/main/java/dev/oreslang/types/**'
@@ -42,7 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED"
-          git diff --quiet
+          bash scripts/test-raw-worktree.sh
+          bash scripts/verify-raw-worktree.sh "$EXPECTED"
           echo "SOURCE_COMMIT=$EXPECTED"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
