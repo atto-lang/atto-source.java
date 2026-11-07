@@ -15,15 +15,14 @@ final class GpuKernelSourceHirV1Test {
     private static final String SAXPY = """
             pub gpu fnc saxpy(
                 f32 alpha,
-                GpuReadBuffer<f32> x,
-                GpuReadBuffer<f32> y,
-                GpuWriteBuffer<f32> out,
-                int n
-            ): void {
-                const int i = gpu.global_id(0);
-                if i < n {
-                    out[i] = alpha * x[i] + y[i];
-                } fi
+                GpuArray<f32> x,
+                GpuArray<f32> y,
+                GpuArray<f32> mut out,
+                u64 n
+            ) -> void {
+                const u64 i = gpu.global_id(0);
+                if i >= n { return; }
+                out[i] = alpha * x[i] + y[i];
             }
             """;
 
@@ -42,7 +41,7 @@ final class GpuKernelSourceHirV1Test {
         var plan = GpuKernelSourceHirV1.lower(ast);
         assertEquals("saxpy", plan.symbol());
         assertEquals(5, plan.parameters().size());
-        assertEquals(GpuKernelSourceHirV1.Type.BUFFER_WRITE_F32,
+        assertEquals(GpuKernelSourceHirV1.Type.BUFFER_READ_WRITE_F32,
                 plan.parameters().get(3).type());
         assertEquals(GpuKernelSourceHirV1.Evidence.TYPED_SOURCE_ONLY_NOT_EXECUTABLE,
                 plan.evidence());
@@ -51,14 +50,15 @@ final class GpuKernelSourceHirV1Test {
 
     @Test void typedSaxpyBodyCapturesIndexGuardAndStoreWithoutHostCall() {
         var plan = GpuKernelSourceHirV1.lower(kernel(SAXPY));
-        assertEquals(2, plan.body().size());
+        assertEquals(3, plan.body().size());
         assertEquals("LET", plan.body().getFirst().opcode());
         assertEquals("gpu.global_id", plan.body().getFirst().value().opcode());
         assertEquals("IF", plan.body().get(1).opcode());
         assertEquals(GpuKernelSourceHirV1.Type.BOOL,
                 plan.body().get(1).value().type());
-        assertEquals("STORE_F32", plan.body().get(1).body().getFirst().opcode());
-        assertEquals("out", plan.body().get(1).body().getFirst().target());
+        assertEquals("RETURN_VOID", plan.body().get(1).body().getFirst().opcode());
+        assertEquals("STORE_F32", plan.body().get(2).opcode());
+        assertEquals("out", plan.body().get(2).target());
     }
 
     @Test void sourceHirNeverGrantsGpuExecutionToProductionCompiler() {
@@ -76,14 +76,14 @@ final class GpuKernelSourceHirV1Test {
     }
 
     @Test void aReadOnlyDeviceViewCanNeverBeStoreTarget() {
-        String invalid = SAXPY.replace("GpuWriteBuffer<f32> out", "GpuReadBuffer<f32> out");
+        String invalid = SAXPY.replace("GpuArray<f32> mut out", "GpuArray<f32> out");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelSourceHirV1.lower(kernel(invalid)));
         assertTrue(error.getMessage().contains("GPU-KERNEL-005"), error::getMessage);
     }
 
     @Test void aWriteOnlyDeviceViewCannotBeLoaded() {
-        String invalid = SAXPY.replace("GpuReadBuffer<f32> x", "GpuWriteBuffer<f32> x");
+        String invalid = SAXPY.replace("GpuArray<f32> x", "GpuWriteBuffer<f32> x");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelSourceHirV1.lower(kernel(invalid)));
         assertTrue(error.getMessage().contains("GPU-KERNEL-005"), error::getMessage);
@@ -127,7 +127,7 @@ final class GpuKernelSourceHirV1Test {
     }
 
     @Test void nonGpuDeclarationDoesNotInheritKernelIdentity() {
-        String host = SAXPY.replace("pub gpu fnc", "pub fnc");
+        String host = "pub fnc saxpy() -> void { return; }";
         Ast.Program program = Parser.parse(host);
         assertInstanceOf(Ast.FunctionDecl.class,
                 program.modules().getFirst().declarations().getFirst());

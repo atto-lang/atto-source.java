@@ -16,15 +16,14 @@ final class GpuKernelTailGuardV1Test {
     private static final String SAXPY = """
             pub gpu fnc saxpy(
                 f32 alpha,
-                GpuReadBuffer<f32> x,
-                GpuReadBuffer<f32> y,
-                GpuWriteBuffer<f32> out,
-                int n
-            ): void {
-                const int i = gpu.global_id(0);
-                if i < n {
-                    out[i] = alpha * x[i] + y[i];
-                } fi
+                GpuArray<f32> x,
+                GpuArray<f32> y,
+                GpuArray<f32> mut out,
+                u64 n
+            ) -> void {
+                const u64 i = gpu.global_id(0);
+                if i >= n { return; }
+                out[i] = alpha * x[i] + y[i];
             }
             """;
 
@@ -46,13 +45,13 @@ final class GpuKernelTailGuardV1Test {
 
     @Test void unguardedStoreIsRejected() {
         var err = assertThrows(IllegalArgumentException.class, () ->
-                kernel(SAXPY.replace("if i < n {", "if true {")));
+                kernel(SAXPY.replace("if i >= n { return; }", "")));
         assertTrue(err.getMessage().contains("GPU-KERNEL-010"), err::getMessage);
     }
 
     @Test void reversedGuardDoesNotEstablishLaneBound() {
         var err = assertThrows(IllegalArgumentException.class, () ->
-                kernel(SAXPY.replace("if i < n {", "if i > n {")));
+                kernel(SAXPY.replace("if i >= n {", "if i <= n {")));
         assertTrue(err.getMessage().contains("GPU-KERNEL-010"), err::getMessage);
     }
 
@@ -70,63 +69,51 @@ final class GpuKernelTailGuardV1Test {
 
     @Test void guardedReadCannotEscapeTheBranch() {
         var err = assertThrows(IllegalArgumentException.class, () ->
-                kernel(SAXPY.replace("if i < n {", "if n < i {")));
+                kernel(SAXPY.replace("if i >= n {", "if n >= i {")));
         assertTrue(err.getMessage().contains("GPU-KERNEL-010"), err::getMessage);
     }
 
     @Test void explicitEarlyReturnGuardCanProtectFallthrough() {
         var candidate = kernel(SAXPY);
-        var statements = candidate.body();
-        var binding = statements.getFirst();
-        var branch = statements.get(1);
-        var condition = branch.value();
-        var negatedCondition = new GpuKernelSourceHirV1.Value(
-                GpuKernelSourceHirV1.Type.BOOL, "compare.>=", null, condition.operands());
-        var earlyReturn = new GpuKernelSourceHirV1.Instruction("IF", null,
-                negatedCondition,
-                List.of(new GpuKernelSourceHirV1.Instruction(
-                        "RETURN_VOID", null, null, List.of())));
-        var fallthrough = branch.body().getFirst();
-        var unguardedProgram = new GpuKernelSourceHirV1.Plan(candidate.symbol(),
+        assertEquals(3, candidate.body().size());
+        var binding = candidate.body().getFirst();
+        var guard = candidate.body().get(1);
+        var store = candidate.body().get(2);
+        assertEquals("RETURN_VOID", guard.body().getFirst().opcode());
+        var unguarded = new GpuKernelSourceHirV1.Plan(candidate.symbol(),
                 candidate.parameters(), candidate.returnType(),
-                List.of(binding, fallthrough), candidate.evidence());
+                List.of(binding, store), candidate.evidence());
         assertThrows(IllegalArgumentException.class,
-                () -> GpuKernelTailGuardV1.audit(unguardedProgram));
-        var guardedProgram = new GpuKernelSourceHirV1.Plan(candidate.symbol(),
-                candidate.parameters(), candidate.returnType(),
-                List.of(binding, earlyReturn, fallthrough), candidate.evidence());
-        var report = GpuKernelTailGuardV1.audit(guardedProgram);
+                () -> GpuKernelTailGuardV1.audit(unguarded));
+        var report = GpuKernelTailGuardV1.audit(candidate);
         assertEquals(3, report.inspectedMemoryOps());
         assertFalse(report.executable());
     }
 
     @Test void nonReturningInverseGuardCannotAuthorizeFallthrough() {
         var candidate = kernel(SAXPY);
-        var branch = candidate.body().get(1);
-        var inverse = new GpuKernelSourceHirV1.Value(
-                GpuKernelSourceHirV1.Type.BOOL, "compare.>=", null,
-                branch.value().operands());
-        var ifNoReturn = new GpuKernelSourceHirV1.Instruction(
-                "IF", null, inverse, List.of());
+        var guard = candidate.body().get(1);
+        var noReturn = new GpuKernelSourceHirV1.Instruction(
+                "IF", null, guard.value(), List.of());
         var forged = new GpuKernelSourceHirV1.Plan(candidate.symbol(),
                 candidate.parameters(), candidate.returnType(),
-                List.of(candidate.body().getFirst(), ifNoReturn,
-                        branch.body().getFirst()), candidate.evidence());
+                List.of(candidate.body().getFirst(), noReturn,
+                        candidate.body().get(2)), candidate.evidence());
         assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelTailGuardV1.audit(forged));
     }
 
     @Test void aDifferentIntegerParameterCannotStandInForCapacityBoundN() {
-        String changed = SAXPY.replace("int n", "int n, int m")
-                .replace("if i < n", "if i < m");
+        String changed = SAXPY.replace("u64 n", "u64 n, u64 m")
+                .replace("if i >= n", "if i >= m");
         var error = assertThrows(IllegalArgumentException.class, () -> kernel(changed));
         assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
     }
 
     @Test void aConstantGuardCannotClaimSourceCapacityProof() {
-        String changed = SAXPY.replace("if i < n", "if i < 1024");
+        String changed = SAXPY.replace("if i >= n", "if i >= 1024");
         var error = assertThrows(IllegalArgumentException.class, () -> kernel(changed));
-        assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
+        assertTrue(error.getMessage().contains("GPU-KERNEL-002"), error::getMessage);
     }
 
 }

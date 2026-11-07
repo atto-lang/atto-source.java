@@ -1878,6 +1878,12 @@ public final class Parser {
             }
         }
 
+        // GPU entry-point return type uses the canonical slim arrow only.
+        // Ordinary function compatibility does not widen device ABI syntax.
+        if (insideGpuKernelBody && !check(ARROW)) {
+            throw error(peek(),
+                    "GPU-KERNEL-001: gpu fnc return type requires '->', never ':' or '=>'");
+        }
         if (check(FAT_ARROW)) {
             throw error(peek(),
                     "fat arrow '=>' is reserved for function types/interface callable signatures; "
@@ -3407,7 +3413,10 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
-            consume(FI, "expected 'fi' to close if");
+            // Inside gpu fnc, a braced guard is complete at '}'.
+            // Outside gpu fnc, the existing mandatory fi remains unchanged.
+            if (insideGpuKernelBody) match(FI);
+            else consume(FI, "expected 'fi' to close if");
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 

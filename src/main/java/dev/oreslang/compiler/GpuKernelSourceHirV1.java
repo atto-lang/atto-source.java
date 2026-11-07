@@ -20,7 +20,7 @@ public final class GpuKernelSourceHirV1 {
     private GpuKernelSourceHirV1() { }
 
     public enum Type {
-        I64, F32, BOOL, VOID, BUFFER_READ_F32, BUFFER_WRITE_F32, BUFFER_READ_WRITE_F32
+        I64, U64, F32, BOOL, VOID, BUFFER_READ_F32, BUFFER_WRITE_F32, BUFFER_READ_WRITE_F32
     }
     public enum Evidence { TYPED_SOURCE_ONLY_NOT_EXECUTABLE }
 
@@ -72,6 +72,7 @@ public final class GpuKernelSourceHirV1 {
         if (ref.arguments().isEmpty()) {
             return switch (ref.name()) {
                 case "int", "i64" -> Type.I64;
+                case "u64" -> Type.U64;
                 case "f32" -> Type.F32;
                 case "bool" -> Type.BOOL;
                 case "void" -> Type.VOID;
@@ -83,7 +84,7 @@ public final class GpuKernelSourceHirV1 {
                 && ref.arguments().getFirst().arguments().isEmpty()
                 && !ref.arguments().getFirst().inferArguments()) {
             return switch (ref.name()) {
-                case "GpuReadBuffer" -> Type.BUFFER_READ_F32;
+                case "GpuArray", "GpuReadBuffer" -> Type.BUFFER_READ_F32;
                 case "GpuWriteBuffer" -> Type.BUFFER_WRITE_F32;
                 case "GpuReadWriteBuffer" -> Type.BUFFER_READ_WRITE_F32;
                 default -> throw fail("002", "unsupported GPU buffer qualifier: " + ref.name());
@@ -118,7 +119,7 @@ public final class GpuKernelSourceHirV1 {
                     && call.arguments().getFirst() instanceof Ast.LiteralExpr literal
                     && literal.value() instanceof Long axis
                     && axis >= 0 && axis <= 2) {
-                return new Value(Type.I64, "gpu.global_id",
+                return new Value(Type.U64, "gpu.global_id",
                         Long.toString(axis), List.of());
             }
             throw fail("006", "host calls, dynamic dispatch and unknown device intrinsics forbidden");
@@ -130,7 +131,7 @@ public final class GpuKernelSourceHirV1 {
                 throw fail("005", "device load requires readable buffer capability");
             }
             Value offset = value(index.index(), locals, depth + 1);
-            require(offset, Type.I64, "device buffer index");
+            require(offset, Type.U64, "device buffer index");
             return new Value(Type.F32, "buffer.load", null,
                     List.of(receiver, offset));
         }
@@ -142,13 +143,15 @@ public final class GpuKernelSourceHirV1 {
             }
             String op = binary.operator();
             if (op.equals("+") || op.equals("-") || op.equals("*")) {
-                if (left.type() != Type.I64 && left.type() != Type.F32)
+                if (left.type() != Type.I64
+                        && left.type() != Type.U64 && left.type() != Type.F32)
                     throw fail("002", "arithmetic requires integer or f32 operands");
                 return new Value(left.type(), "arith." + op, null, List.of(left, right));
             }
             if (op.equals("<") || op.equals("<=") || op.equals(">")
                     || op.equals(">=") || op.equals("eq") || op.equals("neq")) {
-                if (left.type() != Type.I64 && left.type() != Type.F32)
+                if (left.type() != Type.I64
+                        && left.type() != Type.U64 && left.type() != Type.F32)
                     throw fail("002", "comparison requires integer or f32 operands");
                 return new Value(Type.BOOL, "compare." + op, null, List.of(left, right));
             }
@@ -183,6 +186,7 @@ public final class GpuKernelSourceHirV1 {
                     throw fail("006", "GPU v1 locals must be immutable scalar bindings");
                 Value initializer = value(binding.initializer(), symbols, depth + 1);
                 if (initializer.type() != Type.I64
+                        && initializer.type() != Type.U64
                         && initializer.type() != Type.F32
                         && initializer.type() != Type.BOOL)
                     throw fail("005", "GPU local cannot alias or own a device buffer");
@@ -203,7 +207,7 @@ public final class GpuKernelSourceHirV1 {
                         && capability != Type.BUFFER_READ_WRITE_F32)
                     throw fail("005", "GPU store requires exclusive device write capability");
                 Value offset = value(index.index(), symbols, depth + 1);
-                require(offset, Type.I64, "GPU store index");
+                require(offset, Type.U64, "GPU store index");
                 Value rhs = value(assign.value(), symbols, depth + 1);
                 require(rhs, Type.F32, "GPU stored value");
                 lowered.add(new Instruction("STORE_F32", target.name(),
@@ -248,6 +252,11 @@ public final class GpuKernelSourceHirV1 {
         LinkedHashMap<String, Type> scope = new LinkedHashMap<>();
         for (Ast.Param param : fn.parameters()) {
             Type kind = typeRef(param.type());
+            // GpuArray<f32> alone is read-only. Explicit mut grants a
+            // writable referent, not reassignment of the parameter binding.
+            if (param.type().name().equals("GpuArray")) {
+                kind = param.mutable() ? Type.BUFFER_READ_WRITE_F32 : Type.BUFFER_READ_F32;
+            }
             if (kind == Type.VOID) throw fail("002", "void is not a GPU parameter type");
             if (param.structural()) throw fail("006", "GPU v1 cannot capture structural host values");
             if (param.mutable()

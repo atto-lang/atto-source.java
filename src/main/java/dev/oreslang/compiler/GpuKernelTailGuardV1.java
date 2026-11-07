@@ -45,7 +45,7 @@ public final class GpuKernelTailGuardV1 {
     }
 
     private static boolean laneZero(GpuKernelSourceHirV1.Value v, Context ctx, int depth) {
-        if (v == null || depth > 16 || v.type() != GpuKernelSourceHirV1.Type.I64)
+        if (v == null || depth > 16 || v.type() != GpuKernelSourceHirV1.Type.U64)
             return false;
         if (v.opcode().equals("gpu.global_id"))
             return v.operands().isEmpty() && "0".equals(v.symbol());
@@ -57,7 +57,7 @@ public final class GpuKernelTailGuardV1 {
     }
 
     private static boolean bound(GpuKernelSourceHirV1.Value v, Context ctx) {
-        if (v == null || v.type() != GpuKernelSourceHirV1.Type.I64
+        if (v == null || v.type() != GpuKernelSourceHirV1.Type.U64
                 || !v.operands().isEmpty()) return false;
         // The accompanying capacity preflight is defined for the canonical
         // kernel parameter n. A different integer parameter m or a literal
@@ -66,7 +66,7 @@ public final class GpuKernelTailGuardV1 {
         // source-shape evidence, not an authenticated device allocation proof.
         return v.opcode().equals("local")
                 && "n".equals(v.symbol())
-                && ctx.parameters.get("n") == GpuKernelSourceHirV1.Type.I64;
+                && ctx.parameters.get("n") == GpuKernelSourceHirV1.Type.U64;
     }
 
     private static boolean comparison(GpuKernelSourceHirV1.Value v,
