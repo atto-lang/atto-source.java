@@ -96,7 +96,7 @@ final class GpuKernelSourceLinkV1Test {
         assertTrue(error.getMessage().contains("GPU-LAUNCH-001"), error::getMessage);
     }
 
-    @Test void qualifiedKernelIdentityIsDeterministicAndStillNotExecutable() {
+    @Test void qualifiedCrossModuleKernelStillNeedsVerifiedImport() {
         Ast.Program parsed = Parser.parse(KERNEL
                 + HOST.replace("launch saxpy(", "launch gpu_math.saxpy("));
         Ast.GpuKernelDecl kernel = (Ast.GpuKernelDecl)
@@ -105,10 +105,11 @@ final class GpuKernelSourceLinkV1Test {
                 parsed.modules().getFirst().declarations().get(1);
         Ast.ModuleDecl kernelModule = new Ast.ModuleDecl("gpu_math", List.of(kernel));
         Ast.ModuleDecl hostModule = new Ast.ModuleDecl("host", List.of(host));
-        var report = GpuKernelSourceLinkV1.audit(
-                new Ast.Program(List.of(kernelModule, hostModule)));
-        assertEquals("gpu_math", report.links().getFirst().module());
-        assertFalse(report.executable());
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> GpuKernelSourceLinkV1.audit(
+                        new Ast.Program(List.of(kernelModule, hostModule))));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-001"), error::getMessage);
+        assertTrue(error.getMessage().contains("verified typed import"), error::getMessage);
     }
 
     @Test void unrelatedModuleCannotAcquireAnUnqualifiedGpuKernel() {
@@ -140,5 +141,12 @@ final class GpuKernelSourceLinkV1Test {
                 () -> GpuKernelSourceLinkV1.audit(assembled));
         assertTrue(error.getMessage().contains("GPU-LAUNCH-001"), error::getMessage);
         assertTrue(error.getMessage().contains("private GPU kernel"), error::getMessage);
+    }
+
+    @Test void localPrivateKernelDoesNotBecomeCrossModuleCapability() {
+        String privateKernel = KERNEL.replace("pub gpu fnc", "private gpu fnc");
+        var report = audit(privateKernel + HOST);
+        assertEquals(1, report.links().size());
+        assertFalse(report.executable());
     }
 }

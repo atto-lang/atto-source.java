@@ -107,15 +107,20 @@ public final class GpuKernelSourceLinkV1 {
                              List<Link> out) {
         GpuLaunchSourceHirV1.Candidate source = GpuLaunchSourceHirV1.lower(launch);
         String target = source.kernelSymbol();
-        // No implicit cross-module search. Name-only references are lexical,
-        // and explicitly qualified cross-module access requires pub visibility.
-        // Imports/linker alias resolution is not implemented at this stage.
+        // No implicit cross-module search. Name-only references are lexical;
+        // even pub-qualified external names remain denied until typed import
+        // resolution is available. Source spelling is never import authority.
         Kernel kernel = qualified.get(target.contains(".")
                 ? target : callerModule + "." + target);
         if (kernel == null)
             throw error("001", "GPU kernel declaration not found in lexical module: " + target);
-        if (!callerModule.equals(kernel.module()) && !kernel.publiclyExported())
-            throw error("001", "private GPU kernel is inaccessible across modules: " + target);
+        if (!callerModule.equals(kernel.module())) {
+            if (!kernel.publiclyExported())
+                throw error("001", "private GPU kernel is inaccessible across modules: " + target);
+            // Public visibility is necessary but not sufficient: no parsed
+            // module-import or linker capability is issued by this source pass.
+            throw error("001", "cross-module GPU launch needs a verified typed import");
+        }
         List<GpuKernelSourceHirV1.Parameter> parameters = kernel.plan().parameters();
         if (parameters.size() != source.orderedArguments().size())
             throw error("002", "kernel argument arity mismatch for " + target
