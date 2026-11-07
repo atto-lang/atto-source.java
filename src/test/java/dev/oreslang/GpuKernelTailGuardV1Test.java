@@ -62,9 +62,10 @@ final class GpuKernelTailGuardV1Test {
     }
 
     @Test void nonLaneIndexInsideGuardIsNotClaimedSafe() {
+        // Integer literals do not implicitly become u64 GPU indices.
         var err = assertThrows(IllegalArgumentException.class, () ->
                 kernel(SAXPY.replace("out[i] =", "out[0] =")));
-        assertTrue(err.getMessage().contains("GPU-KERNEL-010"), err::getMessage);
+        assertTrue(err.getMessage().contains("GPU-KERNEL-002"), err::getMessage);
     }
 
     @Test void guardedReadCannotEscapeTheBranch() {
