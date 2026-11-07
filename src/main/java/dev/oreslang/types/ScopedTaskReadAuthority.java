@@ -140,6 +140,21 @@ public final class ScopedTaskReadAuthority {
             throw new IllegalArgumentException(
                     "scoped Task READ requires CPU execution until device-fence authority exists");
         }
+        // First run the bounded, structurally validating cross-thread proof.
+        // A malformed or adversarially deep type must fail before it reaches
+        // the more general, recursive auto-trait classifier, whose purpose is
+        // capability composition rather than untrusted graph validation.
+        // No nominal callback may invent Sync authority for this loan.
+        if (!ThreadSafetyTraits.has(
+                referentType, ThreadSafetyTraits.Trait.SYNC,
+                (named, trait) -> false)) {
+            throw new IllegalArgumentException(
+                    "scoped Task READ referent requires independently verified Sync proof");
+        }
+        // The general capability table may grant Sync to an owned handle
+        // (SharedMutex, ActorRef, Arc, etc.) without proving that its borrowed
+        // runtime representation is safe for independent Task READ access.
+        // Both independent classifiers must agree before issuing authority.
         AutoTraitRules.Capabilities referentCapabilities =
                 TypeAutoTraits.inferClosed(referentType);
         if (!referentCapabilities.sync()) {
