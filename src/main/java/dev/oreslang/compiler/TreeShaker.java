@@ -5,6 +5,7 @@ import dev.oreslang.parser.Parser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,6 +25,8 @@ import java.util.Set;
  */
 public final class TreeShaker {
     private static final Object UNKNOWN = new Object();
+    private static final int MAX_SEMANTIC_SYMBOLS = 100_000;
+    private static final int MAX_REACHABLE_SYMBOLS = 100_000;
 
     private TreeShaker() { }
 
@@ -38,12 +41,22 @@ public final class TreeShaker {
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
             Map<String, Object> compileTimeConstants,
-            Set<String> rootSymbols) {
+            Set<String> rootSymbols,
+            boolean libraryBuild,
+            Set<String> semanticSymbols) {
         public Result {
+            if (program == null || retainedSymbols == null ||
+                    removedSymbols == null || compileTimeConstants == null ||
+                    rootSymbols == null || semanticSymbols == null) {
+                throw new IllegalArgumentException(
+                        "tree-shaker result fields cannot be null");
+            }
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
-            compileTimeConstants = Map.copyOf(compileTimeConstants);
+            compileTimeConstants = Collections.unmodifiableMap(
+                    new LinkedHashMap<>(compileTimeConstants));
             rootSymbols = Set.copyOf(rootSymbols);
+            semanticSymbols = Set.copyOf(semanticSymbols);
         }
 
         public boolean retained(String symbol) {
@@ -110,7 +123,14 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues, roots);
+            return new Result(
+                    pruned,
+                    retained,
+                    removed,
+                    constantValues,
+                    roots,
+                    options.preservePublicApi(),
+                    Set.copyOf(symbols.keySet()));
         }
 
         private void collectConstants() {
@@ -119,7 +139,11 @@ public final class TreeShaker {
                     if (declaration instanceof Ast.FieldDecl field
                             && field.bindingKind() == Ast.BindingKind.CONST) {
                         String qualified = qualify(module.name(), field.name());
-                        constants.put(qualified, field);
+                        Ast.FieldDecl prior = constants.putIfAbsent(qualified, field);
+                        if (prior != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate compile-time constant identity '" + qualified + "'");
+                        }
                         String previous = uniqueConstants.putIfAbsent(field.name(), qualified);
                         if (previous != null && !previous.equals(qualified)) {
                             uniqueConstants.remove(field.name());
@@ -135,7 +159,11 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     if (!(declaration instanceof Ast.FunctionDecl function)) continue;
                     String qualified = qualify(module.name(), function.name());
-                    inlineFunctions.put(qualified, function);
+                    Ast.FunctionDecl prior = inlineFunctions.putIfAbsent(qualified, function);
+                    if (prior != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate inline function identity '" + qualified + "'");
+                    }
                     String previous = uniqueInlineFunctions.putIfAbsent(function.name(), qualified);
                     if (previous != null && !previous.equals(qualified)) {
                         uniqueInlineFunctions.remove(function.name());
@@ -1050,8 +1078,16 @@ public final class TreeShaker {
                     String name = declarationName(declaration);
                     if (name == null) continue;
                     String id = qualify(module.name(), name);
+                    if (symbols.size() >= MAX_SEMANTIC_SYMBOLS) {
+                        throw new IllegalArgumentException(
+                                "tree-shaking semantic symbol budget exceeded");
+                    }
                     Symbol symbol = new Symbol(id, module.name(), declaration);
-                    symbols.put(id, symbol);
+                    Symbol prior = symbols.putIfAbsent(id, symbol);
+                    if (prior != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate semantic symbol identity '" + id + "'");
+                    }
                     String previous = uniqueSymbols.putIfAbsent(name, id);
                     if (previous != null && !previous.equals(id)) {
                         uniqueSymbols.remove(name);
@@ -1100,7 +1136,13 @@ public final class TreeShaker {
         }
 
         private void mark(String id) {
-            if (id != null && symbols.containsKey(id) && retained.add(id)) work.addLast(id);
+            if (id == null || !symbols.containsKey(id) || retained.contains(id)) return;
+            if (retained.size() >= MAX_REACHABLE_SYMBOLS) {
+                throw new IllegalArgumentException(
+                        "tree-shaking reachable symbol budget exceeded");
+            }
+            retained.add(id);
+            work.addLast(id);
         }
 
         private void markRuntimeModuleMembers(String moduleName) {

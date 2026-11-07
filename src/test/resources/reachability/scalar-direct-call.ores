@@ -1,0 +1,12 @@
+fnc helper(): int {
+  const value: int = 42;
+  return value;
+}
+
+fnc dead(): int {
+  return 7;
+}
+
+pub fnc main(): int {
+  return helper();
+}
