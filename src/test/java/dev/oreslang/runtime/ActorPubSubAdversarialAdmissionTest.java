@@ -526,6 +526,135 @@ final class ActorPubSubAdversarialAdmissionTest {
     }
 
     @Test
+    void publisherScopedSubscriptionsShareTheCrossTopicActorQuota()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability publisherJoin = group.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability subscriberJoin = group.joinCapability();
+            List<ActorEventBus.Topic<String>> topics = new ArrayList<>();
+            for (int i = 0; i <= 64; i++) {
+                topics.add(group.events().topic(
+                        "scoped-credit-" + i, ActorEventBus.DeliveryPolicy.RELIABLE, 1));
+            }
+            CountDownLatch publisherReady = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> publisher =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            publisherJoin.join();
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            publisherReady.countDown();
+                        }
+                    });
+            publisher.send("join");
+            assertTrue(publisherReady.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            ActorRuntime.ActorRef<String> subscriber =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            subscriberJoin.join();
+                            int limit = Math.min(64, Math.max(1,
+                                    ActorRuntime.currentActorPolicy().maxMailboxMessages()));
+                            List<ActorEventBus.Subscription<String>> owned =
+                                    new ArrayList<>();
+                            for (int i = 0; i < limit; i++) {
+                                owned.add(group.events().subscribePublisher(
+                                        "scoped-credit-" + i, publisher));
+                            }
+                            assertSame(owned.get(0), group.events().subscribePublisher(
+                                    "scoped-credit-0", publisher),
+                                    "duplicate publisher-scoped join must not consume credit");
+                            IllegalStateException denied = assertThrows(
+                                    IllegalStateException.class,
+                                    () -> topics.get(limit).subscribe());
+                            assertTrue(denied.getMessage().contains(
+                                    "subscription limit exceeded"), denied::getMessage);
+                            owned.get(0).close();
+                            ActorEventBus.Subscription<String> admitted =
+                                    assertDoesNotThrow(() -> topics.get(limit).subscribe());
+                            admitted.close();
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            subscriber.send("check");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            subscriber.stop();
+            assertTrue(subscriber.awaitTermination(5, TimeUnit.SECONDS));
+            publisher.stop();
+            assertTrue(publisher.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
+    void retiredPublisherRevokesItsScopedSubscriptionWithoutRevokingObserver()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability publisherJoin = group.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability observerJoin = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "scoped-retirement", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            CountDownLatch publisherReady = new CountDownLatch(1);
+            CountDownLatch subscribed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<ActorEventBus.Subscription<String>> scoped =
+                    new AtomicReference<>();
+            ActorRuntime.ActorRef<String> publisher =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            publisherJoin.join();
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            publisherReady.countDown();
+                        }
+                    });
+            publisher.send("join");
+            assertTrue(publisherReady.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            ActorRuntime.ActorRef<String> observer =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            observerJoin.join();
+                            scoped.set(group.events().subscribePublisher(
+                                    "scoped-retirement", publisher));
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            subscribed.countDown();
+                        }
+                    });
+            observer.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertFalse(scoped.get().closed());
+
+            publisher.stop();
+            assertTrue(publisher.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(scoped.get().closed(),
+                    "publisher termination must retire scoped delivery lease");
+            assertEquals(0, group.events().topics().getFirst().subscribers(),
+                    "publisher scope revocation must free channel and quota");
+            assertTrue(runtime.isAlive(observer),
+                    "publisher death does not own the observer lifecycle");
+            observer.stop();
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
     void subscriptionQuotaBoundsChannelFanoutAndCloseReturnsCredit()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {

@@ -89,6 +89,8 @@ expected = {
         "admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText",
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
+        "publisherScopedSubscriptionsShareTheCrossTopicActorQuota",
+        "retiredPublisherRevokesItsScopedSubscriptionWithoutRevokingObserver",
         "zeroRecipientPublicationsAllocateSequenceButDoNotReplay",
         "reliableRejectionRollsBackEverySubscriberReservation",
         "tryReliableRejectsExtensionPoliciesAndInvalidPayloadWithoutCreatingReceipts",

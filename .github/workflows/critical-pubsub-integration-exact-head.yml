@@ -2,7 +2,7 @@ name: Java critical/suspends and pubsub exact-head guest integration
 
 on:
   push:
-    branches: [integration/critical-suspends-pubsub-20261107]
+    branches: [integration/critical-suspends-pubsub-20261107, integration/critical-pubsub-mainline-20261107]
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/**'
