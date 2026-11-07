@@ -161,6 +161,7 @@ param           = type_ref [ "mut" ] IDENT
 
 binding_decl    = named_inferred_binding
                 | "const" "fnc" IDENT "=" lambda stmt_terminator
+                | "const" IDENT "<" function_type_signature ">" "=" expression stmt_terminator
                 | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
@@ -173,6 +174,11 @@ named_inferred_literal
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "tuple" "(" expression { "," expression } ")" ) ;
+(* 'const name<(Args...) => Result> = fnc(...) -> Result { ... };'
+   is an immutable binding with an explicit Fnc<Args..., Result> type.
+   The declared parameter count, parameter types, and return type must agree
+   with the initializer. Mismatched '=> void' versus '-> int' is an error.
+   The '<...>' is a callable-type ascription, not new runtime generic syntax. *)
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
    Named inference captures a lexical compile-time type alias; it does not create a
    runtime type object. infer struct captures an exact closed struct shape. Record
@@ -452,8 +458,10 @@ sequence_type_item
                 | INT_LITERAL "of" type_ref
                 | "..." type_ref
                 | "..." "(" sequence_type_item { "," sequence_type_item } ")" ;
-function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "=>" type_ref
-                | "(" [ function_type_params ] ")" "=>" type_ref ;
+function_type   = "typeof" "fnc" function_type_signature
+                | function_type_signature ;
+function_type_signature
+                = "(" [ function_type_params ] ")" "=>" type_ref ;
 grouped_type    = "(" type_ref ")" ;
 function_type_params
                 = function_type_param { "," function_type_param } ;
