@@ -37,6 +37,23 @@ final class ActorGuestInvocationLanguageTest {
         assertEquals("starting|alive", run("sibling-after-budget-failure.atto"));
     }
 
+    @Test
+    void mutualTailCallsAcrossFunctionsKeepNativeStackBounded() throws Exception {
+        assertEquals("1", run("stackless-mutual-tail.atto"));
+    }
+
+    @Test
+    void recursiveBinaryExpressionsResumeBothReturnContinuations() throws Exception {
+        assertEquals("21", run("stackless-fibonacci.atto"));
+    }
+
+    @Test
+    void unsupportedLocalBindingsUseExistingGuardedEvaluator() throws Exception {
+        // The M3 subset cannot silently discard a local declaration or
+        // partially run it before falling back to the original evaluator.
+        assertEquals("6", run("stackless-fallback-binding.atto"));
+    }
+
     private static String run(String scenario) throws Exception {
         String resource = "/actor-stack/" + scenario;
         String sourceText;
