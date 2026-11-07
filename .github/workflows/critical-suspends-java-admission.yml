@@ -69,9 +69,14 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
           test -z "$(git status --porcelain --untracked-files=no)"
           mkdir -p target/atto-guest-evidence
-          printf '{"classification":"SCOPED_SUREFIRE_CASES_OBSERVED","proof":"NOT_INDEPENDENTLY_VERIFIED","guest":"CANDIDATE_ONLY","run_id":"%s","attempt":"%s","head":"%s","tree":"%s","job":"%s"}\n' \
+          compiler_sha="$(sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class | cut -d ' ' -f1)"
+          fixture_sha="$(sha256sum examples/critical-actor-checked-v1.atto | cut -d ' ' -f1)"
+          [[ "$compiler_sha" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$fixture_sha" =~ ^[a-f0-9]{64}$ ]]
+          printf '{"classification":"SCOPED_SUREFIRE_CASES_OBSERVED","proof":"NOT_INDEPENDENTLY_VERIFIED","guest":"CANDIDATE_ONLY","run_id":"%s","attempt":"%s","head":"%s","tree":"%s","job":"%s","compiler_class_sha256":"%s","fixture_sha256":"%s"}\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
             "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" "$GITHUB_JOB" \
+            "$compiler_sha" "$fixture_sha" \
             > target/atto-guest-evidence/suite-gate-completed.json
       - name: Record scoped exact-head Java/Truffle guest canary evidence
         if: ${{ always() }}
