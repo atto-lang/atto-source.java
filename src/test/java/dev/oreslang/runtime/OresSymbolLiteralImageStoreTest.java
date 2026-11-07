@@ -128,6 +128,20 @@ class OresSymbolLiteralImageStoreTest {
         }
     }
 
+    @Test void generationIdFromDifferentStoreCannotSelectAnUnrelatedImage() {
+        try (var first = new OresSymbolLiteralImageStore();
+             var second = new OresSymbolLiteralImageStore()) {
+            long a = first.publish(List.of(OresSymbol.process("a")));
+            long b = second.publish(List.of(OresSymbol.process("b")));
+            assertNotEquals(a, b, "different stores may never reuse live VM epochs");
+            assertThrows(IllegalStateException.class, () -> first.pinExpected(b));
+            assertThrows(IllegalStateException.class, () -> second.pinExpected(a));
+            try (var lease = second.pinExpected(b)) {
+                assertEquals(OresSymbol.process("b"), lease.get(0));
+            }
+        }
+    }
+
     @Test void closingStorePreservesExistingLeasesButRejectsNewAdmission() {
         var store = new OresSymbolLiteralImageStore();
         store.publish(List.of(OresSymbol.process("ready")));
