@@ -54,6 +54,10 @@ printf 'trusted/ci 246810\nTRUSTED/CI 246811\n' > "$policy"
 expect_fail trusted/ci
 printf 'trusted/ci 0246810\n' > "$policy"
 expect_fail trusted/ci
+printf 'trusted/ci 246810junk\n' > "$policy"
+expect_fail trusted/ci
+printf 'trusted/ci 246810 \n' > "$policy"
+expect_fail trusted/ci
 printf 'trusted/ci 246810\n' > "$policy"
 expect_ok trusted/ci
 printf 'trusted/ci 246810\r\n' > "$policy"
@@ -106,6 +110,10 @@ expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_API_FAILURE
 export MOCK_EXTRA_LINE=$'\nspoofed/repo\tprivate\ttrue'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_LINE
+export MOCK_EXTRA_LINE=$'\r'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
