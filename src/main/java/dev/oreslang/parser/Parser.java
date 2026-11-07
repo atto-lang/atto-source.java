@@ -2489,6 +2489,31 @@ public final class Parser {
             match(SEMICOLON);
             return scoped;
         }
+        if (check(IDENT) && peek().lexeme().equals("task")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("context")
+                && tokens.get(current + 2).type() == LPAREN) {
+            // task context(#key, value) { body }  desugars to
+            // block { $task_context_enter(#key, value); defer $task_context_exit(); body }
+            // so the binding is restored exactly once on every exit path,
+            // including cancellation unwind. '$' names are not source-lexable.
+            advance(); // task
+            advance(); // context
+            consume(LPAREN, "expected '(' after task context");
+            Ast.Expr key = parseExpression();
+            consume(COMMA, "task context expects (#key, value)");
+            Ast.Expr value = parseExpression();
+            consume(RPAREN, "expected ')' after task context binding");
+            List<Ast.Stmt> body = new ArrayList<>();
+            body.add(new Ast.ExprStmt(new Ast.CallExpr(
+                    new Ast.NameExpr("$task_context_enter"), List.of(), false, List.of(key, value))));
+            body.add(new Ast.DeferStmt(new Ast.CallExpr(
+                    new Ast.NameExpr("$task_context_exit"), List.of(), false, List.of())));
+            body.addAll(parseBlock());
+            match(SEMICOLON);
+            return new Ast.BlockStmt(body);
+        }
         if (check(DO) && checkNext(LBRACE)) {
             advance();
             return parseDoWhile();

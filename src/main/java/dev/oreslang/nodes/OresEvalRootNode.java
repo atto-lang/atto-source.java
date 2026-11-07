@@ -1178,6 +1178,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
+            // Task-local context captured from the turn that created this
+            // task (parent task or awaited caller), re-installed every turn.
+            private dev.oreslang.runtime.TaskContext taskContext =
+                    dev.oreslang.runtime.TaskContext.current();
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1252,6 +1256,20 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override
             public OresScheduler.Step<Object> resume(
+                    OresScheduler.Resume resume)
+                    throws Exception {
+                dev.oreslang.runtime.TaskContext previousContext =
+                        dev.oreslang.runtime.TaskContext.install(taskContext);
+                try {
+                    return resumeTurn(resume);
+                } finally {
+                    // Bindings entered/exited during this turn stay with the task.
+                    taskContext = dev.oreslang.runtime.TaskContext.current();
+                    dev.oreslang.runtime.TaskContext.install(previousContext);
+                }
+            }
+
+            private OresScheduler.Step<Object> resumeTurn(
                     OresScheduler.Resume resume)
                     throws Exception {
                 try {
@@ -7341,6 +7359,29 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
+                };
+                if (name.name().equals("task_context")) return (Invokable) args -> {
+                    requireOne(args, "task_context");
+                    if (!(args.getFirst() instanceof dev.oreslang.runtime.OresSymbol key)) {
+                        throw new IllegalArgumentException("task_context expects a Symbol key");
+                    }
+                    String found = dev.oreslang.runtime.TaskContext.lookup(key.name());
+                    return found == null ? new OptionValue(false, null) : new OptionValue(true, found);
+                };
+                if (name.name().equals("$task_context_enter")) return (Invokable) args -> {
+                    if (args.size() != 2
+                            || !(args.get(0) instanceof dev.oreslang.runtime.OresSymbol key)
+                            || !(args.get(1) instanceof String value)) {
+                        throw new IllegalArgumentException(
+                                "task context(#key, value) requires a Symbol key and a String value");
+                    }
+                    dev.oreslang.runtime.TaskContext.enter(key.name(), value);
+                    return null;
+                };
+                if (name.name().equals("$task_context_exit")) return (Invokable) args -> {
+                    requireZero(args, "task context exit");
+                    dev.oreslang.runtime.TaskContext.exit();
+                    return null;
                 };
                 if (name.name().equals("Some")) return (Invokable) args -> {
                     requireOne(args, "Some");

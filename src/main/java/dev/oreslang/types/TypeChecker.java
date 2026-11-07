@@ -337,7 +337,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
-                "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
+                "print", "Some", "None", "Ok", "Err", "task_context", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
@@ -3163,6 +3163,34 @@ public final class TypeChecker {
                             "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
+            }
+            if (call.callee() instanceof Ast.NameExpr contextCall
+                    && (contextCall.name().equals("task_context")
+                        || contextCall.name().equals("$task_context_enter")
+                        || contextCall.name().equals("$task_context_exit"))) {
+                Type symbol = new Named("$builtin$Symbol", List.of());
+                List<Type> arguments = call.arguments().stream()
+                        .map(argument -> typeOf(argument, env, generics, self)).toList();
+                switch (contextCall.name()) {
+                    case "task_context" -> {
+                        if (arguments.size() != 1 || !arguments.getFirst().equals(symbol)) {
+                            throw new IllegalArgumentException("task_context(#key) expects one Symbol key");
+                        }
+                        return new Named("Option", List.of(Primitive.STRING));
+                    }
+                    case "$task_context_enter" -> {
+                        if (arguments.size() != 2 || !arguments.get(0).equals(symbol)
+                                || !(arguments.get(1) == Primitive.STRING
+                                        || arguments.get(1) instanceof StringLiteral)) {
+                            throw new IllegalArgumentException(
+                                    "task context(#key, value) requires a Symbol key and a String value");
+                        }
+                        return Primitive.VOID;
+                    }
+                    default -> {
+                        return Primitive.VOID;
+                    }
+                }
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
