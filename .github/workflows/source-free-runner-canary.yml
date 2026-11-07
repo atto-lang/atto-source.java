@@ -24,14 +24,20 @@ jobs:
       - name: Prove runner admission without repository checkout
         shell: bash
         env:
-          EXPECTED_REPOSITORY: ${{ github.repository }}
-          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_REPOSITORY: ores-truffle-oreslang/oreslang-source.java
+          EXPECTED_REPOSITORY_ID: '1400792274'
           EXPECTED_RUN_ID: ${{ github.run_id }}
           EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           test -n "${RUNNER_NAME:-}"
           test -n "${RUNNER_OS:-}"
+          test "$RUNNER_OS" = "Linux"
+          test -n "${RUNNER_ARCH:-}"
+          test -d "${GITHUB_WORKSPACE:-/nonexistent}"
+          # Source-free by construction: no checkout, no private objects in the workspace.
+          test ! -e "$GITHUB_WORKSPACE/.git"
+          test -z "$(find "$GITHUB_WORKSPACE" -mindepth 1 -print -quit)"
           test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
           [[ "$EXPECTED_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
@@ -44,5 +50,6 @@ jobs:
             "$EXPECTED_REPOSITORY" "$EXPECTED_REPOSITORY_ID" "$EXPECTED_RUN_ID" \
             "$EXPECTED_RUN_ATTEMPT" "$RUNNER_NAME" "$RUNNER_OS"
           printf 'SOURCE_FREE_PROBE_METADATA=OBSERVED event=%s sha=%s ref=%s\n' "$GITHUB_EVENT_NAME" "$GITHUB_SHA" "$GITHUB_REF"
+          printf 'SOURCE_FREE_WORKSPACE_EMPTY=TRUE runner_arch=%s\n' "$RUNNER_ARCH"
           echo "This canary proves command execution only; external API evidence must verify runner_id > 0."
           echo "It does not certify compiler execution, compiled .ores guest execution, artifacts, or backend parity."
