@@ -355,6 +355,9 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
+        if (name.equals(ROOT_MODULE)) {
+            throw error(previous(), "module name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+        }
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
         // Canonical module syntax is "define module Name as ... end".
@@ -1005,6 +1008,13 @@ public final class Parser {
                         + "and cross-backend lowering; not yet enabled");
             }
         }
+        // Do not silently lower the requested syntax to legacy isoactor,
+        // which does not certify a physical actor-owned heap or sealed state.
+        if (name.equals("isolated") && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == ACTOR) {
+            throw error(peek(), "define isolated actor requires compiler-owned "
+                    + "arena isolation and sealed state-loan lowering; not yet enabled");
+        }
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
             if (current + 2 < tokens.size()
@@ -1070,6 +1080,13 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            // A typed state schema is not a legacy actor field/method.
+            // Reject it with an explicit admission error until the AST,
+            // checker, lifetime rules and runtime-owned loan are integrated.
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                throw error(peek(), "actor state schema requires compiler-sealed "
+                        + "state ownership and handle_state lowering; not yet enabled");
+            }
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
                         || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
@@ -1181,6 +1198,13 @@ public final class Parser {
                 }
                 methods.add(teardown);
                 continue;
+            }
+            // handle_state is reserved for a future intrinsic. A user
+            // method with this name can spoof the critical-loan API, so no
+            // actor may declare it while compiler-owned lowering is absent.
+            if (check(IDENT) && peek().lexeme().equals("handle_state")) {
+                throw error(peek(), "actor handle_state is compiler-owned; "
+                        + "user-defined state-loan authority is forbidden");
             }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
@@ -2577,17 +2601,17 @@ public final class Parser {
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
         if (check(CB) && checkNext(SELECT)) {
-            throw error(peek(), "use 'do select { ... }' instead of 'cb select'");
+            throw error(peek(), "use 'do select { ... }' or 'do select over ... end' instead of 'cb select'");
         }
         if (check(NB) && checkNext(CB)
                 && current + 2 < tokens.size()
                 && tokens.get(current + 2).type() == SELECT) {
-            throw error(peek(), "use 'do nb select { ... }' instead of 'nb cb select'");
+            throw error(peek(), "use 'do nb select { ... }' or 'do nb select over ... end' instead of 'nb cb select'");
         }
         if (check(DO) && (checkNext(SELECT)
                 || (checkNext(NB) && current + 2 < tokens.size()
                     && tokens.get(current + 2).type() == SELECT))) {
-            throw error(peek(), "'do select' requires braced static cases; "
+            throw error(peek(), "'do select' requires static cases using '{ ... }' or 'over ... end'; "
                     + "dynamic 'select from cases' produces a result and "
                     + "has no callback arms to handle discarded reads");
         }
@@ -2832,7 +2856,11 @@ public final class Parser {
                         || tokens.get(i).lexeme().equals("random"))) {
             i++;
         }
-        return i < tokens.size() && tokens.get(i).type() == LBRACE;
+        return i < tokens.size()
+                && (tokens.get(i).type() == LBRACE
+                        || tokens.get(i).type() == OVER
+                        || (tokens.get(i).type() == IDENT
+                                && tokens.get(i).lexeme().equals("over")));
     }
 
     /** A select arm participates in one atomic selection; only the enclosing select sets its wait mode. */
@@ -2864,11 +2892,20 @@ public final class Parser {
 
         consume(SELECT, "expected 'select'");
         Ast.SelectPolicy policy = parseSelectPolicy();
-        consume(LBRACE, "static select requires '{ ... }'; use 'select from cases' for dynamic select");
+        boolean endDelimited = match(OVER) || matchContextualIdentifier("over");
+        if (!endDelimited) {
+            consume(LBRACE,
+                    "static select requires '{ ... }' or 'select over ... end'; "
+                            + "use 'select from cases' for dynamic select");
+        }
 
         List<Ast.SelectArm> arms = new ArrayList<>();
-        while (!check(RBRACE) && !check(EOF)) {
+        boolean seenDefault = false;
+        while (!(endDelimited ? check(END) : check(RBRACE)) && !check(EOF)) {
             if (matchContextualKeyword("when", "case")) {
+                if (seenDefault) {
+                    throw error(previous(), "select default arm must be last");
+                }
                 rejectPerArmChannelWaitModifier();
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
@@ -2944,6 +2981,10 @@ public final class Parser {
             }
 
             if (match(DEFAULT)) {
+                if (seenDefault) {
+                    throw error(previous(), "select permits at most one default arm");
+                }
+                seenDefault = true;
                 consume(COLON, "select default arm requires ':'");
                 if (check(FAT_ARROW)) {
                     throw error(peek(),
@@ -2967,7 +3008,14 @@ public final class Parser {
             throw error(peek(), "expected when/case/default inside select");
         }
 
-        consume(RBRACE, "expected '}' after select");
+        if (endDelimited) {
+            consume(END, "expected 'end' after select over");
+        } else {
+            consume(RBRACE, "expected '}' after select");
+        }
+        if (arms.isEmpty()) {
+            throw error(previous(), "select requires at least one arm");
+        }
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
     }
 

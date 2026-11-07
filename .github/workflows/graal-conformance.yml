@@ -44,6 +44,7 @@ jobs:
         run: bash tests/java_source_tree_integrity_admission.sh
       - name: Validate source parity launcher fail-closed CLI admissions
         run: bash tests/java_source_parity_launcher_admission.sh
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Test AI smoke evidence admission (no compiler claims)
         run: python3 scripts/test_ai_conformance_smoke.py
       - name: Schema validator
@@ -82,6 +83,15 @@ jobs:
         run: |
           scripts/run-source-parity.sh tests/fixtures/native-class-string/main.ores > target/java-class-string-parity.stdout
           printf 'hello world\nhiiii 2hiiii' | cmp - target/java-class-string-parity.stdout
+      - name: Verify six portable Oreslang scalar guest programs through real GraalVM
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          bash -n scripts/verify-portable-scalar-java.sh
+          bash scripts/verify-portable-scalar-java.sh
       - name: Execute byte-identical common-source v1 scalar through real JVM guest
         run: |
           python3 tests/test_native_guest_parity_v1_java.py \

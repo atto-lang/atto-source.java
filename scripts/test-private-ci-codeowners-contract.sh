@@ -29,10 +29,18 @@ expected_tail() {
 RULES
 }
 
+expected_full_tail() {
+  cat <<'RULES'
+/tools/verify-exact-source-tree.sh @ORESoftware
+/tools/test-verify-exact-source-tree.sh @ORESoftware
+RULES
+  expected_tail
+}
+
 check() {
   local input="$1"
   [[ -f "$input" && ! -L "$input" ]] || return 1
-  cmp -s <(effective_rules "$input" | tail -n 7) <(expected_tail)
+  cmp -s <(effective_rules "$input" | tail -n 9) <(expected_full_tail)
 }
 
 if ! check "$policy"; then
@@ -68,6 +76,35 @@ while IFS= read -r exact; do
   reject "$work/mixed" "mixed owner for $exact"
 done < <(expected_tail)
 
+# The exact-tree verifier and its regression script are security-sensitive,
+# including their effective (last-matching) ownership, not just their presence.
+while IFS= read -r exact; do
+  awk -v exact="$exact" '{
+    out = $1
+    for (i = 2; i <= NF; ++i) out = out " " $i
+    if (out == exact) print out " @the1mills"
+    else print $0
+  }' "$work/good" > "$work/tool-mixed"
+  reject "$work/tool-mixed" "mixed owner for $exact"
+
+  awk -v exact="$exact" '{
+    out = $1
+    for (i = 2; i <= NF; ++i) out = out " " $i
+    if (out != exact) print $0
+  }' "$work/good" > "$work/tool-missing"
+  reject "$work/tool-missing" "missing tool owner for $exact"
+done < <(expected_full_tail | head -n 2)
+
+# Even a broad rule inserted after the exact tool rules must fail closed.
+awk '
+  /^# Must remain the final CODEOWNERS rules:/ && !added {
+    print "/tools/ @the1mills"
+    added = 1
+  }
+  { print }
+' "$work/good" > "$work/tool-override"
+reject "$work/tool-override" 'later broad /tools rule overrides verified scripts'
+
 # Missing/reordered security rules and a final broad rule fail closed.
 awk '$1 != "/scripts/publish-private-ci-source-v3.py" { print }' \
   "$work/good" > "$work/missing"
@@ -83,4 +120,4 @@ reject "$work/reordered" 'reordered exact rules'
 ln -s "$work/good" "$work/link"
 reject "$work/link" 'symlinked CODEOWNERS'
 
-printf 'PASS: terminal private-export ownership and 11 adversarial cases\n'
+printf 'PASS: terminal private-export and exact-tree ownership; 16 adversarial cases\n'
