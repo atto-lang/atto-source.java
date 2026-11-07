@@ -88,6 +88,34 @@ public final class GpuKernelSourceCapacityJoinV1 {
         };
     }
 
+    private static boolean isOne(GpuLaunchSourceHirV1.I64Expr axis) {
+        return axis instanceof GpuLaunchSourceHirV1.Constant c && c.value() == 1;
+    }
+
+    /**
+     * The tail guard proves only gpu.global_id(0) < n, and the capacity check
+     * only views against n. Both are sound only when the launch site itself
+     * is the logical 1D form over: [n] with unit secondary axes: any extra
+     * logical or group axis runs several lanes per index, racing writes to the
+     * same out[i]; an over extent other than n is unrelated to the checked
+     * capacity; physical grid/block carries no logical extent at all.
+     */
+    private static void requireCanonicalOneDimensionalGeometry(
+            GpuLaunchSourceHirV1.Geometry geometry, long canonicalN) {
+        if (geometry.mode() != GpuLaunchSourceHirV1.Mode.LOGICAL_OVER_GROUP)
+            throw invalid("canonical 1D kernel requires logical over: [n], not physical grid/block");
+        for (int axis = 1; axis < 3; axis++) {
+            if (!isOne(geometry.extent().get(axis)) || !isOne(geometry.group().get(axis)))
+                throw invalid("canonical 1D kernel indexes only global_id(0); "
+                        + "secondary over/group axes must be 1");
+        }
+        GpuLaunchSourceHirV1.I64Expr extent = geometry.extent().getFirst();
+        boolean namedN = extent instanceof GpuLaunchSourceHirV1.Symbol s && s.name().equals("n");
+        boolean literalN = extent instanceof GpuLaunchSourceHirV1.Constant c && c.value() == canonicalN;
+        if (!namedN && !literalN)
+            throw invalid("launch over extent must be the canonical kernel n");
+    }
+
     /**
      * Views are mapped by declared kernel parameter INDEX, not by a caller
      * supplied expected access flag. Scalar arguments must not have views.
@@ -115,6 +143,7 @@ public final class GpuKernelSourceCapacityJoinV1 {
                 || plan.returnType() != GpuKernelSourceHirV1.Type.VOID)
             throw invalid("kernel source plan and launch link identity/ABI mismatch");
 
+        requireCanonicalOneDimensionalGeometry(link.geometry(), canonicalN);
         var tail = GpuKernelTailGuardV1.audit(plan);
         List<GpuKernelCapacityPreflightV1.Argument> bindings = new ArrayList<>();
         Map<String, View> viewsByLexicalName = new HashMap<>();

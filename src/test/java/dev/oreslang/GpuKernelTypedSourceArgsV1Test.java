@@ -211,6 +211,7 @@ final class GpuKernelTypedSourceArgsV1Test {
                 GpuKernelSourceHirV1.Type.BUFFER_READ_F32, "y"));
         var forged = new GpuKernelSourceLinkV1.Link(
                 c.link().module(), c.link().kernel(), values,
+                c.link().geometry(),
                 GpuKernelSourceLinkV1.Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE);
         assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelTypedSourceArgsV1.audit(c.caller(), c.kernel(), forged));

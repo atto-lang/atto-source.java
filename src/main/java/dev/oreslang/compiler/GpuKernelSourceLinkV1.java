@@ -35,11 +35,17 @@ public final class GpuKernelSourceLinkV1 {
         }
     }
 
+    /**
+     * The launch site's own source geometry is part of the link: a kernel
+     * signature alone cannot say how many lanes reach each index.
+     */
     public record Link(String module, String kernel,
-                       List<BoundArgument> arguments, Evidence evidence) {
+                       List<BoundArgument> arguments,
+                       GpuLaunchSourceHirV1.Geometry geometry, Evidence evidence) {
         public Link {
             Objects.requireNonNull(module, "GPU kernel module");
             Objects.requireNonNull(kernel, "GPU kernel name");
+            Objects.requireNonNull(geometry, "GPU launch source geometry");
             arguments = List.copyOf(arguments);
             if (evidence != Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE)
                 throw error("008", "missing source-only evidence");
@@ -131,7 +137,7 @@ public final class GpuKernelSourceLinkV1 {
             args.add(argument(source.orderedArguments().get(i),
                     parameters.get(i).type()));
         out.add(new Link(kernel.module(), kernel.plan().symbol(), args,
-                Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE));
+                source.geometry(), Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE));
     }
 
     private static void expression(Ast.Expr value, String callerModule,

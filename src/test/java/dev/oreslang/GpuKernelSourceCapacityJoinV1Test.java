@@ -142,6 +142,7 @@ final class GpuKernelSourceCapacityJoinV1Test {
                 GpuKernelSourceHirV1.Type.I64, "x"));
         var forged = new GpuKernelSourceLinkV1.Link(
                 original.link().module(), original.link().kernel(), arguments,
+                original.link().geometry(),
                 GpuKernelSourceLinkV1.Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE);
         var pair = new Subject(original.plan(), forged);
         assertThrows(IllegalArgumentException.class,
