@@ -1,0 +1,25 @@
+fnc fib(int n): int {
+  if n <= 1; do
+    return n;
+  else
+    return fib(n - 1) + fib(n - 2);
+  fi
+}
+
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    self.send(fib(8));
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn Worker();
+  await worker.get_ready();
+  worker.send("go");
+  val next = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(next.value);
+  await worker.get_done();
+  return;
+}
