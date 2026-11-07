@@ -14,6 +14,72 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(15)
 final class ActorPubSubV1ContractTest {
     @Test
+    void acceptedPublicationInvokesReductionCommitExactlyOncePerPolicy()
+            throws Exception {
+        // Run a real subscriber in a live ActorGroup so that the LATEST and
+        // LOSSY active-recipient paths execute. Reflection is limited to
+        // injecting a counting reduction commit callback; no fake delivery.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            var policies = ActorEventBus.DeliveryPolicy.values();
+            for (var policy : policies) {
+                group.events().topic("commit-once-" + policy.name(),
+                        policy, policy == ActorEventBus.DeliveryPolicy.LATEST ? 1 : 2);
+            }
+            CountDownLatch ready = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> subscriber =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            join.join();
+                            for (var policy : policies) {
+                                group.events().subscribe("commit-once-" + policy.name());
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            ready.countDown();
+                        }
+                    });
+            subscriber.send("subscribe");
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            java.lang.reflect.Field field =
+                    ActorEventBus.class.getDeclaredField("topics");
+            field.setAccessible(true);
+            java.util.Map<?, ?> states = (java.util.Map<?, ?>) field.get(group.events());
+            java.lang.reflect.Method withCommit = java.util.Arrays.stream(
+                    ActorEventBus.class.getDeclaredMethods())
+                    .filter(method -> method.getName().equals("publishFrozen")
+                            && method.getParameterCount() == 4)
+                    .findFirst().orElseThrow();
+            withCommit.setAccessible(true);
+            for (var policy : policies) {
+                String name = "commit-once-" + policy.name();
+                Object topicState = states.get(name);
+                assertTrue(topicState != null, "missing topic " + name);
+                java.util.concurrent.atomic.AtomicInteger commits =
+                        new java.util.concurrent.atomic.AtomicInteger();
+                Runnable commit = commits::incrementAndGet;
+                ActorEventBus.PublishReceipt receipt =
+                        (ActorEventBus.PublishReceipt) withCommit.invoke(
+                                group.events(), topicState,
+                                runtime.freezeActorGroupEventPayload("event-" + name),
+                                null, commit);
+                assertEquals(1, commits.get(),
+                        "reduction commit ran more than once for " + policy);
+                assertEquals(1L, receipt.sequence(), name);
+                assertEquals(1, receipt.accepted(), name);
+            }
+            subscriber.stop();
+            assertTrue(subscriber.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
     void admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText() {
         ActorEventBus.PublishReceipt legacy = new ActorEventBus.PublishReceipt(
                 0, 0, 0, 0, OresFuture.completed(java.util.List.of()));

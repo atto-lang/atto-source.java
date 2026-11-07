@@ -86,6 +86,7 @@ expected = {
         "attoPubSubTypeAndAuthorityNegativesStayFailClosed",
     },
     "dev.oreslang.runtime.ActorPubSubV1ContractTest": {
+        "acceptedPublicationInvokesReductionCommitExactlyOncePerPolicy",
         "admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText",
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {

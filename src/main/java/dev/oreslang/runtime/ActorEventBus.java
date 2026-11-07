@@ -751,10 +751,9 @@ public final class ActorEventBus implements AutoCloseable {
                             sequence);
                 }
 
-                // LATEST/LOSSY admit without waiting for per-subscriber
-                // credits; preserve their existing single-lock commit order.
-                commitState.run();
-                topic.sequence.set(sequence);
+                // LATEST/LOSSY have already committed exactly once above,
+                // inside the delivery lock and after allocating the event.
+                // Repeating commitState would run reduction callbacks twice.
                 int accepted = 0;
                 int dropped = 0;
                 int coalesced = 0;
