@@ -103,7 +103,7 @@ jobs:
           fi
       - name: Upload scoped evidence without asserting proof before independent verification
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: java-truffle-atto-guest-source-only-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/atto-guest-evidence/
