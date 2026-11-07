@@ -3,6 +3,7 @@ package dev.oreslang.launcher;
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.CompilerEffectAnalysisV0;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.ast.Ast;
@@ -58,12 +59,12 @@ public final class OresMain {
             }
             return status;
         } catch (UsageException failure) {
-            System.err.println("oreslang: " + failure.getMessage());
+            System.err.println("oreslang: " + safeDiagnosticText(failure.getMessage()));
             return 2;
         } catch (Exception failure) {
             String message = failure.getMessage();
-            System.err.println("oreslang: " +
-                    ((message == null || message.isBlank())
+            System.err.println("oreslang: " + safeDiagnosticText(
+                    message == null || message.isBlank()
                             ? failure.getClass().getSimpleName() : message));
             return 1;
         }
@@ -262,9 +263,13 @@ public final class OresMain {
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
             BuildOptions buildOptions = new BuildOptions(defines, entries, false);
-            TreeShaker.Result result = OresCompiler.compileForBuild(
-                    directOresSource,
-                    buildOptions);
+            final TreeShaker.Result result;
+            try {
+                result = OresCompiler.compileForBuild(directOresSource, buildOptions);
+            } catch (IllegalArgumentException error) {
+                System.err.println(formatCheckDiagnostic(path, error));
+                return 1;
+            }
 
             if (reachabilityReportPath != null) {
                 final Path reportPath;
@@ -457,18 +462,56 @@ public final class OresMain {
         }
     }
 
-    static String formatCheckDiagnostic(Path path, Exception error) {
-        String message = error.getMessage();
-        if (message == null || message.isBlank()) message = error.getClass().getSimpleName();
+    /** Keep CLI diagnostics bounded and safe to print on an ANSI terminal. */
+    private static String safeDiagnosticText(String value) {
+        if (value == null || value.isBlank()) return "<unknown error>";
+        StringBuilder safe = new StringBuilder(Math.min(2048, value.length()));
+        for (int i = 0; i < value.length() && safe.length() < 2048; i++) {
+            char ch = value.charAt(i);
+            // Reject ASCII/C1 controls and Unicode format controls (including
+            // bidi overrides and zero-width reordering) in untrusted text.
+            safe.append(Character.isISOControl(ch)
+                    || Character.getType(ch) == Character.FORMAT ? '?' : ch);
+        }
+        if (value.length() > 2048) safe.append("...");
+        return safe.toString();
+    }
 
+    private static String diagnosticUnit(Path entry, String sourceId) {
+        Path fallback = entry.toAbsolutePath().normalize();
+        try {
+            Path unit = Path.of(sourceId).toAbsolutePath().normalize();
+            Path cwd = Path.of("").toAbsolutePath().normalize();
+            if (unit.startsWith(cwd)) return safeDiagnosticText(cwd.relativize(unit).toString());
+            Path parent = fallback.getParent();
+            if (parent != null && unit.startsWith(parent))
+                return safeDiagnosticText(parent.relativize(unit).toString());
+            // Avoid printing out-of-workspace absolute paths in CI logs.
+            return safeDiagnosticText(unit.getFileName() == null ? "<source>" : unit.getFileName().toString());
+        } catch (java.nio.file.InvalidPathException invalid) {
+            return "<source>";
+        }
+    }
+
+    static String formatCheckDiagnostic(Path path, Exception error) {
+        String unit = diagnosticUnit(path, path.toString());
+        String message = error.getMessage();
+        String context = "";
+        if (error instanceof SourceUnitDiagnosticException linked) {
+            unit = diagnosticUnit(path, linked.unitId());
+            message = linked.detail();
+            if (!linked.moduleName().isBlank())
+                context += "[module: " + safeDiagnosticText(linked.moduleName()) + "] ";
+            if (!linked.namespaceName().isBlank())
+                context += "[namespace: " + safeDiagnosticText(linked.namespaceName()) + "] ";
+        }
+        if (message == null || message.isBlank()) message = error.getClass().getSimpleName();
         Matcher matcher = POSITIONED_DIAGNOSTIC.matcher(message);
         if (matcher.matches()) {
-            return path.toAbsolutePath().normalize()
-                    + ":" + matcher.group(1)
+            return unit + ":" + matcher.group(1)
                     + ":" + matcher.group(2)
-                    + ": error: " + matcher.group(3);
+                    + ": error: " + context + safeDiagnosticText(matcher.group(3));
         }
-
-        return path.toAbsolutePath().normalize() + ":1:1: error: " + message;
+        return unit + ":1:1: error: " + context + safeDiagnosticText(message);
     }
 }
