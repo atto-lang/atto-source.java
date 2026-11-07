@@ -209,6 +209,74 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /**
+     * Non-guest-transferable, runtime-minted actor-incarnation witness for WAL
+     * admission. It does NOT grant a tenant, a file path or a physical FD.
+     * This package-private type is never a bearer token accepted from DATA.
+     */
+    static final class StorageActorProof {
+        private final ActorRuntime runtime;
+        private final ActorRef<?> actor;
+        private final Object executionDomain;
+
+        private StorageActorProof(ActorRuntime runtime, ActorRef<?> actor,
+                                  Object executionDomain) {
+            this.runtime = runtime;
+            this.actor = actor;
+            this.executionDomain = executionDomain;
+        }
+
+        ActorRuntime runtime() { return runtime; }
+        ActorRef<?> actor() { return actor; }
+
+        boolean actorStillAlive() {
+            ActorCell<?> cell = runtime.actors.get(actor.id());
+            if (cell == null || cell.ref != actor || runtime.closed.get()) return false;
+            synchronized (cell.lifecycleLock) {
+                return cell.ref == actor && !cell.stopped.get() && !cell.finalized
+                        && !cell.forceKillFenced && !runtime.closed.get();
+            }
+        }
+
+        /** Called ONLY on a re-entered physical actor turn, not an I/O worker. */
+        boolean validOnCurrentTurn() {
+            ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+            if (current == null || current.runtime() != runtime
+                    || !current.actorId().equals(actor.id())
+                    || current.kind() == ActorKind.UNTRUSTED
+                    || current.executionDomain() != executionDomain) return false;
+            ActorCell<?> cell = runtime.currentActor.get();
+            if (cell == null || cell.ref != actor
+                    || cell.executionDomain != executionDomain) return false;
+            synchronized (cell.lifecycleLock) {
+                return !cell.stopped.get() && !cell.finalized
+                        && !cell.forceKillFenced && !runtime.closed.get()
+                        && cell.activeTurns == 1 && cell.carrierActive
+                        && cell.carrierOwnerThread == Thread.currentThread()
+                        && cell.scheduled.get();
+            }
+        }
+    }
+
+    /**
+     * Mint from the exact admitted ActorCell and its carrier-held single-writer
+     * lease. A caller-selected ActorRef/UUID cannot substitute for this owner.
+     */
+    static StorageActorProof mintStorageActorProof() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null || current.kind() == ActorKind.UNTRUSTED) {
+            throw new SecurityException("WAL proof requires a trusted executing actor turn");
+        }
+        ActorCell<?> cell = current.runtime().currentActor.get();
+        if (cell == null) throw new SecurityException("WAL proof missing physical ActorCell");
+        StorageActorProof proof = new StorageActorProof(
+                current.runtime(), cell.ref, cell.executionDomain);
+        if (!proof.validOnCurrentTurn()) {
+            throw new SecurityException("WAL proof requires an admitted live physical actor turn");
+        }
+        return proof;
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**

@@ -12,6 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Host-internal actor-incarnation check for the WAL physical owner.
+ * Actor activation authority is minted by the real ActorRuntime ActorCell,
+ * never by a caller-owned actor ID or arbitrary thread-local actor proxy.
  *
  * This is NOT a guest builtin, a secure filesystem open, a durable commit API,
  * or a provider of tenant authority. A trusted host registry must supply the
@@ -27,36 +29,27 @@ final class WalStorageActorGate {
     /** One mint per actor incarnation; intentionally never a numeric bearer ID. */
     static final class Capture {
         private final OresContext context;
-        private final ActorRuntime runtime;
-        private final ActorRuntime.ActorRef<?> actor;
-        private final Object actorExecutionDomain;
+        private final ActorRuntime.StorageActorProof proof;
         private final WalStorageFileOwner.Scope scope;
         private final Path policyRoot;
         private volatile boolean revoked;
 
-        private Capture(OresContext context, ActorRuntime runtime,
-                        ActorRuntime.ActorRef<?> actor, Object actorExecutionDomain,
+        private Capture(OresContext context, ActorRuntime.StorageActorProof proof,
                         WalStorageFileOwner.Scope scope, Path policyRoot) {
             this.context = context;
-            this.runtime = runtime;
-            this.actor = actor;
-            this.actorExecutionDomain = actorExecutionDomain;
+            this.proof = proof;
             this.scope = scope;
             this.policyRoot = policyRoot;
         }
 
         private boolean actorStillAlive() {
-            return !revoked && actor.isAlive();
+            return !revoked && proof.actorStillAlive();
         }
 
         private void requireActorTurn() {
             if (!actorStillAlive()
-                    || !ActorRuntime.inActorExecution()
-                    || ActorRuntime.currentActorRuntime() != runtime
-                    || ActorRuntime.currentActorExecutionDomain() != actorExecutionDomain
-                    || ActorRuntime.currentActorId().filter(actor.id()::equals).isEmpty()
-                    || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
-                    || actor.generation() != scope.generation()) {
+                    || !proof.validOnCurrentTurn()
+                    || proof.actor().generation() != scope.generation()) {
                 throw new SecurityException("foreign, stale or retired WAL actor incarnation");
             }
             // Both actor-local and isolate policy, plus scoped host permission.
@@ -78,20 +71,17 @@ final class WalStorageActorGate {
         Objects.requireNonNull(expectedActor);
         Objects.requireNonNull(trustedScope);
         Path root = Objects.requireNonNull(hostPolicyRoot).toAbsolutePath().normalize();
-        ActorRuntime runtime = context.actors();
-        if (!ActorRuntime.inActorExecution()
-                || ActorRuntime.currentActorRuntime() != runtime
-                || ActorRuntime.currentActorId().filter(expectedActor.id()::equals).isEmpty()
-                || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
-                || !expectedActor.isAlive()
-                || expectedActor.generation() != trustedScope.generation()) {
-            throw new SecurityException("WAL storage capture requires live authorized actor turn");
+        // Capture the real scheduler-owned ActorCell, NOT an identity inferred
+        // from a caller-selected ActorRef, message, or Java thread-local proxy.
+        ActorRuntime.StorageActorProof proof = ActorRuntime.mintStorageActorProof();
+        if (proof.runtime() != context.actors()
+                || proof.actor() != expectedActor
+                || proof.actor().generation() != trustedScope.generation()) {
+            throw new SecurityException("WAL storage capture has foreign runtime/actor/generation");
         }
-        Object domain = ActorRuntime.currentActorExecutionDomain();
-        if (domain == null) throw new SecurityException("missing actor execution domain");
         context.requirePermission(RuntimePermissions.Permission.WRITE, root.toString(),
                 "db.wal.storage.capture");
-        return new Capture(context, runtime, expectedActor, domain, trustedScope, root);
+        return new Capture(context, proof, trustedScope, root);
     }
 
     /**

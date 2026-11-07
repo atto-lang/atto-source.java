@@ -45,6 +45,11 @@ public final class WalStorageActorGateHostTest {
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,ref,scope,root));
             ActorRuntime.enter(runtime,ref,domain,ActorRuntime.ActorKind.PRIVATE);
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,foreign,scope,root));
+            // A forged ActorRef with exactly equal numeric ID and generation
+            // must NOT be able to substitute for the runtime-owned ActorCell.
+            var forgedSameId=new ActorRuntime.ActorRef<String>(ref.id(),ref.generation());
+            reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(
+                    ctx,forgedSameId,scope,root));
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,ref,staleScope,root));
             ctx.writeAllowed=false;
             reject(SecurityException.class,()->WalStorageActorGate.captureOnActorTurn(ctx,ref,scope,root));

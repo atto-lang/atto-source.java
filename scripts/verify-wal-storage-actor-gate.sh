@@ -16,7 +16,8 @@ for signature in \
     'public static ActorRuntime currentActorRuntime()' \
     'public static Optional<ActorId> currentActorId()' \
     'public static Object currentActorExecutionDomain()' \
-    'public static ActorKind currentActorKind()'; do
+    'public static ActorKind currentActorKind()' \
+    'static StorageActorProof mintStorageActorProof()'; do
   grep -Fq "$signature" "$actor" || { echo "actor API absent: $signature" >&2; exit 1; }
 done
 for signature in 'public ActorRuntime actors()' 'public void requirePermission('; do
@@ -37,6 +38,6 @@ timeout 30s "$DB_JAVA_BIN" -cp "$scratch" \
   dev.oreslang.runtime.WalStorageActorGateHostTest >"$scratch/out" 2>"$scratch/err" || {
   cat "$scratch/err" >&2; exit 1;
 }
-printf '%s\n' 'WAL_ACTOR_GATE_SHIM_PASS checks=27; NOT ACTUAL ACTOR OR GUEST' >"$scratch/expected"
+printf '%s\n' 'WAL_ACTOR_GATE_SHIM_PASS checks=28; NOT ACTUAL ACTOR OR GUEST' >"$scratch/expected"
 cmp -s "$scratch/out" "$scratch/expected" || { cat "$scratch/out" >&2; exit 1; }
-printf 'HOST_ACTOR_SHIM_CHECKS=27 NO_TRUFFLE_BUILD NO_GUEST_EXECUTION\n'
+printf 'HOST_ACTOR_SHIM_CHECKS=28 NO_TRUFFLE_BUILD NO_GUEST_EXECUTION\n'
