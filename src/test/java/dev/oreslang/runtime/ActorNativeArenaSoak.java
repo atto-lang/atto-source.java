@@ -57,7 +57,9 @@ public final class ActorNativeArenaSoak {
 
     public static void main(String[] args) {
         require(args.length == 1, "usage: ActorNativeArenaSoak /absolute/liboresarena.so");
-        System.load(Path.of(args[0]).toAbsolutePath().toString());
+        Path nativeLibrary = Path.of(args[0]).toAbsolutePath();
+        System.setProperty("ores.thread.native.path", nativeLibrary.toString());
+        System.load(nativeLibrary.toString());
         AtomicLong charged = new AtomicLong();
         long gcBefore = gcCountOrUnknown();
         long rssBefore = rssKiBOrUnknown();
