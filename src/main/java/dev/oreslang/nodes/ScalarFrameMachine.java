@@ -90,6 +90,9 @@ final class ScalarFrameMachine {
 
     private void compileOne(Ast.FunctionDecl fn) {
         if (compiled.containsKey(fn) || visiting.containsKey(fn)) return;
+        // A malicious or generated AST must never blow the JVM compiler
+        // stack by expanding a huge cross-function graph before execution.
+        if (compiled.size() + visiting.size() >= 32) throw new NotAdmitted();
         if (fn.kind() != Ast.CallableKind.FNC || fn.async() || fn.suspends()
                 || fn.generator() || fn.trapped()
                 || fn.actorKind() != Ast.ActorKind.NONE
@@ -132,7 +135,7 @@ final class ScalarFrameMachine {
     private final class Emitter {
         final LinkedHashMap<String, Integer> slots;
         final ArrayList<Instruction> instructions = new ArrayList<>();
-        int stackHeight, peak;
+        int stackHeight, peak, expressionDepth, statementDepth;
         Emitter(LinkedHashMap<String, Integer> slots) { this.slots = slots; }
         void height(int delta) {
             stackHeight += delta;
@@ -145,6 +148,11 @@ final class ScalarFrameMachine {
             instructions.set(index, Instruction.indexed(old.op(), destination));
         }
         void statement(Ast.Stmt stmt, boolean nested) {
+            if (++statementDepth > 64) {
+                statementDepth--;
+                throw new NotAdmitted();
+            }
+            try {
             if (stmt instanceof Ast.BindingStmt binding && !nested) {
                 expr(binding.initializer(), false);
                 emit(Instruction.indexed(Op.STORE, slots.get(binding.name())));
@@ -170,9 +178,17 @@ final class ScalarFrameMachine {
                 int end = instructions.size();
                 for (int index : ends) patch(index, end);
             } else throw new NotAdmitted();
+            } finally {
+                statementDepth--;
+            }
         }
 
         void expr(Ast.Expr node, boolean tailPosition) {
+            if (++expressionDepth > 64) {
+                expressionDepth--;
+                throw new NotAdmitted();
+            }
+            try {
             if (node instanceof Ast.LiteralExpr literal) {
                 Object v = literal.value();
                 if (!(v instanceof Boolean || v instanceof Integer || v instanceof Long
@@ -211,6 +227,9 @@ final class ScalarFrameMachine {
                 emit(Instruction.call(tailPosition ? Op.TAIL_CALL : Op.CALL, callee));
                 height(tailPosition ? -call.arguments().size() : 1 - call.arguments().size());
             } else throw new NotAdmitted();
+            } finally {
+                expressionDepth--;
+            }
         }
     }
 
