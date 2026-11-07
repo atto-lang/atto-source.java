@@ -1,9 +1,11 @@
 package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.CompilerEffectAnalysisV0;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -88,6 +90,7 @@ public final class OresMain {
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
         boolean checkOnly = false;
+        boolean analyzeOnly = false;
         boolean buildAnalysis = false;
         String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
@@ -106,6 +109,7 @@ public final class OresMain {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
                 else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.equals("--analyze")) analyzeOnly = true;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
                 else if (arg.startsWith("--core-log-level="))
@@ -175,8 +179,8 @@ public final class OresMain {
 
         // Report mutually exclusive CLI flags before opening/discovering a file.
         // An invalid invocation is status 2 even when the source path is absent.
-        if (checkOnly && buildAnalysis) {
-            throw new UsageException("--check and --build-analysis are mutually exclusive");
+        if ((checkOnly && buildAnalysis) || (analyzeOnly && (checkOnly || buildAnalysis))) {
+            throw new UsageException("--analyze, --check and --build-analysis are mutually exclusive");
         }
         if (reachabilityReportPath != null && !buildAnalysis) {
             throw new UsageException("--reachability-report requires --build-analysis");
@@ -291,6 +295,26 @@ public final class OresMain {
             throw new UsageException("--define/--entry/--reachability-report require --build-analysis until the artifact build command is wired");
         }
 
+        if (analyzeOnly) {
+            if (!isGuestSourceFile(filename)) {
+                throw new UsageException("--analyze requires a .atto or .ores guest source");
+            }
+            // Use the real linked-admission frontend: no guest execution,
+            // LLVM IR or emitted build artifacts. No fake success from a
+            // formatter stub or syntactic token-only scanner.
+            try {
+                LinkedProgramRunner.validate(
+                        path, System.getenv(), policy, permissionCheckMode);
+                Ast.Program checked = OresCompiler.parseAndTypeCheck(directOresSource);
+                CompilerEffectAnalysisV0.Report report = CompilerEffectAnalysisV0.analyze(checked);
+                for (String record : report.records()) System.out.println(record);
+                return report.exitStatus();
+            } catch (Exception error) {
+                System.err.println(formatCheckDiagnostic(path, error));
+                return 1;
+            }
+        }
+
         if (checkOnly) {
             try {
                 LinkedProgramRunner.validate(
@@ -380,7 +404,7 @@ public final class OresMain {
 
     private static void printUsage() {
         System.err.println(
-                "usage: oreslang-compiler [--check|--build-analysis] "
+                "usage: oreslang-compiler [--check|--analyze|--build-analysis] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "

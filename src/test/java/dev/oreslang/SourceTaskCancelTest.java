@@ -141,8 +141,8 @@ final class SourceTaskCancelTest {
                 pub async fnc main(): void {
                   val mutex = SharedMutex.new(new Counter());
                   let Future<void> child = task {
-                    val guard = mutex.lock();
-                    guard.value = 7;
+                    val lock_guard = mutex.lock();
+                    lock_lock_guard.value = 7;
                     rt cooperate;
                     return;
                   };
@@ -165,8 +165,8 @@ final class SourceTaskCancelTest {
                   let Future<void> child = task {
                     loop {
                       block {
-                        val guard = mutex.lock();
-                        guard.value = 7;
+                        val lock_guard = mutex.lock();
+                        lock_lock_guard.value = 7;
                       }
                       rt cooperate;
                     }

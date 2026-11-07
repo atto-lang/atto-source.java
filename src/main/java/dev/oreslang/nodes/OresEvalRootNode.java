@@ -3977,6 +3977,10 @@ public final class OresEvalRootNode extends RootNode {
                     new java.util.concurrent.atomic.AtomicBoolean();
             SourceValueCont continuation = (resumedTask, value, failure) -> {
                 if (!delivered.compareAndSet(false, true)) {
+                    // A failure raised by the first delivery reaches here through a nested
+                    // catch. Rethrow it: the downstream already owns it, and an ISE would mask it.
+                    if (failure instanceof RuntimeException runtime) throw runtime;
+                    if (failure instanceof Error error) throw error;
                     throw new IllegalStateException(
                             "suspendable expression completed more than once");
                 }
@@ -7891,12 +7895,26 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
                                 "fs." + name, () -> fs.readText(values));
                     };
+                    case "read_text_bounded_async" -> (Invokable) args -> {
+                        requireTwo(args, "fs.read_text_bounded_async");
+                        // Capture immutable validated scalar arguments before
+                        // handing the I/O operation to the descriptor worker.
+                        String path = requireString(args.get(0), "fs.read_text_bounded_async path");
+                        if (!(args.get(1) instanceof Number limit) || !isIntegral(limit)) {
+                            throw new IllegalArgumentException(
+                                    "fs.read_text_bounded_async requires integer max_bytes");
+                        }
+                        long maxBytes = limit.longValue();
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs.read_text_bounded_async",
+                                () -> dev.oreslang.runtime.NativeIo.readTextBounded(context, path, maxBytes));
+                    };
                     case "write_text", "write_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
                                 "fs." + name, () -> fs.writeText(values));
                     };
-                    case "write_text_atomic", "write_text_atomic_blocking" -> (Invokable) args -> {
+                    case "write_text_atomic", "write_text_atomic_blocking", "write_text_atomic_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
                                 "fs." + name, () -> fs.writeTextAtomic(values));
@@ -7925,6 +7943,11 @@ public final class OresEvalRootNode extends RootNode {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
                                 "fs." + name, () -> fs.exists(values));
+                    };
+                    case "file_size", "file_size_blocking", "file_size_async" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.fileSize(values));
                     };
                     case "remove", "remove_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
@@ -11454,6 +11477,9 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object exists(List<Object> args) {
             return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+        }
+        private Object fileSize(List<Object> args) {
+            return NativeIo.fileSize(context, requireStringArg(args, "fs.file_size"));
         }
         private Object listDir(List<Object> args) {
             return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));

@@ -1,0 +1,48 @@
+# Original source-owner exact-head compiler admission, no source export.
+name: AttoLang 19-case scalar Java parser/linked-source conformance
+on:
+  pull_request:
+    paths:
+      - 'contracts/atto-scalar-v1/**'
+      - 'src/test/java/dev/oreslang/AttoScalarV1GuestTest.java'
+      - '.github/workflows/atto-scalar-v1.yml'
+  push:
+    branches: ['test/atto-scalar-java-20261103']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-source-candidates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Bind compiler checks to exact PR HEAD
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "ATTO_JAVA_SCALAR_HEAD=$EXPECTED_HEAD TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Execute source, parser and linked compiler admission tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoScalarV1GuestTest -DfailIfNoTests=true test
+          echo 'ATTO_JAVA_SCALAR_TYPED_RESULT_WITNESS=NOT_EXECUTED'
+      - name: Retain actual JUnit XML receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-java-scalar-v1-junit
+          path: target/surefire-reports/*AttoScalarV1GuestTest*
+          if-no-files-found: warn

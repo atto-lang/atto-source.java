@@ -556,13 +556,15 @@ public final class OwnershipChecker {
                 defineConditionAliases(branch.condition(), branchScope, scope);
                 checkBlock(branch.body(), branchScope, returnType);
                 branchScope.close();
-                exits.add(stateSnapshot(scope));
+                // A branch that always returns never reaches the code after
+                // this statement, so its moves must not poison later uses.
+                if (!definitelyReturns(branch.body())) exits.add(stateSnapshot(scope));
             }
 
             restoreState(base);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyReturns(conditional.elseBody())) exits.add(stateSnapshot(scope));
             } else {
                 exits.add(base); // condition may be false with no else
             }
@@ -582,7 +584,7 @@ public final class OwnershipChecker {
                 if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
                 checkBlock(arm.body(), armScope, returnType);
                 armScope.close();
-                exits.add(stateSnapshot(scope));
+                if (!definitelyReturns(arm.body())) exits.add(stateSnapshot(scope));
             }
             mergeBranchState(base, exits);
             return;
@@ -595,11 +597,13 @@ public final class OwnershipChecker {
                 restoreState(entry);
                 for (Ast.Expr constant : arm.constants()) checkExpr(constant, scope, false);
                 checkBlock(arm.body(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyReturns(arm.body())) exits.add(stateSnapshot(scope));
             }
             restoreState(entry);
             checkBlock(switched.defaultBody(), scope, returnType);
-            exits.add(stateSnapshot(scope));
+            if (switched.defaultBody().isEmpty() || !definitelyReturns(switched.defaultBody())) {
+                exits.add(stateSnapshot(scope));
+            }
             // Missing/default-empty cases retain the original owner state.
             // Moving in any case poisons post-switch use, but not other cases.
             mergeBranchState(entry, exits);
@@ -3593,10 +3597,24 @@ public final class OwnershipChecker {
     }
 
     private Map<String, Ast.TypeRef> genericBindings(List<String> names, List<Ast.TypeRef> arguments) {
-        Map<String, Ast.TypeRef> result = new HashMap<>();
-        if (names.size() != arguments.size()) return result;
-        for (int i = 0; i < names.size(); i++) result.put(names.get(i), arguments.get(i));
-        return result;
+        if (names.size() != arguments.size()) return Map.of();
+        if (arguments.stream().noneMatch(Ast.TypeRef::isNamedParameter)) {
+            // Preserve the ownership representation for ordinary positional types.
+            Map<String, Ast.TypeRef> positional = new HashMap<>();
+            for (int i = 0; i < names.size(); i++)
+                positional.put(names.get(i), arguments.get(i));
+            return positional;
+        }
+        // Do not let raw named wrappers silently bind to the wrong inherited
+        // field/owner in a different source order from the type checker.
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(names, arguments, "owned nominal type");
+        if (!bound.inferenceHoles().isEmpty()
+                || bound.explicitTypes().size() != names.size()) {
+            throw new IllegalArgumentException(
+                    "owned nominal type requires concrete generic arguments");
+        }
+        return bound.explicitTypes();
     }
 
     private Ast.TypeRef substituteType(Ast.TypeRef type, Map<String, Ast.TypeRef> bindings) {
@@ -3993,6 +4011,33 @@ public final class OwnershipChecker {
             state.immutableBorrows = saved.immutableBorrows();
             state.mutableBorrowed = saved.mutableBorrowed();
         }
+    }
+
+    /**
+     * True when every path through {@code body} ends in {@code return}, so
+     * control cannot fall through to the statement after it. Mirrors
+     * TypeChecker#definitelyReturns. Break/continue do not count: they still
+     * reach code after the enclosing loop.
+     */
+    private static boolean definitelyReturns(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional
+                    && !conditional.branches().isEmpty()
+                    && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
+                    && !conditional.elseBody().isEmpty()
+                    && definitelyReturns(conditional.elseBody())) return true;
+            if (stmt instanceof Ast.MatchStmt matched
+                    && !matched.arms().isEmpty()
+                    && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
+            if (stmt instanceof Ast.SwitchStmt switched
+                    && !switched.defaultBody().isEmpty()
+                    && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
+                    && definitelyReturns(switched.defaultBody())) return true;
+        }
+        return false;
     }
 
     private void mergeBranchState(Map<VarState, StateSnapshot> base, List<Map<VarState, StateSnapshot>> exits) {
