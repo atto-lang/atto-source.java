@@ -84,6 +84,7 @@ public final class WalStorageActorGateHostTest {
             reject(SecurityException.class,()->gate.verifyPhysicalSyncOnActorTurn(pending,receipt));
             ActorRuntime.enter(runtime,ref,domain,ActorRuntime.ActorKind.PRIVATE);
             gate.verifyPhysicalSyncOnActorTurn(pending,receipt);
+            reject(SecurityException.class,()->gate.verifyPhysicalSyncOnActorTurn(pending,receipt));
             ok(receipt.operation()==42,"receipt belongs to pending");
             var second=gate.appendAndSyncOnActorTurn(put(7,5,2,43));
             ActorRuntime.leave();
@@ -92,6 +93,7 @@ public final class WalStorageActorGateHostTest {
             reject(SecurityException.class,()->gate.verifyPhysicalSyncOnActorTurn(pending,secondReceipt));
             reject(SecurityException.class,()->gate.verifyPhysicalSyncOnActorTurn(second,receipt));
             gate.verifyPhysicalSyncOnActorTurn(second,secondReceipt);
+            reject(SecurityException.class,()->gate.verifyPhysicalSyncOnActorTurn(second,secondReceipt));
             ok(secondReceipt.sequence()==2,"second physical sync and stage identity");
             ok(Files.size(path)==64,"second append physical file length");
             reject(SecurityException.class,()->gate.verifyPhysicalSyncOnActorTurn(null,receipt));
