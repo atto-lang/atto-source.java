@@ -55,6 +55,23 @@ final class SharedCodeImageStoreTest {
             assertSame(literalA, literalB);
             assertSame(literalA, store.get("app/tag.atto")
                     .staticLiteralValue(OresSymbol.process("ready")));
+            assertSame(literalA, image.literalForActor(
+                    OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+            OresSymbol privateValue = image.literalForActor(
+                    OresSymbol.process("ready"), ActorRuntime.ActorKind.PRIVATE);
+            assertEquals(literalA, privateValue);
+            assertNotSame(literalA, privateValue,
+                    "PRIVATE actors must not retain shared-region scalar addresses");
+            OresSymbol untrustedValue = image.literalForActor(
+                    OresSymbol.process("ready"), ActorRuntime.ActorKind.UNTRUSTED);
+            assertEquals(literalA, untrustedValue);
+            assertNotSame(literalA, untrustedValue,
+                    "UNTRUSTED actors must not retain shared-region scalar addresses");
+            assertThrows(SecurityException.class, () -> image.literalForActor(
+                    OresSymbol.process("ready foo"), ActorRuntime.ActorKind.UNTRUSTED));
+            assertThrows(SecurityException.class, () -> image.literalForActor(
+                    OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000"),
+                    ActorRuntime.ActorKind.UNTRUSTED));
             assertEquals(OresSymbol.process("ready foo"),
                     image.staticLiteralValue(OresSymbol.process("ready foo")));
             OresSymbol dynamic = OresSymbol.process("not-in-source");
