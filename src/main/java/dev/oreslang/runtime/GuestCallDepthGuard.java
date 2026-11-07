@@ -103,6 +103,43 @@ public final class GuestCallDepthGuard {
         return scope.depth;
     }
 
+    /**
+     * Attach evaluator call-site metadata to the frame ALREADY reserved by
+     * enter(), without double-counting the actor's frame or byte budgets.
+     * Metadata contains only primitive values; no guest object can escape
+     * through the host frame capability.
+     */
+    static void writeInvocationDescriptor(int enteredDepth, byte[] descriptor) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (descriptor == null || descriptor.length != 16) {
+            throw new IllegalArgumentException("invalid 16-byte guest call descriptor");
+        }
+        if (scope.arena == null) return;
+        ActorFrameArena.FrameRef frame = scope.frames.peekLast();
+        if (frame == null) throw new IllegalStateException("missing guest invocation frame");
+        scope.arena.write(scope.execution, frame, 0, descriptor);
+    }
+
+    /** Package-private read returns a defensive copy, never frame backing bytes. */
+    static byte[] readInvocationDescriptor(int enteredDepth) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (scope.arena == null) return new byte[0];
+        ActorFrameArena.FrameRef frame = scope.frames.peekLast();
+        if (frame == null) throw new IllegalStateException("missing guest invocation frame");
+        return scope.arena.read(scope.execution, frame, 0, 16);
+    }
+
+    private static Scope requireInvocationScope(int enteredDepth) {
+        Scope scope = CURRENT.get();
+        if (scope == null || enteredDepth <= 0 || scope.depth != enteredDepth
+                || scope.actorStack != ActorRuntime.currentActorGuestStack()
+                || scope.arena != ActorRuntime.currentActorFrameArena()) {
+            if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            throw new IllegalStateException("guest invocation descriptor outside active frame");
+        }
+        return scope;
+    }
+
     /** Pop the actor-owned frame before releasing its logical guest charge. */
     public static void leave(int enteredDepth) {
         Scope scope = CURRENT.get();
