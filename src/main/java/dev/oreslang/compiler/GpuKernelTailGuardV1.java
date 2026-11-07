@@ -78,19 +78,112 @@ public final class GpuKernelTailGuardV1 {
                 && bound(v.operands().get(1), ctx);
     }
 
-    /** Returns the number of checked buffer loads nested in one value. */
+    /*
+     * Source-HIR records are public and constructible independently from the
+     * parser. A report must not treat arbitrary (Type, opcode, operands)
+     * tuples as compiler-verified memory instructions.
+     */
+    private static void requireArity(GpuKernelSourceHirV1.Value v, int expected) {
+        if (v.operands().size() != expected)
+            throw error("malformed typed GPU value operands for " + v.opcode());
+    }
+
+    private static boolean directBufferParameter(GpuKernelSourceHirV1.Value v,
+                                                 Context ctx, boolean writable) {
+        if (v == null || !"local".equals(v.opcode()) || v.symbol() == null
+                || !v.operands().isEmpty())
+            return false;
+        GpuKernelSourceHirV1.Type declared = ctx.parameters.get(v.symbol());
+        if (declared != v.type()) return false;
+        return writable
+                ? declared == GpuKernelSourceHirV1.Type.BUFFER_WRITE_F32
+                    || declared == GpuKernelSourceHirV1.Type.BUFFER_READ_WRITE_F32
+                : declared == GpuKernelSourceHirV1.Type.BUFFER_READ_F32
+                    || declared == GpuKernelSourceHirV1.Type.BUFFER_READ_WRITE_F32;
+    }
+
+    /** Revalidate every typed opcode before making a source-tail claim. */
     private static long inspectValue(GpuKernelSourceHirV1.Value v, Context ctx,
                                      boolean guarded, int depth) {
         if (v == null) throw error("null typed GPU expression");
         if (depth > 32) throw error("typed GPU expression exceeds resource budget");
         long operations = 0;
-        if (v.opcode().equals("buffer.load")) {
-            if (!guarded || v.type() != GpuKernelSourceHirV1.Type.F32
-                    || v.operands().size() != 2
-                    || !laneZero(v.operands().get(1), ctx, 0)) {
-                throw error("device read is not protected by a matching 1D lane guard");
+        switch (v.opcode()) {
+            case "i64.literal" -> {
+                requireArity(v, 0);
+                if (v.type() != GpuKernelSourceHirV1.Type.I64)
+                    throw error("integer literal has wrong typed source ABI");
+                try {
+                    Long.parseLong(v.symbol());
+                } catch (NumberFormatException invalid) {
+                    throw error("invalid typed integer source literal");
+                }
             }
-            operations = 1;
+            case "bool.literal" -> {
+                requireArity(v, 0);
+                if (v.type() != GpuKernelSourceHirV1.Type.BOOL
+                        || (!"true".equals(v.symbol()) && !"false".equals(v.symbol())))
+                    throw error("invalid typed boolean source literal");
+            }
+            case "gpu.global_id" -> {
+                requireArity(v, 0);
+                if (v.type() != GpuKernelSourceHirV1.Type.I64
+                        || (!"0".equals(v.symbol()) && !"1".equals(v.symbol())
+                            && !"2".equals(v.symbol())))
+                    throw error("GPU global lane identity must use typed static axis 0..2");
+            }
+            case "local" -> {
+                requireArity(v, 0);
+                GpuKernelSourceHirV1.Type declared = ctx.parameters.get(v.symbol());
+                GpuKernelSourceHirV1.Value local = ctx.definitions.get(v.symbol());
+                if ((declared == null && local == null)
+                        || (declared != null && declared != v.type())
+                        || (local != null && local.type() != v.type()))
+                    throw error("unbound or mis-typed GPU local source symbol");
+            }
+            case "buffer.load" -> {
+                requireArity(v, 2);
+                if (v.type() != GpuKernelSourceHirV1.Type.F32
+                        || !guarded
+                        || !directBufferParameter(v.operands().get(0), ctx, false)
+                        || !laneZero(v.operands().get(1), ctx, 0))
+                    throw error("buffer read lacks declared read capability or 1D tail guard");
+                operations = 1;
+            }
+            case "arith.+", "arith.-", "arith.*" -> {
+                requireArity(v, 2);
+                var left = v.operands().get(0).type();
+                var right = v.operands().get(1).type();
+                if ((v.type() != GpuKernelSourceHirV1.Type.I64
+                        && v.type() != GpuKernelSourceHirV1.Type.F32)
+                        || left != v.type() || right != v.type())
+                    throw error("arithmetic typed source operands mismatch");
+            }
+            case "compare.<", "compare.<=", "compare.>", "compare.>=",
+                 "compare.eq", "compare.neq" -> {
+                requireArity(v, 2);
+                var left = v.operands().get(0).type();
+                var right = v.operands().get(1).type();
+                if (v.type() != GpuKernelSourceHirV1.Type.BOOL
+                        || (left != GpuKernelSourceHirV1.Type.I64
+                            && left != GpuKernelSourceHirV1.Type.F32)
+                        || left != right)
+                    throw error("comparison typed source operands mismatch");
+            }
+            case "logic.&&", "logic.||" -> {
+                requireArity(v, 2);
+                if (v.type() != GpuKernelSourceHirV1.Type.BOOL
+                        || v.operands().get(0).type() != GpuKernelSourceHirV1.Type.BOOL
+                        || v.operands().get(1).type() != GpuKernelSourceHirV1.Type.BOOL)
+                    throw error("logical typed source operands mismatch");
+            }
+            case "logic.not" -> {
+                requireArity(v, 1);
+                if (v.type() != GpuKernelSourceHirV1.Type.BOOL
+                        || v.operands().getFirst().type() != GpuKernelSourceHirV1.Type.BOOL)
+                    throw error("boolean negation source type mismatch");
+            }
+            default -> throw error("unknown typed GPU source opcode: " + v.opcode());
         }
         for (GpuKernelSourceHirV1.Value child : v.operands()) {
             operations = Math.addExact(operations,
@@ -122,8 +215,17 @@ public final class GpuKernelTailGuardV1 {
                 case "STORE_F32" -> {
                     GpuKernelSourceHirV1.Value value = instruction.value();
                     if (!guarded || value == null || !value.opcode().equals("store.arguments")
+                            || value.type() != GpuKernelSourceHirV1.Type.F32
                             || value.operands().size() != 2
-                            || !laneZero(value.operands().get(0), context, 0)) {
+                            || instruction.target() == null
+                            || context.parameters.get(instruction.target())
+                                != GpuKernelSourceHirV1.Type.BUFFER_WRITE_F32
+                                && context.parameters.get(instruction.target())
+                                != GpuKernelSourceHirV1.Type.BUFFER_READ_WRITE_F32
+                            || !instruction.body().isEmpty()
+                            || !laneZero(value.operands().get(0), context, 0)
+                            || value.operands().get(1).type()
+                                != GpuKernelSourceHirV1.Type.F32) {
                         throw error("device write is not protected by a matching 1D lane guard");
                     }
                     memoryOps = Math.addExact(memoryOps, 1);
