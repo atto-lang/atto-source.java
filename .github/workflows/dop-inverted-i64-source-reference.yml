@@ -67,6 +67,51 @@ jobs:
             -DfailIfNoTests=true \
             -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest \
             test
+      - name: Verify complete five-class executed JUnit XML inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          required = {
+              "DopInvertedGuestAdmissionTest",
+              "InvertedSchemaStorageBridgeTest",
+              "DopInvertedScalarCompilerV1Test",
+              "DopInvertedScalarAdmissionHardeningTest",
+              "DopInvertedScalarStateMachineTest",
+          }
+          reports = sorted(Path("target/surefire-reports").glob("TEST-*.xml"))
+          if not reports:
+              raise SystemExit("DOP_JAVA_JUNIT_NO_EXECUTED_REPORTS")
+          observed = set()
+          cases = 0
+          for report in reports:
+              raw = report.read_bytes()
+              if len(raw) > 1024 * 1024 or b"<!DOCTYPE" in raw:
+                  raise SystemExit("DOP_JAVA_JUNIT_UNSAFE_REPORT")
+              root = ET.fromstring(raw)
+              suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+              if not suites:
+                  raise SystemExit("DOP_JAVA_JUNIT_INVALID_SUITE")
+              for suite in suites:
+                  for testcase in suite.findall("testcase"):
+                      full_name = testcase.get("classname", "")
+                      if not full_name or not testcase.get("name"):
+                          raise SystemExit("DOP_JAVA_JUNIT_MISSING_IDENTITY")
+                      if testcase.find("failure") is not None or (
+                              testcase.find("error") is not None or
+                              testcase.find("skipped") is not None):
+                          raise SystemExit("DOP_JAVA_JUNIT_FAILED_OR_SKIPPED")
+                      observed.add(full_name.rsplit(".", 1)[-1])
+                      cases += 1
+          missing = sorted(required - observed)
+          if missing or cases < len(required):
+              raise SystemExit("DOP_JAVA_JUNIT_MISSING_REQUIRED_CASES:" + ",".join(missing))
+          print(f"DOP_JAVA_JUNIT_EXECUTED_CLASSES={len(required)}")
+          print(f"DOP_JAVA_JUNIT_EXECUTED_CASES={cases}")
+          PY
       - name: Record evidence class after the JUnit process actually ran
         run: |
           echo DOP_JAVA_COMPILER_TYPED_HOST_REFERENCE_TESTED=true
