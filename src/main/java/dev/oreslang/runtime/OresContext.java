@@ -42,11 +42,8 @@ public final class OresContext implements AutoCloseable {
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     // Host-provisioned at context creation; default is DENY with no service.
-    private final WorkflowHostServiceRegistry workflowHostServices =
-            WorkflowHostServiceRegistry.forNewContext();
+    private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
-    /** Internal runtime port only; never export this registry via host interop. */
-    public WorkflowHostServiceRegistry workflowHostServices() { return workflowHostServices; }
     private final OutboundEgressPolicy.Policy outboundHttpPolicy =
             OutboundEgressPolicy.Policy.loopbackOnly();
     private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
@@ -113,6 +110,11 @@ public final class OresContext implements AutoCloseable {
         this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
+        // No host workflow service may enter an adversarial VM context.
+        // Consume a one-shot provision even when forbidden so it cannot leak
+        // into a later trusted context on this embedding thread.
+        this.workflowHostServices = WorkflowHostServiceRegistry.forNewContext(
+                !isolatePolicy.adversarial());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
