@@ -29,12 +29,21 @@ final class ActorSourceTaskFrame {
 
     ActorFrameArena arena() { return arena; }
 
+    private void requireOwnerTurn() {
+        if (ActorRuntime.currentActorFrameArena() != arena
+                || OresScheduler.currentExecutionContext() != execution) {
+            throw new SecurityException(
+                    "actor source frame accessed outside its owning scheduler turn");
+        }
+    }
+
     /**
      * A source task always re-enters under its actor's physical dispatch.
      * Duplicate carrier execution is forbidden even if the scheduler admitted
      * a stale queued ticket.
      */
     synchronized void beforeResume() {
+        requireOwnerTurn();
         if (retired) throw new IllegalStateException("retired actor task frame");
         if (frame == null) {
             frame = arena.push(execution, FRAME_CHARGE_BYTES);
@@ -47,6 +56,7 @@ final class ActorSourceTaskFrame {
 
     /** Called after the task returns Await or Cooperate, before carrier exit. */
     synchronized void suspend() {
+        requireOwnerTurn();
         if (retired || frame == null || waiting)
             throw new IllegalStateException("actor task suspension without a running frame");
         arena.suspend(execution, frame);
