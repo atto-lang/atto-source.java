@@ -1367,9 +1367,11 @@ public final class OwnershipChecker {
                     created.arguments().stream().anyMatch(
                             argument -> argument instanceof Ast.NamedArgExpr
                                     || argument instanceof Ast.SpreadExpr);
-            if (klass != null
-                    && klass.constructor() != null
-                    && klass.genericParameters().isEmpty()) {
+            List<Ast.Param> constructorParams =
+                    klass == null || klass.constructor() == null
+                            ? null
+                            : explicitlySpecializedConstructorParams(klass, created.type());
+            if (constructorParams != null) {
                 for (Ast.Expr raw : created.arguments()) {
                     Ast.Expr source =
                             raw instanceof Ast.NamedArgExpr named
@@ -1386,7 +1388,7 @@ public final class OwnershipChecker {
                 checkArguments(
                         created,
                         created.arguments(),
-                        klass.constructor().parameters(),
+                        constructorParams,
                         scope,
                         "constructor " + klass.name(),
                         true);
@@ -1772,11 +1774,14 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                // Labeled/record-pack calls consume the TypeChecker-published plan.
                 checkArguments(
+                        call,
                         call.arguments(),
                         signature.parameters(),
                         scope,
-                        "function " + namespace.name() + "." + qualified.member());
+                        "function " + namespace.name() + "." + qualified.member(),
+                        true);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -4101,6 +4106,40 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return null;
+    }
+
+    /**
+     * Constructor parameters for a non-generic class, or for a generic class
+     * whose type arguments are written explicitly (positional and/or named by
+     * declaration slot). Returns null for `<>` inference or a malformed
+     * argument list; those keep the positional inference path below.
+     */
+    private List<Ast.Param> explicitlySpecializedConstructorParams(
+            Ast.ClassDecl klass, Ast.TypeRef written) {
+        List<String> names = klass.genericParameters();
+        if (names.isEmpty()) return klass.constructor().parameters();
+        if (written.inferArguments() || written.arguments().size() != names.size()) return null;
+        Map<String, Ast.TypeRef> bindings = new HashMap<>();
+        int positional = 0;
+        for (Ast.TypeRef argument : written.arguments()) {
+            if (argument.isNamedParameter()) {
+                if (!names.contains(argument.namedParameterName())) return null;
+                if (bindings.put(argument.namedParameterName(), argument.namedParameterValue()) != null) return null;
+            } else {
+                if (positional >= names.size()) return null;
+                if (bindings.put(names.get(positional++), argument) != null) return null;
+            }
+        }
+        if (bindings.size() != names.size()) return null;
+        return klass.constructor().parameters().stream()
+                .map(param -> new Ast.Param(
+                        substituteType(param.type(), bindings),
+                        param.name(),
+                        param.structural(),
+                        param.mutable(),
+                        param.omittable(),
+                        param.optionTypeSugar()))
+                .toList();
     }
 
     private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {

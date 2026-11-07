@@ -3153,12 +3153,15 @@ public final class TypeChecker {
                     && env.lookup(namespace.name()) == null
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
-                int arity = fixedCallArity(
+                // Same checked binder as unqualified direct calls: labels and
+                // record packs bind to declaration slots; the plan is published.
+                List<ExpandedCallArgument> expanded = expandFixedCallArguments(
                         call.arguments(), env, generics, self,
-                        "function " + namespace.name() + "." + qualifiedCall.member());
+                        "function " + namespace.name() + "." + qualifiedCall.member(),
+                        true);
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
-                        arity);
+                        expanded.size());
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -3169,7 +3172,10 @@ public final class TypeChecker {
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-                    Type result = checkGenericCallable(
+                    boolean optional = target.parameters().stream().anyMatch(Ast.Param::omittable);
+                    Type result = optional && target.genericParameters().isEmpty()
+                            ? checkOptionalCallable(target, expanded, env, generics, self, label)
+                            : checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
                             target.returnType(),
@@ -3179,8 +3185,11 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
-                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles(),
+                            true,
+                            optional ? defaultArgumentValues(target) : Map.of());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    recordCheckedCallPlan(call, target.parameters(), expanded);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -4463,11 +4472,15 @@ public final class TypeChecker {
                     created.arguments().stream().anyMatch(
                             argument -> argument instanceof Ast.NamedArgExpr
                                     || argument instanceof Ast.SpreadExpr);
-            if (productConstructorSyntax && !klass.genericParameters().isEmpty()) {
+            // Explicit type arguments fix the class bindings, and the checked
+            // plan below binds labels to slots. Only `<>` inference still reads
+            // raw arguments positionally, so it stays fail-closed for labels.
+            if (productConstructorSyntax && !klass.genericParameters().isEmpty()
+                    && created.type().inferArguments()) {
                 throw new IllegalArgumentException(
                         "constructor " + klass.name()
-                                + " named/spread binding on generic classes remains fail-closed "
-                                + "until class inference consumes the checked source-to-ABI plan");
+                                + " named/spread binding with inferred <> class arguments remains "
+                                + "fail-closed; write the class type arguments explicitly");
             }
 
             Named nominal;

@@ -285,13 +285,14 @@ final class ClassCallableProductBindingTest {
                         end
 
                         pub routine main(): void {
-                            new Box<int>(value: 1);
+                            new Box<>(value: 1);
                             return;
                         }
                         """)));
+        // Explicit class type arguments are supported; only <> inference
+        // still reads raw arguments positionally and stays fail-closed.
         assertTrue(
-                generic.getMessage().contains("generic")
-                        || generic.getMessage().contains("source-to-ABI"),
+                generic.getMessage().contains("inferred <>"),
                 generic.getMessage());
     }
 

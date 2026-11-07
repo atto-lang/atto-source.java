@@ -248,4 +248,66 @@ final class NamedArgumentsEdgeCaseHardeningTest {
                 }
                 """, "");
     }
+
+    // ---- module-qualified, generic constructors, comma diagnostics --------------
+
+    @Test
+    void moduleQualifiedNamedCallsBindByNameInSourceOrder() {
+        String module = """
+                define module m
+                  pub fnc enc(int a, int b): int { return a * 100 + b; }
+                  pub routine renc(int a, int b): int { return a * 100 + b; }
+                  pub fnc pick<A, B>(A a, B b): A { return a; }
+                end
+                fnc first(): int { stdio.stdout.write("A"); return 19; }
+                fnc second(): int { stdio.stdout.write("B"); return 23; }
+                """;
+        Run result = run(module + "pub fnc main(): int { return m.enc(b: second(), a: first()); }");
+        assertEquals(1923, result.value());
+        assertEquals("BA", result.out());
+        assertEquals(1923, run(module + "pub fnc main(): int { return m::enc(b: 23, a: 19); }").value());
+        assertEquals(1923, run(module + "pub fnc main(): int { return m.renc(b: 23, a: 19); }").value());
+        assertEquals(7, run(module + "pub fnc main(): int { return m.pick<B=String>(b: \"x\", a: 7); }").value());
+        rejects(module + "pub fnc main(): int { return m.enc(b: 23, q: 19); }", "");
+    }
+
+    @Test
+    void genericClassConstructorsAcceptNamedValuesWithExplicitTypeArguments() {
+        String pair = """
+                define class Pair<A, B> as
+                  pub val A a;
+                  pub val B b;
+                  constructor(A a, B b) { self.a = a; self.b = b; }
+                end
+                fnc first(): int { stdio.stdout.write("A"); return 5; }
+                fnc second(): String { stdio.stdout.write("B"); return "x"; }
+                """;
+        Run result = run(pair + "pub fnc main(): int { return new Pair<int, String>(b: second(), a: first()).a; }");
+        assertEquals(5, result.value());
+        assertEquals("BA", result.out());
+        assertEquals(5, run(pair + "pub fnc main(): int { return new Pair<B=String, A=int>(b: \"x\", a: 5).a; }").value());
+        rejects(pair + "pub fnc main(): int { return new Pair<int, String>(b: 5, a: \"x\").a; }", "");
+        rejects(pair + "pub fnc main(): int { return new Pair<Q=int, B=String>(5, \"x\").a; }", "no generic parameter named");
+        rejects("""
+                define class Box<T> as
+                  pub val T v;
+                  constructor(T v) { self.v = v; }
+                end
+                pub fnc main(): int {
+                  val Box<int> b = new Box<>(v: 6);
+                  return b.v;
+                }
+                """, "inferred <>");
+    }
+
+    @Test
+    void trailingAndDoubledCommasGetDirectDiagnostics() {
+        String add = "fnc add(int a, int b): int { return a * 10 + b; }\n";
+        String f = "fnc f<A>(A a): A { return a; }\n";
+        rejects(add + "pub fnc main(): int { return add(2, 1,); }", "trailing comma");
+        rejects(add + "pub fnc main(): int { return add(b: 1, a: 2,); }", "trailing comma");
+        rejects(add + "pub fnc main(): int { return add(b: 1,, a: 2); }", "empty call argument");
+        rejects(f + "pub fnc main(): int { return f<A=int,>(1); }", "trailing comma");
+        rejects(f + "pub fnc main(): int { return f<int,>(1); }", "trailing comma");
+    }
 }

@@ -5827,11 +5827,16 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ModuleFacade module) {
+                // Labels bind through the TypeChecker-published plan of the
+                // statically resolved exported callable, then use ABI order.
+                Ast.FunctionDecl exported = module.owner().exportedModuleFunction(
+                        module.module(), member.member(), directArgs.values().size());
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
-                        directArgs.requireUnlabeled(
-                                "module function " + member.member()));
+                        exported == null
+                                ? directArgs.requireUnlabeled("module function " + member.member())
+                                : directArgs.inAbiOrder(call, exported));
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
@@ -6218,15 +6223,6 @@ public final class OresEvalRootNode extends RootNode {
             List<Object> args;
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
-                if (!klass.genericParameters().isEmpty()
-                        && directArgs.inputs().stream()
-                                .anyMatch(slot ->
-                                        slot.label() != null
-                                                || slot.projectionIndex() >= 0)) {
-                    throw new IllegalArgumentException(
-                            "constructor " + klass.name()
-                                    + " named/spread binding on generic classes remains fail-closed");
-                }
                 args = directArgs.inAbiOrder(
                         created,
                         constructor.parameters(),
@@ -7640,11 +7636,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ModuleFacade module) {
+                    Ast.FunctionDecl exported = module.owner().exportedModuleFunction(
+                            module.module(), methodCall.member(), directArgs.values().size());
                     return module.owner().prepareModuleInvocation(
                             module.module(),
                             methodCall.member(),
-                            directArgs.requireUnlabeled(
-                                    "module function " + methodCall.member()));
+                            exported == null
+                                    ? directArgs.requireUnlabeled("module function " + methodCall.member())
+                                    : directArgs.inAbiOrder(call, exported));
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
@@ -9955,6 +9954,21 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        /** The unique exported module callable at this arity, or null (no throw). */
+        private Ast.FunctionDecl exportedModuleFunction(Ast.ModuleDecl module, String name, int arity) {
+            Ast.FunctionDecl match = null;
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name)
+                        && fn.parameters().size() == arity
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    if (match != null) return null;
+                    match = fn;
+                }
+            }
+            return match;
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {

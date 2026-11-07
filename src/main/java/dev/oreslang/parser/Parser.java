@@ -4448,6 +4448,7 @@ public final class Parser {
         boolean seenNamed = false;
         if (!check(GT)) {
             do {
+                rejectEmptyListItem(GT, "generic argument");
                 if (check(IDENT) && checkNext(EQUAL)) {
                     String name = advance().lexeme();
                     consume(EQUAL, "expected '=' after named generic argument");
@@ -4858,12 +4859,22 @@ public final class Parser {
         return false;
     }
 
+    /**
+     * Oreslang has no trailing or doubled commas in argument lists. Report
+     * that directly instead of a misleading downstream ordering error.
+     */
+    private void rejectEmptyListItem(Token.Type terminator, String what) {
+        if (check(terminator)) throw error(peek(), "trailing comma is not allowed after the last " + what);
+        if (check(COMMA)) throw error(peek(), "empty " + what + " between commas");
+    }
+
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
         java.util.Set<String> named = new java.util.LinkedHashSet<>();
         boolean namedSeen = false;
         do {
+            rejectEmptyListItem(terminator, "call argument");
             if (match(ELLIPSIS)) {
                 if (namedSeen) {
                     throw error(

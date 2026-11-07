@@ -1,6 +1,6 @@
 # Named value arguments and named type metadata: pre-1.0 contract
 
-Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
+Status: **implemented in the Java/GraalVM compiler** (see "Java implementation status" at the end). LLVM, Wasm, .NET, Forge and formatter parity are not yet verified.
 
 ## Canonical delimiters and surfaces
 
@@ -110,3 +110,36 @@ The `IDENT ":"` recognition applies **only at the top level of a call argument i
 6. Enable CI parity and negative tests on exact Git trees before treating the feature as supported.
 
 **No runtime named-argument reflection or nominal-type overload matching is required.** This is compile-time sugar with strict contract checking.
+
+## Java implementation status (2026-11-07)
+
+Supported end to end (parse, type, ownership, runtime), with one checked
+call plan per call site and lexical evaluation order:
+
+- top-level and module-local functions and routines, including generic ones;
+- module-qualified calls `m.f(b: 1, a: 2)` and `m::f(...)`;
+- instance methods, static functions and generic methods/static functions;
+- explicit constructors, including generic classes with explicit type
+  arguments, positional or named (`new Pair<B=String, A=int>(b: "x", a: 5)`);
+- tuple spread followed by named arguments, and direct `record{...}` packs.
+
+Enforced at compile time:
+
+- duplicate, unknown, missing, case-mismatched and positional-after-named
+  labels; `=` inside a call is always assignment;
+- overrides (instance and static), multi-parent slots and interface
+  implementations must keep parameter labels at each position;
+- named arguments on unlabeled callable values (function values, lambdas,
+  callable fields) are rejected;
+- trailing or doubled commas are rejected with a direct diagnostic.
+
+Still fail-closed:
+
+- labeled or spread construction with inferred class arguments
+  (`new Box<>(v: 6)`); write the class type arguments explicitly;
+- labeled calls whose callable has omittable parameters on surfaces other
+  than direct functions.
+
+A call whose plan the TypeChecker did not publish may only be
+reconstructed when it is the trivial positional identity (no labels,
+record packs or omitted slots).
