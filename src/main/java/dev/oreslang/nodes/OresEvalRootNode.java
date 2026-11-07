@@ -4202,6 +4202,40 @@ public final class OresEvalRootNode extends RootNode {
                         return;
                     }
 
+
+                    // XOR is eager, but its two operands may suspend. Preserve
+                    // left-to-right evaluation and propagate failures exactly once.
+                    if (binary.operator().equals("^^")) {
+                        evalSuspendableExpr(
+                                task,
+                                binary.left(),
+                                env,
+                                (t, left, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(t, null, failure);
+                                        return;
+                                    }
+                                    evalSuspendableExpr(
+                                            t,
+                                            binary.right(),
+                                            env,
+                                            (t2, right, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                    return;
+                                                }
+                                                try {
+                                                    continuation.accept(
+                                                            t2, truth(left) ^ truth(right), null);
+                                                } catch (RuntimeException | Error evaluationFailure) {
+                                                    continuation.accept(
+                                                            t2, null, evaluationFailure);
+                                                }
+                                            });
+                                });
+                        return;
+                    }
+
                     evalSuspendableExpr(
                             task,
                             binary.left(),
