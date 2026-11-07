@@ -1,0 +1,57 @@
+// Java/GraalVM integration candidate: actor-owned critical plus RELIABLE
+// ActorGroup pub/sub in one compiler-backed AttoLang guest program.
+// This is not a guest proof until exact-head JUnit + real CI steps execute.
+define actor CriticalWorker as
+  suspends receive(ActorMail<String> mail): void {
+    let int value = 40;
+    critical {
+      value = value + 2;
+    }
+    self.send(value);
+    self.end();
+    return;
+  }
+end
+
+define actor Subscriber as
+  suspends receive(ActorMail<String> mail): void {
+    val group = actor.group("formal-payments");
+    val topic = group.topic<String>("payment.completed");
+    val subscription = topic.subscribe();
+    self.send("subscribed");
+    val value = await subscription.next();
+    self.send(value);
+    subscription.close();
+    self.end();
+    return;
+  }
+end
+
+pub suspends fnc main(): void {
+  val group = actor.group("formal-payments");
+  val topic = group.topic<String>("payment.completed", "reliable", 1);
+  val subscriber = spawn Subscriber();
+  await subscriber.get_ready();
+  group.join(subscriber);
+  subscriber.send("start");
+  val ready = (await subscriber.outputs.next()).value.unwrap();
+  stdio.stdout.write(ready.value);
+  stdio.stdout.write("|");
+  await topic.publish("p-1");
+  val received = (await subscriber.outputs.next()).value.unwrap();
+  stdio.stdout.write(received.value);
+  await subscriber.get_done();
+  group.leave(subscriber);
+  group.close();
+
+  // Execute the actor-owned critical gate in the SAME guest runtime after
+  // the reliable subscriber has finished its message.
+  val criticalWorker = spawn CriticalWorker();
+  await criticalWorker.get_ready();
+  criticalWorker.send("go");
+  val criticalOutput = (await criticalWorker.outputs.next()).value.unwrap();
+  stdio.stdout.write("|");
+  stdio.stdout.write(criticalOutput.value);
+  await criticalWorker.get_done();
+  return;
+}

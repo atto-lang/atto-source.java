@@ -1,0 +1,52 @@
+name: Java critical/suspends and pubsub exact-head guest integration
+
+on:
+  push:
+    branches: [integration/critical-suspends-pubsub-20261107]
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/**'
+      - 'contracts/v1/fixtures/actor-pubsub*'
+      - 'contracts/v1/fixtures/critical-pubsub*'
+      - 'examples/critical-actor*'
+      - 'scripts/verify-actor-pubsub-v1.sh'
+      - 'scripts/verify-critical-pubsub-integration.sh'
+      - 'scripts/verify-raw-worktree*'
+      - 'scripts/test-raw-worktree.sh'
+      - '.github/workflows/critical-pubsub-integration-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      ATTO_INTEGRATION_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact head, never the synthetic PR merge ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Configure GraalVM and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Require real critical and pubsub guest execution at exact tree
+        shell: bash
+        run: bash scripts/verify-critical-pubsub-integration.sh
+      - name: Preserve exact-head JUnit evidence (no parity claim on upload)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: critical-pubsub-integrated-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
