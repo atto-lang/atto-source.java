@@ -134,13 +134,12 @@ final class GpuKernelTypedSourceArgsV1Test {
         assertThrows(IllegalArgumentException.class, () -> typed(c));
     }
 
-    @Test void literalNUsesAnExactI64SourceArgument() {
+    @Test void literalKernelNIsNotProvedEqualToTheSymbolicLaunchOverN() {
         String source = HOST.replace("saxpy(alpha, x, y, out, n)",
                                      "saxpy(alpha, x, y, out, 256)");
-        var typed = typed(candidate(source));
-        assertEquals(GpuKernelSourceHirV1.Type.I64,
-                typed.bindings().get(4).actualType());
-        assertFalse(typed.executable());
+        var c = candidate(source);
+        var error = assertThrows(IllegalArgumentException.class, () -> typed(c));
+        assertTrue(error.getMessage().contains("kernel bound n"), error::getMessage);
     }
 
     @Test void readOnlyAliasIsNotAWriteLoanOrAllocationProof() {
@@ -176,7 +175,8 @@ final class GpuKernelTypedSourceArgsV1Test {
         String source = HOST.replace("saxpy(alpha, x, y, out, n)",
                                      "saxpy(alpha, x, y, out, 255)");
         var c = candidate(source);
-        assertFalse(typed(c).executable());
+        var error = assertThrows(IllegalArgumentException.class, () -> typed(c));
+        assertTrue(error.getMessage().contains("kernel bound n"), error::getMessage);
         assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelSourceCapacityJoinV1.auditTypedSource(
                         c.caller(), c.kernel(), c.link(),
@@ -228,5 +228,38 @@ final class GpuKernelTypedSourceArgsV1Test {
                 parsed.modules().getFirst().declarations().get(1);
         assertThrows(IllegalArgumentException.class,
                 () -> GpuKernelTypedSourceArgsV1.audit(noLaunch, c.kernel(), c.link()));
+    }
+
+    @Test void unboundHostGeometryNIsNotAcceptedEvenWhenKernelNIsLiteral() {
+        String bad = HOST
+                .replace("GpuWriteBuffer<f32> out, int n",
+                         "GpuWriteBuffer<f32> out")
+                .replace("saxpy(alpha, x, y, out, n)",
+                         "saxpy(alpha, x, y, out, 256)");
+        var c = candidate(bad);
+        var error = assertThrows(IllegalArgumentException.class, () -> typed(c));
+        assertTrue(error.getMessage().contains("declared integer host n"),
+                error::getMessage);
+    }
+
+    @Test void alternateKernelNNameCannotClaimCanonicalOverN() {
+        String bad = HOST.replace(
+                "GpuWriteBuffer<f32> out, int n",
+                "GpuWriteBuffer<f32> out, int n, int count")
+                .replace("saxpy(alpha, x, y, out, n)",
+                         "saxpy(alpha, x, y, out, count)");
+        var c = candidate(bad);
+        var error = assertThrows(IllegalArgumentException.class, () -> typed(c));
+        assertTrue(error.getMessage().contains("kernel bound n"),
+                error::getMessage);
+    }
+
+    @Test void canonicalNIsNotAnOptionalOrImplicitHostParameter() {
+        String bad = HOST.replace("GpuWriteBuffer<f32> out, int n",
+                                  "GpuWriteBuffer<f32> out");
+        var c = candidate(bad);
+        var error = assertThrows(IllegalArgumentException.class, () -> typed(c));
+        assertTrue(error.getMessage().contains("declared integer host n"),
+                error::getMessage);
     }
 }

@@ -226,8 +226,12 @@ public final class GpuKernelTypedSourceArgsV1 {
                 throw reject("duplicate host parameter symbol: " + param.name());
         }
 
+        if (hostParams.get("n") != Type.I64)
+            throw reject("logical over n requires an explicitly declared integer host n");
+
         Map<String, Type> seenBuffers = new HashMap<>();
         List<Binding> result = new ArrayList<>();
+        int canonicalKernelNBindings = 0;
         for (int i = 0; i < link.arguments().size(); i++) {
             var arg = link.arguments().get(i);
             var parameter = kernel.parameters().get(i);
@@ -259,6 +263,13 @@ public final class GpuKernelTypedSourceArgsV1 {
             if (actual != parameter.type())
                 throw reject("host argument type cannot match device kernel parameter "
                         + parameter.name() + " without implicit conversion");
+            if ("n".equals(parameter.name())) {
+                canonicalKernelNBindings++;
+                if (parameter.type() != Type.I64
+                        || arg.kind() != GpuKernelSourceLinkV1.ArgumentKind.LEXICAL_NAME_UNTYPED
+                        || !"n".equals(sourceName))
+                    throw reject("kernel bound n must use exactly the declared host n");
+            }
             if (device(actual)) {
                 if (arg.kind() != GpuKernelSourceLinkV1.ArgumentKind.LEXICAL_NAME_UNTYPED)
                     throw reject("device buffer must be declared lexical argument");
@@ -269,6 +280,8 @@ public final class GpuKernelTypedSourceArgsV1 {
             result.add(new Binding(i, sourceName, actual,
                     parameter.type(), device(actual)));
         }
+        if (canonicalKernelNBindings != 1)
+            throw reject("exactly one kernel integer n binding is required");
         return new Report(caller.name(), link.kernel(), result,
                 Evidence.DECLARED_HOST_ABI_SHAPE_ONLY_NOT_EXECUTABLE);
     }
