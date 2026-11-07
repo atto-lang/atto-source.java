@@ -137,8 +137,12 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void moduleCanReadUniqueCallableFromSiblingModuleInSameFile() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void moduleCannotReadUniqueCallableFromSiblingModuleWithoutQualification() {
+        // Module boundaries are lexical even when a foreign callable has a
+        // globally unique name. Explicit module qualification remains valid
+        // (tested by siblingModulesCanAccessEachOthersNamespacesInSameFile).
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
                 define module internal as
                   pub fnc secret(): int { return 42; }
                 end
