@@ -93,6 +93,8 @@ public final class OresVM implements AutoCloseable {
             Executor rootAdmission, int physicalParallelism, int physicalQueue) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
+        ActorHeapAdmission.requireSupportedTenantIsolationMode(
+                System.getProperty("ores.runtime.tenant.isolation", "trusted-inprocess"));
         if (controlParallelism <= 0) {
             throw new IllegalArgumentException("control parallelism must be positive");
         }
