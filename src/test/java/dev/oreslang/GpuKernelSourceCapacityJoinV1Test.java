@@ -189,14 +189,17 @@ final class GpuKernelSourceCapacityJoinV1Test {
         assertFalse(report.executable());
     }
 
-    @Test void readOnlyAliasesWithDifferentGenerationAreRejected() {
-        var repeated = subject(HOST.replace("saxpy(alpha, x, y, out, n)",
-                                             "saxpy(alpha, x, x, out, n)"));
+    @Test void readOnlyAliasesWithDifferentAllocationGenerationsAreRejected() {
+        // Distinct lexical arguments, same physical allocation identifier.
+        // Reaching the host footprint stage (rather than the earlier
+        // contradictory-source-name guard) is the test's purpose.
         var mismatched = new HashMap<>(views());
         mismatched.put(2, new View("tenant", "gpu", "x", 3,
                                   1024, 0, 1024, 4, Access.READ));
-        assertThrows(IllegalArgumentException.class,
-                () -> audit(repeated, mismatched, 256, 256));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> audit(subject(HOST), mismatched, 256, 256));
+        assertTrue(error.getMessage().contains("inconsistent allocation generation"),
+                error::getMessage);
     }
 
     @Test void f32RequiresAlignedByteExtent() {
