@@ -207,6 +207,35 @@ final class ActorSourceTaskFrameTest {
     }
 
     @Test
+    void sourceSchedulerRefusesExternalCarrierEvenWhenItHasArenaHandle()
+            throws Exception {
+        ExecutionContext actor = ExecutionContext.actor(90, 1, 90, 7, 1, 0, 0);
+        ActorFrameArena frames = new ActorFrameArena(actor.allocationDomain(), 4, 256);
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "unauthenticated-actor-source", 1, Runnable::run, Runnable::run, frames)) {
+            OresFuture<Integer> result =
+                    scheduler.start(resume -> OresScheduler.done(44));
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> result.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, failure.getCause(),
+                    "a scheduler handle alone grants no actor-turn execution");
+            assertEquals(0, frames.usedBytes());
+            assertFalse(frames.isPoisoned(),
+                    "failed foreign dispatch cannot damage the owner");
+        }
+    }
+
+    @Test
+    void boundSourceSchedulerRejectsParallelCarrierConfiguration() {
+        ExecutionContext actor = ExecutionContext.actor(90, 1, 90, 7, 1, 0, 0);
+        ActorFrameArena frames = new ActorFrameArena(actor.allocationDomain(), 4, 256);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresScheduler.runtimeOwned(
+                        "invalid-parallelism", 2, Runnable::run, Runnable::run, frames));
+        assertFalse(frames.isPoisoned());
+    }
+
+    @Test
     void actorTaskAndSynchronousCallIdentifiersNeverAliasWithinOneArena() {
         ExecutionContext actor = ExecutionContext.actor(90, 1, 90, 7, 1, 0, 0);
         ActorFrameArena frames = new ActorFrameArena(actor.allocationDomain(), 4, 256);
