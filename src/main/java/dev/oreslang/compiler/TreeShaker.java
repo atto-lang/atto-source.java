@@ -1436,6 +1436,9 @@ public final class TreeShaker {
                     scanType(parameter.type());
                     nested.add(parameter.name());
                 }
+                if (lambda.declaredReturnType() != null) {
+                    scanType(lambda.declaredReturnType());
+                }
                 scanExpression(module, lambda.expressionBody(), nested);
                 if (lambda.blockBody() != null) scanStatements(module, lambda.blockBody(), nested);
             }
