@@ -24,11 +24,13 @@ with a `GuestInvocationFrame` try-with-resources metadata lease:
    and double close. Reads return defensive copies; no guest object, pointer
    or hosted callback crosses the transport.
 
-`GuestCallDepthGuard` already mints a guarded `ExecutionContext` for each
-outermost synchronous call chain using `ActorFrameArena.newSynchronousExecution`.
-This identity is actor-incarnation-fenced but is **not** a logical source
-`SourceTask` ID across suspension. The actor arena is still reclaimed only
-after the existing STOP quiescence gates.
+`GuestCallDepthGuard` mints a fresh `ExecutionContext` for an outermost
+synchronous call chain outside an actor-bound source task. **Integrated
+with Java PR #2631:** inside an actor-owned SourceTask it instead reuses
+that task's exact generation-fenced execution identity. Its call frames
+nest above the persistent 64-byte task root and unwind before await;
+the SourceTask root remains charged through suspension and carrier migration.
+Actor retirement still waits for physical STOP quiescence.
 
 ## Evidence and tests
 
@@ -75,17 +77,19 @@ the JVM native carrier stack, and a deep expression tree, recursive
 statement/AST walker, Truffle interop or host/JNI callback can still
 consume untracked native frames.
 
-The guarded frame execution ID is minted **per synchronous call chain**,
-not the scheduler-owned logical task ID. It cannot be used to resume a
-suspended `SourceTask` by itself: synchronous invocation descriptors unwind
-when a call returns a Future or suspends. A complete design must:
+Outside a SourceTask, a guarded call chain has its own minted execution
+identity. Inside an actor-owned SourceTask, guarded calls join the scheduler
+identity but still unwind descriptor frames before any await. This does
+**not** mean actual source locals or return continuations are stored in
+the managed frame. A complete implementation must:
 
 - Compile guest functions/methods/closures and expressions into a
   heap-frame instruction stream with explicit return PCs, operand slots,
   type-safe locals, and cleanup edges; replace recursive `eval` dispatch.
-- Bind frame ownership to a stable `SourceTask` logical execution ID
-  across `await` and carrier migration, including non-reentrant mailbox
-  turns and generation-fenced cancellation.
+- Lower actual SourceTask locals, return and cleanup state into the already
+  stable SourceTask execution identity across await/carrier migration,
+  and prove non-reentrant mailbox turns and generation-fenced cancellation.
+
 - Charge all frames and root metadata to one actor stack/heap quota,
   reserve carrier-native host headroom, and enforce FFI call boundaries.
 - Prove actor A's actual compiled `.atto` failure, actor B response,
