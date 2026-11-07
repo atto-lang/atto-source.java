@@ -56,7 +56,7 @@ final class DopInvertedScalarAdmissionHardeningTest {
     void negationOverflowAndCompoundOrDynamicExpressionsFailClosed() {
         rejected(source("rows.push(-(-9223372036854775808),0); "
                 + "return rows.get(0,value);"));
-        rejected(source("rows.push(--7,0); return rows.get(0,value);"));
+        rejected(source("rows.push(-(-7),0); return rows.get(0,value);"));
         rejected(source("rows.push(1 + 2,0); return rows.get(0,value);"));
         rejected(source("rows.push(1,0); return rows.get(-1,value);"));
     }
