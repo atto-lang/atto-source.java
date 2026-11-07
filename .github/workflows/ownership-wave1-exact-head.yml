@@ -15,6 +15,8 @@ on:
       - 'src/test/java/dev/oreslang/TernaryArmTypeSoundnessTest.java'
       - 'src/test/resources/atto/ownership-wave1/**'
       - 'src/test/resources/borrow-contract.tsv'
+      - 'scripts/ci/OwnershipWave1ReceiptVerifier.java'
+      - 'scripts/ci/ownership-wave1-required-methods-v1.txt'
       - '.github/workflows/ownership-wave1-exact-head.yml'
   workflow_dispatch:
 permissions:
@@ -51,6 +53,14 @@ jobs:
           echo "ATTO_OWNERSHIP_WAVE1_TREE=$(git rev-parse 'HEAD^{tree}')"
           java -version
           mvn -version
+      - name: Compile and test JDK-only strict ownership receipt verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/atto-wave1-receipt"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-wave1-receipt" scripts/ci/OwnershipWave1ReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-wave1-receipt" OwnershipWave1ReceiptVerifier \
+            --self-test scripts/ci/ownership-wave1-required-methods-v1.txt
       - name: Execute ownership, primitive-copy and ternary type-soundness JUnit tests
         shell: bash
         run: |
@@ -58,25 +68,18 @@ jobs:
           mvn -B -ntp -Dores.runtime.carriers=native -DfailIfNoTests=true \
             -Dtest=PointerlessFncOwnershipTest,StaticBorrowEscapeBoundaryTest,ProjectedMethodReceiverLoanTest,PrimitiveBorrowCopyTest,SharedBorrowContractTest,AttoOwnershipWave1GuestTest,TernaryArmTypeSoundnessTest \
             test
-      - name: Confirm each JUnit suite actually executed and emitted nonempty reports
+      - name: Verify exact-head ownership Surefire methods without synthetic promotion
         shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          for suite in \
-            PointerlessFncOwnershipTest \
-            StaticBorrowEscapeBoundaryTest \
-            ProjectedMethodReceiverLoanTest \
-            PrimitiveBorrowCopyTest \
-            SharedBorrowContractTest \
-            AttoOwnershipWave1GuestTest \
-            TernaryArmTypeSoundnessTest
-          do
-            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
-            test -s "$report"
-            grep -Eq 'tests="[1-9][0-9]*"' "$report"
-            echo "ATTO_WAVE1_EXECUTED_SUITE=$suite"
-          done
-          echo "ATTO_WAVE1_SEMANTIC_GUEST_GATE=EXECUTED"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          java -cp "$RUNNER_TEMP/atto-wave1-receipt" OwnershipWave1ReceiptVerifier \
+            "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" \
+            scripts/ci/ownership-wave1-required-methods-v1.txt \
+            target/surefire-reports
+          echo "ATTO_WAVE1_EXECUTED_JUNIT_METHODS=103"
       - name: Full project Maven regression
         shell: bash
         run: |
