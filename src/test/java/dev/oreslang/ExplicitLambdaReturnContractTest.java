@@ -208,6 +208,47 @@ final class ExplicitLambdaReturnContractTest {
     }
 
     @Test
+    void anonymousFncExpressionsUseTheSameTypedLambdaContract() throws Exception {
+        String guest = """
+                fnc compute(): int {
+                    const add = fnc(a: int, b: int) -> int {
+                        return a + b;
+                    };
+                    return add(19, 23);
+                }
+                pub fnc main(): void {
+                    stdio.println(compute());
+                    return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(guest));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, guest, "anonymous-fnc.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(source);
+        }
+        assertEquals("42", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void nonLexicalAnonymousFncCannotCaptureOuterLocal() {
+        String guest = """
+                fnc f(): void {
+                    const int secret = 7;
+                    const fnc bad = nlex fnc(x: int) -> int {
+                        return x + secret;
+                    };
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+    }
+
+    @Test
     void constructorReturnTypeDoesNotHideExpressionLambda() {
         Ast.LambdaExpr expression = firstLambda("""
                 fnc f(): void {
