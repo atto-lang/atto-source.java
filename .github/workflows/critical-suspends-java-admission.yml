@@ -76,6 +76,7 @@ jobs:
           grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
           grep -Fq 'name="canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput' "$guest_report"
           grep -Fq 'name="canonicalAttoEarlyReturnGuestReleasesBeforeStop' "$guest_report"
+          grep -Fq 'name="canonicalAttoGuestOutputTracksARealSourceMutation' "$guest_report"
           grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
           grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
           grep -Fq 'name="criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation' "$syntax_report"
@@ -88,6 +89,35 @@ jobs:
           grep -Fq 'name="queuedTicketIsRetractedWithoutReleasingAnotherOwner' "$cleanup_report"
           grep -Fq 'name="retiredAdmissionIsSafeToUnwind' "$cleanup_report"
           grep -Fq 'name="cancellationRacingWithPromotionCannotLeakActorOwnedTicket' "$cleanup_report"
+      - name: Record scoped exact-head Java/Truffle guest canary evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/atto-guest-evidence
+          printf '{"classification":"JVM_TRUFFLE_ATTO_GUEST_TEST","native_aot":"NOT_EXECUTED","actor_borrow_refinement":"NOT_EXECUTED","source_head":"%s","source_tree":"%s","run_id":"%s","attempt":"%s","job":"%s"}\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" \
+            > target/atto-guest-evidence/checkout.json
+          sha256sum examples/critical-actor-checked-v1.atto \
+            examples/critical-actor-early-return-v1.atto \
+            > target/atto-guest-evidence/fixture-sha256.txt
+          if test -s target/classes/dev/oreslang/compiler/OresCompiler.class; then
+            sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class \
+              > target/atto-guest-evidence/compiler-class-sha256.txt
+          fi
+          if test -s target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml; then
+            cp target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml \
+              target/atto-guest-evidence/
+          fi
+      - name: Upload scoped evidence without asserting proof before independent verification
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-truffle-atto-guest-source-only-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/atto-guest-evidence/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Mark evidence scope
         run: |
           echo "Scoped Java admission/host-ticket tests plus Truffle polyglot actor-critical guest fixture."
