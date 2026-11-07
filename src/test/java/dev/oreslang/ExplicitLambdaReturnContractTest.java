@@ -152,7 +152,10 @@ final class ExplicitLambdaReturnContractTest {
         for (String body : new String[] {
                 "return \"wrong\";",
                 "return;",
-                "stdio.println(1);"
+                "stdio.println(1);",
+                // A single returning branch does not satisfy an int callable.
+                "if true { return 42; } fi",
+                "if true { return \"wrong\"; } fi"
         }) {
             String guest = "fnc f(): void { const fnc bad = || -> int { "
                     + body + " }; return; }";
@@ -163,26 +166,29 @@ final class ExplicitLambdaReturnContractTest {
 
     @Test
     void explicitVoidRejectsReturningAValue() {
-        String guest = """
-                fnc f(): void {
-                    const fnc bad = || -> void { return 42; };
-                    return;
-                }
-                """;
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(guest)));
+        for (String body : new String[] {
+                "return 42;",
+                // Nested returns cannot escape the void result contract.
+                "if true { return 42; } fi"
+        }) {
+            String guest = "fnc f(): void { const fnc bad = || -> void { "
+                    + body + " }; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), body);
+        }
     }
 
     @Test
     void deferRejectsAnOtherwiseValidNonVoidCallback() {
-        String guest = """
-                fnc f(): void {
-                    defer || -> int { return 42; };
-                    return;
-                }
-                """;
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(guest)));
+        for (String cleanup : new String[] {
+                "|| -> int { return 42; }",
+                // Even a void callback is invalid when it needs an argument.
+                "|item: int| -> void { stdio.println(item); }"
+        }) {
+            String guest = "fnc f(): void { defer " + cleanup + "; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), cleanup);
+        }
     }
 
     @Test
