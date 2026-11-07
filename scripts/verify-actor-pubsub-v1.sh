@@ -87,6 +87,7 @@ expected = {
     },
     "dev.oreslang.runtime.ActorPubSubV1ContractTest": {
         "acceptedPublicationInvokesReductionCommitExactlyOncePerPolicy",
+        "failedReliableAdmissionCannotCommitReductionOrConsumeSequence",
         "admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText",
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
