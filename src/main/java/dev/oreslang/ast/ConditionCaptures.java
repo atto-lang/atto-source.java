@@ -2,6 +2,7 @@ package dev.oreslang.ast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /** Admission for condition-local captures; no evaluation or expression hoisting. */
 public final class ConditionCaptures {
@@ -11,6 +12,13 @@ public final class ConditionCaptures {
         if (expression == null || expression instanceof Ast.LambdaExpr) return false;
         if (expression instanceof Ast.CaptureExpr) return true;
         return children(expression).stream().anyMatch(ConditionCaptures::contains);
+    }
+
+    /** Collect captures in the condition tree, without entering nested lambdas. */
+    public static void collectNames(Ast.Expr expression, Set<String> names) {
+        if (expression == null || expression instanceof Ast.LambdaExpr) return;
+        if (expression instanceof Ast.CaptureExpr capture) names.add(capture.name());
+        for (Ast.Expr child : children(expression)) collectNames(child, names);
     }
 
     public static void validate(Ast.Expr expression) { validate(expression, true); }

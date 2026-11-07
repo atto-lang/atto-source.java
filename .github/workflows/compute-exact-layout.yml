@@ -1,0 +1,60 @@
+name: Compute exact layout bounded proof and guest
+on:
+  pull_request:
+    paths:
+      - 'stdlib/compute.ores'
+      - 'examples/native-compute-exact-layout.ores'
+      - 'formal/compute/**'
+      - '.github/workflows/compute-exact-layout.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bounded-arithmetic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Run BigInt reference differential checks (host only)
+        run: |
+          set -euo pipefail
+          node --version
+          node --test formal/compute/checked-layout-reference.test.mjs
+      - name: Prove BV8 analogue and mutation controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git hash-object stdlib/compute.ores)" = "b8e11db5f8701fbceb1e2afd39cad06662d0e8be"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends z3
+          z3 -version
+          sha256sum "$(command -v z3)"
+          result="$(timeout 30s z3 -smt2 formal/compute/exact-layout-bv8.smt2)"
+          expected=$'unsat\nunsat\nunsat\nsat\nsat'
+          test "$result" = "$expected"
+  guest-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute real Oreslang guest contract checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-compute-exact-layout.ores" | tee "${RUNNER_TEMP}/layout-guest.out"
+          grep -Fx 'COMPUTE-EXACT-LAYOUT-OK' "${RUNNER_TEMP}/layout-guest.out"

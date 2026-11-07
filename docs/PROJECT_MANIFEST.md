@@ -76,3 +76,43 @@ accidental dependency injection from a leading/trailing separator or `::`.
 The compiler records the resolved target for every loaded import and reuses
 that exact mapping during static linking and runtime linking. Compilation and
 execution therefore cannot disagree about which file a bare import names.
+
+## Library profile
+
+Oreslang has exactly two public library layers:
+
+- `ores.core`: freestanding/no-OS source.
+- `ores.std`: hosted/platform source.
+
+The optional build selection is:
+
+```toml
+[build]
+library_profile = "std"
+```
+
+The only accepted values are `core` and `std`. Omitting the setting defaults
+to `std` so existing hosted projects keep their behavior. Unknown build keys
+and old multi-tier values such as `hosted`, `freestanding-core`, `alloc`,
+`actor`, and `otp` fail closed.
+
+Canonical compiler-owned imports are `ores.core/*` and `ores.std/*`.
+Existing `std/*` imports remain a compatibility spelling for `ores.std/*`
+during migration; they do not create another library layer.
+
+`ores.core` is downward closed: a compiler-owned core module may import only
+another `ores.core` module. It cannot reach `ores.std`, Java host classes,
+project files, or `ORESLANG_PATH`. `ores.std` may depend on `ores.core`
+or `ores.std`, but not on application/ambient source from inside the trusted
+compiler-owned registry.
+
+The Java/Graal backend is hosted and currently executes only the `std`
+profile. A requested `core` build is rejected before import traversal,
+parsing, compiler emission, or guest execution. Java may still execute
+`ores.core` source as part of a hosted `std` build for semantic
+conformance; that is not a bare-metal/no-OS execution proof.
+
+Allocation, actors, supervision, and clocks are not separate public library
+tiers. Freestanding implementations belong beneath `ores.core`; adapters
+that require OS/host services belong beneath `ores.std`.
+

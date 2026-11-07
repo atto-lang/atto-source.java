@@ -129,8 +129,8 @@ final class RuntimePermissionsTest {
         assertEquals("allowed", Files.readString(allowed));
 
         Files.writeString(source, """
-                pub fnc main(): void {
-                  fs.write_text("%s", "blocked");
+                pub routine main(): void {
+                  await fs.write_text("%s", "blocked");
                   return;
                 }
                 """.formatted(escape(denied)));

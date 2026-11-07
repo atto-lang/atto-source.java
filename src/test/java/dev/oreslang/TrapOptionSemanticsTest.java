@@ -125,7 +125,7 @@ final class TrapOptionSemanticsTest {
                           return 1;
                         }
                         """));
-        assertTrue(async.getMessage().contains("async trap"));
+        assertTrue(async.getMessage().contains("suspending trap"));
 
         IllegalArgumentException generator = assertThrows(
                 IllegalArgumentException.class,
@@ -314,6 +314,297 @@ final class TrapOptionSemanticsTest {
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         assertEquals("3:7", run(source));
+    }
+
+    @Test
+    void trapDoesNotSwallowResultUnwrapPanic() throws Exception {
+        String source = """
+                trap fnc panics(): int {
+                  val Result<int, String> invalid = Err("missing");
+                  return invalid.unwrap();
+                }
+                pub fnc main(): void {
+                  val Option<int> ignored = panics();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException thrown = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(thrown.getMessage().contains("Result::unwrap"));
+    }
+
+    @Test
+    void ordinaryCatchStillHandlesExplicitRuntimeCastFailure() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                pub fnc main(): void {
+                  val Animal animal = new Cat();
+                  try {
+                    val Dog dog = animal as Dog;
+                    stdio.stdout.write("unexpected");
+                  } catch (err) {
+                    stdio.stdout.write("caught");
+                  } finally {
+                    stdio.stdout.write(":cleanup");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("caught:cleanup", run(source));
+    }
+
+    @Test
+    void aDeferredOrdinaryCastErrorCannotDowngradeUnwrapPanic() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                fnc deferred_cast(Animal animal): void {
+                  val Dog dog = animal as Dog;
+                  return;
+                }
+
+                trap fnc panic_then_cleanup(Animal animal): int {
+                  defer deferred_cast(animal);
+                  val Option<int> absent = None;
+                  return absent.unwrap();
+                }
+
+                pub fnc main(): void {
+                  val Option<int> ignored = panic_then_cleanup(new Cat());
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void deferredUnwrapPanicOverridesRecoverableBodyCastError() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                fnc deferred_panic(): void {
+                  val Option<int> absent = None;
+                  val int invalid = absent.unwrap();
+                  return;
+                }
+
+                trap fnc cast_then_panic(Animal animal): int {
+                  defer deferred_panic();
+                  val Dog dog = animal as Dog;
+                  return 1;
+                }
+
+                pub fnc main(): void {
+                  val Option<int> ignored = cast_then_panic(new Cat());
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void finallyCastErrorCannotDowngradeAnUnwrapPanic() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                trap fnc panic_with_finally(Animal animal): int {
+                  try {
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    return 7;
+                  } finally {
+                    val Dog impossible = animal as Dog;
+                  }
+                }
+
+                pub fnc main(): void {
+                  val Option<int> ignored = panic_with_finally(new Cat());
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void suspendableTryFinallyCannotDowngradeUnwrapPanic() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                async fnc answer(): int { return 1; }
+                async fnc panics(): int {
+                  val int received = await answer();
+                  val Animal animal = new Cat();
+                  try {
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    return received;
+                  } finally {
+                    val Dog impossible = animal as Dog;
+                  }
+                }
+                pub fnc main(): void {
+                  val int impossible = await panics();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void suspendedTryCatchStillRecoversOrdinaryCastAndRunsFinallyOnce() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                async fnc answer(): int { return 11; }
+                async fnc recover_cast(): int {
+                  val int seed = await answer();
+                  val Animal animal = new Cat();
+                  let mut int status = 0;
+                  try {
+                    val Dog dog = animal as Dog;
+                    status = 1;
+                  } catch (err) {
+                    status = seed;
+                  } finally {
+                    status = status + 1;
+                  }
+                  return status;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(await recover_cast());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("12", run(source));
+    }
+
+    @Test
+    void suspendedNestedBlockRunsDeferAndFinallyExactlyOnce() throws Exception {
+        String source = """
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 11;
+                }
+                async fnc compute(): int {
+                  let mut int status = 0;
+                  try {
+                    defer stdio.stdout.write("D");
+                    val int number = await answer();
+                    status = number;
+                  } catch (err) {
+                    status = 99;
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                  return status;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(await compute());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("DF11", run(source));
+    }
+
+    @Test
+    void suspendedNestedPanicRunsDeferAndFinallyOnceWithoutCatch() throws Exception {
+        String source = """
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 11;
+                }
+                async fnc compute(): int {
+                  val int seed = await answer();
+                  try {
+                    defer stdio.stdout.write("D");
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    stdio.stdout.write("C");
+                    return seed;
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                }
+                pub fnc main(): void {
+                  val int unused = await compute();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(OresLanguage.ID, source, "nested-once.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            PolyglotException panic = assertThrows(
+                    PolyglotException.class, () -> context.eval(program));
+            assertTrue(panic.getMessage().contains("Option::unwrap"));
+        }
+        assertEquals("DF", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void expressionTrapRemainsOptionTypedAfterCleanupReconciliation() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Option<int> result = trap (40 + 2);
+                  stdio.stdout.write(result.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("42", run(source));
     }
 
     private static String run(String program) throws Exception {
