@@ -178,6 +178,9 @@ public final class ScalarFrameStorage implements AutoCloseable {
     private void checkTop(Frame frame) {
         Objects.requireNonNull(frame);
         if (closed || frame.closed || frames.peekLast() != frame) {
+            // A host callback must not suppress a scalar frame authority
+            // violation and silently resume the next actor mailbox turn.
+            if (arena != null) arena.poisonFromGuestGuard();
             throw new IllegalStateException("stale or out-of-order scalar frame lease");
         }
     }
@@ -192,14 +195,20 @@ public final class ScalarFrameStorage implements AutoCloseable {
 
     private Scalar readSlot(Frame frame, int slot) {
         byte[] word = readBytes(frame, HEADER_BYTES + slot * SLOT_BYTES, SLOT_BYTES);
-        return new Scalar(word[0],
-                ByteBuffer.wrap(word).order(ByteOrder.BIG_ENDIAN).getLong(8));
+        try {
+            return new Scalar(word[0],
+                    ByteBuffer.wrap(word).order(ByteOrder.BIG_ENDIAN).getLong(8));
+        } catch (IllegalArgumentException invalidTag) {
+            if (arena != null) arena.poisonFromGuestGuard();
+            throw invalidTag;
+        }
     }
 
     private int readBoundedInt(Frame frame, int offset, int max, String field) {
         long value = ByteBuffer.wrap(readBytes(frame, offset, 8))
                 .order(ByteOrder.BIG_ENDIAN).getLong();
         if (value < 0 || value > max) {
+            if (arena != null) arena.poisonFromGuestGuard();
             throw new IllegalStateException("corrupt scalar " + field + " in owned frame");
         }
         return (int) value;
