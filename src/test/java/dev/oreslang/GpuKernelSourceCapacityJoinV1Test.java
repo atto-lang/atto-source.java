@@ -239,4 +239,73 @@ final class GpuKernelSourceCapacityJoinV1Test {
         assertThrows(SecurityException.class,
                 () -> audit(subject(HOST), mutated, 256, 256));
     }
+
+    private static GpuKernelSourceHirV1.Plan withForgedStore(
+            GpuKernelSourceHirV1.Plan original, String target,
+            GpuKernelSourceHirV1.Value rhs) {
+        var branch = original.body().get(1);
+        var originalStore = branch.body().getFirst();
+        var index = originalStore.value().operands().getFirst();
+        var store = new GpuKernelSourceHirV1.Instruction(
+                "STORE_F32", target,
+                new GpuKernelSourceHirV1.Value(GpuKernelSourceHirV1.Type.F32,
+                        "store.arguments", null, List.of(index, rhs)), List.of());
+        var modifiedBranch = new GpuKernelSourceHirV1.Instruction(
+                "IF", null, branch.value(), List.of(store));
+        return new GpuKernelSourceHirV1.Plan(
+                original.symbol(), original.parameters(), original.returnType(),
+                List.of(original.body().getFirst(), modifiedBranch), original.evidence());
+    }
+
+    @Test void sourceCapacityJoinRejectsForgedWriteIntoReadOnlyBuffer() {
+        var original = subject(HOST);
+        var rhs = original.plan().body().get(1).body().getFirst()
+                .value().operands().get(1);
+        var forged = withForgedStore(original.plan(), "x", rhs);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> audit(new Subject(forged, original.link()), views(), 256, 256));
+        assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
+        assertTrue(error.getMessage().contains("device write"), error::getMessage);
+    }
+
+    @Test void sourceCapacityJoinRejectsHostCallForgedInsideTypedHir() {
+        var original = subject(HOST);
+        var forgedCall = new GpuKernelSourceHirV1.Value(
+                GpuKernelSourceHirV1.Type.F32, "host.call", "escape", List.of());
+        var forged = withForgedStore(original.plan(), "out", forgedCall);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> audit(new Subject(forged, original.link()), views(), 256, 256));
+        assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
+        assertTrue(error.getMessage().contains("unknown typed GPU source opcode"),
+                error::getMessage);
+    }
+
+    @Test void sourceCapacityJoinRejectsForgedNonVoidKernelPlan() {
+        var original = subject(HOST);
+        var forged = new GpuKernelSourceHirV1.Plan(
+                original.plan().symbol(), original.plan().parameters(),
+                GpuKernelSourceHirV1.Type.F32,
+                original.plan().body(), original.plan().evidence());
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> audit(new Subject(forged, original.link()), views(), 256, 256));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-005"), error::getMessage);
+    }
+
+    @Test void sourceCapacityJoinRejectsForgedBufferLocalAlias() {
+        var original = subject(HOST);
+        var forgedAlias = new GpuKernelSourceHirV1.Instruction(
+                "LET", "alias",
+                new GpuKernelSourceHirV1.Value(
+                        GpuKernelSourceHirV1.Type.BUFFER_READ_F32,
+                        "local", "x", List.of()), List.of());
+        var plan = new GpuKernelSourceHirV1.Plan(
+                original.plan().symbol(), original.plan().parameters(),
+                original.plan().returnType(),
+                List.of(forgedAlias, original.plan().body().getFirst(),
+                        original.plan().body().get(1)), original.plan().evidence());
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> audit(new Subject(plan, original.link()), views(), 256, 256));
+        assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
+        assertTrue(error.getMessage().contains("scalar type"), error::getMessage);
+    }
 }
