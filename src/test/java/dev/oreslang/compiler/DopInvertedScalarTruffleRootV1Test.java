@@ -97,6 +97,27 @@ final class DopInvertedScalarTruffleRootV1Test {
     }
 
     @Test
+    void sixtyFourCompiledSourcesRetainIndependentValuesAcrossRepeatedRootCalls() {
+        long totalCalls = 0;
+        for (int seed = 1; seed <= 64; seed++) {
+            long value = seed % 2 == 0 ? -((long) seed) : (long) seed;
+            String code = source(
+                    "rows.push(11, 100); rows.set(0, value, " + value + "); "
+                  + "return rows.get(0, value);");
+            RootCallTarget target = compile(code);
+            long hostValue = OresCompiler.compileDopInvertedScalarI64(code)
+                    .executeHostReference();
+            assertEquals(value, hostValue, "host reference seed=" + seed);
+            for (int replay = 0; replay < 5; replay++) {
+                assertEquals(hostValue, target.call(),
+                        "isolated Truffle root seed=" + seed + " replay=" + replay);
+                totalCalls++;
+            }
+        }
+        assertEquals(320L, totalCalls);
+    }
+
+    @Test
     void sharedBoundsRemainSeparateFromOrdinaryTruffleLanguage() {
         String code = source("rows.push(42, 7); return rows.get(0, value);");
         RootCallTarget a = compile(code);
