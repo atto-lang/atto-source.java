@@ -1,0 +1,28 @@
+name: Real-time actor-region model admission
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/RealtimeRegionEffectModel.java'
+      - 'src/main/java/dev/oreslang/compiler/RealtimeActorSourceEffects.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeRegionEffectModelSelfTest.java'
+      - 'src/test/java/dev/oreslang/compiler/RealtimeActorSourceEffectsSelfTest.java'
+      - 'docs/realtime/region-effect-stage1.md'
+      - 'tools/test_realtime_region_model.sh'
+      - '.github/workflows/rt-region-model-admission.yml'
+permissions:
+  contents: read
+jobs:
+  symbolic-region-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile and run exact region/actor-source selftests
+        run: bash tools/test_realtime_region_model.sh
