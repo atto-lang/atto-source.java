@@ -8,6 +8,7 @@
 # Critical build and CI control plane. Broad ownership complements the
 # security-specific entries above; V3 still requires exact reviewed governance authority.
 /.github/workflows/ @ORESoftware
+/docs/security/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
 
