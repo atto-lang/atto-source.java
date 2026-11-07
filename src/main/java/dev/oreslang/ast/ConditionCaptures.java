@@ -84,6 +84,17 @@ public final class ConditionCaptures {
         else if (expression instanceof Ast.TupleExpr e) children.addAll(e.elements());
         else if (expression instanceof Ast.ObjectExpr e) {
             for (Ast.ObjectField field : e.fields()) children.add(field.value());
+        } else if (expression instanceof Ast.LiteralExpr
+                || expression instanceof Ast.NameExpr
+                || expression instanceof Ast.LambdaExpr
+                || expression instanceof Ast.TaskExpr) {
+            // Literals/names have no children. Lambda and Task are deferred
+            // execution boundaries, never condition-local capture scopes.
+        } else {
+            // A future AST variant must not bypass capture scope admission.
+            throw new IllegalArgumentException(
+                    "unsupported conditional expression node: "
+                            + expression.getClass().getName());
         }
         return children;
     }
