@@ -31,6 +31,12 @@ final class NativeHttpRawWireAdmissionTest {
                     socket.getInputStream(), StandardCharsets.ISO_8859_1));
             String statusLine = lines.readLine();
             assertNotNull(statusLine, "transport must send an HTTP status line");
+            String header;
+            do {
+                header = lines.readLine();
+                assertNotNull(header, "response headers must be terminated");
+            } while (!header.isEmpty());
+            assertEquals(-1, lines.read(), "Connection: close must terminate the response");
             return statusLine;
         }
     }
@@ -66,25 +72,25 @@ final class NativeHttpRawWireAdmissionTest {
         server.start();
         try {
             InetSocketAddress address = server.getAddress();
-            assertTrue(request(address, get("Host: localhost\r\n")).contains("200"),
+            assertTrue(request(address, get("Host: localhost\r\n")).startsWith("HTTP/1.1 200"),
                     "one valid Host must remain accepted");
             assertTrue(request(address, get(
-                    "Host: localhost\r\nHost: attacker.test\r\n")).contains("400"),
+                    "Host: localhost\r\nHost: attacker.test\r\n")).startsWith("HTTP/1.1 400"),
                     "the JDK must preserve duplicate Host information for the gate");
             assertTrue(request(address, get(
-                    "Host: localhost,attacker.test\r\n")).contains("400"),
+                    "Host: localhost,attacker.test\r\n")).startsWith("HTTP/1.1 400"),
                     "joined Host must not become a routing ambiguity");
             assertTrue(request(address, get(
                     "Host: localhost\r\nX-Long: " + "x".repeat(12_000) + "\r\n"))
-                    .contains("400"), "individual 12 KiB header must be rejected");
+                    .startsWith("HTTP/1.1 400"), "individual 12 KiB header must be rejected");
             assertTrue(request(address,
                     "POST / HTTP/1.1\r\n"
                     + "Host: localhost\r\n"
                     + "Transfer-Encoding: chunked\r\n"
                     + "Connection: close\r\n\r\n"
-                    + "Z\r\nfoo\r\n0\r\n\r\n").contains("400"),
+                    + "Z\r\nfoo\r\n0\r\n\r\n").startsWith("HTTP/1.1 400"),
                     "malformed chunk-size must be a client error");
-            assertTrue(request(address, get("Host: localhost\r\n")).contains("200"),
+            assertTrue(request(address, get("Host: localhost\r\n")).startsWith("HTTP/1.1 200"),
                     "the listener must survive all prior malformed requests");
         } finally {
             server.stop(0);
