@@ -15,6 +15,118 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(30)
 final class ActorNativeStorageStandaloneTest {
+    @Test
+    void arenaCleanupRetriesRefundFailureWithoutRestoringAccessOrDoubleFree() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean fail = new AtomicBoolean(true);
+        ActorNativeArena a = new ActorNativeArena(256 * 1024, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> {
+                if (fail.getAndSet(false)) throw new IllegalStateException("refund fault");
+                charged.addAndGet(-bytes);
+            };
+        });
+        var region = a.region(32);
+        a.region(64);
+        var fields = a.fields(List.of("count"), new Object());
+        fields.put("count", 4L);
+        assertThrows(IllegalStateException.class, a::close);
+        assertTrue(a.closed(), "failed cleanup must keep guest authority revoked");
+        assertThrows(IllegalStateException.class, () -> region.readByte(0));
+        assertThrows(IllegalStateException.class, () -> fields.get("count"));
+        assertThrows(IllegalStateException.class, () -> a.region(8));
+        a.close();
+        assertEquals(0, charged.get());
+        assertEquals(0, a.committedBytes());
+        a.close();
+        assertEquals(0, charged.get(), "successful refunds must not repeat");
+    }
+
+    @Test
+    void explicitlyClosedRegionRetainsPendingRefundForArenaCleanup() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean fail = new AtomicBoolean(true);
+        ActorNativeArena a = new ActorNativeArena(1024, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> {
+                if (fail.getAndSet(false)) throw new IllegalStateException("refund fault");
+                charged.addAndGet(-bytes);
+            };
+        });
+        var region = a.region(32);
+        assertThrows(IllegalStateException.class, region::close);
+        assertTrue(region.closed());
+        assertEquals(32, charged.get());
+        a.close();
+        assertEquals(0, charged.get());
+        a.close();
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void slabRefundFailureRetriesAfterNativeBytesWereAlreadyReleased() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean fail = new AtomicBoolean(true);
+        ActorNativeArena a = new ActorNativeArena(8192, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> {
+                if (fail.getAndSet(false)) throw new IllegalStateException("refund fault");
+                charged.addAndGet(-bytes);
+            };
+        });
+        a.fields(List.of("count"), new Object());
+        assertThrows(IllegalStateException.class, a::close);
+        assertTrue(a.closed());
+        assertEquals(0, a.committedBytes(), "native slab is freed before refund");
+        a.close();
+        assertEquals(0, charged.get());
+        a.close();
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void failedPrepublicationAllocationRetainsRefundForRetry() throws Exception {
+        AtomicLong regionCharge = new AtomicLong();
+        AtomicBoolean regionRefundFails = new AtomicBoolean(true);
+        ActorNativeArena regionArena = new ActorNativeArena(1024, () -> {}, bytes -> {
+            regionCharge.addAndGet(bytes);
+            return () -> {
+                if (regionRefundFails.get()) throw new IllegalStateException("refund fault");
+                regionCharge.addAndGet(-bytes);
+            };
+        });
+        var nextOffset = ActorNativeArena.class.getDeclaredField("nextActorOffset");
+        nextOffset.setAccessible(true);
+        nextOffset.setLong(regionArena, Long.MAX_VALUE - 3);
+        ArithmeticException regionFailure = assertThrows(
+                ArithmeticException.class, () -> regionArena.region(8));
+        assertEquals(1, regionFailure.getSuppressed().length);
+        assertEquals(8, regionCharge.get(), "failed refund must stay charged until retry");
+        assertEquals(0, regionArena.committedBytes(), "failed region was never published");
+        regionRefundFails.set(false);
+        regionArena.close();
+        assertEquals(0, regionCharge.get());
+
+        AtomicLong slabCharge = new AtomicLong();
+        AtomicBoolean slabRefundFails = new AtomicBoolean(true);
+        ActorNativeArena slabArena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            slabCharge.addAndGet(bytes);
+            return () -> {
+                if (slabRefundFails.get()) throw new IllegalStateException("refund fault");
+                slabCharge.addAndGet(-bytes);
+            };
+        });
+        nextOffset.setLong(slabArena, Long.MAX_VALUE - 3);
+        ArithmeticException slabFailure = assertThrows(
+                ArithmeticException.class, () -> slabArena.fields(List.of("count"), new Object()));
+        assertEquals(1, slabFailure.getSuppressed().length);
+        assertTrue(slabCharge.get() > 0, "failed slab refund must remain retained");
+        assertEquals(0, slabArena.committedBytes(), "failed slab was never published");
+        slabRefundFails.set(false);
+        slabArena.close();
+        assertEquals(0, slabCharge.get());
+    }
+
     private static ActorNativeArena arena(long maximum, AtomicLong charged, AtomicBoolean owner) {
         return new ActorNativeArena(maximum, () -> {
             if (!owner.get()) throw new SecurityException("native storage off actor turn");
@@ -185,3 +297,4 @@ final class ActorNativeStorageStandaloneTest {
         assertEquals(0, charged.get());
     }
 }
+
