@@ -262,6 +262,47 @@ final class ExplicitLambdaReturnContractTest {
     }
 
     @Test
+    void futureTypedDispatchArmsMustNotBeMisparsedAsProceduralReturns() {
+        String[] unsupported = {
+                """
+                fnc f(bool selected): int {
+                    return match<int> selected over
+                        on true -> int { return 42; }
+                        on false -> int { return 0; }
+                    end;
+                }
+                """,
+                """
+                fnc f(int selected): int {
+                    return switch<int> selected over
+                        case 7 -> int { return 42; }
+                        default -> int { return 0; }
+                    end;
+                }
+                """,
+                """
+                fnc f(Channel<int> values): int {
+                    return select<int> over
+                        when readch values: int item -> int { return item; }
+                    end;
+                }
+                """,
+                """
+                fnc f(bool selected): int {
+                    return do match selected over
+                        on true -> { return 42; }
+                        on false -> { return 0; }
+                    end;
+                }
+                """
+        };
+        for (String guest : unsupported) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), guest);
+        }
+    }
+
+    @Test
     void constructorReturnTypeDoesNotHideExpressionLambda() {
         Ast.LambdaExpr expression = firstLambda("""
                 fnc f(): void {
