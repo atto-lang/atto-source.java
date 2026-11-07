@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.ConditionCaptures;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -264,6 +266,69 @@ final class CaptureExpressionAuditTest {
         assertTrue(result.retained(Parser.ROOT_MODULE+".produce"));
         assertTrue(result.retained(Parser.ROOT_MODULE+".consume"));
         assertDoesNotThrow(() -> TypeChecker.check(result.program()));
+    }
+
+
+    @Test
+    void conditionCaptureValidatorRejectsSkippedShortCircuitOperands() {
+        Ast.CaptureExpr capture = new Ast.CaptureExpr(new Ast.LiteralExpr(42), "value");
+        Ast.Expr leftOfAnd = new Ast.BinaryExpr("&&", capture, new Ast.LiteralExpr(true));
+        Ast.Expr leftOfOr = new Ast.BinaryExpr("||", capture, new Ast.LiteralExpr(false));
+        assertDoesNotThrow(() -> ConditionCaptures.validate(leftOfAnd));
+        assertDoesNotThrow(() -> ConditionCaptures.validate(leftOfOr));
+
+        for (String operator : java.util.List.of("&&", "||")) {
+            Ast.Expr skipped = new Ast.BinaryExpr(operator, new Ast.LiteralExpr(true), capture);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> ConditionCaptures.validate(skipped));
+            assertTrue(failure.getMessage().contains("may be skipped"), failure::getMessage);
+        }
+    }
+
+    @Test
+    void conditionCaptureValidatorRejectsNestedSkippedCallsAndTernaryArms() {
+        Ast.CaptureExpr capture = new Ast.CaptureExpr(new Ast.LiteralExpr(42), "value");
+        Ast.Expr call = new Ast.CallExpr(new Ast.NameExpr("ready"), java.util.List.of(capture));
+        assertTrue(ConditionCaptures.contains(call));
+        assertDoesNotThrow(() -> ConditionCaptures.validate(call));
+
+        Ast.Expr nestedShortCircuit = new Ast.BinaryExpr("&&", new Ast.LiteralExpr(true), call);
+        Ast.Expr trueArm = new Ast.ConditionalExpr(new Ast.LiteralExpr(true), call, new Ast.LiteralExpr(false));
+        Ast.Expr falseArm = new Ast.ConditionalExpr(new Ast.LiteralExpr(true), new Ast.LiteralExpr(false), call);
+        for (Ast.Expr skipped : java.util.List.of(nestedShortCircuit, trueArm, falseArm)) {
+            assertTrue(ConditionCaptures.contains(skipped));
+            assertThrows(IllegalArgumentException.class, () -> ConditionCaptures.validate(skipped));
+        }
+        Ast.Expr eagerCondition = new Ast.ConditionalExpr(capture,
+                new Ast.LiteralExpr(true), new Ast.LiteralExpr(false));
+        assertDoesNotThrow(() -> ConditionCaptures.validate(eagerCondition));
+    }
+
+    @Test
+    void conditionCaptureValidatorAdmitsMatchSubjectButNotGuardOrValueArms() {
+        Ast.CaptureExpr capture = new Ast.CaptureExpr(new Ast.LiteralExpr(42), "value");
+        Ast.WildcardPattern wildcard = new Ast.WildcardPattern();
+        Ast.Expr eagerSubject = new Ast.MatchExpr(capture, java.util.List.of(
+                new Ast.MatchValueArm(wildcard, null, new Ast.LiteralExpr(true))));
+        assertDoesNotThrow(() -> ConditionCaptures.validate(eagerSubject));
+
+        Ast.Expr skippedGuard = new Ast.MatchExpr(new Ast.LiteralExpr(1), java.util.List.of(
+                new Ast.MatchValueArm(wildcard, capture, new Ast.LiteralExpr(true))));
+        Ast.Expr skippedValue = new Ast.MatchExpr(new Ast.LiteralExpr(1), java.util.List.of(
+                new Ast.MatchValueArm(wildcard, null, capture)));
+        for (Ast.Expr skipped : java.util.List.of(skippedGuard, skippedValue)) {
+            assertTrue(ConditionCaptures.contains(skipped));
+            assertThrows(IllegalArgumentException.class, () -> ConditionCaptures.validate(skipped));
+        }
+    }
+
+    @Test
+    void desugaredWhileConditionsCannotBypassSkippedCaptureAdmission() {
+        // These must be checked through the synthesized if condition, not as
+        // an unchecked classic for-loop predicate after parser lowering.
+        reject("fnc f():void{while true && (1 as let value)>0 {break;}}");
+        reject("fnc f():void{while true || (1 as let value)>0 {break;}}");
+        check("fnc f():void{let i=2;while (i as let value)>0 {i=i-1;}}");
     }
 
     private static void rejectOwnership(String source) {
