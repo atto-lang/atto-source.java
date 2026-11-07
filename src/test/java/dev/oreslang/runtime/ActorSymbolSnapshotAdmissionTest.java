@@ -101,6 +101,32 @@ final class ActorSymbolSnapshotAdmissionTest {
                 () -> snapshot.put("smuggled", "mutation"));
     }
 
+    @Test void actualUntrustedMailboxRejectsNestedStableAndHiddenSymbolsBeforeQueueing() {
+        try (var runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Map<Object, Object>> ref =
+                    runtime.spawnUntrusted(context -> (message, turn) -> {
+                        assertEquals(ActorRuntime.ActorKind.UNTRUSTED, turn.kind());
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+
+            // A visible outer key never authorizes a nested STABLE value.
+            assertThrows(SecurityException.class, () -> ref.send(Map.of(
+                    OresSymbol.process("ready"),
+                    List.of(OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000")))));
+            // Nor may an internal PROCESS symbol appear nested in a value.
+            assertThrows(SecurityException.class, () -> ref.send(Map.of(
+                    OresSymbol.process("ready"),
+                    List.of(OresSymbol.process("tenant/private")))));
+
+            // Failed admissions must not reserve or poison the mailbox;
+            // a public-core-only graph should still reach the actor.
+            ref.send(Map.of(OresSymbol.process("ready"),
+                    List.of(OresSymbol.process("error"))));
+            ref.done().join();
+        }
+    }
+
     @Test void untrustedMailboxRejectsHiddenSymbolIntroducedDuringCopy() {
         try (var runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<Map<Object, Object>> ref =
