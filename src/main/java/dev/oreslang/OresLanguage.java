@@ -10,6 +10,7 @@ import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresSymbolLiteralSource;
 import dev.oreslang.runtime.OresScheduler;
 import org.graalvm.polyglot.SandboxPolicy;
 
@@ -180,7 +181,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
-        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
+        // The source was successfully parsed/typechecked (or handed in as an
+        // exact checked program). Only statically spelled #literals enter the
+        // shared immutable image; dynamic Symbol.process values never intern.
+        RootCallTarget evaluator = new OresEvalRootNode(
+                this, program, codeUnitId, OresSymbolLiteralSource.collect(text)).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }
