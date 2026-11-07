@@ -3678,18 +3678,175 @@ public final class Parser {
             declaredResult = parseTypeRef();
             consume(GT, "match result parameter requires exactly one type argument and closing '>'");
         }
-        Ast.MatchStmt parsed = parseMatch(true);
-        List<Ast.MatchValueArm> valueArms = new ArrayList<>();
-        for (Ast.MatchArm arm : parsed.arms()) {
-            if (arm.body().size() != 1
-                    || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
-                    || returned.value() == null) {
-                throw error(previous(),
-                        "value match arms require exactly one 'return expression;' and no other statements");
-            }
-            valueArms.add(new Ast.MatchValueArm(arm.pattern(), arm.guard(), returned.value()));
+
+        // Historical value-match sources could spell `match<T> first value over`.
+        // MatchExpr is source-ordered already, so retain the marker only as a
+        // compatibility parse surface; it carries no separate runtime mode.
+        matchContextualIdentifier("first");
+
+        boolean previousSuppression = suppressRefinementOperators;
+        suppressRefinementOperators = true;
+        Ast.Expr subject;
+        try {
+            subject = parseExpression();
+        } finally {
+            suppressRefinementOperators = previousSuppression;
         }
-        return new Ast.MatchExpr(parsed.subject(), valueArms, declaredResult);
+
+        if (!(match(OVER) || matchContextualIdentifier("over"))) {
+            throw error(peek(), "value match requires 'over' before its arms");
+        }
+
+        // Preserve the historical braced outer match as compatibility syntax.
+        // Canonical syntax is match value over ... end.
+        boolean braced = match(LBRACE);
+        List<Ast.MatchValueArm> valueArms = new ArrayList<>();
+
+        while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            if (!matchContextualIdentifier("on")) {
+                if (check(ELSE) || check(DEFAULT)) {
+                    throw error(peek(), "match has no default/else keyword; use 'on _'");
+                }
+                throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
+            }
+
+            Ast.Pattern pattern = parsePattern();
+            Ast.Expr guard = null;
+            if (matchWhenKeyword()) {
+                int previousGuardStart = matchGuardStartToken;
+                matchGuardStartToken = current;
+                try {
+                    guard = parseExpression();
+                } finally {
+                    matchGuardStartToken = previousGuardStart;
+                }
+            }
+
+            if (check(FAT_ARROW)) {
+                throw error(peek(),
+                        "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
+            }
+
+            if (braced) {
+                // Historical outer-brace value matches remain one-return arms.
+                match(ARROW);
+                List<Ast.Stmt> body = parseBlock();
+                if (body.size() != 1
+                        || !(body.getFirst() instanceof Ast.ReturnStmt returned)
+                        || returned.value() == null) {
+                    throw error(previous(),
+                            "legacy braced value match arms require exactly one 'return expression;'");
+                }
+                valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
+                continue;
+            }
+
+            consume(ARROW, "value match arms use the slim arrow '->'");
+
+            if (match(DOUBLE_COLON)) {
+                List<Ast.Stmt> body = parseUntil(END);
+                consume(END, "expected 'end' to close value match block arm");
+                if (body.isEmpty()
+                        || !(body.getLast() instanceof Ast.ReturnStmt returned)
+                        || returned.value() == null) {
+                    throw error(previous(),
+                            "value match block arm must end with explicit 'return value;'");
+                }
+                List<Ast.Stmt> prefix = body.subList(0, body.size() - 1);
+                if (valueArmPrefixContainsReturn(prefix)) {
+                    throw error(previous(),
+                            "value match block arm v1 permits only its terminal top-level 'return value;' result");
+                }
+                valueArms.add(new Ast.MatchValueArm(
+                        pattern, guard, List.copyOf(prefix), returned.value()));
+                continue;
+            }
+
+            if (check(LBRACE)) {
+                // Compatibility with prior over/end braced arms.
+                List<Ast.Stmt> body = parseBlock();
+                if (body.size() != 1
+                        || !(body.getFirst() instanceof Ast.ReturnStmt returned)
+                        || returned.value() == null) {
+                    throw error(previous(),
+                            "legacy braced value match arms require exactly one 'return expression;'");
+                }
+                valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
+                continue;
+            }
+
+            Ast.Expr value = parseExpression();
+            // Canonical expression arms are deliberately explicit: a newline
+            // never substitutes for this semicolon.
+            consume(SEMICOLON, "value match expression arm must end with ';'");
+            valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
+        }
+
+        if (braced) consume(RBRACE, "expected '}' to close braced value match");
+        else consume(END, "expected 'end' to close value match");
+
+        if (valueArms.isEmpty()) {
+            throw error(previous(), "value match requires at least one 'on' arm");
+        }
+        return new Ast.MatchExpr(subject, valueArms, declaredResult);
+    }
+
+    /**
+     * V1 block arms use one terminal top-level ARM_RESULT. Reject earlier
+     * return statements even when nested in ordinary control flow; enabling
+     * those requires a dedicated value-arm CFG completeness proof.
+     *
+     * Nested lambda/task expression bodies are not walked here because their
+     * returns belong to their own callable/task control-flow domain.
+     */
+    private boolean valueArmPrefixContainsReturn(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block
+                    && valueArmPrefixContainsReturn(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope
+                    && valueArmPrefixContainsReturn(scope.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (valueArmPrefixContainsReturn(branch.body())) return true;
+                }
+                if (valueArmPrefixContainsReturn(conditional.elseBody())) return true;
+            }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (valueArmPrefixContainsReturn(arm.body())) return true;
+                }
+            }
+            if (stmt instanceof Ast.SwitchStmt switched) {
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (valueArmPrefixContainsReturn(arm.body())) return true;
+                }
+                if (valueArmPrefixContainsReturn(switched.defaultBody())) return true;
+            }
+            if (stmt instanceof Ast.TryStmt attempted) {
+                if (valueArmPrefixContainsReturn(attempted.body())
+                        || valueArmPrefixContainsReturn(attempted.catchBody())
+                        || valueArmPrefixContainsReturn(attempted.finallyBody())) return true;
+            }
+            if (stmt instanceof Ast.ForOfStmt loop
+                    && valueArmPrefixContainsReturn(loop.body())) return true;
+            if (stmt instanceof Ast.ForOfDestructureStmt loop
+                    && valueArmPrefixContainsReturn(loop.body())) return true;
+            if (stmt instanceof Ast.ForStmt loop
+                    && valueArmPrefixContainsReturn(loop.body())) return true;
+            if (stmt instanceof Ast.DoWhileStmt loop
+                    && valueArmPrefixContainsReturn(loop.body())) return true;
+            if (stmt instanceof Ast.LoopStmt loop
+                    && valueArmPrefixContainsReturn(loop.body())) return true;
+            if (stmt instanceof Ast.SelectStmt selected) {
+                for (Ast.SelectArm arm : selected.arms()) {
+                    if (valueArmPrefixContainsReturn(arm.body())) return true;
+                }
+            }
+            if (stmt instanceof Ast.UsingBorrowStmt loan
+                    && valueArmPrefixContainsReturn(loan.body())) return true;
+        }
+        return false;
     }
 
     private Ast.Pattern parsePattern() {

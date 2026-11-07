@@ -243,6 +243,19 @@ public final class TreeShaker {
                         || containsLambda(conditional.whenTrue())
                         || containsLambda(conditional.whenFalse());
             }
+            if (expression instanceof Ast.MatchExpr matched) {
+                // The constant-call inliner only substitutes expressions. A
+                // lexical value-arm block has statement-local declarations and
+                // effects, so keep the call uninlined until statement-aware
+                // substitution is proven.
+                if (containsLambda(matched.subject())) return true;
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    if (!arm.prefixStatements().isEmpty()) return true;
+                    if (arm.guard() != null && containsLambda(arm.guard())) return true;
+                    if (containsLambda(arm.value())) return true;
+                }
+                return false;
+            }
             if (expression instanceof Ast.RuntimeCallExpr runtime) {
                 return runtime.arguments().stream().anyMatch(this::containsLambda);
             }
@@ -309,11 +322,16 @@ public final class TreeShaker {
                 Ast.Expr subject = substitute(matched.subject(), substitutions, shadowed);
                 List<Ast.MatchValueArm> arms = new ArrayList<>();
                 for (Ast.MatchValueArm arm : matched.arms()) {
+                    if (!arm.prefixStatements().isEmpty()) {
+                        throw new IllegalStateException(
+                                "statement-aware substitution is required for block value-match arms");
+                    }
                     LinkedHashSet<String> armLocals = new LinkedHashSet<>(shadowed);
                     addPatternLocalNames(arm.pattern(), armLocals);
                     arms.add(new Ast.MatchValueArm(
                             arm.pattern(),
                             substitute(arm.guard(), substitutions, armLocals),
+                            List.of(),
                             substitute(arm.value(), substitutions, armLocals)));
                 }
                 return new Ast.MatchExpr(subject, arms, matched.resultType());
@@ -900,10 +918,12 @@ public final class TreeShaker {
                 for (Ast.MatchValueArm arm : matched.arms()) {
                     LinkedHashMap<String, Object> armLocals = new LinkedHashMap<>(locals);
                     addPatternLocals(arm.pattern(), armLocals);
+                    Ast.Expr guard = rewriteExpression(arm.guard(), module, armLocals);
+                    List<Ast.Stmt> prefix = rewriteStatements(
+                            arm.prefixStatements(), module, armLocals);
+                    Ast.Expr result = rewriteExpression(arm.value(), module, armLocals);
                     arms.add(new Ast.MatchValueArm(
-                            arm.pattern(),
-                            rewriteExpression(arm.guard(), module, armLocals),
-                            rewriteExpression(arm.value(), module, armLocals)));
+                            arm.pattern(), guard, prefix, result));
                 }
                 return new Ast.MatchExpr(subject, arms, matched.resultType());
             }
@@ -1406,6 +1426,7 @@ public final class TreeShaker {
                     addPatternLocalNames(arm.pattern(), armLocals);
                     scanPatternTypes(arm.pattern());
                     scanExpression(module, arm.guard(), armLocals);
+                    scanStatements(module, arm.prefixStatements(), armLocals);
                     scanExpression(module, arm.value(), armLocals);
                 }
                 return;

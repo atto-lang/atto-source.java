@@ -85,4 +85,43 @@ final class ValueMatchSuspensionTest {
         var typed = TypeChecker.check(Parser.parse(guest));
         OwnershipChecker.check(typed);
     }
+
+    @Test
+    void canonicalBlockArmSuspendsAndPublishesOnlyArmResult() throws Exception {
+        String program = """
+            pub async routine main(): void {
+              val Channel<int> values = Channel.new<int>(0);
+              val writer = nb writech values, 39;
+
+              val int result = match<int> true over
+                on true -> ::
+                  val int base = await (nb readch values);
+                  return base + 3;
+                end
+                on false -> 0;
+              end;
+
+              await writer;
+              stdio.println(result);
+              return;
+            }
+            """;
+
+        var parsed = Parser.parse(program);
+        var typed = TypeChecker.check(parsed);
+        OwnershipChecker.check(typed);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                OresLanguage.ID, program, "canonical-block-arm-await.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42",
+                output.toString(StandardCharsets.UTF_8)
+                        .trim().replace("\r", ""));
+    }
+
 }

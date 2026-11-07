@@ -1884,6 +1884,36 @@ public final class TypeChecker {
         }
     }
 
+
+    /**
+     * Check statements in an already-created lexical environment. Value-match
+     * block prefixes use this so locals declared before the terminal ARM_RESULT
+     * remain visible to that result expression.
+     */
+    private void checkStatementsInExistingScope(
+            List<Ast.Stmt> body,
+            Env env,
+            Set<String> generics,
+            Type expectedReturn,
+            Type self) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BindingStmt binding && binding.inferredTypeName() != null) {
+                inferredTypeNames.add(binding.inferredTypeName());
+                env.reserveInferredType(binding.inferredTypeName());
+            }
+        }
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BindingStmt binding
+                    && isShortNamedAggregateInference(binding, env, generics)) {
+                String name = binding.declaredType().name();
+                shortInferredTypeNames.put(binding, name);
+                inferredTypeNames.add(name);
+                env.reserveInferredType(name);
+            }
+            checkStatement(stmt, env, generics, expectedReturn, self);
+        }
+    }
+
     /**
      * A short name introduces an alias only when the name is truly absent.
      * Existing aliases, class/interface names, generics, builtins, and an
@@ -4405,13 +4435,10 @@ public final class TypeChecker {
                         "value match result parameter must be a known, non-void value type");
             }
             if (declaredResult instanceof Borrow) {
-                // Inferred value matches already reject branch-local loan escape.
-                // An explicit type must not circumvent that check by erasing &T.
                 throw new IllegalArgumentException(
                         "value match cannot produce an explicit borrowed result until loan escape is proven");
             }
             Type result = declaredResult;
-            List<Ast.MatchArm> proofArms = new ArrayList<>();
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             try {
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
@@ -4424,41 +4451,56 @@ public final class TypeChecker {
                                 Primitive.BOOL,
                                 "value match guard");
                     }
-                    Type actual = declaredResult == null
-                            ? typeOf(arm.value(), armEnv, generics, self)
-                            : typeOfAgainstExpected(arm.value(), declaredResult, armEnv, generics, self);
+
+                    // V1 rejects earlier arm returns at AST admission. Check the
+                    // statement prefix as an isolated control region so a
+                    // break/continue cannot target a loop outside MatchExpr,
+                    // while preserving async/suspends authority of the caller.
+                    int previousLoopDepth = loopDepth;
+                    Env previousTypeScope = currentTypeScope;
+                    loopDepth = 0;
+                    currentTypeScope = armEnv;
+                    Type actual;
+                    try {
+                        checkStatementsInExistingScope(
+                                arm.prefixStatements(),
+                                armEnv,
+                                generics,
+                                Primitive.VOID,
+                                self);
+                        actual = declaredResult == null
+                                ? typeOf(arm.value(), armEnv, generics, self)
+                                : typeOfAgainstExpected(
+                                        arm.value(), declaredResult, armEnv, generics, self);
+                    } finally {
+                        currentTypeScope = previousTypeScope;
+                        loopDepth = previousLoopDepth;
+                    }
+
                     if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
                         throw new IllegalArgumentException(
                                 "value match arms must return a statically known non-void value");
                     }
                     if (declaredResult != null) {
-                        // An explicit result type constrains each arm, but
-                        // cannot erase readonly/ownership capabilities.
-                        requireReadonlyCapabilityPreserved(actual, declaredResult, "value match arm");
+                        requireReadonlyCapabilityPreserved(
+                                actual, declaredResult, "value match arm");
                         requireAssignable(actual, declaredResult, "value match arm");
                     } else if (result == null) {
                         result = actual;
                     } else {
-                        // Preserve the existing invariant inference contract
-                        // when no result parameter was supplied.
                         requireReadonlyCapabilityPreserved(actual, result, "value match arm");
                         requireAssignable(actual, result, "value match arm");
                         requireAssignable(result, actual, "value match arm");
                     }
-                    proofArms.add(new Ast.MatchArm(
-                            arm.pattern(), arm.guard(),
-                            List.of(new Ast.ReturnStmt(arm.value()))));
+
                 }
-                // Reuse the canonical finite-domain reachability and
-                // exhaustive-pattern checker. These arm returns are checked
-                // against MatchExpr's result, not the enclosing function.
-                checkMatch(
-                        new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
-                        subject, env, generics, result, self);
+
+                checkValueMatchCoverage(
+                        valueMatch.arms(), subject, generics, self);
                 return result;
             } finally {
-                // Only the selected arm executes at runtime. Type-checking
-                // all branches cannot establish outer definite-init facts.
+                // Only the selected arm executes at runtime. Type-checking all
+                // branches cannot establish outer definite-initialization facts.
                 env.restoreInitialization(before);
             }
         }
@@ -6311,6 +6353,57 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Coverage/reachability for MatchExpr after each arm has already been
+     * type-checked in its own isolated environment. This routine is pure with
+     * respect to expression flow: it never re-types guards or executes body
+     * checks, so definite-initialization state cannot leak between arms.
+     */
+    private void checkValueMatchCoverage(
+            List<Ast.MatchValueArm> arms,
+            Type subject,
+            Set<String> generics,
+            Type self) {
+        for (int i = 0; i < arms.size(); i++) {
+            Ast.MatchValueArm arm = arms.get(i);
+
+            if (i > 0 && patternsProvablyExhaustive(
+                    arms.subList(0, i).stream()
+                            .filter(previous -> previous.guard() == null)
+                            .map(Ast.MatchValueArm::pattern)
+                            .toList(),
+                    subject, generics, self, 0)) {
+                throw new IllegalArgumentException(
+                        "unreachable match arm " + (i + 1)
+                                + ": earlier arms already exhaust " + subject);
+            }
+
+            for (int j = 0; j < i; j++) {
+                Ast.MatchValueArm previous = arms.get(j);
+                if (previous.guard() != null) continue;
+                if (patternSubsumes(
+                        previous.pattern(), arm.pattern(),
+                        subject, generics, self)) {
+                    throw new IllegalArgumentException(
+                            "unreachable match arm " + (i + 1)
+                                    + ": earlier arm " + (j + 1)
+                                    + " already matches every value accepted by it");
+                }
+            }
+        }
+
+        List<Ast.Pattern> unguarded = arms.stream()
+                .filter(arm -> arm.guard() == null)
+                .map(Ast.MatchValueArm::pattern)
+                .toList();
+        if (!patternsProvablyExhaustive(
+                unguarded, subject, generics, self, 0)) {
+            throw new IllegalArgumentException(
+                    "non-exhaustive match for " + subject
+                            + "; add an unguarded 'on _' arm or cover every provable case");
+        }
+    }
+
     private void checkPattern(
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
@@ -7150,9 +7243,13 @@ public final class TypeChecker {
                     || hasSuspendingSumCallbackSyntax(conditional.whenFalse());
         if (expr instanceof Ast.MatchExpr match) {
             if (hasSuspendingSumCallbackSyntax(match.subject())) return true;
-            for (Ast.MatchValueArm arm : match.arms())
+            for (Ast.MatchValueArm arm : match.arms()) {
+                // Inline sum callbacks do not yet audit arbitrary statement
+                // blocks. Fail closed instead of ignoring a block prefix.
+                if (!arm.prefixStatements().isEmpty()) return true;
                 if ((arm.guard() != null && hasSuspendingSumCallbackSyntax(arm.guard()))
                         || hasSuspendingSumCallbackSyntax(arm.value())) return true;
+            }
             return false;
         }
         if (expr instanceof Ast.TypeTestExpr test)

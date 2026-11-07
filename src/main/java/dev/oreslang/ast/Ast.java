@@ -1116,19 +1116,114 @@ public final class Ast {
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
-     * Expression-form match: each arm returns a value *to this expression*,
-     * never to the surrounding callable. Distinct from procedural MatchStmt.
+     * Expression-form match arm. Source block arms spell their result as
+     * `return value;`, but parsing normalizes that token sequence into this
+     * dedicated value field. Ordinary ReturnStmt is therefore always
+     * FUNCTION_RETURN; MatchValueArm.value is always ARM_RESULT.
      *
-     * The initial compiler admission accepts exactly one explicit return
-     * expression per arm. More complex arm bodies need an explicit local
-     * control-flow representation and must not be silently lowered.
+     * V1 permits lexical prefix statements followed by exactly one terminal
+     * top-level ARM_RESULT. Prefix control flow may not contain ReturnStmt.
      */
-    public record MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+    public record MatchValueArm(
+            Pattern pattern,
+            Expr guard,
+            List<Stmt> prefixStatements,
+            Expr value) {
         public MatchValueArm {
             java.util.Objects.requireNonNull(pattern, "value match pattern");
-            java.util.Objects.requireNonNull(value, "value match return expression");
+            prefixStatements = List.copyOf(java.util.Objects.requireNonNull(
+                    prefixStatements, "value match prefix"));
+            java.util.Objects.requireNonNull(value, "value match ARM_RESULT");
+            for (Stmt statement : prefixStatements) {
+                if (valueArmPrefixContainsReturn(statement)) {
+                    throw new IllegalArgumentException(
+                            "value match arm v1 permits only its dedicated terminal ARM_RESULT");
+                }
+            }
+        }
+
+        /** Compatibility constructor for expression arms. */
+        public MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+            this(pattern, guard, List.of(), value);
+        }
+
+        /**
+         * Runtime/checker lowering helper. The synthetic ReturnStmt is created
+         * only after the AST has already typed the destination as ARM_RESULT.
+         * Consumers must catch it at the value-arm boundary.
+         */
+        public List<Stmt> loweringBody() {
+            java.util.ArrayList<Stmt> lowered = new java.util.ArrayList<>(prefixStatements);
+            lowered.add(new ReturnStmt(value));
+            return List.copyOf(lowered);
         }
     }
+
+    /**
+     * ARM_RESULT prefix scanning deliberately walks statement control flow but
+     * not expressions. Returns inside nested lambdas/tasks/value-dispatch
+     * expressions belong to their own control-flow domain.
+     */
+    private static boolean valueArmPrefixContainsReturn(Stmt statement) {
+        if (statement instanceof ReturnStmt) return true;
+        if (statement instanceof BlockStmt block) {
+            return block.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TaskScopeStmt scope) {
+            return scope.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof UsingBorrowStmt loan) {
+            return loan.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof IfStmt conditional) {
+            return conditional.branches().stream()
+                            .anyMatch(branch -> branch.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || conditional.elseBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof MatchStmt matched) {
+            return matched.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        if (statement instanceof SwitchStmt switched) {
+            return switched.cases().stream()
+                            .anyMatch(arm -> arm.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || switched.defaultBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TryStmt attempted) {
+            return attempted.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.catchBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.finallyBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfDestructureStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForStmt loop) {
+            return (loop.initializer() != null
+                            && valueArmPrefixContainsReturn(loop.initializer()))
+                    || loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof DoWhileStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof LoopStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof SelectStmt selected) {
+            return selected.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        return false;
+    }
+
     public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
         public MatchExpr {
             java.util.Objects.requireNonNull(subject, "value match subject");

@@ -2040,12 +2040,16 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (expr instanceof Ast.MatchExpr matched) {
-                // Value matches are expressions, not procedural blocks. Check
-                // subject, guards and arm results for cooperative suspension.
+                // Value matches are expressions, but canonical arms may own
+                // lexical statement blocks. Scan every statement so an await
+                // in a block prefix selects the resumable SourceTask path.
                 if (expressionContainsPotentialSuspension(matched.subject(), seen)) return true;
                 for (Ast.MatchValueArm arm : matched.arms()) {
                     if (arm.guard() != null
                             && expressionContainsPotentialSuspension(arm.guard(), seen)) return true;
+                    for (Ast.Stmt statement : arm.prefixStatements()) {
+                        if (statementContainsPotentialSuspension(statement, seen)) return true;
+                    }
                     if (expressionContainsPotentialSuspension(arm.value(), seen)) return true;
                 }
                 return false;
@@ -4557,7 +4561,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (arm.guard() == null) {
-                evalSuspendableExpr(task, arm.value(), armEnv, continuation);
+                evalSuspendableValueMatchBody(task, arm, armEnv, continuation);
                 return;
             }
             evalSuspendableExpr(
@@ -4571,8 +4575,8 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         try {
                             if (truth(guard)) {
-                                evalSuspendableExpr(
-                                        t, arm.value(), armEnv, continuation);
+                                evalSuspendableValueMatchBody(
+                                        t, arm, armEnv, continuation);
                             } else {
                                 evalSuspendableValueMatchArm(
                                         t, matched, subject, parent,
@@ -4580,6 +4584,42 @@ public final class OresEvalRootNode extends RootNode {
                             }
                         } catch (RuntimeException | Error guardFailure) {
                             continuation.accept(t, null, guardFailure);
+                        }
+                    });
+        }
+
+        /**
+         * A value-arm block is a local control-flow domain. runBlock performs
+         * defer/finally/resource cleanup before publishing SourceFlow.RETURN;
+         * only then is that return converted to MatchExpr's ARM_RESULT.
+         */
+        private void evalSuspendableValueMatchBody(
+                SourceTask task,
+                Ast.MatchValueArm arm,
+                Env armEnv,
+                SourceValueCont continuation) {
+            runBlock(
+                    task,
+                    arm.loweringBody(),
+                    armEnv,
+                    (t, flow) -> {
+                        switch (flow.kind()) {
+                            case RETURN ->
+                                    continuation.accept(t, flow.value(), null);
+                            case THROW ->
+                                    continuation.accept(t, null, flow.failure());
+                            case NORMAL ->
+                                    continuation.accept(
+                                            t,
+                                            null,
+                                            new IllegalStateException(
+                                                    "value match arm completed without explicit ARM_RESULT"));
+                            case BREAK, CONTINUE ->
+                                    continuation.accept(
+                                            t,
+                                            null,
+                                            new IllegalStateException(
+                                                    "value match arm cannot break/continue an enclosing loop"));
                         }
                     });
         }
@@ -7279,9 +7319,24 @@ public final class OresEvalRootNode extends RootNode {
                     bindings.forEach((name, value) ->
                             armEnv.define(name, value, Ast.BindingKind.VAL));
                     if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
-                    // The arm's return is the result of this expression;
-                    // do not throw the enclosing callable's Return signal.
-                    return eval(arm.value(), armEnv);
+
+                    try {
+                        // The tail barrier prevents the terminal ARM_RESULT
+                        // from being rewritten as a callable tail call.
+                        executeBlock(arm.loweringBody(), armEnv, true);
+                    } catch (ReturnSignal returned) {
+                        return returned.value;
+                    } catch (TailCallSignal escapedTailCall) {
+                        throw new IllegalStateException(
+                                "value match ARM_RESULT escaped as a callable tail call",
+                                escapedTailCall);
+                    } catch (BreakSignal | ContinueSignal escapedLoopControl) {
+                        throw new IllegalStateException(
+                                "value match arm cannot break/continue an enclosing loop",
+                                escapedLoopControl);
+                    }
+                    throw new IllegalStateException(
+                            "value match arm completed without explicit ARM_RESULT");
                 }
                 throw new IllegalStateException(
                         "exhaustive value match invariant violated at runtime");

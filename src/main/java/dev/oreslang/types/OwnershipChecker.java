@@ -1001,6 +1001,20 @@ public final class OwnershipChecker {
                 try {
                     definePatternAliases(arm.pattern(), subject.type, source, armScope);
                     if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+
+                    int previousLoopDepth = loopDepth;
+                    loopDepth = 0;
+                    try {
+                        for (Ast.Stmt statement : arm.prefixStatements()) {
+                            checkStatement(
+                                    statement,
+                                    armScope,
+                                    Ast.TypeRef.simple("void"));
+                        }
+                    } finally {
+                        loopDepth = previousLoopDepth;
+                    }
+
                     ValueInfo value = checkExpr(arm.value(), armScope, consuming);
                     // Do not let branch-scoped loans become expression values:
                     // a returned borrow could outlive its pattern bindings.
@@ -2104,8 +2118,14 @@ public final class OwnershipChecker {
         } else if (value instanceof Ast.MatchExpr match) {
             if (!isCopyType(syntacticType(match.subject(), scope)))
                 collectFormattingRoots(match.subject(), scope, roots);
-            for (Ast.MatchValueArm arm : match.arms())
+            for (Ast.MatchValueArm arm : match.arms()) {
+                if (!arm.prefixStatements().isEmpty()) {
+                    throw error(
+                            "value match block arms are not yet admitted directly as formatting arguments; "
+                                    + "bind the owned match result first");
+                }
                 collectFormattingRoots(arm.value(), scope, roots);
+            }
         } else if (value instanceof Ast.AssignExpr assignment) {
             // Assignment evaluates to the newly installed value, which can
             // alias its target while later format arguments are evaluated.
@@ -3019,8 +3039,23 @@ public final class OwnershipChecker {
         return captures;
     }
 
-    private void scanStatements(List<Ast.Stmt> statements, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures) {
+    private void scanStatements(
+            List<Ast.Stmt> statements,
+            Set<String> locals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
         Set<String> blockLocals = new HashSet<>(locals);
+        scanStatementsInScope(
+                statements, blockLocals, outer, recursiveBinding, captures);
+    }
+
+    private void scanStatementsInScope(
+            List<Ast.Stmt> statements,
+            Set<String> blockLocals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 // A lambda binding is recursive: its own name is local inside
@@ -3240,6 +3275,12 @@ public final class OwnershipChecker {
                             recursiveBinding,
                             captures);
                 }
+                scanStatementsInScope(
+                        arm.prefixStatements(),
+                        armLocals,
+                        outer,
+                        recursiveBinding,
+                        captures);
                 scanExpr(
                         arm.value(),
                         armLocals,
