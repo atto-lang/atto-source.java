@@ -2172,13 +2172,15 @@ public final class TypeChecker {
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
-                Type cleanup = typeOf(defer.expression(), env, generics, self);
-                if (defer.expression() instanceof Ast.LambdaExpr
-                        && cleanup instanceof Function callable
-                        && callable.result() != Primitive.VOID
-                        && callable.result() != Unknown.INSTANCE) {
-                    throw new IllegalArgumentException(
-                            "defer lambda must return void, not " + callable.result());
+                if (defer.expression() instanceof Ast.LambdaExpr lambda) {
+                    // Check the entire body against a known void signature.
+                    // Inferring Unknown for a multi-statement block could
+                    // otherwise hide a nested value-return from deferred
+                    // cleanup, and defer must not publish any result.
+                    validateLambdaAgainstExpected(lambda,
+                            new Function(List.of(), Primitive.VOID), env, generics, self);
+                } else {
+                    typeOf(defer.expression(), env, generics, self);
                 }
             } finally {
                 // Defer executes later; checking its expression now must not
