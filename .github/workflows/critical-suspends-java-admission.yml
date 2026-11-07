@@ -19,6 +19,7 @@ on:
       - 'examples/critical-actor-checked-v1.atto'
       - 'examples/critical-actor-early-return-v1.ores'
       - 'examples/critical-actor-early-return-v1.atto'
+      - 'examples/actor-pubsub-canonical-suspends-v1.atto'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - '.github/workflows/critical-suspends-java-admission.yml'
   workflow_dispatch:

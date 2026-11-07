@@ -20,6 +20,31 @@ final class CriticalSuspendsV1SyntaxTest {
         assertTrue(error.getMessage().contains(message), error::toString);
     }
 
+    @Test void canonicalPubSubSyntaxBridgeRetainsSuspendingEntrypoint() throws Exception {
+        // This proves source-parser admission ONLY. ActorGroup/Topic type
+        // checking and guest execution belong to the separate pub-sub branch.
+        byte[] bytes = java.nio.file.Files.readAllBytes(
+                java.nio.file.Path.of("examples", "actor-pubsub-canonical-suspends-v1.atto"));
+        java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-1");
+        sha.update(("blob " + bytes.length + "\0")
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        sha.update(bytes);
+        assertEquals("fe10d9e5018a3f030a10bc31586e851198aaa4a3",
+                java.util.HexFormat.of().formatHex(sha.digest()),
+                "canonical pub-sub fixture Git blob drifted");
+        String source = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(source.contains("pub suspends fnc main(): void {"));
+        assertFalse(source.contains("pub async routine main()"));
+        Ast.Program parsed = Parser.parse(source);
+        Ast.FunctionDecl main = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getLast());
+        assertEquals("main", main.name());
+        assertEquals(Ast.CallableKind.FNC, main.kind());
+        assertTrue(main.suspends());
+        assertFalse(main.async());
+    }
+
     @Test void canonicalSynchronousAndSuspendingFunctionsRemainAccepted() {
         assertDoesNotThrow(() -> Parser.parse("pub fnc sync(): int { return 7; }"));
         assertDoesNotThrow(() -> Parser.parse("pub suspends fnc work(): int { return 7; }"));
