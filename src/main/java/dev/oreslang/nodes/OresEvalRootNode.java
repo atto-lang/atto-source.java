@@ -847,6 +847,11 @@ public final class OresEvalRootNode extends RootNode {
                     && initial.kind() == InvocationKind.FUNCTION
                     && initial.owner() == this
                     && initial.target() instanceof Ast.FunctionDecl scalarRoot
+                    && !scalarRoot.name().equals("init")
+                    && initial.arguments().size() == scalarRoot.parameters().size()
+                    && initial.arguments().stream().allMatch(arg ->
+                            arg instanceof Byte || arg instanceof Short
+                            || arg instanceof Integer || arg instanceof Long)
                     && Parser.ROOT_MODULE.equals(declarationModules.get(scalarRoot))) {
                 ScalarFrameMachine.Host host = new ScalarFrameMachine.Host() {
                     @Override
