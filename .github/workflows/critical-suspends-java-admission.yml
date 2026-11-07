@@ -16,6 +16,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorCriticalGateIdentityTest.java'
       - 'src/test/java/dev/oreslang/CriticalActorGuestExecutionTest.java'
       - 'src/test/java/dev/oreslang/ActorBorrowCompilerAdmissionTest.java'
+      - 'tools/VerifyAssuranceSurefire.java'
       - 'examples/critical-actor-checked-v1.ores'
       - 'examples/critical-actor-checked-v1.atto'
       - 'examples/critical-actor-early-return-v1.ores'
@@ -58,44 +59,14 @@ jobs:
             clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
-          # A compiled class alone is not guest-execution evidence. Require
-          # Surefire's concrete JUnit XML and both real guest test cases.
-          guest_report=target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml
-          syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
-          capture_report=target/surefire-reports/TEST-dev.oreslang.TaskCaptureAdmissionIdentityTest.xml
-          cleanup_report=target/surefire-reports/TEST-dev.oreslang.nodes.CriticalTicketCleanupTest.xml
-          borrow_report=target/surefire-reports/TEST-dev.oreslang.ActorBorrowCompilerAdmissionTest.xml
-          for report in "$guest_report" "$syntax_report" "$capture_report" "$cleanup_report" "$borrow_report" \
-            target/surefire-reports/TEST-dev.oreslang.CriticalBodyEffectsTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
-            test -s "$report"
-            # A file created by a skipped or empty suite is not test evidence.
-            grep -Eq 'tests="[1-9][0-9]*"' "$report"
-            ! grep -Eq '(skipped|failures|errors)="[1-9][0-9]*"' "$report"
-          done
-          grep -Fq 'name="actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop' "$guest_report"
-          grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
-          grep -Fq 'name="canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput' "$guest_report"
-          grep -Fq 'name="canonicalAttoEarlyReturnGuestReleasesBeforeStop' "$guest_report"
-          grep -Fq 'name="canonicalAttoGuestOutputTracksARealSourceMutation' "$guest_report"
-          grep -Fq 'name="twoSharedBorrowsCanCoexistWithoutExclusiveWriter' "$borrow_report"
-          grep -Fq 'name="independentExclusiveBorrowIsAllowedWhenNoReadLoanExists' "$borrow_report"
-          grep -Fq 'name="exclusiveWriterIsRejectedWhenTwoReadBorrowsAreLive' "$borrow_report"
-          grep -Fq 'name="ownershipTransferFailsWhileSharedBorrowIsLive' "$borrow_report"
-          grep -Fq 'name="sourceOwnerIsUnusableAfterRtTakeMove' "$borrow_report"
-          grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
-          grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
-          grep -Fq 'name="criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation' "$syntax_report"
-          grep -Fq 'name="rawHostAstAndForgedEpochCannotPublishTaskCaptures' "$capture_report"
-          grep -Fq 'name="untypedNoncriticalTaskCannotAcquireExecutableOwnership' "$capture_report"
-          grep -Fq 'name="successfulTypeRecheckRevokesPreviouslyExecutableNoncriticalTask' "$capture_report"
-          grep -Fq 'name="failedTypeRecheckRevokesPreviouslyExecutableNoncriticalTask' "$capture_report"
-          grep -Fq 'name="publicStagedCapturePublisherCannotMintTaskTransferAuthority' "$capture_report"
-          grep -Fq 'name="immediateTicketIsReleasedAfterFailedSchedulerTransition' "$cleanup_report"
-          grep -Fq 'name="queuedTicketIsRetractedWithoutReleasingAnotherOwner' "$cleanup_report"
-          grep -Fq 'name="retiredAdmissionIsSafeToUnwind' "$cleanup_report"
-          grep -Fq 'name="cancellationRacingWithPromotionCannotLeakActorOwnedTicket' "$cleanup_report"
+          # Stronger than grep on XML fragments: inspect suite identity,
+          # every testcase result, counts, duplicates, and exact required names.
+          java tools/VerifyAssuranceSurefire.java target/surefire-reports
+          mkdir -p target/atto-guest-evidence
+          printf '{"classification":"SCOPED_SUREFIRE_CASES_OBSERVED","proof":"NOT_INDEPENDENTLY_VERIFIED","guest":"CANDIDATE_ONLY","run_id":"%s","attempt":"%s","head":"%s","tree":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
+            > target/atto-guest-evidence/suite-gate-completed.json
       - name: Record scoped exact-head Java/Truffle guest canary evidence
         if: ${{ always() }}
         shell: bash
