@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -430,6 +431,34 @@ public final class OresScheduler implements AutoCloseable {
             throw new SecurityException("foreign actor SourceTask frame binding");
         }
         return frame;
+    }
+
+    /**
+     * Compiler-only bridge for source function/method parameter admission.
+     *
+     * <p>The supported scalar subset is first serialized into its owning
+     * actor's already-charged 64-byte SourceTask frame, then decoded for the
+     * actual source Env parameter bindings. Unsupported reference or wider
+     * argument lists explicitly use the existing JVM interpreter values.
+     * This does not lower recursive interpreter frames or object roots.
+     */
+    public static List<?> bindCompilerSourceArguments(List<?> arguments) {
+        Objects.requireNonNull(arguments, "arguments");
+        ActorSourceTaskFrame frame = currentActorSourceTaskFrame();
+        if (frame == null) return arguments;
+        List<Object> decoded = frame.bindSourceParameters(arguments);
+        return decoded == null ? arguments : decoded;
+    }
+
+    /**
+     * Authenticate a scalar-only source parameter image on each resumed task
+     * turn, before executing its saved continuation. No callback can use this
+     * helper to mint a task frame or resurrect a stale actor generation.
+     */
+    public static void verifyCompilerSourceArguments(List<?> arguments) {
+        Objects.requireNonNull(arguments, "arguments");
+        ActorSourceTaskFrame frame = currentActorSourceTaskFrame();
+        if (frame != null) frame.verifySourceParameters(arguments);
     }
 
     /**
