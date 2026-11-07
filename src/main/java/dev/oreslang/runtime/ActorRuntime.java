@@ -2117,6 +2117,13 @@ public final class ActorRuntime implements AutoCloseable {
         Object prepared = isPrivateKind(cell.kind)
                 ? isolateCopy(value)
                 : freezeForTransport(value);
+        // The sender graph can mutate during the detach walk. Only this
+        // detached image is eligible for output publication: revalidate
+        // data-only authority and recursive untrusted Symbol visibility.
+        rejectDataFreezeCapabilities(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
         long bytes = estimateFrozenBytes(
                 prepared,
                 new IdentityHashMap<>(),
@@ -5998,6 +6005,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // Pre-copy validation is advisory against mutable host collections.
+        // The bytes that will enter the mailbox require independent checks
+        // after detachment, before any memory reservation or enqueue.
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
