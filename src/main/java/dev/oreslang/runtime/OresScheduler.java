@@ -1051,6 +1051,13 @@ public final class OresScheduler implements AutoCloseable {
                         // TERMINAL. A wall deadline or forced cancellation
                         // that already won keeps its existing terminal cause.
                         if (phase.compareAndSet(RUNNING, TERMINAL)) {
+                            // A cleanup-aware Future is in deferred-cancellation
+                            // mode: cancel() only records the request, so the
+                            // publish step needs a recorded outcome or the
+                            // Future never settles (observed as a lost wakeup).
+                            if (task instanceof CleanupAwareTask<?>) {
+                                terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
+                            }
                             checkpointCancellationPending.set(true);
                         }
                         // Never invoke arbitrary synchronous Future listeners

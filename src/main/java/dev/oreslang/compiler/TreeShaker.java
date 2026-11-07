@@ -753,7 +753,8 @@ public final class TreeShaker {
                 // a physical-quiescence effect and must never be folded into a
                 // plain block even when its children appear side-effect free.
                 return List.of(new Ast.TaskScopeStmt(
-                        rewriteStatements(scope.body(), module, new LinkedHashMap<>(locals))));
+                        rewriteStatements(scope.body(), module, new LinkedHashMap<>(locals)),
+                        scope.deadlineMillis(), scope.supervise()));
             }
             if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
                 return List.of(statement);

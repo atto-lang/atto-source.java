@@ -367,7 +367,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
-                "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
+                "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectPlan", "DynamicSelectPlan", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
@@ -2179,6 +2179,14 @@ public final class TypeChecker {
                         "task scope exit is a physical-quiescence suspension point; "
                                 + "declare the enclosing callable async or suspends");
             }
+            if (taskScope.deadlineMillis() != null) {
+                Type deadline = typeOf(taskScope.deadlineMillis(), env, generics, self);
+                if (deadline != Primitive.INT) {
+                    throw new IllegalArgumentException(
+                            "task scope deadline(ms) requires an int number of milliseconds, got "
+                                    + deadline);
+                }
+            }
             checkBlock(taskScope.body(), env, generics, expectedReturn, self);
             return;
         }
@@ -2318,10 +2326,13 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> normalExit = env.initializationSnapshot();
 
             env.restoreInitialization(before);
-            Env caught = new Env(env);
-            caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
-            checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
-            Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
+            Map<Env.Binding, Set<String>> caughtExit = before;
+            if (attempted.hasCatch()) {
+                Env caught = new Env(env);
+                caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
+                checkBlock(attempted.catchBody(), caught, generics, expectedReturn, self);
+                caughtExit = env.initializationSnapshot();
+            }
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
@@ -3231,7 +3242,8 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr futureCall
                     && futureCall.receiver() instanceof Ast.NameExpr futureFactory
                     && futureFactory.name().equals("Future")
-                    && (futureCall.member().equals("all") || futureCall.member().equals("race"))) {
+                    && (futureCall.member().equals("all") || futureCall.member().equals("race")
+                        || futureCall.member().equals("first"))) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(
                             "Future." + futureCall.member() + " does not accept call-site type arguments");
@@ -3277,6 +3289,41 @@ public final class TypeChecker {
                             "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
+            }
+            if (call.callee() instanceof Ast.NameExpr contextCall
+                    && (contextCall.name().equals("task_context")
+                        || contextCall.name().equals("task_cancel_requested")
+                        || contextCall.name().equals("$task_context_enter")
+                        || contextCall.name().equals("$task_context_exit"))) {
+                Type symbol = new Named("$builtin$Symbol", List.of());
+                List<Type> arguments = call.arguments().stream()
+                        .map(argument -> typeOf(argument, env, generics, self)).toList();
+                switch (contextCall.name()) {
+                    case "task_cancel_requested" -> {
+                        if (!arguments.isEmpty()) {
+                            throw new IllegalArgumentException("task_cancel_requested() takes no arguments");
+                        }
+                        return Primitive.BOOL;
+                    }
+                    case "task_context" -> {
+                        if (arguments.size() != 1 || !arguments.getFirst().equals(symbol)) {
+                            throw new IllegalArgumentException("task_context(#key) expects one Symbol key");
+                        }
+                        return new Named("Option", List.of(Primitive.STRING));
+                    }
+                    case "$task_context_enter" -> {
+                        if (arguments.size() != 2 || !arguments.get(0).equals(symbol)
+                                || !(arguments.get(1) == Primitive.STRING
+                                        || arguments.get(1) instanceof StringLiteral)) {
+                            throw new IllegalArgumentException(
+                                    "task context(#key, value) requires a Symbol key and a String value");
+                        }
+                        return Primitive.VOID;
+                    }
+                    default -> {
+                        return Primitive.VOID;
+                    }
+                }
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
@@ -7377,6 +7424,16 @@ public final class TypeChecker {
             case "onSuccess" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
+            // Task-handle members. Valid only on a Future produced by a
+            // `task { }` block; the runtime rejects borrowed producers.
+            case "cancel" -> new Function(List.of(), Primitive.BOOL);
+            case "cancel_with" -> new Function(
+                    List.of(new Named("$builtin$Symbol", List.of())), Primitive.BOOL);
+            case "is_cancel_requested" -> new Function(List.of(), Primitive.BOOL);
+            case "cancel_after" -> new Function(List.of(Primitive.INT), Primitive.BOOL);
+            case "get_done" -> new Function(
+                    List.of(),
+                    new Named("Future", List.of(new Named("$builtin$Symbol", List.of()))));
             case "flatten" -> {
                 if (!(element instanceof Named inner)
                         || !inner.name().equals("Future")
@@ -10472,7 +10529,9 @@ public final class TypeChecker {
                     && definitelyReturns(switched.defaultBody())) return true;
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
-                if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
+                // Without catch, the exceptional path rethrows rather than falling through.
+                if (definitelyReturns(attempted.body())
+                        && (!attempted.hasCatch() || definitelyReturns(attempted.catchBody()))) return true;
             }
         }
         return false;

@@ -2698,12 +2698,56 @@ public final class Parser {
                 && current + 2 < tokens.size()
                 && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 1).lexeme().equals("scope")
-                && tokens.get(current + 2).type() == LBRACE) {
+                && (tokens.get(current + 2).type() == LBRACE
+                    || (tokens.get(current + 2).type() == IDENT
+                        && (tokens.get(current + 2).lexeme().equals("deadline")
+                            || tokens.get(current + 2).lexeme().equals("supervise"))))) {
             advance(); // nb or contextual task
             advance(); // contextual scope
-            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            Ast.Expr deadline = null;
+            boolean supervise = false;
+            while (check(IDENT)) {
+                String option = peek().lexeme();
+                if (option.equals("deadline") && deadline == null) {
+                    advance();
+                    consume(LPAREN, "expected '(' after task scope deadline");
+                    deadline = parseExpression();
+                    consume(RPAREN, "expected ')' after task scope deadline milliseconds");
+                } else if (option.equals("supervise") && !supervise) {
+                    advance();
+                    supervise = true;
+                } else {
+                    throw error(peek(), "task scope accepts deadline(ms) and supervise, each at most once");
+                }
+            }
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock(), deadline, supervise);
             match(SEMICOLON);
             return scoped;
+        }
+        if (check(IDENT) && peek().lexeme().equals("task")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("context")
+                && tokens.get(current + 2).type() == LPAREN) {
+            // task context(#key, value) { body }  desugars to
+            // block { $task_context_enter(#key, value); defer $task_context_exit(); body }
+            // so the binding is restored exactly once on every exit path,
+            // including cancellation unwind. '$' names are not source-lexable.
+            advance(); // task
+            advance(); // context
+            consume(LPAREN, "expected '(' after task context");
+            Ast.Expr key = parseExpression();
+            consume(COMMA, "task context expects (#key, value)");
+            Ast.Expr value = parseExpression();
+            consume(RPAREN, "expected ')' after task context binding");
+            List<Ast.Stmt> body = new ArrayList<>();
+            body.add(new Ast.ExprStmt(new Ast.CallExpr(
+                    new Ast.NameExpr("$task_context_enter"), List.of(), false, List.of(key, value))));
+            body.add(new Ast.DeferStmt(new Ast.CallExpr(
+                    new Ast.NameExpr("$task_context_exit"), List.of(), false, List.of())));
+            body.addAll(parseBlock());
+            match(SEMICOLON);
+            return new Ast.BlockStmt(body);
         }
         if (check(DO) && checkNext(LBRACE)) {
             advance();
@@ -4207,6 +4251,12 @@ public final class Parser {
 
     private Ast.TryStmt parseTry() {
         List<Ast.Stmt> body = parseBlock();
+        // try { } finally { } without catch: the failure propagates after
+        // finally runs (errorName == null marks "no catch").
+        if (!check(CATCH)) {
+            if (!match(FINALLY)) throw error(peek(), "expected catch or finally after try block");
+            return new Ast.TryStmt(body, null, List.of(), parseBlock());
+        }
         consume(CATCH, "expected catch after try block");
         consume(LPAREN, "expected '(' after catch");
         String error = consume(IDENT, "expected catch binding").lexeme();

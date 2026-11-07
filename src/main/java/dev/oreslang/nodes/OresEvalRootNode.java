@@ -26,6 +26,8 @@ import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.TaskScope;
+import dev.oreslang.runtime.TaskHandle;
+import dev.oreslang.runtime.SourceTaskHandles;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -1177,6 +1179,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
+            // Task-local context captured from the turn that created this
+            // task (parent task or awaited caller), re-installed every turn.
+            private dev.oreslang.runtime.TaskContext taskContext =
+                    dev.oreslang.runtime.TaskContext.current();
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1251,6 +1257,20 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override
             public OresScheduler.Step<Object> resume(
+                    OresScheduler.Resume resume)
+                    throws Exception {
+                dev.oreslang.runtime.TaskContext previousContext =
+                        dev.oreslang.runtime.TaskContext.install(taskContext);
+                try {
+                    return resumeTurn(resume);
+                } finally {
+                    // Bindings entered/exited during this turn stay with the task.
+                    taskContext = dev.oreslang.runtime.TaskContext.current();
+                    dev.oreslang.runtime.TaskContext.install(previousContext);
+                }
+            }
+
+            private OresScheduler.Step<Object> resumeTurn(
                     OresScheduler.Resume resume)
                     throws Exception {
                 try {
@@ -1731,9 +1751,12 @@ public final class OresEvalRootNode extends RootNode {
                     current != null ? current : context.vm().rootScheduler();
             try {
                 TaskScope structuredScope = env.structuredTaskScope();
-                OresFuture<Object> future = structuredScope != null
-                        ? structuredScope.startTask(task).result()
-                        : scheduler.start(task);
+                // Both paths yield a TaskHandle so source code can cancel the
+                // task and await its physical-quiescence barrier (get_done).
+                TaskHandle<Object> handle = structuredScope != null
+                        ? structuredScope.startTask(task)
+                        : scheduler.startTracked(task);
+                OresFuture<Object> future = SourceTaskHandles.register(handle);
                 transfer.commit();
                 return future;
             } catch (RuntimeException | Error failure) {
@@ -2626,11 +2649,25 @@ public final class OresEvalRootNode extends RootNode {
                     final TaskScope runtimeScope;
                     try {
                         runtimeScope = OresScheduler.requireCurrent().newTaskScope();
+                        runtimeScope.cancelSiblingsOnFailure(!taskScope.supervise());
                     } catch (RuntimeException | Error failure) {
                         continuation.accept(task, SourceFlow.throwing(failure));
                         return;
                     }
 
+                    // deadline(ms): expiry cancels the scope's children with
+                    // reason "timeout"; they unwind their own defers/guards.
+                    final java.util.concurrent.ScheduledFuture<?> deadlineTimer;
+                    try {
+                        deadlineTimer = taskScope.deadlineMillis() == null ? null
+                                : SourceTaskHandles.cancelScopeAfter(
+                                        runtimeScope,
+                                        ((Number) eval(taskScope.deadlineMillis(), env)).longValue());
+                    } catch (RuntimeException | Error failure) {
+                        runtimeScope.cancel("task scope deadline rejected");
+                        continuation.accept(task, SourceFlow.throwing(failure));
+                        return;
+                    }
                     Env scopedEnv = env.withStructuredTaskScope(runtimeScope);
                     runBlock(
                             task,
@@ -2641,7 +2678,11 @@ public final class OresEvalRootNode extends RootNode {
                                             t,
                                             runtimeScope,
                                             flow,
-                                            continuation));
+                                            taskScope.supervise(),
+                                            (owner, finished) -> {
+                                                if (deadlineTimer != null) deadlineTimer.cancel(false);
+                                                continuation.accept(owner, finished);
+                                            }));
                     return;
                 }
 
@@ -2742,6 +2783,7 @@ public final class OresEvalRootNode extends RootNode {
                                 // try body owns it via the heap cleanup stack.
                                 t.disarmSourceCleanup(pendingFinally);
                                 if (flow.kind() == SourceFlowKind.THROW
+                                        && attempted.hasCatch()
                                         && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
                                     caught.define(
@@ -3223,6 +3265,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 TaskScope scope,
                 SourceFlow flow,
+                boolean supervise,
                 SourceFlowCont continuation) {
             boolean cancellingForUnwind =
                     flow.kind() == SourceFlowKind.THROW;
@@ -3250,7 +3293,8 @@ public final class OresEvalRootNode extends RootNode {
                             mergeStructuredChildOutcome(
                                     pendingFlow,
                                     scope,
-                                    cleanupCancellation));
+                                    cleanupCancellation,
+                                    supervise));
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(
                             task,
@@ -3275,14 +3319,16 @@ public final class OresEvalRootNode extends RootNode {
                                 mergeStructuredChildOutcome(
                                         pendingFlow,
                                         scope,
-                                        cleanupCancellation));
+                                        cleanupCancellation,
+                                        supervise));
                     });
         }
 
         private SourceFlow mergeStructuredChildOutcome(
                 SourceFlow flow,
                 TaskScope scope,
-                boolean cancellationWasCleanup) {
+                boolean cancellationWasCleanup,
+                boolean supervise) {
             dev.oreslang.runtime.TaskHandle.TaskOutcome<?> outcome =
                     scope.firstNonSuccessOutcome();
             if (outcome == null
@@ -3290,17 +3336,23 @@ public final class OresEvalRootNode extends RootNode {
                 return flow;
             }
             if (outcome instanceof dev.oreslang.runtime.TaskHandle.Failed<?> failed) {
-                return mergeCleanupFailure(flow, failed.failure());
-            }
-            if (outcome instanceof dev.oreslang.runtime.TaskHandle.Cancelled<?> cancelled) {
-                if (cancellationWasCleanup) {
+                // supervise: an ordinary child failure is the owner's to
+                // inspect via get_done(). A panic or failed cleanup still
+                // escapes: neither may be silently absorbed.
+                if (supervise
+                        && !(failed.failure() instanceof dev.oreslang.runtime.UntrappableTaskFailure)
+                        && !(failed.failure() instanceof dev.oreslang.runtime.TaskOwnedLeases.CleanupFailure)
+                        && !(failed.failure() instanceof OresScheduler.CleanupIncompleteError)) {
                     return flow;
                 }
-                return mergeCleanupFailure(
-                        flow,
-                        new java.util.concurrent.CancellationException(
-                                "structured Task child cancelled: "
-                                        + cancelled.reason()));
+                return mergeCleanupFailure(flow, failed.failure());
+            }
+            if (outcome instanceof dev.oreslang.runtime.TaskHandle.Cancelled<?>) {
+                // Like Kotlin: a cancelled child does not fail its parent.
+                // Its only cancellers are its owner (via its task handle) and
+                // this scope's own unwind. Failures are recorded ahead of
+                // cancellations by TaskScope, so none is hidden here.
+                return flow;
             }
             throw new IllegalStateException(
                     "unknown structured Task child outcome " + outcome);
@@ -6491,7 +6543,7 @@ public final class OresEvalRootNode extends RootNode {
                     catch (RuntimeException failure) {
                         // Guest catch may recover explicit denials and other ordinary
                         // errors, but must never consume panic or scheduler control.
-                        if (!isGuestCatchableFailure(failure)) throw failure;
+                        if (!tried.hasCatch() || !isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
@@ -7403,6 +7455,33 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
+                };
+                if (name.name().equals("task_cancel_requested")) return (Invokable) args -> {
+                    requireZero(args, "task_cancel_requested");
+                    return SourceTaskHandles.currentTaskCancelRequested();
+                };
+                if (name.name().equals("task_context")) return (Invokable) args -> {
+                    requireOne(args, "task_context");
+                    if (!(args.getFirst() instanceof dev.oreslang.runtime.OresSymbol key)) {
+                        throw new IllegalArgumentException("task_context expects a Symbol key");
+                    }
+                    String found = dev.oreslang.runtime.TaskContext.lookup(key.name());
+                    return found == null ? new OptionValue(false, null) : new OptionValue(true, found);
+                };
+                if (name.name().equals("$task_context_enter")) return (Invokable) args -> {
+                    if (args.size() != 2
+                            || !(args.get(0) instanceof dev.oreslang.runtime.OresSymbol key)
+                            || !(args.get(1) instanceof String value)) {
+                        throw new IllegalArgumentException(
+                                "task context(#key, value) requires a Symbol key and a String value");
+                    }
+                    dev.oreslang.runtime.TaskContext.enter(key.name(), value);
+                    return null;
+                };
+                if (name.name().equals("$task_context_exit")) return (Invokable) args -> {
+                    requireZero(args, "task context exit");
+                    dev.oreslang.runtime.TaskContext.exit();
+                    return null;
                 };
                 if (name.name().equals("Some")) return (Invokable) args -> {
                     requireOne(args, "Some");
@@ -8454,6 +8533,37 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, true);
                     };
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "Future.cancel");
+                        return requireOwnedTask(future, "cancel").cancel("cancelled");
+                    };
+                    case "cancel_with" -> (Invokable) args -> {
+                        requireOne(args, "Future.cancel_with");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresSymbol reason)) {
+                            throw new IllegalArgumentException(
+                                    "Future.cancel_with expects a Symbol reason");
+                        }
+                        return requireOwnedTask(future, "cancel_with").cancel(reason.name());
+                    };
+                    case "cancel_after" -> (Invokable) args -> {
+                        requireOne(args, "Future.cancel_after");
+                        if (!(args.getFirst() instanceof Number millis)) {
+                            throw new IllegalArgumentException(
+                                    "Future.cancel_after expects an int number of milliseconds");
+                        }
+                        return SourceTaskHandles.cancelAfter(
+                                requireOwnedTask(future, "cancel_after"), millis.longValue());
+                    };
+                    case "is_cancel_requested" -> (Invokable) args -> {
+                        requireZero(args, "Future.is_cancel_requested");
+                        return requireOwnedTask(future, "is_cancel_requested")
+                                .isCancellationRequested();
+                    };
+                    case "get_done" -> (Invokable) args -> {
+                        requireZero(args, "Future.get_done");
+                        return SourceTaskHandles.outcomeSymbol(
+                                requireOwnedTask(future, "get_done"));
+                    };
                     default -> throw new IllegalArgumentException(
                             "unknown Future instance member " + name);
                 };
@@ -8467,6 +8577,10 @@ public final class OresEvalRootNode extends RootNode {
                     case "race" -> (Invokable) args -> {
                         requireOne(args, "Future.race");
                         return OresFutures.race(asSequence(args.getFirst()));
+                    };
+                    case "first" -> (Invokable) args -> {
+                        requireOne(args, "Future.first");
+                        return SourceTaskHandles.first(asSequence(args.getFirst()));
                     };
                     default -> throw new IllegalArgumentException("unknown Future member " + name);
                 };
@@ -11697,6 +11811,15 @@ public final class OresEvalRootNode extends RootNode {
         if(value instanceof List<?> list)return new ArrayList<>(list);
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
+    }
+    /** Task-handle members apply only to Futures made by a task { } block. */
+    private static TaskHandle<?> requireOwnedTask(OresFuture<?> future, String member) {
+        TaskHandle<?> handle = SourceTaskHandles.lookup(future);
+        if (handle == null) {
+            throw new IllegalArgumentException("Future." + member
+                    + " is only available on a task { } handle; a borrowed Future cannot be cancelled by an observer");
+        }
+        return handle;
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}

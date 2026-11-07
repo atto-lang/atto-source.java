@@ -66,40 +66,90 @@ Things we do that most of these do not:
 | 7 | Failed cleanup quarantines without hanging actor STOP | **Fixed in this change**, tested |
 | 8 | Bounded cleanup (4096 cleanup dispatches) | Implemented, tested |
 | 9 | `all` / `race` / `all_settled` cancel losers; bounded `map_parallel`; waterfall; pipeline | Implemented (host), tested |
-| G1 | **Source-level task handle**: `task { }` returns `Future<T>` with no `cancel`/`get_done` | **Missing** — PR #1468 is stale/conflicting; issue #2150 |
-| G2 | **Timeouts as cancel scopes** (`with_timeout`, `task scope deadline 2s { }`) | **Missing** for ordinary tasks; wall deadlines exist only for untrusted actors |
-| G3 | **Scope policies**: supervisor scope (failures don't cancel siblings), first-success scope (Loom `ShutdownOnSuccess`) | **Missing**; scopes are fail-fast only |
-| G4 | **Task-local context** (Loom `ScopedValue`, Swift `TaskLocal`, Kotlin context) for trace IDs, deadlines, permissions | **Missing** |
-| G5 | Source `try`/`finally` without `catch`; source `throw`; typed `raise`/`recover` | **Missing** (parser requires `catch`; `throw` gated) |
-| G6 | Explicit cancel-safety contract for `select` arms and I/O (tokio-style "cancel-safe" ops) | Partial: host revokers exist; no source-level guarantee/annotation |
-| G7 | Cancellation checkpoint in long CPU loops without `await` | Partial: `rt cooperate` and soft preemption; no `rt check_cancelled` |
-| G8 | Executing CI evidence | Hosted runners still fail admission; this change was verified locally only |
+| 10 | **Source task handle**: `t.cancel()`, `t.cancel_with(#reason)`, `t.is_cancel_requested()`, `await t.get_done()` | Implemented (source), tested |
+| 11 | **Timeouts**: `t.cancel_after(ms)`; `task scope deadline(ms) { }` | Implemented (source), tested |
+| 12 | **Scope policies**: fail-fast by default (first failure cancels siblings); `task scope supervise { }` | Implemented (source), tested |
+| 13 | **`try { } finally { }`** without `catch` | Implemented (sync, async, cancel unwind, generators), tested |
+| 14 | **Task-local context**: `task context(#key, "v") { }`, `task_context(#key)` | Implemented (source), tested |
+| 15 | **Checkpoints**: CPU loops without `await` are cancellable (loop back-edges); `task_cancel_requested()` for early exit | Implemented, tested |
+| 16 | **First-success**: `Future.first([...])` returns the first result and cancels losing task handles (Loom `ShutdownOnSuccess`) | Implemented (source), tested |
+| G5b | Source `throw`; typed `raise`/`recover` | **Missing** (gated in the parser/checker) |
+| G6 | Cancel-safety contract for `select` arms, channels and native I/O at source level | **Partial** — see "Cancel-safety rules" |
+| G8 | Executing CI evidence | Hosted runners still fail admission; verified locally only |
 
-## Roadmap (recommended order)
+## Source API (v1)
 
-1. **G1 — source `Task<T>` handle.** Rebase or replace #1468:
-   `let Task<int> t = task { ... };` with `await t`, `t.cancel(#reason)`,
-   `await t.get_done()` → `TaskOutcome<T>` (`Success | Failed | Panicked |
-   Cancelled`). Lower to the existing `TaskHandle`; do not create a second
-   runtime. Every `task { }` stays owned by the innermost scope; dropping a
-   handle never detaches.
-2. **G2 — deadlines as scopes.** `task scope deadline 250ms { ... }` and
-   `with_timeout(d, || -> ...)`. Expiry is an ordinary authenticated
-   cancellation of the scope (reason `#timeout`), so cleanup and lock release
-   reuse rows 3 and 5. Generalize the untrusted-actor wall-deadline timer.
-3. **G3 — scope policies.** `task scope supervise { }` (child failure is
-   reported, siblings continue) and `task scope first { }` (first success
-   cancels the rest). Both must still join physically before exit.
-4. **G5 — `try`/`finally` without `catch`.** Smallest grammar change with high
-   value for cleanup code; `defer` remains the idiomatic form.
-5. **G4 — task-local context.** Immutable, inherited by child tasks, bound per
-   scope (Loom `ScopedValue` semantics, not mutable thread-locals).
-6. **G6/G7 — cancel-safety and checkpoints.** Document which awaits are
-   cancel-safe; add `rt check_cancelled` for CPU loops.
-7. **LLVM / other backends** implement the same state machine; the Java
-   tests in "Evidence" are the reference traces.
+```ores
+let Future<int> t = task { ... };       // owned by the innermost task scope, if any
+t.cancel();                             // request; cleanup runs in the task
+t.cancel_with(#no_longer_needed);       // request with a reason
+t.cancel_after(250);                    // timeout in ms (reason: timeout)
+t.is_cancel_requested();                // bool
+val outcome = await t.get_done();       // #success | #failed | #panicked |
+                                        // #cancelled | #cleanup_failed
+await t;                                // value, or the failure/cancellation
 
-## Bugs fixed in this change
+task scope { ... }                      // joins children; first failure cancels siblings
+task scope supervise { ... }            // failures stay with the child; panics still escape
+task scope deadline(250) { ... }        // children cancelled at expiry; scope then exits
+task scope deadline(250) supervise { }  // options combine
+
+task context(#trace_id, "abc") { ... }  // inherited by child tasks and awaited calls
+task_context(#trace_id)                 // Option<String>
+
+task_cancel_requested()                 // inside a task block: has cancel been asked?
+
+await Future.first([a, b])              // first result wins; losing task handles are
+                                        // cancelled; borrowed Futures only unsubscribed
+
+try { ... } finally { ... }             // failure propagates after finally
+```
+
+Semantics worth knowing:
+
+- `get_done()` never throws. It resolves only after the task has physically
+  stopped and its locks/leases were released. `await t` may resolve earlier.
+- Only a Future made by `task { }` has these members. Calling them on any
+  other Future (I/O, timers, `map`, channels) is an error: an observer cannot
+  cancel a producer it merely borrowed.
+- A cancelled child does not fail its scope (Kotlin semantics). A failed child
+  does, unless the scope is `supervise`. A failure is never hidden behind an
+  earlier sibling cancellation.
+- A task that returns after its cancellation was requested reports
+  `#cancelled`: the request won.
+- A deadline cancels the scope's *child tasks*. The scope body keeps running
+  to its own exit, then joins (Trio `move_on_after` for children). Use
+  `t.cancel_after(ms)` to bound a single task.
+- Context values are immutable `String`s in v1, so context can never carry
+  mutable state around the ownership checker.
+
+## Cancel-safety rules
+
+1. Cancellation is delivered only at suspension points: `await`,
+   `rt cooperate`, task scope exit, and loop back-edges (soft preemption).
+   Straight-line code between them is never interrupted.
+2. The compiler rejects suspension while a `MutexGuard` is live. So a
+   cancelled task can never be caught holding a lock; guards are released at
+   block exit before the next suspension point.
+3. Cancelling a task never cancels a Future it was awaiting; the waiter is
+   only unsubscribed. A borrowed producer's result is not lost.
+4. Cleanup (`defer`, `finally`, iterator close) may itself `await`; it runs
+   shielded (no second cancellation), bounded by 4,096 cleanup dispatches,
+   after which the task is quarantined as `#cleanup_failed`.
+5. Not yet proven at source level: exactly-once arbitration of a `select`
+   arm that wins at the same moment its task is cancelled, and native I/O
+   that cannot be interrupted. These stay open (G6).
+
+## Remaining work
+
+1. **`select`/channel cancel-safety tests** at source level (G6).
+2. **Source `throw` and typed `raise`/`recover`.**
+3. **Other backends** (LLVM, .NET, Wasm, Cranelift, Forge) need the same
+   behaviour; the Java guest tests listed below are the reference traces.
+4. **Formatter and syntax highlighters** need `task scope deadline(..)`,
+   `supervise`, `task context(..)`, `Future.first` and catch-less `try`.
+
+## Bugs fixed (PR #2521)
 
 - **Actor STOP never ran suspended task cleanup.** Merge `7ff9948aaf`
   ("reconcile actor STOP cleanup and graceful teardown") kept only the
@@ -120,7 +170,37 @@ Things we do that most of these do not:
   not block on `lock()`, stateless actor factories, `block { }` and
   `rt borrow` syntax) or had races. They now encode the intended behaviour.
 
-## Evidence
+## Bugs fixed (source task API change)
+
+- **Cancelled tasks skipped their `defer`s.** `TaskHandle.start` wrapped every
+  task in a plain lambda, dropping the cleanup-aware marker, and killed a
+  cancelled task by throwing at its next checkpoint. Every task in a
+  `task scope` and in `map_parallel` was cancelled without running cleanup.
+  Cleanup-aware tasks now keep the marker and are unwound by the scheduler.
+- **Lost wakeup on cancel-before-first-turn.** The checkpoint path set a
+  cleanup-aware task TERMINAL with no outcome; its deferred-cancellation
+  Future never settled (about 1 in 150 runs). Covered by
+  `SourceTaskCancelRaceTest` (200 runs).
+- **A cancelled child failed its scope**, and the first recorded non-success
+  could hide a later sibling failure. Both fixed.
+
+## Evidence (source task API change)
+
+Local, JDK 21, `mvn -o test`, macOS arm64, after merging `main` at
+`16813b448b`.
+
+- New guest-source tests: `SourceTaskCancelTest` (16),
+  `SourceTaskCancelRaceTest` (200 cancel-vs-first-turn races),
+  `SourceTryFinallyTest` (6), `SourceTaskContextTest` (6). All pass,
+  repeated 3-5 times.
+- Full suite, 4,227 tests: this branch 56 failures + 17 errors; untouched
+  `main` (4,198 tests) the same 56 + 17. **No test fails on this branch that
+  passes on `main`.** The failures are pre-existing and unrelated.
+- A 1,200-run stress of cancel-vs-first-turn found the lost wakeup before the
+  fix and none after.
+
+## Evidence (PR #2521)
+
 
 Local, JDK 21 (Homebrew OpenJDK 21), `mvn -o test`, macOS arm64.
 
