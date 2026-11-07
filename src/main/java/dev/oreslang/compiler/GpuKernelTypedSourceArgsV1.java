@@ -88,30 +88,56 @@ public final class GpuKernelTypedSourceArgsV1 {
     }
 
     /**
-     * Only an actual direct source launch in the specified host callable may
-     * supply lexical argument binding evidence. Nested source call sites are
-     * deliberately unproved by this small stage (fail closed).
+     * G1e cannot prove host function SSA, local shadowing, early exit or
+     * effects yet. Admit ONLY one direct launch (assignment to a fresh
+     * binding or expression statement) and optionally a trailing bare return.
+     * Reject every other statement instead of returning a misleading report.
+     *
+     * This remains declarative source shape, never an execution capability.
      */
     private static void requireMatchingCallSite(Ast.FunctionDecl caller,
                                                 GpuKernelSourceLinkV1.Link link) {
         int matched = 0;
+        boolean returned = false;
+        java.util.HashSet<String> formals = new java.util.HashSet<>();
+        for (Ast.Param param : caller.parameters())
+            formals.add(param.name());
         for (Ast.Stmt statement : caller.body()) {
-            Ast.Expr expression = null;
-            if (statement instanceof Ast.BindingStmt binding)
-                expression = binding.initializer();
-            else if (statement instanceof Ast.ExprStmt evaluated)
-                expression = evaluated.expression();
-            else if (statement instanceof Ast.ReturnStmt returned)
-                expression = returned.value();
-            if (!(expression instanceof Ast.GpuLaunchExpr launch))
+            if (returned)
+                throw reject("unreachable statement after source return");
+            if (statement instanceof Ast.ReturnStmt ret) {
+                if (matched != 1 || ret.value() != null)
+                    throw reject("GPU source launch needs only an optional trailing bare return");
+                returned = true;
                 continue;
+            }
+
+            Ast.Expr expression;
+            if (statement instanceof Ast.BindingStmt binding) {
+                if (binding.kind() == Ast.BindingKind.LET
+                        || binding.inferredTypeName() != null
+                        || binding.name() == null
+                        || binding.name().isBlank()
+                        || formals.contains(binding.name()))
+                    throw reject("mutable, inferred or shadowing launch-result binding");
+                expression = binding.initializer();
+            } else if (statement instanceof Ast.ExprStmt evaluated) {
+                expression = evaluated.expression();
+            } else {
+                throw reject("unproven host control flow or effect around GPU launch");
+            }
+            if (!(expression instanceof Ast.GpuLaunchExpr launch))
+                throw reject("unproven host statement or local alias around GPU launch");
+            if (++matched != 1)
+                throw reject("multiple source GPU launches require ownership effect proof");
+
             var candidate = GpuLaunchSourceHirV1.lower(launch);
             String target = candidate.kernelSymbol();
             if (!target.equals(link.kernel())
                     && !target.equals(link.module() + "." + link.kernel()))
-                continue;
-            if (++matched != 1 || candidate.orderedArguments().size() != link.arguments().size())
-                throw reject("ambiguous direct GPU launch source binding");
+                throw reject("direct GPU launch target differs from source link");
+            if (candidate.orderedArguments().size() != link.arguments().size())
+                throw reject("direct GPU launch argument count differs from source link");
             for (int i = 0; i < link.arguments().size(); i++) {
                 Ast.Expr raw = candidate.orderedArguments().get(i);
                 var bound = link.arguments().get(i);
