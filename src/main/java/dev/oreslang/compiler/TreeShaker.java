@@ -5,6 +5,7 @@ import dev.oreslang.parser.Parser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -24,6 +25,8 @@ import java.util.Set;
  */
 public final class TreeShaker {
     private static final Object UNKNOWN = new Object();
+    private static final int MAX_SEMANTIC_SYMBOLS = 100_000;
+    private static final int MAX_REACHABLE_SYMBOLS = 100_000;
 
     private TreeShaker() { }
 
@@ -38,12 +41,22 @@ public final class TreeShaker {
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
             Map<String, Object> compileTimeConstants,
-            Set<String> rootSymbols) {
+            Set<String> rootSymbols,
+            boolean libraryBuild,
+            Set<String> semanticSymbols) {
         public Result {
+            if (program == null || retainedSymbols == null ||
+                    removedSymbols == null || compileTimeConstants == null ||
+                    rootSymbols == null || semanticSymbols == null) {
+                throw new IllegalArgumentException(
+                        "tree-shaker result fields cannot be null");
+            }
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
-            compileTimeConstants = Map.copyOf(compileTimeConstants);
+            compileTimeConstants = Collections.unmodifiableMap(
+                    new LinkedHashMap<>(compileTimeConstants));
             rootSymbols = Set.copyOf(rootSymbols);
+            semanticSymbols = Set.copyOf(semanticSymbols);
         }
 
         public boolean retained(String symbol) {
@@ -110,7 +123,14 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues, roots);
+            return new Result(
+                    pruned,
+                    retained,
+                    removed,
+                    constantValues,
+                    roots,
+                    options.preservePublicApi(),
+                    Set.copyOf(symbols.keySet()));
         }
 
         private void collectConstants() {
@@ -119,7 +139,11 @@ public final class TreeShaker {
                     if (declaration instanceof Ast.FieldDecl field
                             && field.bindingKind() == Ast.BindingKind.CONST) {
                         String qualified = qualify(module.name(), field.name());
-                        constants.put(qualified, field);
+                        Ast.FieldDecl prior = constants.putIfAbsent(qualified, field);
+                        if (prior != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate compile-time constant identity '" + qualified + "'");
+                        }
                         String previous = uniqueConstants.putIfAbsent(field.name(), qualified);
                         if (previous != null && !previous.equals(qualified)) {
                             uniqueConstants.remove(field.name());
@@ -135,7 +159,11 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     if (!(declaration instanceof Ast.FunctionDecl function)) continue;
                     String qualified = qualify(module.name(), function.name());
-                    inlineFunctions.put(qualified, function);
+                    Ast.FunctionDecl prior = inlineFunctions.putIfAbsent(qualified, function);
+                    if (prior != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate inline function identity '" + qualified + "'");
+                    }
                     String previous = uniqueInlineFunctions.putIfAbsent(function.name(), qualified);
                     if (previous != null && !previous.equals(qualified)) {
                         uniqueInlineFunctions.remove(function.name());
@@ -230,6 +258,9 @@ public final class TreeShaker {
                 return created.arguments().stream().anyMatch(this::containsLambda);
             }
             if (expression instanceof Ast.AwaitExpr awaited) return containsLambda(awaited.expression());
+            // Task bodies are independently scheduled effect regions. Never
+            // constant-inline a callable through this boundary.
+            if (expression instanceof Ast.TaskExpr) return true;
             if (expression instanceof Ast.ListExpr list) {
                 return list.elements().stream().anyMatch(this::containsLambda);
             }
@@ -698,6 +729,13 @@ public final class TreeShaker {
                 return List.of(new Ast.BlockStmt(
                         rewriteStatements(block.body(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.TaskScopeStmt scope) {
+                // Preserve the structured-concurrency boundary exactly. It is
+                // a physical-quiescence effect and must never be folded into a
+                // plain block even when its children appear side-effect free.
+                return List.of(new Ast.TaskScopeStmt(
+                        rewriteStatements(scope.body(), module, new LinkedHashMap<>(locals))));
+            }
             if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
                 return List.of(statement);
             }
@@ -974,6 +1012,15 @@ public final class TreeShaker {
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
             }
+            if (expression instanceof Ast.TaskExpr task) {
+                return new Ast.TaskExpr(
+                        task.domain(),
+                        rewriteStatements(
+                                task.body(),
+                                module,
+                                new LinkedHashMap<>(locals)),
+                        task.legacyNb());
+            }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(
                         operation.operation(),
@@ -1031,8 +1078,16 @@ public final class TreeShaker {
                     String name = declarationName(declaration);
                     if (name == null) continue;
                     String id = qualify(module.name(), name);
+                    if (symbols.size() >= MAX_SEMANTIC_SYMBOLS) {
+                        throw new IllegalArgumentException(
+                                "tree-shaking semantic symbol budget exceeded");
+                    }
                     Symbol symbol = new Symbol(id, module.name(), declaration);
-                    symbols.put(id, symbol);
+                    Symbol prior = symbols.putIfAbsent(id, symbol);
+                    if (prior != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate semantic symbol identity '" + id + "'");
+                    }
                     String previous = uniqueSymbols.putIfAbsent(name, id);
                     if (previous != null && !previous.equals(id)) {
                         uniqueSymbols.remove(name);
@@ -1081,7 +1136,13 @@ public final class TreeShaker {
         }
 
         private void mark(String id) {
-            if (id != null && symbols.containsKey(id) && retained.add(id)) work.addLast(id);
+            if (id == null || !symbols.containsKey(id) || retained.contains(id)) return;
+            if (retained.size() >= MAX_REACHABLE_SYMBOLS) {
+                throw new IllegalArgumentException(
+                        "tree-shaking reachable symbol budget exceeded");
+            }
+            retained.add(id);
+            work.addLast(id);
         }
 
         private void markRuntimeModuleMembers(String moduleName) {
@@ -1233,6 +1294,8 @@ public final class TreeShaker {
                     scanExpression(module, deferred.expression(), locals);
                 } else if (statement instanceof Ast.BlockStmt block) {
                     scanStatements(module, block.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.TaskScopeStmt scope) {
+                    scanStatements(module, scope.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.LoopStmt loop) {
                     scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.DoWhileStmt loop) {
@@ -1386,6 +1449,10 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 scanExpression(module, awaited.expression(), locals);
+            } else if (expression instanceof Ast.TaskExpr task) {
+                // Task execution is deferred but its referenced code/types are
+                // still reachable from the enclosing executable.
+                scanStatements(module, task.body(), new LinkedHashSet<>(locals));
             }
             else if (expression instanceof Ast.ChannelOpExpr operation) {
                 scanExpression(module, operation.channel(), locals);
