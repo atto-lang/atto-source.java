@@ -193,6 +193,73 @@ final class ActorStackM4IntegrationTest {
     }
 
     @Test
+    void actorAwaitRejectsOpenCallFrameWithoutResumingTheLeakedLease() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> frames = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> future = new AtomicReference<>();
+            AtomicInteger dispatches = new AtomicInteger();
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                frames.set(ActorRuntime.currentActorFrameArena());
+                future.set(runtime.startActorTask(resume -> {
+                    dispatches.incrementAndGet();
+                    GuestInvocationFrame leaked = GuestInvocationFrame.enter(0, 0);
+                    assertNotNull(leaked);
+                    return OresScheduler.await(gate);
+                }));
+            });
+            actor.send("fault");
+            until(() -> future.get() != null && future.get().isDone());
+            assertThrows(ExecutionException.class,
+                    () -> future.get().get(3, TimeUnit.SECONDS));
+            gate.completeFromRuntime(1);
+            assertEquals(1, dispatches.get(),
+                    "scheduler must not arm or resume the rejected await");
+            assertTrue(frames.get().isPoisoned());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, frames.get().usedBytes());
+        }
+    }
+
+    @Test
+    void cancellationAfterValidScalarCallRetiresOnlyTheSuspendedTaskLease()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> frames = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
+            AtomicInteger steps = new AtomicInteger();
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                frames.set(ActorRuntime.currentActorFrameArena());
+                pending.set(runtime.startActorTask(resume -> {
+                    steps.incrementAndGet();
+                    try (GuestInvocationFrame scalar = GuestInvocationFrame.enter(0, 2)) {
+                        scalar.writeScalarArguments(new long[]{20, 22});
+                        assertEquals(42L,
+                                scalar.readScalarArgument(0) + scalar.readScalarArgument(1));
+                    }
+                    return OresScheduler.await(gate);
+                }));
+            });
+            actor.send("start");
+            until(() -> steps.get() == 1 && frames.get() != null
+                    && frames.get().usedBytes() == ActorSourceTaskFrame.FRAME_CHARGE_BYTES);
+            assertEquals(1, frames.get().liveFrames());
+            assertTrue(pending.get().cancel(false));
+            until(() -> frames.get().usedBytes() == 0);
+            assertEquals(0, frames.get().liveFrames());
+            assertFalse(frames.get().isPoisoned());
+            assertTrue(actor.isAlive());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
     void scalarFrameFromRootCannotFakeActorSourceTaskOwnership() {
         assertNull(OresScheduler.currentExecutionContext());
         try (GuestInvocationFrame scope = GuestInvocationFrame.enter(0, 2)) {
