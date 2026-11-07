@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,17 +30,49 @@ public final class SharedCodeImageStore implements AutoCloseable {
     public static final class CodeImage {
         private final String codeUnitId;
         private final Ast.Program program;
+        private final List<OresSymbol> staticLiterals;
+        private final OresSymbolLiteralImageStore literalStore;
+        private final OresSymbolLiteralImageStore.Lease literalLease;
 
-        private CodeImage(String codeUnitId, Ast.Program program) {
+        private CodeImage(String codeUnitId, Ast.Program program, List<OresSymbol> literals) {
             if (Objects.requireNonNull(codeUnitId, "codeUnitId").isBlank()) {
                 throw new IllegalArgumentException("code unit id cannot be blank");
             }
             this.codeUnitId = codeUnitId;
             this.program = Objects.requireNonNull(program, "program");
+            this.staticLiterals = List.copyOf(Objects.requireNonNull(literals, "literals"));
+            // Each linked code unit has its OWN immutable region: importing a
+            // ninth source unit must not evict the eight-generation hot-reload
+            // quota of a completely different code unit.
+            OresSymbolLiteralImageStore image = new OresSymbolLiteralImageStore();
+            try {
+                image.publish(staticLiterals);
+                literalLease = image.pinLatest();
+            } catch (RuntimeException | Error failed) {
+                image.close();
+                throw failed;
+            }
+            literalStore = image;
         }
 
         public String codeUnitId() { return codeUnitId; }
         public Ast.Program program() { return program; }
+
+        /**
+         * Only compiler-lexed static literals are pooled. Dynamic guest names
+         * remain independent non-interned values; correctness is logical
+         * kind/name equality, not pointer or slot identity.
+         */
+        public OresSymbol staticLiteralValue(OresSymbol value) {
+            Objects.requireNonNull(value, "value");
+            int ordinal = literalLease.indexOf(value);
+            return ordinal < 0 ? value : literalLease.get(ordinal);
+        }
+
+        private void close() {
+            literalLease.close();
+            literalStore.close();
+        }
 
         @Override
         public String toString() {
@@ -51,16 +84,27 @@ public final class SharedCodeImageStore implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
 
     public CodeImage publish(String codeUnitId, Ast.Program immutableProgram) {
-        CodeImage image = new CodeImage(codeUnitId, immutableProgram);
+        return publish(codeUnitId, immutableProgram, List.of());
+    }
+
+    public CodeImage publish(
+            String codeUnitId, Ast.Program immutableProgram, List<OresSymbol> literalCatalog) {
+        Objects.requireNonNull(literalCatalog, "literalCatalog");
         synchronized (images) {
             if (closed.get()) throw new IllegalStateException("shared code store is closed");
-            CodeImage prior = images.putIfAbsent(codeUnitId, image);
-            if (prior != null && prior.program() != immutableProgram) {
-                throw new IllegalStateException(
-                        "attempted to replace already-linked code unit '" + codeUnitId
-                        + "' without starting a new versioned code generation");
+            CodeImage prior = images.get(codeUnitId);
+            if (prior != null) {
+                if (prior.program() != immutableProgram
+                        || !prior.staticLiterals.equals(literalCatalog)) {
+                    throw new IllegalStateException(
+                            "attempted to replace already-linked code unit '" + codeUnitId
+                                    + "' without starting a new versioned code generation");
+                }
+                return prior;
             }
-            return prior == null ? image : prior;
+            CodeImage image = new CodeImage(codeUnitId, immutableProgram, literalCatalog);
+            images.put(codeUnitId, image);
+            return image;
         }
     }
 
@@ -80,6 +124,7 @@ public final class SharedCodeImageStore implements AutoCloseable {
     public void close() {
         synchronized (images) {
             if (!closed.compareAndSet(false, true)) return;
+            for (CodeImage image : images.values()) image.close();
             images.clear();
         }
     }
