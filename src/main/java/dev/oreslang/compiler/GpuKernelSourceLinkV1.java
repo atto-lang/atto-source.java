@@ -56,7 +56,8 @@ public final class GpuKernelSourceLinkV1 {
         public boolean executable() { return false; }
     }
 
-    private record Kernel(String module, GpuKernelSourceHirV1.Plan plan) { }
+    private record Kernel(String module, GpuKernelSourceHirV1.Plan plan,
+                          boolean publiclyExported) { }
 
     private static IllegalArgumentException error(String code, String why) {
         return new IllegalArgumentException("GPU-LAUNCH-" + code + ": " + why);
@@ -68,7 +69,8 @@ public final class GpuKernelSourceLinkV1 {
         GpuKernelSourceHirV1.Plan plan = GpuKernelSourceHirV1.lower(declaration);
         String name = plan.symbol();
         String key = module.name() + "." + name;
-        if (qualified.putIfAbsent(key, new Kernel(module.name(), plan)) != null)
+        if (qualified.putIfAbsent(key, new Kernel(module.name(), plan,
+                declaration.signature().visibility() == Ast.Visibility.PUBLIC)) != null)
             throw error("001", "duplicate gpu fnc declaration " + key);
         unqualified.computeIfAbsent(name, ignored -> new ArrayList<>())
                 .add(qualified.get(key));
@@ -99,24 +101,21 @@ public final class GpuKernelSourceLinkV1 {
         throw error("006", "GPU argument calls, suspension and host effects are not source-proven");
     }
 
-    private static void link(Ast.GpuLaunchExpr launch,
+    private static void link(Ast.GpuLaunchExpr launch, String callerModule,
                              Map<String, Kernel> qualified,
                              Map<String, List<Kernel>> unqualified,
                              List<Link> out) {
         GpuLaunchSourceHirV1.Candidate source = GpuLaunchSourceHirV1.lower(launch);
         String target = source.kernelSymbol();
-        Kernel kernel;
-        if (target.contains(".")) {
-            kernel = qualified.get(target);
-        } else {
-            List<Kernel> matches = unqualified.get(target);
-            if (matches != null && matches.size() > 1)
-                throw error("001", "ambiguous gpu fnc kernel name " + target
-                        + "; qualify its module");
-            kernel = matches == null || matches.isEmpty() ? null : matches.getFirst();
-        }
+        // No implicit cross-module search. Name-only references are lexical,
+        // and explicitly qualified cross-module access requires pub visibility.
+        // Imports/linker alias resolution is not implemented at this stage.
+        Kernel kernel = qualified.get(target.contains(".")
+                ? target : callerModule + "." + target);
         if (kernel == null)
-            throw error("001", "GPU kernel declaration not found: " + target);
+            throw error("001", "GPU kernel declaration not found in lexical module: " + target);
+        if (!callerModule.equals(kernel.module()) && !kernel.publiclyExported())
+            throw error("001", "private GPU kernel is inaccessible across modules: " + target);
         List<GpuKernelSourceHirV1.Parameter> parameters = kernel.plan().parameters();
         if (parameters.size() != source.orderedArguments().size())
             throw error("002", "kernel argument arity mismatch for " + target
@@ -130,42 +129,42 @@ public final class GpuKernelSourceLinkV1 {
                 Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE));
     }
 
-    private static void expression(Ast.Expr value,
+    private static void expression(Ast.Expr value, String callerModule,
                                    Map<String, Kernel> qualified,
                                    Map<String, List<Kernel>> unqualified,
                                    List<Link> out, int depth) {
         if (value == null) return;
         if (depth > 64) throw error("006", "GPU launch expression tree exceeds quota");
         if (value instanceof Ast.GpuLaunchExpr launch) {
-            link(launch, qualified, unqualified, out);
+            link(launch, callerModule, qualified, unqualified, out);
         } else if (value instanceof Ast.AwaitExpr awaited) {
-            expression(awaited.expression(), qualified, unqualified, out, depth + 1);
+            expression(awaited.expression(), callerModule, qualified, unqualified, out, depth + 1);
         } else if (value instanceof Ast.CallExpr call) {
-            expression(call.callee(), qualified, unqualified, out, depth + 1);
+            expression(call.callee(), callerModule, qualified, unqualified, out, depth + 1);
             for (Ast.Expr arg : call.arguments())
-                expression(arg, qualified, unqualified, out, depth + 1);
+                expression(arg, callerModule, qualified, unqualified, out, depth + 1);
         } else if (value instanceof Ast.BinaryExpr binary) {
-            expression(binary.left(), qualified, unqualified, out, depth + 1);
-            expression(binary.right(), qualified, unqualified, out, depth + 1);
+            expression(binary.left(), callerModule, qualified, unqualified, out, depth + 1);
+            expression(binary.right(), callerModule, qualified, unqualified, out, depth + 1);
         } else if (value instanceof Ast.UnaryExpr unary) {
-            expression(unary.operand(), qualified, unqualified, out, depth + 1);
+            expression(unary.operand(), callerModule, qualified, unqualified, out, depth + 1);
         } else if (value instanceof Ast.AssignExpr assign) {
-            expression(assign.target(), qualified, unqualified, out, depth + 1);
-            expression(assign.value(), qualified, unqualified, out, depth + 1);
+            expression(assign.target(), callerModule, qualified, unqualified, out, depth + 1);
+            expression(assign.value(), callerModule, qualified, unqualified, out, depth + 1);
         } else if (value instanceof Ast.IndexExpr index) {
-            expression(index.receiver(), qualified, unqualified, out, depth + 1);
-            expression(index.index(), qualified, unqualified, out, depth + 1);
+            expression(index.receiver(), callerModule, qualified, unqualified, out, depth + 1);
+            expression(index.index(), callerModule, qualified, unqualified, out, depth + 1);
         } else if (value instanceof Ast.ConditionalExpr conditional) {
-            expression(conditional.condition(), qualified, unqualified, out, depth + 1);
-            expression(conditional.whenTrue(), qualified, unqualified, out, depth + 1);
-            expression(conditional.whenFalse(), qualified, unqualified, out, depth + 1);
+            expression(conditional.condition(), callerModule, qualified, unqualified, out, depth + 1);
+            expression(conditional.whenTrue(), callerModule, qualified, unqualified, out, depth + 1);
+            expression(conditional.whenFalse(), callerModule, qualified, unqualified, out, depth + 1);
         }
         // This is a source-level diagnostic preflight, NOT a completeness
         // proof for arbitrary nested AST nodes. Every unproven launch remains
         // blocked by the normal GPU-LAUNCH-008 typechecker path.
     }
 
-    private static void statements(List<Ast.Stmt> body,
+    private static void statements(List<Ast.Stmt> body, String callerModule,
                                    Map<String, Kernel> qualified,
                                    Map<String, List<Kernel>> unqualified,
                                    List<Link> out, int depth) {
@@ -173,19 +172,19 @@ public final class GpuKernelSourceLinkV1 {
             throw error("006", "GPU launch source control-flow quota exceeded");
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BindingStmt bind) {
-                expression(bind.initializer(), qualified, unqualified, out, 0);
+                expression(bind.initializer(), callerModule, qualified, unqualified, out, 0);
             } else if (stmt instanceof Ast.ExprStmt expr) {
-                expression(expr.expression(), qualified, unqualified, out, 0);
+                expression(expr.expression(), callerModule, qualified, unqualified, out, 0);
             } else if (stmt instanceof Ast.ReturnStmt ret) {
-                expression(ret.value(), qualified, unqualified, out, 0);
+                expression(ret.value(), callerModule, qualified, unqualified, out, 0);
             } else if (stmt instanceof Ast.BlockStmt block) {
-                statements(block.body(), qualified, unqualified, out, depth + 1);
+                statements(block.body(), callerModule, qualified, unqualified, out, depth + 1);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    expression(branch.condition(), qualified, unqualified, out, 0);
-                    statements(branch.body(), qualified, unqualified, out, depth + 1);
+                    expression(branch.condition(), callerModule, qualified, unqualified, out, 0);
+                    statements(branch.body(), callerModule, qualified, unqualified, out, depth + 1);
                 }
-                statements(conditional.elseBody(), qualified, unqualified, out, depth + 1);
+                statements(conditional.elseBody(), callerModule, qualified, unqualified, out, depth + 1);
             }
         }
     }
@@ -214,7 +213,7 @@ public final class GpuKernelSourceLinkV1 {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl host)
-                    statements(host.body(), qualified, unqualified, links, 0);
+                    statements(host.body(), module.name(), qualified, unqualified, links, 0);
             }
         }
         return new Report(links, Evidence.SOURCE_SIGNATURE_ONLY_NOT_EXECUTABLE);

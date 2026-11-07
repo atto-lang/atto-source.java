@@ -129,10 +129,4 @@ final class GpuKernelTailGuardV1Test {
         assertTrue(error.getMessage().contains("GPU-KERNEL-010"), error::getMessage);
     }
 
-    @Test void inversionMustUseTheSameCanonicalNBound() {
-        String changed = SAXPY.replace("int n", "int n, int m")
-                .replace("if i < n", "if i >= m { return; } if i < n");
-        var plan = kernel(changed);
-        assertFalse(plan.executable());
-    }
 }

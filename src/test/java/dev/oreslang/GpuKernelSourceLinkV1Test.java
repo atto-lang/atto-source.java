@@ -97,7 +97,8 @@ final class GpuKernelSourceLinkV1Test {
     }
 
     @Test void qualifiedKernelIdentityIsDeterministicAndStillNotExecutable() {
-        Ast.Program parsed = Parser.parse(KERNEL + HOST);
+        Ast.Program parsed = Parser.parse(KERNEL
+                + HOST.replace("launch saxpy(", "launch gpu_math.saxpy("));
         Ast.GpuKernelDecl kernel = (Ast.GpuKernelDecl)
                 parsed.modules().getFirst().declarations().getFirst();
         Ast.FunctionDecl host = (Ast.FunctionDecl)
@@ -108,5 +109,36 @@ final class GpuKernelSourceLinkV1Test {
                 new Ast.Program(List.of(kernelModule, hostModule)));
         assertEquals("gpu_math", report.links().getFirst().module());
         assertFalse(report.executable());
+    }
+
+    @Test void unrelatedModuleCannotAcquireAnUnqualifiedGpuKernel() {
+        Ast.Program parsed = Parser.parse(KERNEL + HOST);
+        Ast.GpuKernelDecl kernel = (Ast.GpuKernelDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.FunctionDecl host = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        var assembled = new Ast.Program(List.of(
+                new Ast.ModuleDecl("gpu_math", List.of(kernel)),
+                new Ast.ModuleDecl("host", List.of(host))));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> GpuKernelSourceLinkV1.audit(assembled));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-001"), error::getMessage);
+    }
+
+    @Test void privateGpuKernelIsNotCallableFromAnotherModuleEvenWhenQualified() {
+        String privateKernel = KERNEL.replace("pub gpu fnc", "private gpu fnc");
+        Ast.Program parsed = Parser.parse(privateKernel
+                + HOST.replace("launch saxpy(", "launch gpu_math.saxpy("));
+        Ast.GpuKernelDecl kernel = (Ast.GpuKernelDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.FunctionDecl host = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        var assembled = new Ast.Program(List.of(
+                new Ast.ModuleDecl("gpu_math", List.of(kernel)),
+                new Ast.ModuleDecl("host", List.of(host))));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> GpuKernelSourceLinkV1.audit(assembled));
+        assertTrue(error.getMessage().contains("GPU-LAUNCH-001"), error::getMessage);
+        assertTrue(error.getMessage().contains("private GPU kernel"), error::getMessage);
     }
 }
