@@ -23,7 +23,7 @@ if bash "$verify" "$java" "$tmp/missing.c" >"$tmp/missing.log" 2>&1; then
 fi
 
 cp "$native" "$tmp/duplicate.c"
-printf '\n/* duplicate symbol negative canary: Java_dev_atto_runtime_NativeCarrierExecutor_nativeStart */\n' >> "$tmp/duplicate.c"
+printf '\nJNIEXPORT void JNICALL Java_dev_atto_runtime_NativeCarrierExecutor_nativeStart(JNIEnv *env, jclass cls, jlong handle) { (void)env; (void)cls; (void)handle; }\n' >> "$tmp/duplicate.c"
 if bash "$verify" "$java" "$tmp/duplicate.c" >"$tmp/duplicate.log" 2>&1; then
   echo "::error::Duplicate JNI export mutation survived" >&2
   exit 1

@@ -41,3 +41,47 @@ jobs:
           javac_path="$(readlink -f "$(command -v javac)")"
           java_home="$(dirname "$(dirname "$javac_path")")"
           cc -std=c11 -fsyntax-only -I"$java_home/include" -I"$java_home/include/linux" src/main/c/oresthread.c
+
+  jni-runtime-smoke:
+    needs: namespace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable head and tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "EXACT_HEAD=$EXPECTED_HEAD"
+          echo "EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build native carrier and inspect exported JNI symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-native-thread.sh
+          test -s target/native/liboresthread.so
+          nm -D --defined-only target/native/liboresthread.so | awk '{print $3}' |
+            grep -E '^Java_.*_NativeCarrierExecutor_' | LC_ALL=C sort > target/native/jni-exported.txt
+          sed -nE 's/^.*[[:space:]]native[[:space:]]+[^[:space:]]+[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\(.*/Java_dev_atto_runtime_NativeCarrierExecutor_\1/p' \
+            src/main/java/dev/atto/runtime/NativeCarrierExecutor.java |
+            LC_ALL=C sort > target/native/jni-expected.txt
+          test "$(wc -l < target/native/jni-expected.txt)" -ge 10
+          diff -u target/native/jni-expected.txt target/native/jni-exported.txt
+          echo "Native JNI exports verified: $(wc -l < target/native/jni-exported.txt)"
+      - name: Execute native carrier JUnit smoke
+        run: |
+          mvn -B -ntp -Dtest=NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest -DfailIfNoTests=true test
+          grep -H '^Tests run:' target/surefire-reports/dev.atto.runtime.NativeCarrierExecutorTest.txt target/surefire-reports/dev.atto.runtime.ActorRuntimeNativeCarrierTest.txt

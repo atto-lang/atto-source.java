@@ -19,7 +19,8 @@ mapfile -t declared < <(
 }
 
 mapfile -t exported < <(
-  grep -oE 'Java_[A-Za-z0-9_]+_NativeCarrierExecutor_[A-Za-z0-9_]+' "$native_source" |
+  grep -oE 'JNIEXPORT[[:space:]]+[A-Za-z0-9_]+[[:space:]]+JNICALL[[:space:]]+Java_[A-Za-z0-9_]+_NativeCarrierExecutor_[A-Za-z0-9_]+' "$native_source" |
+    sed -E 's/^.*JNICALL[[:space:]]+//' |
     LC_ALL=C sort
 )
 (( ${#exported[@]} > 0 )) || {

@@ -23,3 +23,7 @@ A successful static gate is not compiler-backed evidence. Before this PR can be 
 ## JNI binding hardening
 
 The first migration commit moved `dev.oreslang.runtime.NativeCarrierExecutor` without changing C JNI exports. This would cause `UnsatisfiedLinkError` when loading `liboresthread`. The follow-up changes all ten `Java_dev_oreslang_runtime_NativeCarrierExecutor_*` exports to `Java_dev_atto_runtime_NativeCarrierExecutor_*`. `scripts/verify-atto-jni-bindings.sh` compares the declared native methods with the C symbol multiset; `scripts/test-atto-jni-bindings.sh` adds negative mutation fixtures for old package, missing symbol, duplicate symbol, and missing declaration. The exact-head namespace workflow also includes a native C syntax check with the runner JDK's JNI headers. Authored checks are not counted as executed until runner admission succeeds.
+
+## Required next execution gate
+
+The optional `jni-runtime-smoke` job is dependent on the exact-head namespace job and runs the source-native `scripts/build-native-thread.sh` with GraalVM/JDK 25, compares the compiled `liboresthread.so` exported JNI symbol set with declarations, then runs `NativeCarrierExecutorTest` and `ActorRuntimeNativeCarrierTest` through Maven Surefire. The first job rerun on November 7 again reported `steps=null` with no logs; these smoke tests have therefore not executed, and the runner-admission blocker remains.
