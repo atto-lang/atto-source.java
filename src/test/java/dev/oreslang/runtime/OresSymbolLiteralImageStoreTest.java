@@ -15,6 +15,96 @@ import java.util.concurrent.Future;
 import static org.junit.jupiter.api.Assertions.*;
 
 class OresSymbolLiteralImageStoreTest {
+    @Test void emptyLiteralImageHasNoOrdinalsAndRetainsItsGeneration() {
+        try (var store = new OresSymbolLiteralImageStore()) {
+            long epoch = store.publish(List.of());
+            try (var pinned = store.pinExpected(epoch)) {
+                assertEquals(0, pinned.size());
+                assertEquals(0L, pinned.payloadBytes());
+                assertEquals(-1, pinned.indexOf(OresSymbol.process("ready")));
+                assertThrows(IndexOutOfBoundsException.class, () -> pinned.get(0));
+            }
+            assertEquals(1, store.liveGenerationCount());
+        }
+    }
+
+    @Test void maximalAsciiImageHasExactlyOneMiBOfCanonicalPayload() {
+        try (var store = new OresSymbolLiteralImageStore()) {
+            List<OresSymbol> full = new ArrayList<>();
+            for (int i = 0; i < OresSymbolLiteralImageStore.MAX_LITERALS; i++) {
+                String prefix = "tag_" + i + "_";
+                full.add(OresSymbol.process(prefix + "x".repeat(256 - prefix.length())));
+            }
+            long epoch = store.publish(full);
+            try (var pin = store.pinExpected(epoch)) {
+                assertEquals(OresSymbolLiteralImageStore.MAX_LITERALS, pin.size());
+                assertEquals(OresSymbolLiteralImageStore.MAX_PAYLOAD_UTF8_BYTES,
+                        pin.payloadBytes());
+                assertEquals(full.get(full.size() - 1), pin.get(full.size() - 1));
+                assertEquals(full.size() - 1, pin.indexOf(full.get(full.size() - 1)));
+            }
+            full.clear();
+            assertEquals(1, store.liveGenerationCount());
+        }
+    }
+
+    @Test void rejectedMaximalImagePlusOneLeavesPreviousImagePublished() {
+        try (var store = new OresSymbolLiteralImageStore()) {
+            long old = store.publish(List.of(OresSymbol.process("ready")));
+            List<OresSymbol> overflowing = new ArrayList<>();
+            for (int i = 0; i <= OresSymbolLiteralImageStore.MAX_LITERALS; i++) {
+                overflowing.add(OresSymbol.process("item_" + i));
+            }
+            assertThrows(IllegalArgumentException.class, () -> store.publish(overflowing));
+            try (var preserved = store.pinExpected(old)) {
+                assertEquals(1, preserved.size());
+                assertEquals(OresSymbol.process("ready"), preserved.get(0));
+            }
+            assertEquals(1, store.liveGenerationCount());
+        }
+    }
+
+    @Test void stableAndProcessNamespacesStayDistinctEvenForSameUuidText() {
+        String uuid = "550e8400-e29b-41d4-a716-446655440000";
+        try (var store = new OresSymbolLiteralImageStore()) {
+            store.publish(List.of(OresSymbol.stable(uuid), OresSymbol.process(uuid)));
+            try (var pinned = store.pinLatest()) {
+                assertEquals(2, pinned.size());
+                assertEquals(0, pinned.indexOf(OresSymbol.stable(uuid)));
+                assertEquals(1, pinned.indexOf(OresSymbol.process(uuid)));
+                assertNotEquals(pinned.get(0), pinned.get(1));
+                assertThrows(SecurityException.class,
+                        () -> pinned.copyForUntrustedCoreV1(0));
+                assertThrows(SecurityException.class,
+                        () -> pinned.copyForUntrustedCoreV1(1));
+            }
+        }
+    }
+
+    @Test void concurrentWritersProduceUniqueProcessLocalEpochsWithoutLostImages()
+            throws Exception {
+        try (var store = new OresSymbolLiteralImageStore();
+             var workers = Executors.newFixedThreadPool(8)) {
+            List<Future<Long>> results = new ArrayList<>();
+            for (int i = 0; i < 96; i++) {
+                final int ordinal = i;
+                results.add(workers.submit(() -> store.publish(
+                        List.of(OresSymbol.process("thread-" + ordinal)))));
+            }
+            java.util.Set<Long> minted = new java.util.HashSet<>();
+            for (Future<Long> result : results) {
+                assertTrue(minted.add(result.get(8, TimeUnit.SECONDS)),
+                        "publisher epochs must never collide");
+            }
+            assertEquals(results.size(), minted.size());
+            assertEquals(1, store.liveGenerationCount(),
+                    "all unpinned previous generations must retire");
+            try (var latest = store.pinLatest()) {
+                assertEquals(1, latest.size());
+            }
+        }
+    }
+
     @Test void trustedReadersReuseImmutableValuesWithoutIdentityBasedEquality() {
         try (var store = new OresSymbolLiteralImageStore()) {
             long generation = store.publish(List.of(OresSymbol.process("ready"),
