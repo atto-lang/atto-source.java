@@ -1829,7 +1829,8 @@ public final class OwnershipChecker {
                                     original.structural(),
                                     false);
                             Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
-                                    List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
+                                    List.of(protectedParam), lambda.expressionBody(), lambda.blockBody(),
+                                    lambda.nonLexical(), lambda.declaredReturnType());
                             mutexCriticalSectionDepth++;
                             try {
                                 checkLambda(protectedLambda, scope, null);

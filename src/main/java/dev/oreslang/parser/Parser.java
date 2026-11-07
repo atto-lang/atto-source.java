@@ -1413,7 +1413,10 @@ public final class Parser {
             throw error(previous(), "lambda binding shorthand requires 'const fnc'");
         }
         if (functionShorthand) name = consume(IDENT, "expected function binding name").lexeme();
-        else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        else if (looksLikeNamedCallableBindingSignature()) {
+            name = advance().lexeme();
+            type = parseNamedCallableBindingSignature();
+        } else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
@@ -2338,6 +2341,45 @@ public final class Parser {
         positional.addAll(named.values());
         positional.addAll(shapes);
         return positional;
+    }
+
+    /**
+     * Distinguish 'const name<(Args) => Result> = expression' from a
+     * conventional type-first binding such as 'const Option<int> x = ...'.
+     * Commit only after the entire signature and '=' have been recognized.
+     */
+    private boolean looksLikeNamedCallableBindingSignature() {
+        if (!check(IDENT) || !checkNext(LT)
+                || current + 2 >= tokens.size()
+                || tokens.get(current + 2).type() != LPAREN) {
+            return false;
+        }
+        int mark = current;
+        try {
+            advance(); // candidate binding name
+            parseNamedCallableBindingSignature();
+            return check(EQUAL);
+        } catch (IllegalArgumentException malformed) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    /**
+     * Named binding signatures are type ascriptions, not generic declaration
+     * parameters. 'const callback<(int, int) => int> = ...' is equivalent to
+     * a typed Fnc<int, int, int> binding. The RHS must be compatible with this
+     * exact callback contract, including its return type.
+     */
+    private Ast.TypeRef parseNamedCallableBindingSignature() {
+        consume(LT, "named callable binding requires '<'");
+        if (!check(LPAREN)) {
+            throw error(peek(), "named callable binding requires '(Args...) => ReturnType'");
+        }
+        Ast.TypeRef signature = parseFunctionTypeSignature();
+        consume(GT, "named callable binding requires '>' after its function signature");
+        return signature;
     }
 
     private Ast.TypeRef parseFunctionTypeSignature() {
@@ -3279,6 +3321,9 @@ public final class Parser {
         }
         if (functionShorthand) {
             name = consume(IDENT, "expected function binding name").lexeme();
+        } else if (looksLikeNamedCallableBindingSignature()) {
+            name = advance().lexeme();
+            type = parseNamedCallableBindingSignature();
         } else if (check(IDENT) && checkNext(COLON)) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after binding name");
@@ -4883,8 +4928,16 @@ public final class Parser {
         }
         if (match(NLEX)) {
             if (check(PIPE)) return parsePipeLambda(true);
+            if (check(FNC) && checkNext(LPAREN)) {
+                advance(); // anonymous fnc expression shares the lambda AST
+                return parseLambda(true);
+            }
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        }
+        if (check(FNC) && checkNext(LPAREN)) {
+            advance(); // explicit anonymous fnc expression, not a declaration
+            return parseLambda(false);
         }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
@@ -5003,14 +5056,50 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
-        // Only an immediate '{' denotes the statement-block form. Everything
-        // else starts a normal expression body. This is intentionally lexical:
-        // future prefix expressions such as `struct{...}{...}` must remain
-        // expression bodies rather than being confused with a lambda block.
+        // Immediate '{' denotes an inferred block. Preserve expression-bodied
+        // lambdas, while recognizing an explicitly typed *braced* block:
+        //   || -> void { cleanup(); }
+        //   |x: int| -> int { return x + 1; }
         if (check(LBRACE)) {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
         }
+        // Speculate only on the return type plus a following block opener.
+        // A failed type probe cannot consume an expression-bodied lambda.
+        int start = current;
+        Ast.TypeRef resultType = null;
+        try {
+            resultType = parseTypeRef();
+        } catch (IllegalArgumentException ignored) {
+            // Not a type header: parse the existing expression-body grammar.
+        }
+        if (resultType != null && check(LBRACE)) {
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, resultType);
+        }
+        // Scalar type names are contextual IDENTs, so '|| -> int;' would
+        // otherwise be accepted as an expression-bodied lambda returning an
+        // identifier named 'int'. Refuse an unambiguous bare scalar type
+        // followed by an expression terminator: typed lambdas need '{...}'.
+        // Do not reject '|| -> int + 1' or any other legitimate expression.
+        if (resultType != null
+                && resultType.arguments().isEmpty()
+                && !resultType.inferArguments()
+                && isBareScalarReturnType(resultType.name())
+                && (check(SEMICOLON) || check(COMMA) || check(RPAREN)
+                    || check(RBRACE) || check(EOF))) {
+            throw error(peek(), "explicit lambda result type requires a braced body");
+        }
+        current = start;
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+    }
+
+    private static boolean isBareScalarReturnType(String name) {
+        return switch (name) {
+            case "int", "uint", "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64",
+                    "bool", "boolean", "string", "float",
+                    "f32", "f64", "decimal", "bigint" -> true;
+            default -> false;
+        };
     }
 
     private boolean looksLikeLambda() {

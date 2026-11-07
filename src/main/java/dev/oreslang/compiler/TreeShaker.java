@@ -454,7 +454,8 @@ public final class TreeShaker {
                         lambda.parameters(),
                         substitute(lambda.expressionBody(), substitutions, nestedShadowed),
                         lambda.blockBody(),
-                        lambda.nonLexical());
+                        lambda.nonLexical(),
+                        lambda.declaredReturnType());
             }
             throw new IllegalStateException(
                     "unhandled expression during specialization " + expression.getClass().getSimpleName());
@@ -1086,7 +1087,8 @@ public final class TreeShaker {
                         lambda.blockBody() == null
                                 ? null
                                 : rewriteStatements(lambda.blockBody(), module, lambdaLocals),
-                        lambda.nonLexical());
+                        lambda.nonLexical(),
+                        lambda.declaredReturnType());
             }
             throw new IllegalStateException("unhandled expression " + expression.getClass().getSimpleName());
         }
@@ -1496,6 +1498,9 @@ public final class TreeShaker {
                 for (Ast.Param parameter : lambda.parameters()) {
                     scanType(parameter.type());
                     nested.add(parameter.name());
+                }
+                if (lambda.declaredReturnType() != null) {
+                    scanType(lambda.declaredReturnType());
                 }
                 scanExpression(module, lambda.expressionBody(), nested);
                 if (lambda.blockBody() != null) scanStatements(module, lambda.blockBody(), nested);

@@ -2237,7 +2237,16 @@ public final class TypeChecker {
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
-                typeOf(defer.expression(), env, generics, self);
+                if (defer.expression() instanceof Ast.LambdaExpr lambda) {
+                    // Check the entire body against a known void signature.
+                    // Inferring Unknown for a multi-statement block could
+                    // otherwise hide a nested value-return from deferred
+                    // cleanup, and defer must not publish any result.
+                    validateLambdaAgainstExpected(lambda,
+                            new Function(List.of(), Primitive.VOID), env, generics, self);
+                } else {
+                    typeOf(defer.expression(), env, generics, self);
+                }
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
@@ -4775,9 +4784,19 @@ public final class TypeChecker {
             // constructor's one-time fixed-field initialization privilege.
             currentConstructorOwner = null;
             Type result;
+            Type declaredLambdaResult = lambda.declaredReturnType() == null
+                    ? null : resolve(lambda.declaredReturnType(), generics, self);
             try {
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                } else if (declaredLambdaResult != null) {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, declaredLambdaResult, self);
+                    if (declaredLambdaResult != Primitive.VOID
+                            && !definitelyReturns(lambda.blockBody())) {
+                        throw new IllegalArgumentException(
+                                "non-void block lambda must explicitly return on every path");
+                    }
+                    result = declaredLambdaResult;
                 } else {
                     // A one-expression return block has an unambiguous result
                     // type. Infer it without inventing a return type for more
@@ -5589,6 +5608,15 @@ public final class TypeChecker {
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
+        Type declaredLambdaResult = lambda.declaredReturnType() == null
+                ? null : resolve(lambda.declaredReturnType(), generics, self);
+        if (declaredLambdaResult != null) {
+            requireReadonlyCapabilityPreserved(
+                    declaredLambdaResult, expected.result(), "lambda declared return type");
+            requireAssignable(declaredLambdaResult, expected.result(),
+                    "lambda declared return type");
+        }
+        Type bodyReturn = declaredLambdaResult == null ? expected.result() : declaredLambdaResult;
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
@@ -5596,21 +5624,21 @@ public final class TypeChecker {
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                        lambda.expressionBody(), bodyReturn, lambdaEnv, generics, self);
                 requireReadonlyCapabilityPreserved(
                         actual,
-                        expected.result(),
+                        bodyReturn,
                         "lambda expression body");
-                requireAssignable(actual, expected.result(), "lambda expression body");
+                requireAssignable(actual, bodyReturn, "lambda expression body");
             } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, bodyReturn, self);
             }
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
         if (lambda.blockBody() != null
-                && expected.result() != Primitive.VOID
+                && bodyReturn != Primitive.VOID
                 && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void block lambda must explicitly return on every path");
         }
