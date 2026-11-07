@@ -54,6 +54,15 @@ final class ActorGuestInvocationLanguageTest {
         assertEquals("6", run("stackless-fallback-binding.atto"));
     }
 
+    @Test
+    void actorScalarCallsBeforeAndAfterSourceTaskCooperateKeepCorrectValues()
+            throws Exception {
+        // This exercises real .atto source actors and the integrated M3/M1.7
+        // code paths, but does NOT suspend an active scalar call frame.
+        assertEquals("21|100000",
+                run("m4-scalar-before-after-actor-suspension.atto"));
+    }
+
     private static String run(String scenario) throws Exception {
         String resource = "/actor-stack/" + scenario;
         String sourceText;
