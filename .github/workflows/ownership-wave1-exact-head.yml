@@ -12,6 +12,7 @@ on:
       - 'src/test/java/dev/oreslang/PrimitiveBorrowCopyTest.java'
       - 'src/test/java/dev/oreslang/SharedBorrowContractTest.java'
       - 'src/test/java/dev/oreslang/AttoOwnershipWave1GuestTest.java'
+      - 'src/test/java/dev/oreslang/TernaryArmTypeSoundnessTest.java'
       - 'src/test/resources/atto/ownership-wave1/**'
       - 'src/test/resources/borrow-contract.tsv'
       - '.github/workflows/ownership-wave1-exact-head.yml'
@@ -50,13 +51,32 @@ jobs:
           echo "ATTO_OWNERSHIP_WAVE1_TREE=$(git rev-parse 'HEAD^{tree}')"
           java -version
           mvn -version
-      - name: Execute real ownership and primitive-copy JUnit tests
+      - name: Execute ownership, primitive-copy and ternary type-soundness JUnit tests
         shell: bash
         run: |
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native -DfailIfNoTests=true \
-            -Dtest=PointerlessFncOwnershipTest,StaticBorrowEscapeBoundaryTest,ProjectedMethodReceiverLoanTest,PrimitiveBorrowCopyTest,SharedBorrowContractTest,AttoOwnershipWave1GuestTest \
+            -Dtest=PointerlessFncOwnershipTest,StaticBorrowEscapeBoundaryTest,ProjectedMethodReceiverLoanTest,PrimitiveBorrowCopyTest,SharedBorrowContractTest,AttoOwnershipWave1GuestTest,TernaryArmTypeSoundnessTest \
             test
+      - name: Confirm each JUnit suite actually executed and emitted nonempty reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+            PointerlessFncOwnershipTest \
+            StaticBorrowEscapeBoundaryTest \
+            ProjectedMethodReceiverLoanTest \
+            PrimitiveBorrowCopyTest \
+            SharedBorrowContractTest \
+            AttoOwnershipWave1GuestTest \
+            TernaryArmTypeSoundnessTest
+          do
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            echo "ATTO_WAVE1_EXECUTED_SUITE=$suite"
+          done
+          echo "ATTO_WAVE1_SEMANTIC_GUEST_GATE=EXECUTED"
       - name: Full project Maven regression
         shell: bash
         run: |
