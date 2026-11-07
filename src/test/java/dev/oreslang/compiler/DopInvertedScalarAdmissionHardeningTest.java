@@ -101,6 +101,11 @@ final class DopInvertedScalarAdmissionHardeningTest {
                 binding.initializer(), true, null);
         assertThrows(IllegalArgumentException.class,
                 () -> DopInvertedScalarCompilerV1.lower(forged(p,forgedBinding,fn.returnType())));
+        var discardedOwner = new Ast.BindingStmt(
+                binding.kind(), binding.declaredType(), "_",
+                binding.initializer(), binding.mutableReferent(), null);
+        assertThrows(IllegalArgumentException.class,
+                () -> DopInvertedScalarCompilerV1.lower(forged(p,discardedOwner,fn.returnType())));
     }
 
     @Test
