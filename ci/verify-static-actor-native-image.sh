@@ -57,6 +57,7 @@ file "$tmp/atto-static-actor-guest" | grep -Eq 'ELF|Mach-O' || {
   echo 'ATTO_STATIC_AOT_NOT_EXECUTED: artifact not native OS machine code' >&2; exit 1;
 }
 sha256sum "$tmp/atto-static-actor-guest"
+echo "ATTO_GRAAL_NATIVE_GUEST_SHA256=$(sha256sum "$tmp/atto-static-actor-guest" | cut -d ' ' -f 1)"
 native_exit=0
 "$tmp/atto-static-actor-guest" > "$tmp/stdout" 2> "$tmp/stderr" || native_exit=$?
 if (( native_exit != 0 )); then
