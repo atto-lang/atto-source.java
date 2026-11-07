@@ -81,6 +81,15 @@ final class NativeHttpRawWireAdmissionTest {
                     "Host: localhost,attacker.test\r\n")).startsWith("HTTP/1.1 400"),
                     "joined Host must not become a routing ambiguity");
             assertTrue(request(address, get(
+                    "Host: localhost\r\nhOsT: attacker.test\r\n")).startsWith("HTTP/1.1 400"),
+                    "mixed-case duplicate Host must not bypass case-insensitive lookup");
+            assertTrue(request(address, get(
+                    "Host:   \r\n")).startsWith("HTTP/1.1 400"),
+                    "blank Host must fail closed");
+            assertTrue(request(address, get(
+                    "X-Case: value\r\n")).startsWith("HTTP/1.1 400"),
+                    "HTTP/1.1 without Host must fail closed");
+            assertTrue(request(address, get(
                     "Host: localhost\r\nX-Long: " + "x".repeat(12_000) + "\r\n"))
                     .startsWith("HTTP/1.1 400"), "individual 12 KiB header must be rejected");
             assertTrue(request(address,
