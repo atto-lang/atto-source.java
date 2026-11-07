@@ -1364,7 +1364,10 @@ public final class Parser {
             throw error(previous(), "lambda binding shorthand requires 'const fnc'");
         }
         if (functionShorthand) name = consume(IDENT, "expected function binding name").lexeme();
-        else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        else if (check(IDENT) && checkNext(LT)) {
+            name = advance().lexeme();
+            type = parseNamedCallableBindingSignature();
+        } else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
@@ -2250,6 +2253,22 @@ public final class Parser {
         return positional;
     }
 
+    /**
+     * Named binding signatures are type ascriptions, not generic declaration
+     * parameters. 'const callback<(int, int) => int> = ...' is equivalent to
+     * a typed Fnc<int, int, int> binding. The RHS must be compatible with this
+     * exact callback contract, including its return type.
+     */
+    private Ast.TypeRef parseNamedCallableBindingSignature() {
+        consume(LT, "named callable binding requires '<'");
+        if (!check(LPAREN)) {
+            throw error(peek(), "named callable binding requires '(Args...) => ReturnType'");
+        }
+        Ast.TypeRef signature = parseFunctionTypeSignature();
+        consume(GT, "named callable binding requires '>' after its function signature");
+        return signature;
+    }
+
     private Ast.TypeRef parseFunctionTypeSignature() {
         consume(LPAREN, "expected '(' in function type");
         List<Ast.TypeRef> params = parseFunctionTypeParametersAfterOpen();
@@ -3072,6 +3091,9 @@ public final class Parser {
         }
         if (functionShorthand) {
             name = consume(IDENT, "expected function binding name").lexeme();
+        } else if (check(IDENT) && checkNext(LT)) {
+            name = advance().lexeme();
+            type = parseNamedCallableBindingSignature();
         } else if (check(IDENT) && checkNext(COLON)) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after binding name");
