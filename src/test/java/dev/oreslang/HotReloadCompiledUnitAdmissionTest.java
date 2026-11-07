@@ -86,7 +86,7 @@ final class HotReloadCompiledUnitAdmissionTest {
     @Test
     void rejectedReplacementCannotReplaceOrRetirePreviouslyAdmittedGeneration() {
         var base = fixture();
-        String imported = "import fnc {b_value} from \"./b.ores\";\\n"
+        String imported = "import fnc {b_value} from \"./b.ores\";\n"
                 + GOOD;
         // The public CompiledUnit record permits a counterfeit AST, digest,
         // dependency list or executable source. None may mutate live state.
