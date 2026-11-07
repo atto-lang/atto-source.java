@@ -116,9 +116,29 @@ jobs:
             sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class \
               > target/atto-guest-evidence/compiler-class-sha256.txt
           fi
-          if test -s target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml; then
-            cp target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml \
-              target/atto-guest-evidence/
+          # Preserve all eight actual Surefire suites inspected above, not
+          # just the guest subset. A failure may leave only partial XML;
+          # an independent reviewer must then reject the absent pass-only
+          # receipt / missing complete suite manifest.
+          for suite in \
+            dev.oreslang.CriticalActorGuestExecutionTest \
+            dev.oreslang.ActorBorrowCompilerAdmissionTest \
+            dev.oreslang.CriticalSuspendsV1SyntaxTest \
+            dev.oreslang.TaskCaptureAdmissionIdentityTest \
+            dev.oreslang.nodes.CriticalTicketCleanupTest \
+            dev.oreslang.CriticalBodyEffectsTest \
+            dev.oreslang.runtime.CriticalGateTest \
+            dev.oreslang.runtime.ActorCriticalGateIdentityTest; do
+            file="target/surefire-reports/TEST-${suite}.xml"
+            if test -s "$file"; then
+              cp -- "$file" target/atto-guest-evidence/
+            fi
+          done
+          # Manifest does not itself prove execution; it binds the uploaded
+          # report bytes to the candidate GitHub artifact archive digest.
+          if compgen -G 'target/atto-guest-evidence/TEST-*.xml' >/dev/null; then
+            (cd target/atto-guest-evidence &&
+              sha256sum TEST-*.xml > surefire-xml-sha256.txt)
           fi
       - name: Upload scoped evidence without asserting proof before independent verification
         if: ${{ always() }}
