@@ -207,4 +207,119 @@ final class ActorScalarSourceTaskIntegrationTest {
             assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
         }
     }
+    @Test
+    void typedScalarContinuationSnapshotSurvivesAwaitInSameTaskFrame()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var gate = new OresFuture<Integer>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<ActorSourceTaskFrame> savedLease = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> task = new AtomicReference<>();
+            AtomicInteger resumes = new AtomicInteger();
+            List<Object> scalars = List.of(123L, (short) -9, true,
+                    Float.intBitsToFloat(0x7fc00055));
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) {
+                    turn.self().stop();
+                    return;
+                }
+                ActorFrameArena store = ActorRuntime.currentActorFrameArena();
+                arena.set(store);
+                task.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame lease = OresScheduler.currentActorSourceTaskFrame();
+                    assertNotNull(lease, "the source task has a physically bound frame");
+                    assertSame(store, lease.arena());
+                    if (resumes.getAndIncrement() == 0) {
+                        savedLease.set(lease);
+                        assertThrows(IllegalStateException.class, lease::restoreTypedScalars,
+                                "restore without an explicit snapshot must reject");
+                        lease.saveTypedScalars(scalars);
+                        assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, store.usedBytes(),
+                                "typed state stays within the precharged 64-byte lease");
+                        return OresScheduler.await(gate);
+                    }
+                    assertSame(savedLease.get(), lease,
+                            "await must restore the same task-frame authority");
+                    List<Object> decoded = lease.restoreTypedScalars();
+                    assertEquals(scalars.size(), decoded.size());
+                    assertEquals(123L, decoded.get(0));
+                    assertEquals((short) -9, decoded.get(1));
+                    assertEquals(true, decoded.get(2));
+                    assertEquals(0x7fc00055,
+                            Float.floatToRawIntBits((Float) decoded.get(3)));
+                    assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, store.usedBytes());
+                    return OresScheduler.done(123);
+                }));
+            });
+            actor.send("start");
+            awaitCondition(() -> savedLease.get() != null && arena.get() != null
+                    && arena.get().usedBytes() == ActorSourceTaskFrame.FRAME_CHARGE_BYTES);
+            assertNull(OresScheduler.currentActorSourceTaskFrame(),
+                    "non-carrier host may not borrow a task's frame");
+            assertThrows(SecurityException.class, () -> savedLease.get().restoreTypedScalars());
+            assertThrows(SecurityException.class,
+                    () -> savedLease.get().saveTypedScalars(List.of(3L)));
+            assertFalse(arena.get().isPoisoned(), "foreign caller must not poison the owner");
+            gate.completeFromRuntime(1);
+            awaitCondition(() -> task.get() != null && task.get().isDone());
+            assertEquals(123, task.get().get(3, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, arena.get().peakBytes());
+            assertEquals(0, arena.get().usedBytes());
+            assertTrue(savedLease.get().retired());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+        }
+    }
+
+    @Test
+    void typedTaskSnapshotsRejectReferenceTransportAndOverflowWithoutExtraCharge()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            AtomicInteger dispatches = new AtomicInteger();
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                ActorFrameArena store = ActorRuntime.currentActorFrameArena();
+                arena.set(store);
+                result.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame lease = OresScheduler.currentActorSourceTaskFrame();
+                    assertNotNull(lease);
+                    if (dispatches.getAndIncrement() == 0) {
+                        assertThrows(IllegalArgumentException.class,
+                                () -> lease.saveTypedScalars(List.of(new Object())));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> lease.saveTypedScalars(
+                                        java.util.Collections.nCopies(
+                                                ActorSourceTaskFrame.MAX_SCALAR_VALUES + 1,
+                                                1L)));
+                        assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, store.usedBytes());
+                        assertFalse(store.isPoisoned(),
+                                "unsupported state is rejected before touching the arena");
+                        lease.saveTypedScalars(List.of(1L, false, (byte) -2));
+                        return OresScheduler.cooperate();
+                    }
+                    assertEquals(List.of(1L, false, (byte) -2),
+                            lease.restoreTypedScalars());
+                    assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, store.usedBytes());
+                    return OresScheduler.done(9);
+                }));
+            });
+            actor.send("start");
+            awaitCondition(() -> result.get() != null && result.get().isDone());
+            assertEquals(9, result.get().get(3, TimeUnit.SECONDS));
+            assertEquals(2, dispatches.get());
+            assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, arena.get().peakBytes());
+            assertEquals(0, arena.get().usedBytes());
+            assertFalse(arena.get().isPoisoned());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+        }
+    }
+
 }
