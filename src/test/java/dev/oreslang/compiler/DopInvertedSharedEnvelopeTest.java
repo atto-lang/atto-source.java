@@ -40,8 +40,9 @@ final class DopInvertedSharedEnvelopeTest {
         byte[] bytes = Files.readAllBytes(Path.of(
                 "contracts", "dop-inverted-v1", name));
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
-        digest.update(("blob " + bytes.length + "\u0000")
+        digest.update(("blob " + bytes.length)
                 .getBytes(StandardCharsets.US_ASCII));
+        digest.update((byte) 0);
         return HexFormat.of().formatHex(digest.digest(bytes));
     }
 
