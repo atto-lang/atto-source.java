@@ -71,3 +71,24 @@ run/attempt/head/tree must all be checked by an independent verifier.
 This parser is a safeguard against accidental/malformed test XML and misleading
 grep matches; it is not a cryptographic attestation and does not make a
 compromised compiler, malicious test suite, or CI runner trustworthy.
+
+## Independent receipt readback integration
+
+The pass-only `target/atto-guest-evidence/suite-gate-completed.json` now includes
+the `GITHUB_JOB` key, SHA-256 of the compiled `OresCompiler.class`, and
+SHA-256 of the canonical `critical-actor-checked-v1.atto` fixture, alongside
+original PR-head/tree/run/attempt. These values are written **only after**
+structural inspection of real Surefire XML.
+
+The independent gate in
+[compiler-parity-website PR #7](https://github.com/ores-truffle-oreslang/compiler-parity-website/pull/7),
+`tools/verify-assurance-receipt.mjs`, checks these fields against **reviewer-pinned**
+hashes and a fresh GitHub PR/commit/run/job API readback. Distinguish the
+GitHub display job name from the `GITHUB_JOB` key. A successful metadata
+comparison is a candidate-only result; the gate does not download, sign,
+authenticate, or evaluate the actual guest trace or artifact bytes. The
+always-uploaded `checkout.json` does **not** qualify as pass-only evidence.
+
+Never grant a read token to PR-controlled code. Run live verification from a
+trusted independent checkout after CI runner admission is restored. Real Java
+and Graal tests are still unexecuted until GitHub returns nonzero started steps.
