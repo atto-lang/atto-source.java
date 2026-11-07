@@ -14,6 +14,7 @@ on:
       - 'pom.xml'
       - 'tools/VerifyDopInvertedJUnit.java'
       - 'tools/verify-dop-inverted-atto-contract.sh'
+      - 'tools/test-verify-dop-inverted-atto-contract.sh'
       - 'src/main/java/dev/oreslang/runtime/InvertedColumnStore.java'
       - 'src/test/java/dev/oreslang/compiler/DopInvertedGuestI64V1Test.java'
       - 'src/test/java/dev/oreslang/DopInvertedGuestAdmissionTest.java'
@@ -51,6 +52,9 @@ jobs:
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bash tools/verify-dop-inverted-atto-contract.sh
+      - name: source-admission-mutation-tests
+        shell: bash
+        run: bash tools/test-verify-dop-inverted-atto-contract.sh
       - name: setup-graalvm
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
