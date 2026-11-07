@@ -80,7 +80,7 @@ Do not merge/promote the full feature before:
 
 ## Tests and execution
 
-Added 14 JUnit host/runtime methods in `ActorFrameArenaTest` covering byte
+Added 16 JUnit host/runtime methods in `ActorFrameArenaTest` covering byte
 storage isolation, defensive copying, frame/byte quotas, LIFO mutation,
 foreign actor and stale generation rejection, suspend/resume on another Java
 thread, double resume, cancel, retirement, supervisor-like fresh generation,
