@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 from pathlib import Path
+import re
 import random
 import subprocess
 import sys
@@ -72,7 +73,7 @@ class HardenedStaticCompilerTests(unittest.TestCase):
         with self.assertRaisesRegex(atto.CompileError, "actor message budget exceeded"):
             atto.parse_atto(source)
 
-    def test_10000_message_parser_boundary(self):
+    def test_exact_message_budget_parser_boundary(self):
         source = program(actors=1, messages=[("a0", 1)] * atto.MAX_SENDS)
         kinds, actions, _, sends = atto.parse_atto(source)
         self.assertEqual(sends, atto.MAX_SENDS)
@@ -82,14 +83,12 @@ class HardenedStaticCompilerTests(unittest.TestCase):
         self.rejects(ORIGINAL.replace("increment", "incrеment"), "unsupported AttoLang token")
 
     def test_block_comment_not_silently_ignored(self):
-        self.rejects(ORIGINAL.replace("stop a", "/* hidden state edit */ stop a"),
-                     "unsupported AttoLang token") if "stop a" in ORIGINAL else self.rejects(
-            ORIGINAL.replace("stop first;", "/* hidden */ stop first;"),
-            "unsupported AttoLang token")
+        self.rejects(ORIGINAL.replace("stop first;", "/* hidden */ stop first;"),
+                     "unsupported AttoLang token")
 
     def test_forbid_unimplemented_ownership_semantics(self):
         self.rejects(ORIGINAL.replace("first.send(7);", "rt take first; first.send(7);"),
-                     "unsupported AttoLang token" if "rt take" in "" else "expected")
+                     "expected")
 
     def test_forbid_direct_state_access(self):
         self.rejects(ORIGINAL.replace("second.send(9);", "second.total = 9;"), "expected")
@@ -118,7 +117,7 @@ class HardenedStaticCompilerTests(unittest.TestCase):
             self.assertEqual(result, 43, case)
             self.assertEqual(sends, len(messages), case)
             self.assertEqual(generated.count(".send("), sends, case)
-            self.assertEqual(generated.count(".close();"), actors, case)
+            self.assertEqual(len(re.findall(r"handle_\\d+\\.close\\(\\);", generated)), actors, case)
             actual = [(a, value) for op, a, value in actions if op == "send"]
             self.assertEqual(actual, messages, case)
             self.assertIn("Arena.ofConfined()", generated, case)
