@@ -66,3 +66,57 @@ Run `mvn -Dtest=GuestCallDepthGuardTest,GuestCallDepthLanguageTest,ProperTailCal
 with JDK 21+, capture exact head SHA and non-empty job steps.
 CI runner admission errors or `steps=[]` are **NOT_EXECUTED**.
 Do not label Java or any other backend process-fault-isolated from these tests.
+
+## Stacked M1 actor-owned budget slice (2026-11-07)
+
+The separate `feat/actor-owned-logical-stack-m1-20261107` branch builds
+on M0 without replacing its native-carrier guard:
+
+* `ActorRuntime.ActorCell` allocates one `ActorGuestStack` per actor
+  **incarnation**, and carries its identity through
+  `ActorExecutionContext` into each physical mailbox turn. Stack accounting
+  does not use a map keyed by recyclable integer actor IDs.
+* `GuestCallDepthGuard.enter/leave` now reserve and release both the
+  actor-owned logical frame budget and the carrier-local synchronous recursion
+  cap. Both must admit the frame; a proper tail transfer remains one entry.
+* Once the actor stack is exhausted or an impossible unwind is observed it is
+  **poisoned permanently**, even after all frames unwind. A new supervised
+  incarnation gets a fresh stack. Carrier context switches while a guest frame
+  remains live fail closed.
+* At mailbox dispatch boundaries, `ActorRuntime` converts even a swallowed
+  guest stack-budget failure into fail-stop actor termination rather than
+  accepting another message. Other actor cells can reuse the carrier with a
+  distinct budget and an empty native recursion scope.
+* `ActorGuestStackTest` covers quota exhaustion, invalid unwind, actor
+  identity across mailbox turns, host swallowing, and a sibling actor on the
+  single-worker shared carrier. These are **host-model tests**, not proof that
+  a compiled `.atto` actor survived stack exhaustion.
+
+### Still missing — do NOT claim per-actor physical stack isolation
+
+The interpreter's *actual local/return-address storage is still on Java
+carrier-thread native stacks*. The new `ActorGuestStack` is actor-owned
+logical frame *accounting*, not a segmented heap-resident execution stack.
+The 64-entry limit is not proven safe against all expression/AST recursion,
+Truffle, callbacks, JVM stack sizes, JNI/FFI, or OOM. Actor-owned suspended
+frames do not yet debit this object. Until all guest expression/call/continuation
+paths lower to bounded actor-owned frame segments, the full user-requested
+physical per-actor stack guarantee remains **NOT IMPLEMENTED**.
+
+Next: replace recursive evaluator paths with an explicit bounded frame
+interpreter or heap-resident continuations, add per-actor byte/frame quotas
+and generation-fenced retention on suspend/resume, and run compiler-backed
+`.atto` actor A/B + supervisor restart fixtures under reduced native stack
+limits. A host/native callback that bypasses checks requires rejection or a
+killable OS worker, never catch-and-continue after `StackOverflowError`.
+
+### Validation for this stacked change
+
+```sh
+mvn -Dtest=ActorGuestStackTest,GuestCallDepthGuardTest,GuestCallDepthLanguageTest,GuestCallDepthActorHostModelTest,ProperTailCallTest test
+```
+
+This command is a required verification gate; it has **not** been executed
+with actual project dependencies/CI in the current source-side environment.
+Do not merge merely because the authored tests exist or because unrelated
+source-free jobs passed. Preserve exact-head, nonzero-step, real guest receipts.
