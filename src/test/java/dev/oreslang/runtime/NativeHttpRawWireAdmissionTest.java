@@ -60,12 +60,16 @@ final class NativeHttpRawWireAdmissionTest {
     void hostValidationRejectsMalformedRawRequestsAndListenerRecovers() throws IOException {
         InetAddress loopback = InetAddress.getLoopbackAddress();
         HttpServer server = HttpServer.create(new InetSocketAddress(loopback, 0), 8);
+        java.util.concurrent.atomic.AtomicInteger admitted = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger successfulBodies = new java.util.concurrent.atomic.AtomicInteger();
         server.createContext("/", exchange -> {
             int status;
             try {
                 NativeHttp.validateHeadersForAdmission(
                         exchange.getRequestHeaders(), exchange.getProtocol(), 1024);
+                admitted.incrementAndGet();
                 exchange.getRequestBody().readAllBytes();
+                successfulBodies.incrementAndGet();
                 status = 200;
             } catch (IllegalArgumentException badRequest) {
                 status = 400;
@@ -126,6 +130,10 @@ final class NativeHttpRawWireAdmissionTest {
                     "malformed chunk-size must be a client error");
             assertTrue(request(address, get("Host: localhost\r\n")).startsWith("HTTP/1.1 200"),
                     "the listener must survive all prior malformed requests");
+            assertEquals(4, admitted.get(),
+                    "only two good GETs, valid chunked, and malformed chunk body may pass header admission");
+            assertEquals(3, successfulBodies.get(),
+                    "malformed chunk must never complete body processing");
         } finally {
             server.stop(0);
         }
