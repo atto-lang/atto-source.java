@@ -58,6 +58,10 @@ final class NativeOtpSupervisorPolicyTest {
                       stdio.println(OtpSupervisor.restart_budget_allows(3, 3).unwrap());
                       stdio.println(OtpSupervisor.restart_budget_allows(2, 3).unwrap());
                       stdio.println(OtpSupervisor.restart_budget_allows(0, 0).unwrap());
+                      stdio.println(OtpSupervisor.restart_budget_allows(1, 3, 4).unwrap());
+                      stdio.println(OtpSupervisor.restart_budget_allows(2, 3, 4).unwrap());
+                      stdio.println(OtpSupervisor.restart_budget_allows(0, 5, 4).unwrap());
+                      stdio.println(OtpSupervisor.restart_budget_allows(0, 0, 0).unwrap());
                       stdio.println(OtpSupervisor.restart_span("one_for_one", -1, 5).is_err());
                       stdio.println(OtpSupervisor.restart_span("one_for_one", 5, 5).is_err());
                       stdio.println(OtpSupervisor.restart_span("one_for_one", 0, 0).is_err());
@@ -66,6 +70,8 @@ final class NativeOtpSupervisorPolicyTest {
                       stdio.println(OtpSupervisor.should_restart("unknown", false).is_err());
                       stdio.println(OtpSupervisor.restart_budget_allows(-1, 3).is_err());
                       stdio.println(OtpSupervisor.restart_budget_allows(1, -1).is_err());
+                      stdio.println(OtpSupervisor.restart_budget_allows(0, -1, 3).is_err());
+                      stdio.println(OtpSupervisor.restart_budget_allows(0, 1, 4097).is_err());
                       return;
                     }
                     """);
@@ -78,8 +84,9 @@ final class NativeOtpSupervisorPolicyTest {
                     "2", "3", "0", "5", "2", "5",
                     "true", "false", "true", "false",
                     "false", "true", "false",
+                    "true", "false", "false", "true",
                     "true", "true", "true", "true", "true",
-                    "true", "true", "true")),
+                    "true", "true", "true", "true", "true")),
                     out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> err.toString(StandardCharsets.UTF_8));
         } finally {

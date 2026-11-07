@@ -8,9 +8,16 @@ computes **restart selections and policy admission**, in Oreslang source.
   `rest_for_one`.
 - `should_restart(policy, normal_or_shutdown)` validates
   `permanent`/`transient`/`temporary` classifications.
-- `restart_budget_allows(restarts_in_window, max_restarts)` checks a single
-  bounded counter; it does **not** track real timestamps. Trusted supervisor
-  CONTROL must implement the monotonic time window and restart escalation.
+- `restart_budget_allows(restarts_in_window, max_restarts)` preserves the
+  one-child compatibility check.
+- `restart_budget_allows(restarts_in_window, requested_restarts, max_restarts)`
+  charges an entire replacement span atomically. A `one_for_all` or
+  `rest_for_one` episode cannot bypass restart intensity by counting a
+  multi-child replacement as one restart. The comparison is subtraction-based
+  to remain overflow-safe.
+- Neither helper tracks real timestamps. Trusted supervisor CONTROL must own the
+  monotonic restart window, deterministic backoff, physical quiescence and
+  escalation.
 
 This is **NOT** a functional OTP supervisor behaviour. The source module
 cannot grant CONTROL, monitor a child, mint ActorRefs, handle panics, own a

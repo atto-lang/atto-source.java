@@ -48,13 +48,32 @@ define module OtpSupervisor as
     fi
   }
 
-  // Pure one-step predicate only. Runtime supervisor must own the bounded
-  // restart timestamps and monotonic time provider used to count the window.
-  // This deliberately does NOT invent a clock or implement restart delivery.
+  // Compatibility helper for a one-child restart.
   pub fnc restart_budget_allows(int restarts_in_window, int max_restarts): Result<bool, String> {
-    if restarts_in_window < 0 || max_restarts < 0 || max_restarts > 4096; do
+    return restart_budget_allows(restarts_in_window, 1, max_restarts);
+  }
+
+  // Pure group-restart predicate. Charge every replacement child before
+  // starting any of them, so one_for_all/rest_for_one cannot hide restart
+  // amplification behind one logical failure event.
+  //
+  // Runtime supervisor still owns the bounded timestamp window and monotonic
+  // clock. This deliberately does NOT invent time or perform restarts.
+  pub fnc restart_budget_allows(
+      int restarts_in_window,
+      int requested_restarts,
+      int max_restarts): Result<bool, String> {
+    if restarts_in_window < 0
+        || requested_restarts < 0
+        || max_restarts < 0
+        || max_restarts > 4096; do
       return Err("invalid restart-intensity accounting");
     fi
-    return Ok(restarts_in_window < max_restarts);
+    if requested_restarts > max_restarts; do
+      return Ok(false);
+    fi
+    // Subtract before compare rather than adding the two counters: this stays
+    // overflow-safe even if the integer representation changes later.
+    return Ok(restarts_in_window <= max_restarts - requested_restarts);
   }
 end
