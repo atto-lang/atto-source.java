@@ -92,6 +92,42 @@ final class ScalarFrameStorageTest {
     }
 
     @Test
+    void caughtStaleFrameCapabilityPoisonsOnlyOwningActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> compromised = new AtomicReference<>();
+            AtomicReference<ActorFrameArena> other = new AtomicReference<>();
+            AtomicInteger siblingMessages = new AtomicInteger();
+            var failing = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                compromised.set(ActorRuntime.currentActorFrameArena());
+                try (ScalarFrameStorage storage = new ScalarFrameStorage()) {
+                    var lease = storage.enter(0, 1);
+                    storage.leave(lease);
+                    // Malicious host adapter attempts to suppress use-after-
+                    // free. Arena must still become terminal for this actor.
+                    assertThrows(IllegalStateException.class, lease::pc);
+                }
+            });
+            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                other.set(ActorRuntime.currentActorFrameArena());
+                siblingMessages.incrementAndGet();
+                turn.self().stop();
+            });
+            failing.send("use-after-free");
+            assertTrue(failing.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(failing.failure().isPresent());
+            assertNotNull(compromised.get());
+            assertTrue(compromised.get().isPoisoned());
+            assertEquals(0, compromised.get().usedBytes());
+            sibling.send("still-alive");
+            assertTrue(sibling.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(sibling.failure().isEmpty());
+            assertEquals(1, siblingMessages.get());
+            assertNotSame(compromised.get(), other.get());
+        }
+    }
+
+    @Test
     void actorScalarQuotaPoisonDoesNotDamageSiblingCarrier()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(
