@@ -102,6 +102,19 @@ per-listener admission check. Embedders that initialize another JDK HTTP server
 first must set the properties before that initialization; the backend cannot
 retroactively reconfigure JDK static limits. See NativeHttp.configureTransportDefaults.
 
+The admission layer also rejects duplicate or comma-joined HTTP/1.1 Host
+values, HTTP/1.1 requests without Host, negative Content-Length, and
+individual header name+value pairs over 8192 characters; the existing
+100-field and 32768-character aggregate limits remain. These post-parse
+checks complement but cannot replace JVM-wide JDK parser limits. A malformed
+request-body framing read (IOException while reading an inbound body) maps to
+HTTP 400 instead of 500, without relabeling response-side I/O failures.
+The local regression cases live in NativeHttpFramingAdmissionTest.
+
+**Proof status:** These are staged host-admission safeguards, not certification
+of a complete HTTP/1.1 parser. Exact-head CI, a live raw-wire Spin replay,
+and HTTP/1.0 compatibility need executed evidence before merging.
+
 This backend supports origin-form targets, strict UTF-8 paths, keep-alive,
 chunked transfer, and streaming. It rejects absolute/network-path/fragment
 request targets when they reach its handler. TLS termination, HTTP/2,
