@@ -1088,6 +1088,13 @@ public final class OwnershipChecker {
             state = state.aliasSource;
         }
         if (!visited.add(state) || state.bindingId.value() == 0L) return null;
+        // Following an alias into a closed scope or a detached captured
+        // VarState must not grant authority over storage that is no longer
+        // part of this lexical borrow-checker's visible owner inventory.
+        if (!scope.visibleStates().contains(state)) return null;
+        if (scope.identityRoot.issuedBindings.get(state.bindingId.value()) != state)
+            return null;
+        if (state.allocationOriginId.value() != 0L) return null;
         java.util.Collections.reverse(reversed);
         return new ResolvedOwnershipPlace(
                 name.name(), state, state.bindingId, state.allocationOriginId,
@@ -5433,6 +5440,7 @@ public final class OwnershipChecker {
         private final Scope parent;
         private final Scope identityRoot;
         private long nextBindingId = 1L;
+        private final Map<Long,VarState> issuedBindings = new LinkedHashMap<>();
         private final boolean descendantsNonLexical;
         private final Map<String,VarState> locals = new LinkedHashMap<>();
         private final Map<String,Ast.TypeRef> inferredTypes = new LinkedHashMap<>();
@@ -5463,9 +5471,18 @@ public final class OwnershipChecker {
                 if (identityRoot.nextBindingId <= 0L)
                     throw new IllegalArgumentException("Oreslang ownership error: exhausted compiler binding identities");
                 state.bindingId = new BindingId(identityRoot.nextBindingId++);
+                identityRoot.issuedBindings.put(state.bindingId.value(), state);
+            } else if (identityRoot.issuedBindings.get(state.bindingId.value()) != state) {
+                // No newly allocated VarState may present the ID of another
+                // declaration or one minted in an unrelated function scope.
+                throw new IllegalArgumentException(
+                        "Oreslang ownership error: foreign or duplicated compiler binding identity");
             }
-            // Existing alias states may keep their identity, but a fresh
-            // syntactic name is never proof of an independent allocation.
+            // Allocation-origin proof is not yet available in Java typed
+            // MIR. An origin number on a source state is never authority.
+            if (state.allocationOriginId.value() != 0L)
+                throw new IllegalArgumentException(
+                        "Oreslang ownership error: unverified allocation origin identity");
             locals.put(name, state);
             state.debugName = name;
         }
