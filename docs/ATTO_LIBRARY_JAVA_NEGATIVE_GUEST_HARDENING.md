@@ -14,3 +14,14 @@ reject source substitution.
 The profile/ownership transitive effects across all five backends are **not**
 proven by this suite. Tests are authored but not executed under GitHub Actions
 while source-owned runner admission is blocked; do not count as guest receipts.
+
+## Historical std/* namespace security
+
+The compatibility import prefix `std/` is now included in the same
+compiler-owned *reserved root* classification as `atto.std/` and
+`ores.std/`. Its bare root `std` is reserved too, avoiding filesystem
+fallback in callers that consult the general namespace-reservation helper.
+JUnit tests cover canonical/legacy spellings, Windows-style separators,
+dot-segment traversal and a project-local shadow file. Relative local
+imports (`./std/...`) retain separate explicit-path semantics.
+These are authored compiler-resolver checks, not stepful hosted CI proof.

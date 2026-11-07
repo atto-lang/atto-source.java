@@ -92,6 +92,10 @@ public final class CoreLibrarySources {
                 || normalized.startsWith("atto.runtime.actor/")
                 || normalized.equals("ores.core")
                 || normalized.equals("ores.std")
+                // std/* predates atto.std but remains compiler-owned and
+                // must never fall back to a user-controlled local file.
+                || normalized.equals("std")
+                || normalized.startsWith(LEGACY_STD_IMPORT_PREFIX)
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
                 || normalized.startsWith(STD_IMPORT_PREFIX);
     }

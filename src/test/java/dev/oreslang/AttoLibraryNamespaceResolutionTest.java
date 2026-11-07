@@ -143,6 +143,42 @@ final class AttoLibraryNamespaceResolutionTest {
     }
 
     @Test
+    void legacyHostedStdRootIsCompilerReservedAgainstFilesystemShadowing() throws Exception {
+        for (String path : new String[] {
+                "std", "std/testing", "std/testing.ores",
+                "std/testing.atto", "std\\\\testing",
+                "atto.std/testing", "ores.std/testing"
+        })
+            assertTrue(CoreLibrarySources.isReservedOresLibraryImport(path),
+                    "compiler-owned std alias must not be ambient source: " + path);
+        assertFalse(CoreLibrarySources.isReservedOresLibraryImport("./std/testing"));
+        Path shadow = temp.resolve("std");
+        Files.createDirectories(shadow);
+        Files.writeString(shadow.resolve("testing.ores"),
+                "define module testing as pub fnc max_int(int a,int b):int{return 99;} end",
+                StandardCharsets.UTF_8);
+        assertEquals(CoreLibrarySources.source("atto.std/testing"),
+                CoreLibrarySources.source("std/testing"),
+                "legacy hosted module alias must use packaged source, not project shadow");
+    }
+
+    @Test
+    void canonicalLibraryPathBodiesRejectBackslashAliasAndDotSegments() {
+        for (String value : new String[] {
+                "atto.core\\\\numeric", "atto.core/./numeric",
+                "atto.core/../numeric", "atto.core/numeric//",
+                "atto.std/./testing", "std/../testing"
+        }) {
+            assertTrue(CoreLibrarySources.isReservedOresLibraryImport(value),
+                "compiler-owned root must remain reserved before failing bad path");
+        }
+        assertThrows(IllegalArgumentException.class,
+            () -> CoreLibrarySources.oresCoreSource("atto.core\\\\numeric"));
+        assertThrows(IllegalArgumentException.class,
+            () -> CoreLibrarySources.source("std/../testing"));
+    }
+
+    @Test
     void unsupportedNamespacesAndTraversalAreNeverAmbientFilesystemImports() {
         for (String path : new String[] {
                 "atto.core", "atto.alloc", "atto.alloc/int_buffer",
