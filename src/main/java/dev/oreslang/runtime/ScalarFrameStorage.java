@@ -58,8 +58,6 @@ public final class ScalarFrameStorage implements AutoCloseable {
         private final byte[] local;
         private final int locals;
         private final int maxOperands;
-        private int pc;
-        private int sp;
         private boolean closed;
 
         private Frame(ActorFrameArena.FrameRef lease, byte[] local, int locals, int maxOperands) {
@@ -69,12 +67,14 @@ public final class ScalarFrameStorage implements AutoCloseable {
             this.maxOperands = maxOperands;
         }
 
-        public int pc() { checkTop(this); return pc; }
+        public int pc() {
+            checkTop(this);
+            return readBoundedInt(this, 0, Integer.MAX_VALUE, "program counter");
+        }
         public void setPc(int nextPc) {
             checkTop(this);
             if (nextPc < 0) throw new IllegalArgumentException("negative program counter");
-            pc = nextPc;
-            storeLong(this, 0, pc);
+            storeLong(this, 0, nextPc);
         }
         public void putLocal(int index, Scalar scalar) {
             checkTop(this);
@@ -88,20 +88,25 @@ public final class ScalarFrameStorage implements AutoCloseable {
         }
         public void push(Scalar scalar) {
             checkTop(this);
-            if (sp >= maxOperands) throw new IllegalStateException("operand stack quota exceeded");
-            writeSlot(this, locals + sp++, scalar);
-            storeLong(this, 8, sp);
+            int depth = operandDepth();
+            if (depth >= maxOperands) throw new IllegalStateException("operand stack quota exceeded");
+            writeSlot(this, locals + depth, scalar);
+            storeLong(this, 8, depth + 1);
         }
         public Scalar pop() {
             checkTop(this);
-            if (sp <= 0) throw new IllegalStateException("operand stack underflow");
-            int slot = locals + --sp;
+            int depth = operandDepth();
+            if (depth <= 0) throw new IllegalStateException("operand stack underflow");
+            int slot = locals + depth - 1;
             Scalar result = readSlot(this, slot);
             writeBytes(this, HEADER_BYTES + slot * SLOT_BYTES, new byte[SLOT_BYTES]);
-            storeLong(this, 8, sp);
+            storeLong(this, 8, depth - 1);
             return result;
         }
-        public int operandDepth() { checkTop(this); return sp; }
+        public int operandDepth() {
+            checkTop(this);
+            return readBoundedInt(this, 8, maxOperands, "operand height");
+        }
         public int localsCount() { return locals; }
     }
 
@@ -189,6 +194,15 @@ public final class ScalarFrameStorage implements AutoCloseable {
         byte[] word = readBytes(frame, HEADER_BYTES + slot * SLOT_BYTES, SLOT_BYTES);
         return new Scalar(word[0],
                 ByteBuffer.wrap(word).order(ByteOrder.BIG_ENDIAN).getLong(8));
+    }
+
+    private int readBoundedInt(Frame frame, int offset, int max, String field) {
+        long value = ByteBuffer.wrap(readBytes(frame, offset, 8))
+                .order(ByteOrder.BIG_ENDIAN).getLong();
+        if (value < 0 || value > max) {
+            throw new IllegalStateException("corrupt scalar " + field + " in owned frame");
+        }
+        return (int) value;
     }
 
     private void storeLong(Frame frame, int offset, long value) {
