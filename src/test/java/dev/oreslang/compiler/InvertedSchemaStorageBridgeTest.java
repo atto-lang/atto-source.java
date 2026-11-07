@@ -88,6 +88,29 @@ final class InvertedSchemaStorageBridgeTest {
     }
 
     @Test
+    void boundedCompilerOwnedSoaDoesNotImplicitlyGrowBeyondDeclaredCapacity() {
+        var parsed = schema("define inverted struct Row as "
+                + "let value: int; token: int; end");
+        try (var bridge = new InvertedSchemaStorageBridge(parsed, 2)) {
+            var first = bridge.push(7, 70);
+            var second = bridge.push(19, 190);
+            assertEquals(2, bridge.size());
+            assertThrows(IllegalStateException.class,
+                    () -> bridge.push(42, 420),
+                    "bounded guest owner cannot silently trigger store growth");
+            assertEquals(7L, bridge.get(first, "value"));
+            assertEquals(19L, bridge.get(second, "value"));
+            bridge.eraseSwap(first);
+            var third = bridge.push(42, 420);
+            assertEquals(2, bridge.size());
+            assertEquals(42L, bridge.get(third, "value"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> bridge.get(first, "value"),
+                    "reused physical capacity does not resurrect the erased handle");
+        }
+    }
+
+    @Test
     void closedBridgeRejectsEveryOutstandingHandleAndLoan() {
         var bridge = new InvertedSchemaStorageBridge(schema(
                 "define inverted struct Row as let value: int; token: int; end"));
