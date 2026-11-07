@@ -8,7 +8,7 @@ define isoactor PrivateSubscriber as
   }
 end
 
-pub async routine main(): void {
+pub suspends fnc main(): void {
   val group = actor.group("private-events");
   group.topic<String>("events", "reliable", 4);
   val subscriber = spawn PrivateSubscriber();

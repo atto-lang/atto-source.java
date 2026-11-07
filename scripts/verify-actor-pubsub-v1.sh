@@ -73,6 +73,8 @@ expected = {
     },
     "dev.oreslang.SourceActorPubSubExecutionTest": {
         "positivePubSubFixturesUseSuspendsOnlyEntrypoints",
+        "suspendsTopicCapabilityFailsTaskSendBoundaryAfterParserAdmission",
+        "pubSubHandlesCannotCrossIndependentSuspendsTaskBoundary",
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
         "portableTryPublishRejectedUntilNativeLowering",
         "attoMultiGroupGuestPreservesOtherGroupAfterLeave",

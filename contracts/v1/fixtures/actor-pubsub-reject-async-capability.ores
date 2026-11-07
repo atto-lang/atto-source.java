@@ -1,4 +1,4 @@
-async fnc bad(Topic<String> topic): void {
+suspends fnc bad(Topic<String> topic): void {
   return;
 }
 

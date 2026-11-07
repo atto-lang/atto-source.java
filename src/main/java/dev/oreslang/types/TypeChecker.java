@@ -805,7 +805,7 @@ public final class TypeChecker {
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
                                 + "pass an owned/sendable nominal value instead");
             }
-            if (param.structural() && (fn.async() || fn.generator())) {
+            if (param.structural() && (fn.async() || fn.suspends() || fn.generator())) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                 + "pass an owned nominal value or copy the required fields");
@@ -817,7 +817,9 @@ public final class TypeChecker {
                         false,
                         "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
             }
-            if (fn.async()) {
+            if (fn.async() || fn.suspends()) {
+                // A suspends function creates a SourceTask; non-Send handles
+                // cannot cross this boundary, even if the caller owns them.
                 validateAsyncBoundaryType(
                         parameterType,
                         false,
@@ -849,7 +851,7 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
-        if (fn.async()) {
+        if (fn.async() || fn.suspends()) {
             validateAsyncBoundaryType(
                     returns,
                     true,

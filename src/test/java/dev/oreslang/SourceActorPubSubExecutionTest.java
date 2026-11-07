@@ -1,5 +1,8 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
@@ -17,6 +20,24 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SourceActorPubSubExecutionTest {
+    @Test
+    void suspendsTopicCapabilityFailsTaskSendBoundaryAfterParserAdmission() throws Exception {
+        String source = fixture("actor-pubsub-reject-suspends-capability.atto");
+        assertEquals(fixture("actor-pubsub-reject-suspends-capability.ores"), source);
+        Ast.Program parsed = Parser.parse(source);
+        Ast.FunctionDecl bad = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        assertTrue(bad.suspends());
+        assertFalse(bad.async());
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains("must be concrete owned task-safe data"),
+                denied.getMessage());
+        assertFalse(denied.getMessage().contains("'async' callable modifier is removed"),
+                "retired syntax rejection is not a Topic Send proof");
+    }
+
     @Test
     void positivePubSubFixturesUseSuspendsOnlyEntrypoints() throws Exception {
         // A lexical migration guard, not a runtime proof. The selected
@@ -143,6 +164,8 @@ final class SourceActorPubSubExecutionTest {
                 {"actor-pubsub-reject-mailbox-capability",
                         "cannot use Topic across an actor boundary"},
                 {"actor-pubsub-reject-async-capability",
+                        "must be concrete owned task-safe data"},
+                {"actor-pubsub-reject-suspends-capability",
                         "must be concrete owned task-safe data"}
         };
         for (String[] vector : rejected) {
@@ -206,7 +229,7 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
-    void pubSubHandlesCannotCrossAsyncTaskBoundary() throws Exception {
+    void pubSubHandlesCannotCrossIndependentSuspendsTaskBoundary() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
                 () -> run(
