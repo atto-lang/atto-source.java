@@ -69,4 +69,8 @@ jobs:
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bash tools/verify-dop-inverted-atto-contract.sh
+        run: |
+          set -euo pipefail
+          # Run the pinned Git-object script; JUnit/build code could rewrite its
+          # working-tree copy and otherwise bypass the post-execution check.
+          git show HEAD:tools/verify-dop-inverted-atto-contract.sh | bash
