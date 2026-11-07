@@ -56,6 +56,34 @@ public final class GuestInvocationFrame implements AutoCloseable {
                 carrierDepth, descriptor(kind, arity, hops));
     }
 
+    /**
+     * Store the two primitive parameter slots in the actor-owned 32-byte
+     * guard frame. A non-actor invocation keeps its host-local parameter
+     * values instead; unsupported references never enter these slots.
+     */
+    public void writeScalarArguments(long[] args) {
+        ensureOpenOnCarrier();
+        if (args == null || args.length > 2) {
+            throw new IllegalArgumentException("at most two integer scalar arguments");
+        }
+        if (GuestCallDepthGuard.hasActorInvocationFrame(carrierDepth)) {
+            for (int i = 0; i < 2; i++) {
+                GuestCallDepthGuard.writeScalarArgument(
+                        carrierDepth, i, i < args.length ? args[i] : 0L);
+            }
+        }
+    }
+
+    public boolean hasActorOwnedScalarSlots() {
+        ensureOpenOnCarrier();
+        return GuestCallDepthGuard.hasActorInvocationFrame(carrierDepth);
+    }
+
+    public long readScalarArgument(int index) {
+        ensureOpenOnCarrier();
+        return GuestCallDepthGuard.readScalarArgument(carrierDepth, index);
+    }
+
     /** Package-local diagnostic copy: no guest frame backing array escapes. */
     byte[] snapshotDescriptor() {
         ensureOpenOnCarrier();
