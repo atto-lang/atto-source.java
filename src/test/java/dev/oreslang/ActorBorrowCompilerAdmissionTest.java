@@ -66,4 +66,67 @@ final class ActorBorrowCompilerAdmissionTest {
                   val stale = rt borrow entries;
                 """), "use of moved value");
     }
+    @Test void evenOneSharedReaderBlocksExclusiveWriter() {
+        deny(fn("""
+                  val reader = rt borrow entries;
+                  val writer = rt mut borrow entries;
+                """), "while another borrow is active");
+    }
+
+    @Test void exclusiveWriterBlocksNewSharedReader() {
+        deny(fn("""
+                  val writer = rt mut borrow entries;
+                  val reader = rt borrow entries;
+                """), "while it is mutably borrowed");
+    }
+
+    @Test void secondExclusiveWriterIsNeverAdmitted() {
+        deny(fn("""
+                  val first = rt mut borrow entries;
+                  val second = rt mut borrow entries;
+                """), "while it is mutably borrowed");
+    }
+
+    @Test void reassignmentOfOwnerDuringReadBorrowIsRejected() {
+        deny(fn("""
+                  val reader = rt borrow entries;
+                  entries = new Array<int>();
+                """), "while immutably borrowed");
+    }
+
+    @Test void lexicalReadBorrowReleaseAllowsLaterExclusiveWriter() {
+        accept(fn("""
+                  {
+                    val first = rt borrow entries;
+                    val second = rt borrow entries;
+                  }
+                  val writer = rt mut borrow entries;
+                """));
+    }
+
+    @Test void lexicalExclusiveBorrowReleaseAllowsLaterReader() {
+        accept(fn("""
+                  {
+                    val writer = rt mut borrow entries;
+                  }
+                  val reader = rt borrow entries;
+                """));
+    }
+
+    @Test void lexicalReadBorrowReleaseAllowsOwnershipTake() {
+        accept(fn("""
+                  {
+                    val reader = rt borrow entries;
+                  }
+                  val transferred = rt take entries;
+                """));
+    }
+
+    @Test void doubleRtTakeOfSameOwnedBindingIsRejected() {
+        deny(fn("""
+                  val first = rt take entries;
+                  val second = rt take entries;
+                """), "use of moved value");
+    }
+
 }
