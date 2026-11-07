@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -361,4 +362,58 @@ final class ChannelRuntimeTest {
         assertThrows(RuntimeException.class, read::join);
         assertThrows(RuntimeException.class, selected::join);
     }
+    @Test
+    void publicSelectDescriptorsExposeOnlyDirectionalCapabilities() throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.ReadChannel<Integer> output = channel.output();
+        ChannelRuntime.WriteChannel<Integer> input = channel.input();
+
+        assertSame(output, channel.output());
+        assertSame(input, channel.input());
+        assertSame(output, ChannelRuntime.read(channel).channel());
+        assertSame(input, ChannelRuntime.write(channel, 29).channel());
+        assertSame(output, new ChannelRuntime.ReadCase<>(channel).channel());
+        assertSame(input, new ChannelRuntime.WriteCase<>(channel, 29).channel());
+
+        assertEquals(
+                ChannelRuntime.ReadChannel.class,
+                ChannelRuntime.ReadCase.class.getMethod("channel").getReturnType());
+        assertEquals(
+                ChannelRuntime.WriteChannel.class,
+                ChannelRuntime.WriteCase.class.getMethod("channel").getReturnType());
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("backingChannel"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("backingChannel"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("tryWrite", Object.class));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("tryRead"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("close"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("close"));
+
+        assertTrue(channel.tryWrite(17));
+        ChannelRuntime.SelectResult selectedRead = ChannelRuntime.SelectSet
+                .of(ChannelRuntime.read(output))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(ChannelRuntime.SelectOperation.READ, selectedRead.operation());
+        assertEquals(17, selectedRead.value());
+
+        ChannelRuntime.SelectResult selectedWrite = ChannelRuntime.SelectSet
+                .of(ChannelRuntime.write(input, 29))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(ChannelRuntime.SelectOperation.WRITE, selectedWrite.operation());
+        assertEquals(29, output.tryRead().orElseThrow());
+    }
+
 }
