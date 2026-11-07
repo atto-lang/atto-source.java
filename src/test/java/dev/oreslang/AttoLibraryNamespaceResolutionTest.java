@@ -78,7 +78,7 @@ final class AttoLibraryNamespaceResolutionTest {
                     () -> CoreLibrarySources.oresCoreSource("atto.core/" + suffix), suffix);
         }
         assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.oresCoreSource("atto.core/numeric\u0000hidden"));
+                () -> CoreLibrarySources.oresCoreSource("atto.core/numeric" + (char) 0 + "hidden"));
     }
 
     @Test
