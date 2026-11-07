@@ -77,15 +77,6 @@ final class IpcTransportSessionLease {
     IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
                              long generation, int limit,
                              IpcReceiptCompletionBridge receipts,
-                             FrameWriter writer, PhysicalCloser closer,
-                             CleanupScheduler scheduler) {
-        this(trustedEpoch, generation, limit, receipts, null,
-                writer, closer, scheduler);
-    }
-
-    IpcTransportSessionLease(IpcReceiptCorrelation.Envelope trustedEpoch,
-                             long generation, int limit,
-                             IpcReceiptCompletionBridge receipts,
                              Object physicalOwner,
                              FrameWriter writer, PhysicalCloser closer,
                              CleanupScheduler scheduler) {
@@ -96,7 +87,8 @@ final class IpcTransportSessionLease {
         this.generation = generation;
         this.limit = limit;
         this.receipts = Objects.requireNonNull(receipts, "receipts");
-        this.physicalOwner = physicalOwner;
+        this.physicalOwner = Objects.requireNonNull(
+                physicalOwner, "physicalOwner");
         this.writer = Objects.requireNonNull(writer, "writer");
         this.closer = Objects.requireNonNull(closer, "closer");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -135,10 +127,6 @@ final class IpcTransportSessionLease {
                 throw new PreDispatchRejectedException(
                         "closed/stale/bounded IPC transport");
             }
-            if (physicalOwner == null) {
-                throw new IllegalStateException(
-                        "atomic IPC admission requires bound physical owner");
-            }
             outcome = receipts.admitAndCommit(
                     physicalOwner, message, generation);
             ++activeWrites;
@@ -157,55 +145,6 @@ final class IpcTransportSessionLease {
             releaseWrite();
         }
         return new WriteAttempt(outcome, error);
-    }
-
-    /**
-     * Linearize session admission, receipt dispatch commitment, and close
-     * intent on this session monitor, BEFORE any possible physical write.
-     * The transport callback is invoked OUTSIDE both session and receipt
-     * monitors while this operation pins the underlying physical resource.
-     */
-    void writeFrame(long expectedGeneration,
-                    IpcReceiptCorrelation.Envelope message,
-                    byte[] preparedFrame) throws IOException {
-        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport write");
-        Objects.requireNonNull(message, "message");
-        Objects.requireNonNull(preparedFrame, "preparedFrame");
-        synchronized (this) {
-            if (phase != Phase.OPEN || expectedGeneration != generation
-                    || !sameTrustedEpoch(message) || activeWrites >= limit) {
-                throw new PreDispatchRejectedException(
-                        "closed/stale/bounded IPC transport");
-            }
-            // No arbitrary user callbacks or memory allocation after
-            // commitment until the writer has acquired the physical pin.
-            ++activeWrites;
-            try {
-                if (physicalOwner == null) {
-                    receipts.commitDispatch(message);
-                } else {
-                    receipts.commitDispatch(
-                            physicalOwner, message, generation);
-                }
-            } catch (RuntimeException failure) {
-                --activeWrites;
-                throw new PreDispatchRejectedException(
-                        "IPC receipt dispatch commitment rejected", failure);
-            } catch (Error failure) {
-                --activeWrites;
-                throw failure;
-            }
-        }
-        try {
-            writer.write(message, preparedFrame);
-        } catch (IOException | RuntimeException | Error failure) {
-            // A dispatch-committed failed write is INDETERMINATE, even when
-            // the host call threw before reporting any accepted bytes.
-            requestClose();
-            throw failure;
-        } finally {
-            releaseWrite();
-        }
     }
 
     /**
@@ -258,17 +197,21 @@ final class IpcTransportSessionLease {
      * write pins do not drain by a supervisor deadline. Never marks an
      * executing physical close as retired or interrupts its cleanup worker.
      */
-    synchronized boolean quarantineIfUnsettled(Throwable failure) {
+    boolean quarantineIfUnsettled(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantine");
         Objects.requireNonNull(failure, "failure");
-        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
-        if (phase == Phase.FINALIZING && cleanupExecuting) {
-            if (closeFailure == null) closeFailure = failure;
-            return false;
+        synchronized (this) {
+            if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+            if (phase == Phase.FINALIZING && cleanupExecuting) {
+                if (closeFailure == null) closeFailure = failure;
+                return false;
+            }
+            closeFailure = failure;
+            phase = Phase.QUARANTINED;
+            notifyAll();
+            return true;
         }
-        closeFailure = failure;
-        phase = Phase.QUARANTINED;
-        notifyAll();
-        return true;
     }
 
     /** An explicit supervisor retry never reopens a quarantined session. */
@@ -341,6 +284,11 @@ final class IpcTransportSessionLease {
     }
 
     private void finalizePhysicalClose(long attempt) {
+        // The scheduler callback itself may have been misrouted onto an actor
+        // carrier. Reject before touching this monitor: checking only after
+        // synchronized(this) could park the actor behind a host lifecycle lock.
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport cleanup worker");
         synchronized (this) {
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
@@ -348,13 +296,6 @@ final class IpcTransportSessionLease {
                 closeFailure = new IllegalStateException(
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
-                phase = Phase.QUARANTINED;
-                notifyAll();
-                return;
-            }
-            if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed on an actor carrier");
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
@@ -373,13 +314,12 @@ final class IpcTransportSessionLease {
             return; // Never declare the descriptor reusable.
         }
         synchronized (this) { physicalCloseConfirmed = true; }
+        final IpcReceiptCompletionBridge.RetiredCompletions terminal;
         try {
-            // Arbitrary dependent user callbacks can run: no session lock held.
-            if (physicalOwner == null) {
-                receipts.transportLost(trustedEpoch);
-            } else {
-                receipts.transportLost(physicalOwner, trustedEpoch, generation);
-            }
+            // Retire correlation authority without running arbitrary dependent
+            // callbacks: they may synchronously block this cleanup worker.
+            terminal = receipts.transportLostDeferred(
+                    physicalOwner, trustedEpoch, generation);
         } catch (RuntimeException | Error failure) {
             synchronized (this) {
                 closeFailure = failure;
@@ -396,21 +336,38 @@ final class IpcTransportSessionLease {
             phase = Phase.RETIRED;
             notifyAll();
         }
+        // All physical/ledger state is now settled and published. Deliver
+        // terminal stages outside the lease lock so a stalled application
+        // callback cannot hold the descriptor in FINALIZING indefinitely.
+        terminal.complete();
     }
 
-    synchronized Snapshot snapshot() {
-        return new Snapshot(generation, phase, activeWrites,
-                physicalCloseConfirmed, receiptsRetired);
+    Snapshot snapshot() {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport snapshot");
+        synchronized (this) {
+            return new Snapshot(generation, phase, activeWrites,
+                    physicalCloseConfirmed, receiptsRetired);
+        }
     }
 
-    synchronized Throwable closeFailure() { return closeFailure; }
+    Throwable closeFailure() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport close failure inspection");
+        synchronized (this) {
+            return closeFailure;
+        }
+    }
 
-    synchronized boolean invariant() {
-        return activeWrites >= 0 && activeWrites <= limit
-                && (!physicalCloseConfirmed || activeWrites == 0)
-                && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
-                && (phase != Phase.OPEN || !physicalCloseConfirmed)
-                && (phase != Phase.FINALIZING || activeWrites == 0)
-                && (!cleanupExecuting || phase == Phase.FINALIZING);
+    boolean invariant() {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport invariant inspection");
+        synchronized (this) {
+            return activeWrites >= 0 && activeWrites <= limit
+                    && (!physicalCloseConfirmed || activeWrites == 0)
+                    && (phase != Phase.RETIRED || (physicalCloseConfirmed && receiptsRetired))
+                    && (phase != Phase.OPEN || !physicalCloseConfirmed)
+                    && (phase != Phase.FINALIZING || activeWrites == 0)
+                    && (!cleanupExecuting || phase == Phase.FINALIZING);
+        }
     }
 }

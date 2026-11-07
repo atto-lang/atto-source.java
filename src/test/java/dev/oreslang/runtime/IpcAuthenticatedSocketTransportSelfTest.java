@@ -195,6 +195,34 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(!client.isClosed());
         }
 
+        // A bridge-claim failure AFTER the socket streams and lease have
+        // been prepared must not leak the socket or mutate the broker's key.
+        // The failed transport cannot publish any receipt correlation.
+        try (ServerSocket server = new ServerSocket(
+                    0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(
+                     InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            var occupiedBridge = new IpcReceiptCompletionBridge(1);
+            occupiedBridge.claimPhysicalTransport(
+                    new Object(), configMessage, 13);
+            byte[] callerKey = key();
+            byte[] originalKey = callerKey.clone();
+            try {
+                new IpcAuthenticatedSocketTransport(
+                        client, occupiedBridge, configMessage, 13, 1,
+                        callerKey, connectionBinding,
+                        IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                throw new AssertionError("duplicate physical bridge claim accepted");
+            } catch (IllegalStateException expected) {
+                check(expected.getMessage().contains("already bound"));
+            }
+            check(client.isClosed());
+            check(Arrays.equals(callerKey, originalKey));
+            check(occupiedBridge.counters().pending() == 0);
+            check(occupiedBridge.invariant());
+        }
+
         // Invalid close deadlines are side-effect free: validation occurs
         // before close intent or physical abort is submitted.
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
@@ -224,13 +252,13 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 } catch (IllegalStateException expected) {
                     check(expected.getMessage().contains("cannot block an actor carrier"));
                 }
-                check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
                 check(!client.isClosed());
                 check(!transport.keyCloneZeroized());
             } finally {
                 RuntimeBlockingGuard.exitActorCarrier();
             }
             check(!RuntimeBlockingGuard.actorCarrierMarked());
+            check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.OPEN);
             check(transport.requestCloseAndAwait(3000));
             check(transport.snapshot().phase() == IpcTransportSessionLease.Phase.RETIRED);
         }
@@ -288,6 +316,117 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
                 awaitPhase(transport, IpcTransportSessionLease.Phase.RETIRED);
                 check(transport.snapshot().activeWrites() == 0);
                 check(transport.keyCloneZeroized());
+            } finally {
+                cleanup.shutdownNow();
+                cleanup.awaitTermination(2, TimeUnit.SECONDS);
+            }
+            peer.join(3000);
+            check(!peer.isAlive());
+            check(peerFailure.get() == null);
+        }
+
+        // Terminal completion may synchronously run a dependent callback.
+        // That callback must not inherit the socket's readGate: it waits for a
+        // second host reader to consume ACK for the next in-flight message.
+        // With callback delivery inside readGate this deterministically times
+        // out, even though bridge.gate was already released.
+        byte[] callbackPayload = "receipt callback gate".getBytes(
+                java.nio.charset.StandardCharsets.UTF_8);
+        var callbackFirst = envelope(1, "callbackRead", 3, 4, callbackPayload);
+        var callbackSecond = envelope(2, "callbackRead", 3, 4, callbackPayload);
+        peerFailure.set(null);
+        try (ServerSocket server = new ServerSocket(
+                0, 16, InetAddress.getLoopbackAddress())) {
+            Thread peer = new Thread(() -> {
+                try (Socket accepted = server.accept()) {
+                    accepted.setSoTimeout(5000);
+                    var replay = new IpcAuthenticatedSocketTransport.InboundReplayGate();
+                    for (int i = 1; i <= 2; ++i) {
+                        var decoded = IpcAuthenticatedSocketTransport.decodeDataFrame(
+                                IpcAuthenticatedSocketTransport.readDataWireFrame(
+                                        accepted.getInputStream()),
+                                callbackFirst, 111, replay, connectionBinding, key);
+                        check(decoded.envelope().messageSequence() == i);
+                    }
+                    for (var messageForReceipt :
+                            new IpcReceiptCorrelation.Envelope[]{
+                                    callbackFirst, callbackSecond}) {
+                        IpcAuthenticatedSocketTransport.writeWireFrame(
+                                accepted.getOutputStream(),
+                                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                                        messageForReceipt, 111,
+                                        IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED,
+                                        connectionBinding, key));
+                        IpcAuthenticatedSocketTransport.writeWireFrame(
+                                accepted.getOutputStream(),
+                                IpcAuthenticatedSocketTransport.encodeReceiptFrame(
+                                        messageForReceipt, 111,
+                                        IpcReceiptCorrelation.Stage.HANDLER_COMMITTED,
+                                        connectionBinding, key));
+                    }
+                } catch (Throwable failure) {
+                    peerFailure.compareAndSet(null, failure);
+                }
+            }, "ipc-test-peer-callback-read-gate");
+            peer.start();
+            ExecutorService cleanup = Executors.newSingleThreadExecutor();
+            try (Socket client = new Socket(
+                    InetAddress.getLoopbackAddress(), server.getLocalPort())) {
+                client.setSoTimeout(5000);
+                var bridge = new IpcReceiptCompletionBridge(2);
+                var transport = new IpcAuthenticatedSocketTransport(
+                        client, bridge, callbackFirst, 111, 1,
+                        key, connectionBinding, cleanup::execute);
+                var first = transport.send(callbackFirst, callbackPayload);
+                var second = transport.send(callbackSecond, callbackPayload);
+                check(!first.writeAttemptFailed() && !second.writeAttemptFailed());
+
+                AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+                AtomicReference<IpcReceiptCorrelation.Stage> nextAck =
+                        new AtomicReference<>();
+                CountDownLatch callbackDone = new CountDownLatch(1);
+                first.outcome().thenAccept(stage -> {
+                    try {
+                        CountDownLatch received = new CountDownLatch(1);
+                        Thread nextReader = new Thread(() -> {
+                            try {
+                                nextAck.set(transport.readVerifiedReceipt());
+                            } catch (Throwable failure) {
+                                callbackFailure.compareAndSet(null, failure);
+                            } finally {
+                                received.countDown();
+                            }
+                        }, "ipc-test-dependent-next-receipt-reader");
+                        nextReader.setDaemon(true);
+                        nextReader.start();
+                        try {
+                            if (!received.await(2, TimeUnit.SECONDS)) {
+                                callbackFailure.compareAndSet(null, new AssertionError(
+                                        "terminal completion callback held socket readGate"));
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            callbackFailure.compareAndSet(null, interrupted);
+                        }
+                    } finally {
+                        callbackDone.countDown();
+                    }
+                });
+                check(transport.readVerifiedReceipt()
+                        == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+                check(transport.readVerifiedReceipt()
+                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                check(first.outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                check(callbackDone.await(2, TimeUnit.SECONDS));
+                check(callbackFailure.get() == null);
+                check(nextAck.get() == IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED);
+                check(transport.readVerifiedReceipt()
+                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                check(second.outcome().toCompletableFuture().join()
+                        == IpcReceiptCorrelation.Stage.HANDLER_COMMITTED);
+                check(bridge.invariant());
+                check(transport.requestCloseAndAwait(3000));
             } finally {
                 cleanup.shutdownNow();
                 cleanup.awaitTermination(2, TimeUnit.SECONDS);
@@ -971,12 +1110,15 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             client.setSendBufferSize(1024);
             peer.setReceiveBufferSize(1024);
             AtomicInteger scheduled = new AtomicInteger();
+            AtomicReference<Throwable> illegalAbortFailure = new AtomicReference<>();
             IpcTransportSessionLease.CleanupScheduler scheduler = cleanup -> {
                 if (scheduled.incrementAndGet() == 1) {
                     Thread invalidCarrier = new Thread(() -> {
                         RuntimeBlockingGuard.enterActorCarrier();
                         try {
                             cleanup.run();
+                        } catch (Throwable failure) {
+                            illegalAbortFailure.set(failure);
                         } finally {
                             RuntimeBlockingGuard.exitActorCarrier();
                         }
@@ -1023,6 +1165,9 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(!transport.requestCloseAndAwait(3000));
             check(transport.snapshot().phase()
                     == IpcTransportSessionLease.Phase.QUARANTINED);
+            check(illegalAbortFailure.get() instanceof IllegalStateException);
+            check(illegalAbortFailure.get().getMessage().contains(
+                    "cannot block an actor carrier"));
             check(transport.snapshot().activeWrites() == 1);
             check(sender.isAlive());
             transport.retryQuarantinedAbort();
