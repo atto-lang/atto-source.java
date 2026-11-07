@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * VM-internal, immutable Symbol literal images shared by trusted actors.
@@ -27,6 +28,10 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
     static final int MAX_LITERALS = 4_096;
     static final long MAX_PAYLOAD_UTF8_BYTES = 1_048_576L;
     static final int MAX_LIVE_GENERATIONS = 8;
+    // VM-local sequence: a numeric generation from another image store must
+    // never accidentally select a different store's first/second generation.
+    // Still internal metadata, NOT a guest capability or durable identifier.
+    private static final AtomicLong NEXT_IMAGE_GENERATION = new AtomicLong(1L);
 
     private static final class Image {
         final long generation;
@@ -109,7 +114,6 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
 
     private final Map<Long, Image> live = new HashMap<>();
     private Image current;
-    private long nextGeneration = 1L;
     private volatile boolean closed;
     // Reentrancy is per publisher thread, not a process-wide staging lock:
     // iterating a host collection can execute arbitrary callbacks and must
@@ -158,9 +162,6 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
                 if (closed) {
                     throw new IllegalStateException("Symbol image store closed during publication");
                 }
-                if (nextGeneration == Long.MAX_VALUE) {
-                    throw new IllegalStateException("Symbol generation counter exhausted");
-                }
                 int afterPublication = live.size() + 1
                         - (current != null && current.pins == 0 ? 1 : 0);
                 if (afterPublication > MAX_LIVE_GENERATIONS) {
@@ -169,11 +170,18 @@ final class OresSymbolLiteralImageStore implements AutoCloseable {
                 // Allocate the image and reserve the map entry before changing
                 // the visible current generation. Neither map nor Image may
                 // call host callbacks during this commit.
-                Image image = new Image(nextGeneration, sealed, lookup, bytes);
+                long candidate;
+                while (true) {
+                    candidate = NEXT_IMAGE_GENERATION.get();
+                    if (candidate == Long.MAX_VALUE) {
+                        throw new IllegalStateException("Symbol generation counter exhausted");
+                    }
+                    if (NEXT_IMAGE_GENERATION.compareAndSet(candidate, candidate + 1)) break;
+                }
+                Image image = new Image(candidate, sealed, lookup, bytes);
                 live.put(image.generation, image);
                 Image previous = current;
                 current = image;
-                ++nextGeneration;
                 retireIfUnused(previous);
                 return image.generation;
             }
