@@ -30,6 +30,8 @@ final class VerifyAssuranceSurefire {
             "canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput",
             "canonicalAttoEarlyReturnGuestReleasesBeforeStop",
             "canonicalAttoGuestOutputTracksARealSourceMutation",
+            "canonicalAttoGuestCriticalBodyMutationChangesOutput",
+            "canonicalAttoGuestSourceMutationWorksInBothDirections",
             "unverifiedFreeFunctionCriticalSourceDoesNotExecute"
         )),
         new Suite("dev.oreslang.ActorBorrowCompilerAdmissionTest", List.of(
