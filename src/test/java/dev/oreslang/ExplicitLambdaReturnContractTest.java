@@ -211,6 +211,31 @@ final class ExplicitLambdaReturnContractTest {
     }
 
     @Test
+    void bareScalarReturnAnnotationMustHaveBracedBody() {
+        for (String type : new String[] {
+                "int", "uint", "i32", "i64", "bool", "boolean",
+                "string", "float", "f64", "decimal", "bigint"
+        }) {
+            String guest = "fnc f(): void { const bad = || -> "
+                    + type + "; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(guest), type);
+        }
+    }
+
+    @Test
+    void bareScalarTypeGuardDoesNotConsumeExpressionBodies() {
+        Ast.LambdaExpr expression = firstLambda("""
+                fnc f(): void {
+                    const fnc callback = |int: int| -> int + 1;
+                    return;
+                }
+                """);
+        assertNull(expression.declaredReturnType());
+        assertNotNull(expression.expressionBody());
+    }
+
+    @Test
     void namedCallableLambdaAcceptsExplicitReturnType() {
         Ast.Program parsed = Parser.parse("""
                 fnc increment = |x: int| -> int {
