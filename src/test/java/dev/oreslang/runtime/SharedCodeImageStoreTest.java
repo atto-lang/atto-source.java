@@ -99,6 +99,86 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void hostileCatalogCannotHoldCodeRegistryLockOrResurrectClosedStore() throws Exception {
+        Ast.Program slowProgram = Parser.parse("pub routine main(): void { return; }");
+        Ast.Program fastProgram = Parser.parse("pub routine other(): void { return; }");
+        var scanning = new CountDownLatch(1);
+        var finish = new CountDownLatch(1);
+        List<OresSymbol> slowCatalog = new java.util.AbstractList<>() {
+            @Override public int size() { return 1; }
+            @Override public OresSymbol get(int i) { return OresSymbol.process("slow"); }
+            @Override public java.util.Iterator<OresSymbol> iterator() {
+                return new java.util.Iterator<>() {
+                    boolean consumed;
+                    @Override public boolean hasNext() { return !consumed; }
+                    @Override public OresSymbol next() {
+                        consumed = true;
+                        scanning.countDown();
+                        try {
+                            if (!finish.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test catalog iterator timed out");
+                            }
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(e);
+                        }
+                        return OresSymbol.process("slow");
+                    }
+                };
+            }
+        };
+        SharedCodeImageStore store = new SharedCodeImageStore();
+        try (var workers = Executors.newFixedThreadPool(2)) {
+            var slow = workers.submit(() -> store.publish("slow.atto", slowProgram, slowCatalog));
+            try {
+                assertTrue(scanning.await(3, TimeUnit.SECONDS));
+                var fast = workers.submit(() ->
+                        store.publish("fast.atto", fastProgram,
+                                List.of(OresSymbol.process("fast"))));
+                var fastImage = fast.get(2, TimeUnit.SECONDS);
+                assertEquals(OresSymbol.process("fast"),
+                        fastImage.staticLiteralValue(OresSymbol.process("fast")));
+                store.close();
+            } finally {
+                finish.countDown();
+            }
+            var rejected = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> slow.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, rejected.getCause());
+            assertEquals(0, store.imageCount());
+        } finally {
+            store.close();
+        }
+    }
+
+    @Test
+    void lyingSourceCatalogSizeStillMeetsRealEntryQuota() {
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+            List<OresSymbol> overflowing = new java.util.AbstractList<>() {
+                @Override public int size() { return 0; }
+                @Override public OresSymbol get(int i) {
+                    return OresSymbol.process("name_" + i);
+                }
+                @Override public java.util.Iterator<OresSymbol> iterator() {
+                    return new java.util.Iterator<>() {
+                        int at;
+                        @Override public boolean hasNext() {
+                            return at <= OresSymbolLiteralImageStore.MAX_LITERALS;
+                        }
+                        @Override public OresSymbol next() {
+                            return OresSymbol.process("name_" + at++);
+                        }
+                    };
+                }
+            };
+            assertThrows(IllegalArgumentException.class, () ->
+                    store.publish("too-many.atto", program, overflowing));
+            assertEquals(0, store.imageCount());
+        }
+    }
+
+    @Test
     void concurrentReadersNeverConstructANewCodeImage() throws Exception {
         Ast.Program parsedOnce = Parser.parse("pub routine main(): void { return; }");
         try (SharedCodeImageStore store = new SharedCodeImageStore()) {
