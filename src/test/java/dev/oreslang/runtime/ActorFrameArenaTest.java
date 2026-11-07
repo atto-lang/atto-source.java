@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.io.Serializable;
+import java.util.ArrayDeque;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -105,6 +107,54 @@ final class ActorFrameArenaTest {
         assertThrows(SecurityException.class, () -> store.pop(other, frame));
         assertFalse(store.isPoisoned(), "foreign input must not poison another actor");
         store.pop(a, frame);
+    }
+
+    @Test
+    void foreignGenerationCannotProbeWhetherAnotherActorHasPoisonedItsStack() {
+        ExecutionContext a = actor(7, 1, 1);
+        ExecutionContext attacker = actor(7, 1, 2);
+        ActorFrameArena store = arena(a, 1, 8);
+        var frame = store.push(a, 8);
+        assertThrows(ActorFrameArena.BudgetExceeded.class, () -> store.push(a, 1));
+        assertThrows(SecurityException.class, () -> store.read(attacker, frame, 0, 1),
+                "auth must precede the poisoned-state diagnostic");
+        assertThrows(ActorFrameArena.BudgetExceeded.class, () -> store.read(a, frame, 0, 1));
+        store.cancel(a);
+    }
+
+    @Test
+    void cancellationAndQuiescentRetirementZeroizeBackingFrameBytes() throws Exception {
+        ExecutionContext a = actor(7, 1, 1);
+        ActorFrameArena store = arena(a, 2, 16);
+        var first = store.push(a, 8);
+        store.write(a, first, 0, new byte[]{7, 8, 9});
+        byte[] canceledBacking = privateTopFrameBytes(store, a);
+        store.cancel(a);
+        assertArrayEquals(new byte[8], canceledBacking,
+                "cancellation must scrub the original backing allocation");
+
+        var second = store.push(a, 8);
+        store.write(a, second, 0, new byte[]{1, 2, 3});
+        byte[] retiredBacking = privateTopFrameBytes(store, a);
+        store.retireQuiesced();
+        assertArrayEquals(new byte[8], retiredBacking,
+                "retirement must zero even a still-live frame before reclamation");
+        assertThrows(IllegalStateException.class, () -> store.pop(a, second));
+    }
+
+    /** Trusted host-only reflection: no frame backing arrays become guest values. */
+    private static byte[] privateTopFrameBytes(
+            ActorFrameArena arena, ExecutionContext execution) throws Exception {
+        var stacksField = ActorFrameArena.class.getDeclaredField("stacks");
+        stacksField.setAccessible(true);
+        Map<?, ?> stacks = (Map<?, ?>) stacksField.get(arena);
+        ArrayDeque<?> stack = (ArrayDeque<?>) stacks.get(execution.id());
+        assertNotNull(stack);
+        Object frame = stack.peekLast();
+        assertNotNull(frame);
+        var bytesField = frame.getClass().getDeclaredField("bytes");
+        bytesField.setAccessible(true);
+        return (byte[]) bytesField.get(frame);
     }
 
     @Test
