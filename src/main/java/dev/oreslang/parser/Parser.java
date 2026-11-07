@@ -4608,13 +4608,26 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
-        // Only an immediate '{' denotes the statement-block form. Everything
-        // else starts a normal expression body. This is intentionally lexical:
-        // future prefix expressions such as `struct{...}{...}` must remain
-        // expression bodies rather than being confused with a lambda block.
+        // Immediate '{' denotes an inferred block. Preserve expression-bodied
+        // lambdas, while recognizing an explicitly typed *braced* block:
+        //   || -> void { cleanup(); }
+        //   |x: int| -> int { return x + 1; }
         if (check(LBRACE)) {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
         }
+        // Speculate only on the return type plus a following block opener.
+        // A failed type probe cannot consume an expression-bodied lambda.
+        int start = current;
+        Ast.TypeRef resultType = null;
+        try {
+            resultType = parseTypeRef();
+        } catch (IllegalArgumentException ignored) {
+            // Not a type header: parse the existing expression-body grammar.
+        }
+        if (resultType != null && check(LBRACE)) {
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, resultType);
+        }
+        current = start;
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
     }
 
