@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/typed-callable-exact-head-jvm-aot.yml'
       - 'pom.xml'
+      - 'docs/grammar.ebnf'
+      - 'src/main/java/dev/oreslang/nodes/**'
       - 'tools/ci/VerifyTypedCallableSurefire.java'
       - 'src/main/java/dev/oreslang/ast/**'
       - 'src/main/java/dev/oreslang/parser/**'
@@ -20,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: typed-callable-exact-${{ github.event.pull_request.number || github.ref }}
+  group: typed-callable-exact-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -32,10 +34,10 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Fail closed on checkout or tree mismatch
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -49,6 +51,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+      - name: Exercise the report guard against adversarial synthetic reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          java tools/ci/VerifyTypedCallableSurefire.java --self-test
       - name: Execute exact-source official JUnit engine, not synthetic probes
         shell: bash
         run: |
@@ -56,11 +63,6 @@ jobs:
           mvn -B -ntp \
             -Dtest=ExplicitLambdaReturnContractTest,NamedCallableBindingSignatureTest,CallableReturnParserBoundaryTest,TypedLambdaTreeShakerContractTest \
             -DfailIfNoTests=true test
-      - name: Exercise the report guard against adversarial synthetic reports
-        shell: bash
-        run: |
-          set -euo pipefail
-          java tools/ci/VerifyTypedCallableSurefire.java --self-test
       - name: Require official JUnit XML, exact suites and at least 38 executed cases
         shell: bash
         run: |
@@ -78,7 +80,7 @@ jobs:
       - name: Verify exact source head after Maven
         shell: bash
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
@@ -94,11 +96,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Verify native build source identity
         shell: bash
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
@@ -166,7 +168,7 @@ jobs:
           echo 'AOT_GUEST_EXECUTED=TRUE'
       - name: Assert exact source head remained unchanged
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
