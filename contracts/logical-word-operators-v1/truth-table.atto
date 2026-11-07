@@ -1,0 +1,20 @@
+pub fnc main(): void {
+  stdio.println(false and false);
+  stdio.println(false and true);
+  stdio.println(true and false);
+  stdio.println(true and true);
+
+  stdio.println(false or false);
+  stdio.println(false or true);
+  stdio.println(true or false);
+  stdio.println(true or true);
+
+  stdio.println(false xor false);
+  stdio.println(false xor true);
+  stdio.println(true xor false);
+  stdio.println(true xor true);
+
+  // and binds tighter than xor, which binds tighter than or.
+  stdio.println(false or true xor true and false);
+  return;
+}
