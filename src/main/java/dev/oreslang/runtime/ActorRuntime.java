@@ -1605,6 +1605,12 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             if (release != null) release.run();
+            // An aborted/STOP-drained continuation must release its actor-local
+            // receipt, not merely the mailbox slot. A running callback can
+            // retire only after its own finally executes.
+            if (continuation instanceof ActorContinuationLedger.Admission receipt) {
+                receipt.close();
+            }
         }
     }
 
@@ -1993,19 +1999,40 @@ public final class ActorRuntime implements AutoCloseable {
      * threads may only enqueue a runtime continuation; they never execute guest
      * code directly.</p>
      */
-    public final class ContinuationTarget {
+    public static final class ContinuationTarget {
         private final ActorId actorId;
+        // A non-static inner target implicitly retains its ActorRuntime even
+        // if the actor cell is weakly captured. A foreign pending Future must
+        // not pin an entire closed runtime through this completion capability.
+        private final java.lang.ref.WeakReference<ActorRuntime> originatingRuntime;
+        // Identity, not merely ActorId, fences a reused hot-reload incarnation.
+        private final java.lang.ref.WeakReference<ActorCell<?>> capturedCell;
 
-        private ContinuationTarget(ActorId actorId) {
-            this.actorId = Objects.requireNonNull(actorId, "actorId");
+        private ContinuationTarget(ActorRuntime runtime, ActorCell<?> cell) {
+            this.originatingRuntime = new java.lang.ref.WeakReference<>(
+                    Objects.requireNonNull(runtime, "runtime"));
+            this.actorId = cell.ref.id();
+            this.capturedCell = new java.lang.ref.WeakReference<>(cell);
         }
 
         public ActorId actorId() {
             return actorId;
         }
 
+        private ActorCell<?> currentCell(ActorRuntime runtime) {
+            ActorCell<?> cell = capturedCell.get();
+            return cell != null && runtime.actors.get(actorId) == cell ? cell : null;
+        }
+
+        private ActorCell<?> currentCell() {
+            ActorRuntime runtime = originatingRuntime.get();
+            return runtime == null ? null : currentCell(runtime);
+        }
+
         private boolean enqueue(Runnable continuation) {
-            return enqueueContinuation(actorId, continuation);
+            ActorRuntime runtime = originatingRuntime.get();
+            ActorCell<?> cell = runtime == null ? null : currentCell(runtime);
+            return cell != null && runtime.enqueueContinuation(cell, continuation);
         }
     }
 
@@ -2030,7 +2057,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell.ref.id());
+        return new ContinuationTarget(this, cell);
     }
 
     /**
@@ -2430,8 +2457,11 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(future, "future");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
+        if (target.originatingRuntime.get() != this) {
+            throw new SecurityException("actor continuation target belongs to another runtime");
+        }
 
-        ActorCell<?> cell = actors.get(target.actorId());
+        ActorCell<?> cell = target.currentCell();
         if (cell == null || !ownFuture(cell, future, false)) return;
 
         future.whenCompleteRuntime(
@@ -2463,11 +2493,19 @@ public final class ActorRuntime implements AutoCloseable {
                         || (cell.stopped.get()
                                 && !cell.sourceStopCleanupPending
                                 && !cell.sourceStopCleanupActive)) return false;
-                if (!cell.sourceTaskMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
-                    throw new IllegalStateException(
-                            "actor source continuation mailbox capacity invariant violated for "
-                                    + cell.ref.id());
+                ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
+                        ActorContinuationLedger.Lane.SOURCE_TASK, continuation);
+                boolean published = false;
+                try {
+                    if (!cell.sourceTaskMailbox.tryWrite(
+                            MessageEnvelope.continuation(receipt))) {
+                        throw new IllegalStateException(
+                                "actor source continuation mailbox capacity invariant violated for "
+                                        + cell.ref.id());
+                    }
+                    published = true;
+                } finally {
+                    if (!published) receipt.close();
                 }
                 admitted = true;
                 if (currentActor.get() == cell) cell.sourceHandoffRequested = true;
@@ -2479,11 +2517,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
-        Objects.requireNonNull(actorId, "actorId");
+    private boolean enqueueContinuation(ActorCell<?> cell, Runnable continuation) {
+        Objects.requireNonNull(cell, "cell");
         Objects.requireNonNull(continuation, "continuation");
-        ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        ActorId actorId = cell.ref.id();
+        if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -2493,11 +2531,20 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
-                if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
-                    throw new IllegalStateException(
-                            "actor continuation mailbox capacity invariant violated for " + actorId);
+                if (cell.stopped.get() || cell.finalized || closed.get()
+                        || actors.get(actorId) != cell) return false;
+                ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
+                        ActorContinuationLedger.Lane.ORDINARY, continuation);
+                boolean published = false;
+                try {
+                    if (!cell.continuationMailbox.tryWrite(
+                            MessageEnvelope.continuation(receipt))) {
+                        throw new IllegalStateException(
+                                "actor continuation mailbox capacity invariant violated for " + actorId);
+                    }
+                    published = true;
+                } finally {
+                    if (!published) receipt.close();
                 }
                 admitted = true;
 
@@ -2545,48 +2592,66 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceReceiveSuspended = true;
         }
 
+        // This may observe a borrowed Future that never settles. Do not let
+        // its retained callback strongly pin the actor's heap or the runtime
+        // after STOP/hot reload. Live actors are rooted by the runtime's actor
+        // table until physical retirement; a producer only resolves weak
+        // identities and enqueues scheduler work, never guest code.
+        java.lang.ref.WeakReference<ActorRuntime> runtimeRef =
+                new java.lang.ref.WeakReference<>(this);
+        java.lang.ref.WeakReference<ActorCell<?>> cellRef =
+                new java.lang.ref.WeakReference<>(cell);
         future.whenCompleteRuntime((ignored, failure) -> {
-            if (!enqueueContinuation(cell.ref.id(), () -> {
-                long completedSequence;
-                synchronized (cell.lifecycleLock) {
-                    completedSequence = cell.activeMail == null
-                            ? -1L : cell.activeMail.sequence();
+            ActorRuntime runtime = runtimeRef.get();
+            ActorCell<?> admittedCell = cellRef.get();
+            if (runtime == null || admittedCell == null) return;
+            runtime.resumeSuspendedReceiveFromFuture(admittedCell, failure);
+        });
+    }
+
+    /** A borrowed producer completion never runs source receive code inline. */
+    private void resumeSuspendedReceiveFromFuture(
+            ActorCell<?> cell, Throwable failure) {
+        if (!enqueueContinuation(cell, () -> {
+            long completedSequence;
+            synchronized (cell.lifecycleLock) {
+                completedSequence = cell.activeMail == null
+                        ? -1L : cell.activeMail.sequence();
+                cell.sourceReceiveSuspended = false;
+                cell.activeMail = null;
+                cell.lifecycleLock.notifyAll();
+            }
+            if (failure != null) {
+                Throwable terminal = OresFuture.unwrap(failure);
+                if (terminal instanceof java.util.concurrent.CancellationException
+                        && cell.endRequested) {
+                    return;
+                }
+                if (terminal instanceof RuntimeException runtime) throw runtime;
+                if (terminal instanceof Error error) throw error;
+                throw new RuntimeException(terminal);
+            }
+            if (completedSequence < 0) {
+                throw new IllegalStateException("source receive lost pending mail sequence");
+            }
+            cell.markMessageProcessed(completedSequence);
+        })) {
+            boolean failActor = false;
+            synchronized (cell.lifecycleLock) {
+                if (!cell.stopped.get() && !cell.finalized) {
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
-                    cell.lifecycleLock.notifyAll();
-                }
-                if (failure != null) {
-                    Throwable terminal = OresFuture.unwrap(failure);
-                    if (terminal instanceof java.util.concurrent.CancellationException
-                            && cell.endRequested) {
-                        return;
-                    }
-                    if (terminal instanceof RuntimeException runtime) throw runtime;
-                    if (terminal instanceof Error error) throw error;
-                    throw new RuntimeException(terminal);
-                }
-                if (completedSequence < 0) {
-                    throw new IllegalStateException("source receive lost pending mail sequence");
-                }
-                cell.markMessageProcessed(completedSequence);
-            })) {
-                boolean failActor = false;
-                synchronized (cell.lifecycleLock) {
-                    if (!cell.stopped.get() && !cell.finalized) {
-                        cell.sourceReceiveSuspended = false;
-                        cell.activeMail = null;
-                        failActor = true;
-                    }
-                }
-                // A failed Future invokes registered callbacks inline. Never
-                // initiate termination while an outer lifecycle monitor is
-                // still held: drain observers may re-enter the runtime.
-                if (failActor) {
-                    cell.fail(new IllegalStateException(
-                            "actor source receive completion could not re-enter its continuation lane"));
+                    failActor = true;
                 }
             }
-        });
+            // A failed Future invokes registered callbacks inline. Never
+            // initiate termination while an outer lifecycle monitor is
+            // still held: drain observers may re-enter the runtime.
+            if (failActor) {
+                cell.fail(new IllegalStateException(
+                        "actor source receive completion could not re-enter its continuation lane"));
+            }
+        }
     }
 
     /** An actor handle is an opaque typed local capability, never a direct actor-state pointer. */
@@ -7895,6 +7960,12 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /**
+         * Separate actor-owned receipts: the currently RUNNING callback may
+         * coexist with a fully reserved continuation mailbox.
+         */
+        private final ActorContinuationLedger continuationLedger =
+                new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS + 1);
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -9015,6 +9086,9 @@ public final class ActorRuntime implements AutoCloseable {
             })) {
                 // Safe only after all source tasks and physical receipts retire.
             }
+            // Actor finalization is gated on physical retirement above; no
+            // stale producer may mint fresh cleanup receipts beyond this point.
+            continuationLedger.sealAll();
         }
 
         private void recordFinalizationFailure(Throwable failure) {
@@ -9108,6 +9182,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
+                // STOP invalidates ordinary wake receipts before draining the
+                // queue; already-admitted SourceTask cleanup retains authority.
+                continuationLedger.sealOrdinary();
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
                 pendingOperationRevocationPending = true;
