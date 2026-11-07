@@ -372,7 +372,13 @@ pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body
 lambda_param    = IDENT | type_ref IDENT | IDENT ":" type_ref ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
-lambda_body     = block | expression ;
+lambda_body     = block | type_ref block | expression ;
+(* After a lambda's '->', an explicit result type is recognized only when
+   immediately followed by a braced block: || -> void { ... }. A bare
+   expression-bodied lambda (|| -> x + 1) remains inferable. The type checker
+   enforces declared return paths, and an inline defer lambda must produce
+   void. This does not introduce '=>' for executable function bodies or
+   per-arm '-> Type' result typing in match/switch/select. *)
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
                 | "(" expression "," expression { "," expression } ")" ;
