@@ -35,7 +35,10 @@ for source in "${source_paths[@]}"; do
   }
 done
 if [[ -n "${ATTO_EXPECTED_SOURCE_HEAD:-}" ]]; then
-  [[ -z "$(git ls-files --others -- src/main/c src/main/java/dev/oreslang/runtime src/test/java/dev/oreslang/runtime)" ]] || {
+  untracked_inputs="$(git ls-files --others -- src/main/c src/main/java/dev/oreslang/runtime src/test/java/dev/oreslang/runtime)" || {
+    echo "NATIVE_ARENA_NOT_EXECUTED: cannot enumerate compiler inputs" >&2; exit 2;
+  }
+  [[ -z "$untracked_inputs" ]] || {
     echo "NATIVE_ARENA_NOT_EXECUTED: untracked or ignored compiler inputs" >&2; exit 2;
   }
 fi
