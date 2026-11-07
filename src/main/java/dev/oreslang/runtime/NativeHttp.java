@@ -63,12 +63,24 @@ public final class NativeHttp implements AutoCloseable {
     static void validateHeadersForAdmission(
             com.sun.net.httpserver.Headers headers, String protocol, int bodyLimit) {
         List<String> hosts = headers.get("Host");
-        if ("HTTP/1.1".equalsIgnoreCase(protocol)
-                && (hosts == null || hosts.size() != 1
-                    || hosts.get(0) == null || hosts.get(0).isBlank()
-                    || hosts.get(0).indexOf(',') >= 0)) {
-            // A duplicate or joined Host field permits request-routing ambiguity.
+        if (("HTTP/1.1".equalsIgnoreCase(protocol) && hosts == null)
+                || (hosts != null && (hosts.size() != 1 || !validHostValue(hosts.get(0))))) {
+            // Host is required for HTTP/1.1 and, whenever present, must not
+            // permit duplicate or ambiguous routing targets.
             throw new IllegalArgumentException("invalid Host header");
+        }
+        List<String> lengths = headers.get("Content-Length");
+        List<String> transfers = headers.get("Transfer-Encoding");
+        if (lengths != null && (lengths.size() != 1 || lengths.get(0) == null
+                || !lengths.get(0).matches("[0-9]+"))) {
+            throw new IllegalArgumentException("ambiguous Content-Length");
+        }
+        if (transfers != null && (lengths != null || transfers.size() != 1
+                || transfers.get(0) == null
+                || !"chunked".equalsIgnoreCase(transfers.get(0).trim())
+                || !"HTTP/1.1".equalsIgnoreCase(protocol))) {
+            // Do not let different HTTP parsers disagree on body framing.
+            throw new IllegalArgumentException("ambiguous Transfer-Encoding");
         }
         int size = 0;
         for (var entry : headers.entrySet()) {
@@ -84,12 +96,23 @@ public final class NativeHttp implements AutoCloseable {
         if (size > 32768 || headers.size() > 100) {
             throw new IllegalArgumentException("headers too large");
         }
-        String length = headers.getFirst("Content-Length");
-        if (length != null) {
-            long parsed = Long.parseLong(length);
-            if (parsed < 0) throw new IllegalArgumentException("negative Content-Length");
+        if (lengths != null) {
+            long parsed = Long.parseLong(lengths.get(0));
             if (parsed > bodyLimit) throw new IllegalArgumentException("body too large");
         }
+    }
+
+    private static boolean validHostValue(String host) {
+        if (host == null || host.isEmpty()) return false;
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            // Reject ASCII whitespace, controls, non-ASCII bytes and URI
+            // delimiters that could produce a different downstream authority.
+            // Bracketed IPv6 literals and host:port are still permitted.
+            if (c <= 0x20 || c >= 0x7f || c == '/' || c == '\\'
+                    || c == '?' || c == '#' || c == '@' || c == ',') return false;
+        }
+        return true;
     }
 
     /** An invalid request-body framing stream is a client error, not HTTP 500.

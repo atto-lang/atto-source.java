@@ -89,6 +89,82 @@ final class NativeHttpFramingAdmissionTest {
     }
 
     @Test
+    void rejectsAmbiguousContentLengthEvenIfTransportParserAcceptedIt() {
+        Headers repeated = valid();
+        repeated.add("Content-Length", "0");
+        repeated.add("Content-Length", "0");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(repeated, "HTTP/1.1", 1024));
+
+        Headers joined = valid();
+        joined.add("Content-Length", "0,0");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(joined, "HTTP/1.1", 1024));
+
+        Headers signed = valid();
+        signed.add("Content-Length", "+1");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(signed, "HTTP/1.1", 1024));
+
+        Headers nondigit = valid();
+        nondigit.add("Content-Length", "1x");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(nondigit, "HTTP/1.1", 1024));
+    }
+
+    @Test
+    void requiresExactlyOneSupportedTransferEncodingWithoutContentLength() {
+        Headers chunked = valid();
+        chunked.add("Transfer-Encoding", "chunked");
+        assertDoesNotThrow(
+                () -> NativeHttp.validateHeadersForAdmission(chunked, "HTTP/1.1", 1024));
+
+        Headers conflict = valid();
+        conflict.add("Transfer-Encoding", "chunked");
+        conflict.add("Content-Length", "0");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(conflict, "HTTP/1.1", 1024));
+
+        Headers repeated = valid();
+        repeated.add("Transfer-Encoding", "chunked");
+        repeated.add("Transfer-Encoding", "chunked");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(repeated, "HTTP/1.1", 1024));
+
+        Headers unsupported = valid();
+        unsupported.add("Transfer-Encoding", "gzip, chunked");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(unsupported, "HTTP/1.1", 1024));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(chunked, "HTTP/1.0", 1024));
+    }
+
+    @Test
+    void rejectsWhitespaceAndUriDelimiterHostAmbiguity() {
+        for (String host : new String[] {"example.test/path", "bad host",
+                "example.test@attacker.test", "example.test#fragment",
+                "example.test,attacker.test"}) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertThrows(IllegalArgumentException.class,
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "unexpected Host admission: " + host);
+        }
+        Headers ipv6 = valid();
+        ipv6.set("Host", "[::1]:8080");
+        assertDoesNotThrow(
+                () -> NativeHttp.validateHeadersForAdmission(ipv6, "HTTP/1.1", 1024));
+
+        Headers legacy = new Headers();
+        assertDoesNotThrow(
+                () -> NativeHttp.validateHeadersForAdmission(legacy, "HTTP/1.0", 1024));
+        legacy.add("Host", "bad host");
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeHttp.validateHeadersForAdmission(legacy, "HTTP/1.0", 1024));
+    }
+
+    @Test
     void mapsMalformedRequestBodyStreamToClientErrorOnly() {
         IOException malformedChunk = new IOException("invalid chunk size");
         assertEquals(400, NativeHttp.operationFailureStatus(malformedChunk, true));

@@ -92,6 +92,22 @@ final class NativeHttpRawWireAdmissionTest {
             assertTrue(request(address, get(
                     "Host: localhost\r\nX-Long: " + "x".repeat(12_000) + "\r\n"))
                     .startsWith("HTTP/1.1 400"), "individual 12 KiB header must be rejected");
+            assertTrue(request(address, get(
+                    "Host: localhost\r\nContent-Length: 0\r\nContent-Length: 0\r\n"))
+                    .startsWith("HTTP/1.1 400"), "duplicate Content-Length must be rejected");
+            assertTrue(request(address, get(
+                    "Host: localhost\r\nContent-Length: 0,0\r\n"))
+                    .startsWith("HTTP/1.1 400"), "joined Content-Length must be rejected");
+            assertTrue(request(address,
+                    "POST / HTTP/1.1\r\nHost: localhost\r\n"
+                    + "Content-Length: 0\r\nTransfer-Encoding: chunked\r\n"
+                    + "Connection: close\r\n\r\n0\r\n\r\n")
+                    .startsWith("HTTP/1.1 400"), "TE/CL disagreement must be rejected");
+            assertTrue(request(address,
+                    "POST / HTTP/1.1\r\nHost: localhost\r\n"
+                    + "Transfer-Encoding: chunked\r\n"
+                    + "Connection: close\r\n\r\n0\r\n\r\n")
+                    .startsWith("HTTP/1.1 200"), "single valid chunked body must still work");
             assertTrue(request(address,
                     "POST / HTTP/1.1\r\n"
                     + "Host: localhost\r\n"
