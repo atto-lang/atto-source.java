@@ -551,6 +551,9 @@ public final class OwnershipChecker {
 
             Map<VarState, StateSnapshot> falsePath = base;
             for (Ast.IfBranch branch : conditional.branches()) {
+                // Ownership admission must independently reject skipped or
+                // duplicate captures even without a preceding type pass.
+                dev.oreslang.ast.ConditionCaptures.validate(branch.condition());
                 restoreState(falsePath);
                 Scope conditionScope = new Scope(scope);
                 checkExpr(branch.condition(), conditionScope, false);

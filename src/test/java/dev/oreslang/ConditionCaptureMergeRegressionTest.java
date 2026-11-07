@@ -61,4 +61,32 @@ final class ConditionCaptureMergeRegressionTest {
                 "ChannelOpExpr", "DynamicSelectExpr", "ListExpr",
                 "TupleExpr", "ObjectExpr", "LambdaExpr"), observed);
     }
+    @Test void captureAstRejectsMissingValueAndInvalidNames() {
+        assertThrows(NullPointerException.class,
+                () -> new Ast.CaptureExpr(null, "value"));
+        for (String name : new String[] { null, "", " ", "_" }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Ast.CaptureExpr(new Ast.LiteralExpr(1), name));
+        }
+    }
+
+    @Test void duplicateUnconditionalCaptureNamesFailClosed() {
+        Ast.Expr condition = new Ast.CallExpr(new Ast.NameExpr("ready"), List.of(
+                new Ast.CaptureExpr(new Ast.LiteralExpr(1), "same"),
+                new Ast.CaptureExpr(new Ast.LiteralExpr(2), "same")));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ConditionCaptures.validate(condition));
+        assertTrue(error.getMessage().contains("duplicate condition-local capture"));
+    }
+
+    @Test void independentCaptureNamesRemainAdmittedInSourceOrder() {
+        Ast.Expr condition = new Ast.CallExpr(new Ast.NameExpr("ready"), List.of(
+                new Ast.CaptureExpr(new Ast.LiteralExpr(1), "first"),
+                new Ast.CaptureExpr(new Ast.LiteralExpr(2), "second")));
+        assertDoesNotThrow(() -> ConditionCaptures.validate(condition));
+        var names = new LinkedHashSet<String>();
+        ConditionCaptures.collectNames(condition, names);
+        assertEquals(List.of("first", "second"), List.copyOf(names));
+    }
+
 }

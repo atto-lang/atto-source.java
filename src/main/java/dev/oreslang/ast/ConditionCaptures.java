@@ -1,6 +1,7 @@
 package dev.oreslang.ast;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -21,35 +22,46 @@ public final class ConditionCaptures {
         for (Ast.Expr child : children(expression)) collectNames(child, names);
     }
 
-    public static void validate(Ast.Expr expression) { validate(expression, true); }
+    public static void validate(Ast.Expr expression) {
+        validate(expression, true, new HashSet<>());
+    }
 
-    private static void validate(Ast.Expr expression, boolean unconditional) {
+    private static void validate(
+            Ast.Expr expression, boolean unconditional, Set<String> names) {
         if (expression == null || expression instanceof Ast.LambdaExpr) return;
-        if (expression instanceof Ast.CaptureExpr && !unconditional) {
-            throw new IllegalArgumentException(
-                    "as let capture may be skipped by short-circuit or conditional evaluation; capture before that branch");
+        if (expression instanceof Ast.CaptureExpr capture) {
+            if (!unconditional) {
+                throw new IllegalArgumentException(
+                        "as let capture may be skipped by short-circuit or conditional evaluation; capture before that branch");
+            }
+            if (!names.add(capture.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate condition-local capture '" + capture.name() + "'");
+            }
         }
         if (expression instanceof Ast.BinaryExpr binary
                 && (binary.operator().equals("&&") || binary.operator().equals("||"))) {
-            validate(binary.left(), unconditional);
-            validate(binary.right(), false);
+            validate(binary.left(), unconditional, names);
+            validate(binary.right(), false, names);
             return;
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
-            validate(conditional.condition(), unconditional);
-            validate(conditional.whenTrue(), false);
-            validate(conditional.whenFalse(), false);
+            validate(conditional.condition(), unconditional, names);
+            validate(conditional.whenTrue(), false, names);
+            validate(conditional.whenFalse(), false, names);
             return;
         }
         if (expression instanceof Ast.MatchExpr matched) {
-            validate(matched.subject(), unconditional);
+            validate(matched.subject(), unconditional, names);
             for (Ast.MatchValueArm arm : matched.arms()) {
-                validate(arm.guard(), false);
-                validate(arm.value(), false);
+                validate(arm.guard(), false, names);
+                validate(arm.value(), false, names);
             }
             return;
         }
-        for (Ast.Expr child : children(expression)) validate(child, unconditional);
+        for (Ast.Expr child : children(expression)) {
+            validate(child, unconditional, names);
+        }
     }
 
     private static List<Ast.Expr> children(Ast.Expr expression) {

@@ -1148,7 +1148,14 @@ public final class Ast {
     public record PatternTestExpr(Expr value, Pattern pattern) implements Expr { }
 
     /** Condition-local capture: bind the value once and yield that same value. */
-    public record CaptureExpr(Expr value, String name) implements Expr { }
+    public record CaptureExpr(Expr value, String name) implements Expr {
+        public CaptureExpr {
+            java.util.Objects.requireNonNull(value, "capture value");
+            if (name == null || name.isBlank() || name.equals("_")) {
+                throw new IllegalArgumentException("capture requires a non-discard binding name");
+            }
+        }
+    }
 
     public enum CastMode { CHECKED, OPTIONAL }
 
