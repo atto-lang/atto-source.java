@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import dev.oreslang.parser.Parser;
 
 import java.util.AbstractMap;
 import java.util.Map;
@@ -22,6 +23,36 @@ final class ActorSymbolSnapshotAdmissionTest {
         return StackWalker.getInstance().walk(frames -> frames.anyMatch(frame ->
                 frame.getClassName().equals(ActorRuntime.class.getName())
                         && frame.getMethodName().equals(method)));
+    }
+
+    @Test void sharedActorCannotSpoofAnotherLiteralImageTrustDomain() {
+        var program = Parser.parse("pub routine main(): void { return; }");
+        try (var images = new SharedCodeImageStore();
+             var runtime = new ActorRuntime()) {
+            var image = images.publish("trust-domain.atto", program,
+                    java.util.List.of(OresSymbol.process("ready")));
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(context ->
+                    (message, turn) -> {
+                        assertTrue(ActorRuntime.inActorExecution());
+                        assertEquals(ActorRuntime.ActorKind.SHARED,
+                                ActorRuntime.currentActorKind());
+                        assertEquals(OresSymbol.process("ready"),
+                                image.requireGuestStaticLiteral(
+                                        OresSymbol.process("ready"),
+                                        ActorRuntime.ActorKind.SHARED));
+                        assertThrows(SecurityException.class,
+                                () -> image.literalForActor(
+                                        OresSymbol.process("ready"),
+                                        ActorRuntime.ActorKind.PRIVATE));
+                        assertThrows(SecurityException.class,
+                                () -> image.requireGuestStaticLiteral(
+                                        OresSymbol.process("ready"), null));
+                        turn.runtime().endCurrentActor();
+                    });
+            actor.ready().join();
+            actor.send("probe");
+            actor.done().join();
+        }
     }
 
     @Test void untrustedMailboxRejectsHiddenSymbolIntroducedDuringCopy() {
