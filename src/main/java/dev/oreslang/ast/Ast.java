@@ -832,8 +832,16 @@ public final class Ast {
      * Borrowed captures remain separately gated by compiler-issued scoped
      * READ authority.
      */
-    public record TaskScopeStmt(List<Stmt> body) implements Stmt {
+    /**
+     * {@code task scope [deadline(ms)] [supervise] { ... }}. A deadline cancels
+     * the scope's child tasks when it expires (the scope body itself keeps
+     * running to its exit, then joins). {@code supervise}: a failed child does
+     * not fail the scope; inspect it through its task handle's get_done().
+     */
+    public record TaskScopeStmt(List<Stmt> body, Expr deadlineMillis, boolean supervise)
+            implements Stmt {
         public TaskScopeStmt { body = List.copyOf(body); }
+        public TaskScopeStmt(List<Stmt> body) { this(body, null, false); }
     }
     /**
      * Scoped transport/resource loan syntax. Keeping it as a distinct AST node

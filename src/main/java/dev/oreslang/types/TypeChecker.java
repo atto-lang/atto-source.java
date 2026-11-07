@@ -2113,6 +2113,14 @@ public final class TypeChecker {
                         "task scope exit is a physical-quiescence suspension point; "
                                 + "declare the enclosing callable async or suspends");
             }
+            if (taskScope.deadlineMillis() != null) {
+                Type deadline = typeOf(taskScope.deadlineMillis(), env, generics, self);
+                if (deadline != Primitive.INT) {
+                    throw new IllegalArgumentException(
+                            "task scope deadline(ms) requires an int number of milliseconds, got "
+                                    + deadline);
+                }
+            }
             checkBlock(taskScope.body(), env, generics, expectedReturn, self);
             return;
         }
@@ -7081,6 +7089,7 @@ public final class TypeChecker {
             case "cancel_with" -> new Function(
                     List.of(new Named("$builtin$Symbol", List.of())), Primitive.BOOL);
             case "is_cancel_requested" -> new Function(List.of(), Primitive.BOOL);
+            case "cancel_after" -> new Function(List.of(Primitive.INT), Primitive.BOOL);
             case "get_done" -> new Function(
                     List.of(),
                     new Named("Future", List.of(new Named("$builtin$Symbol", List.of()))));

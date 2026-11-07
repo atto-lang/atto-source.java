@@ -172,8 +172,135 @@ final class SourceTaskCancelTest {
                 error::getMessage);
     }
 
-    private static String run(String sourceText) throws Exception {
+    @Test
+    void cancelAfterTimesOutALoopingTaskAndRunsItsDefer() throws Exception {
+        assertEquals("true|cleanup|#cancelled", run("""
+                pub async fnc main(): void {
+                  let Future<void> child = task {
+                    defer stdio.stdout.write("|cleanup");
+                    loop {
+                      rt cooperate;
+                    }
+                    return;
+                  };
+                  stdio.stdout.write(child.cancel_after(30));
+                  val outcome = await child.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outcome);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void scopeDeadlineCancelsChildrenThenTheScopeExits() throws Exception {
+        assertEquals("cleanup|after", run("""
+                pub async fnc main(): void {
+                  task scope deadline(30) {
+                    let Future<void> child = task {
+                      defer stdio.stdout.write("cleanup");
+                      loop {
+                        rt cooperate;
+                      }
+                      return;
+                    };
+                  }
+                  stdio.stdout.write("|after");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void scopeDeadlineMustBeAnInt() {
+        PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
+                pub async fnc main(): void {
+                  task scope deadline("soon") {
+                  }
+                  return;
+                }
+                """));
+        assertTrue(error.getMessage().contains("deadline(ms) requires an int"), error::getMessage);
+    }
+
+    @Test
+    void failingChildCancelsItsSiblingsByDefault() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
+                pub async fnc main(): void {
+                  task scope {
+                    let Future<void> looping = task {
+                      defer stdio.stdout.write("sibling-cancelled");
+                      loop {
+                        rt cooperate;
+                      }
+                      return;
+                    };
+                    let Future<int> failing = task {
+                      rt cooperate;
+                      val Array<int> missing = new Array<int>();
+                      return missing.get(0);
+                    };
+                  }
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """, output));
+        String printed = output.toString(StandardCharsets.UTF_8);
+        assertEquals("sibling-cancelled", printed);
+        assertTrue(error.getMessage().toLowerCase(java.util.Locale.ROOT).contains("index"),
+                error::getMessage);
+    }
+
+    @Test
+    void superviseScopeKeepsSiblingsRunningAndReportsTheFailure() throws Exception {
+        assertEquals("sibling-done|#failed|after", run("""
+                pub async fnc main(): void {
+                  task scope supervise {
+                    let Future<void> sibling = task {
+                      rt cooperate;
+                      rt cooperate;
+                      rt cooperate;
+                      stdio.stdout.write("sibling-done");
+                      return;
+                    };
+                    let Future<int> failing = task {
+                      val Array<int> missing = new Array<int>();
+                      return missing.get(0);
+                    };
+                    val outcome = await failing.get_done();
+                    await sibling.get_done();
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(outcome);
+                  }
+                  stdio.stdout.write("|after");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void superviseScopeDoesNotAbsorbAPanic() {
+        PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
+                pub async fnc main(): void {
+                  task scope supervise {
+                    let Future<void> panicking = task {
+                      None.unwrap();
+                      return;
+                    };
+                  }
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """));
+        assertTrue(error.getMessage().contains("Option::unwrap"), error::getMessage);
+    }
+
+    private static String run(String sourceText) throws Exception {
+        return run(sourceText, new ByteArrayOutputStream());
+    }
+
+    private static String run(String sourceText, ByteArrayOutputStream output) throws Exception {
         Source source = Source.newBuilder(
                         OresLanguage.ID, sourceText, "source-task-cancel.ores")
                 .mimeType(OresLanguage.MIME_TYPE)

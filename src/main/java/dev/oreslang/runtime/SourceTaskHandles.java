@@ -66,6 +66,54 @@ public final class SourceTaskHandles {
         return symbol;
     }
 
+    /** Longest accepted timeout: one day. Longer waits are almost always bugs. */
+    static final long MAX_TIMEOUT_MILLIS = 86_400_000L;
+
+    private static final java.util.concurrent.ScheduledThreadPoolExecutor TIMEOUTS =
+            createTimeoutTimer();
+
+    private static java.util.concurrent.ScheduledThreadPoolExecutor createTimeoutTimer() {
+        java.util.concurrent.ScheduledThreadPoolExecutor timer =
+                new java.util.concurrent.ScheduledThreadPoolExecutor(1,
+                        runnable -> Thread.ofPlatform().daemon(true)
+                                .name("ores-task-timeout").unstarted(runnable));
+        timer.setRemoveOnCancelPolicy(true);
+        return timer;
+    }
+
+    /**
+     * Cancel {@code handle} with reason {@code timeout} after {@code millis},
+     * unless it has finished by then. The timer callback only requests
+     * cancellation; the task unwinds its defers and guards on its own
+     * scheduler. Returns false when the task has already finished.
+     */
+    public static boolean cancelAfter(TaskHandle<?> handle, long millis) {
+        Objects.requireNonNull(handle, "handle");
+        if (millis < 0 || millis > MAX_TIMEOUT_MILLIS) {
+            throw new IllegalArgumentException(
+                    "timeout must be between 0 and " + MAX_TIMEOUT_MILLIS + " ms");
+        }
+        if (handle.getDone().isDone() || handle.result().isDone()) return false;
+        java.util.concurrent.ScheduledFuture<?> timer = TIMEOUTS.schedule(
+                () -> handle.cancel("timeout"),
+                millis, java.util.concurrent.TimeUnit.MILLISECONDS);
+        // Drop the timer as soon as the task stops, so idle timers never pile up.
+        handle.result().whenCompleteRuntime((value, failure) -> timer.cancel(false));
+        return true;
+    }
+
+    /** {@code task scope deadline(ms)}: cancel the scope's children on expiry. */
+    public static java.util.concurrent.ScheduledFuture<?> cancelScopeAfter(
+            TaskScope scope, long millis) {
+        Objects.requireNonNull(scope, "scope");
+        if (millis < 0 || millis > MAX_TIMEOUT_MILLIS) {
+            throw new IllegalArgumentException(
+                    "task scope deadline must be between 0 and " + MAX_TIMEOUT_MILLIS + " ms");
+        }
+        return TIMEOUTS.schedule(() -> scope.cancel("timeout"),
+                millis, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
     private static OresSymbol classifyFailure(Throwable failure) {
         if (failure instanceof TaskOwnedLeases.CleanupFailure
                 || failure instanceof OresScheduler.CleanupIncompleteError) {

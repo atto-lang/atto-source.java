@@ -2626,11 +2626,25 @@ public final class OresEvalRootNode extends RootNode {
                     final TaskScope runtimeScope;
                     try {
                         runtimeScope = OresScheduler.requireCurrent().newTaskScope();
+                        runtimeScope.cancelSiblingsOnFailure(!taskScope.supervise());
                     } catch (RuntimeException | Error failure) {
                         continuation.accept(task, SourceFlow.throwing(failure));
                         return;
                     }
 
+                    // deadline(ms): expiry cancels the scope's children with
+                    // reason "timeout"; they unwind their own defers/guards.
+                    final java.util.concurrent.ScheduledFuture<?> deadlineTimer;
+                    try {
+                        deadlineTimer = taskScope.deadlineMillis() == null ? null
+                                : SourceTaskHandles.cancelScopeAfter(
+                                        runtimeScope,
+                                        ((Number) eval(taskScope.deadlineMillis(), env)).longValue());
+                    } catch (RuntimeException | Error failure) {
+                        runtimeScope.cancel("task scope deadline rejected");
+                        continuation.accept(task, SourceFlow.throwing(failure));
+                        return;
+                    }
                     Env scopedEnv = env.withStructuredTaskScope(runtimeScope);
                     runBlock(
                             task,
@@ -2641,7 +2655,11 @@ public final class OresEvalRootNode extends RootNode {
                                             t,
                                             runtimeScope,
                                             flow,
-                                            continuation));
+                                            taskScope.supervise(),
+                                            (owner, finished) -> {
+                                                if (deadlineTimer != null) deadlineTimer.cancel(false);
+                                                continuation.accept(owner, finished);
+                                            }));
                     return;
                 }
 
@@ -3223,6 +3241,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 TaskScope scope,
                 SourceFlow flow,
+                boolean supervise,
                 SourceFlowCont continuation) {
             boolean cancellingForUnwind =
                     flow.kind() == SourceFlowKind.THROW;
@@ -3250,7 +3269,8 @@ public final class OresEvalRootNode extends RootNode {
                             mergeStructuredChildOutcome(
                                     pendingFlow,
                                     scope,
-                                    cleanupCancellation));
+                                    cleanupCancellation,
+                                    supervise));
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(
                             task,
@@ -3275,14 +3295,16 @@ public final class OresEvalRootNode extends RootNode {
                                 mergeStructuredChildOutcome(
                                         pendingFlow,
                                         scope,
-                                        cleanupCancellation));
+                                        cleanupCancellation,
+                                        supervise));
                     });
         }
 
         private SourceFlow mergeStructuredChildOutcome(
                 SourceFlow flow,
                 TaskScope scope,
-                boolean cancellationWasCleanup) {
+                boolean cancellationWasCleanup,
+                boolean supervise) {
             dev.oreslang.runtime.TaskHandle.TaskOutcome<?> outcome =
                     scope.firstNonSuccessOutcome();
             if (outcome == null
@@ -3290,6 +3312,15 @@ public final class OresEvalRootNode extends RootNode {
                 return flow;
             }
             if (outcome instanceof dev.oreslang.runtime.TaskHandle.Failed<?> failed) {
+                // supervise: an ordinary child failure is the owner's to
+                // inspect via get_done(). A panic or failed cleanup still
+                // escapes: neither may be silently absorbed.
+                if (supervise
+                        && !(failed.failure() instanceof dev.oreslang.runtime.UntrappableTaskFailure)
+                        && !(failed.failure() instanceof dev.oreslang.runtime.TaskOwnedLeases.CleanupFailure)
+                        && !(failed.failure() instanceof OresScheduler.CleanupIncompleteError)) {
+                    return flow;
+                }
                 return mergeCleanupFailure(flow, failed.failure());
             }
             if (outcome instanceof dev.oreslang.runtime.TaskHandle.Cancelled<?>) {
@@ -8340,6 +8371,15 @@ public final class OresEvalRootNode extends RootNode {
                                     "Future.cancel_with expects a Symbol reason");
                         }
                         return requireOwnedTask(future, "cancel_with").cancel(reason.name());
+                    };
+                    case "cancel_after" -> (Invokable) args -> {
+                        requireOne(args, "Future.cancel_after");
+                        if (!(args.getFirst() instanceof Number millis)) {
+                            throw new IllegalArgumentException(
+                                    "Future.cancel_after expects an int number of milliseconds");
+                        }
+                        return SourceTaskHandles.cancelAfter(
+                                requireOwnedTask(future, "cancel_after"), millis.longValue());
                     };
                     case "is_cancel_requested" -> (Invokable) args -> {
                         requireZero(args, "Future.is_cancel_requested");

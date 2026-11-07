@@ -2463,10 +2463,29 @@ public final class Parser {
                 && current + 2 < tokens.size()
                 && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 1).lexeme().equals("scope")
-                && tokens.get(current + 2).type() == LBRACE) {
+                && (tokens.get(current + 2).type() == LBRACE
+                    || (tokens.get(current + 2).type() == IDENT
+                        && (tokens.get(current + 2).lexeme().equals("deadline")
+                            || tokens.get(current + 2).lexeme().equals("supervise"))))) {
             advance(); // nb or contextual task
             advance(); // contextual scope
-            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            Ast.Expr deadline = null;
+            boolean supervise = false;
+            while (check(IDENT)) {
+                String option = peek().lexeme();
+                if (option.equals("deadline") && deadline == null) {
+                    advance();
+                    consume(LPAREN, "expected '(' after task scope deadline");
+                    deadline = parseExpression();
+                    consume(RPAREN, "expected ')' after task scope deadline milliseconds");
+                } else if (option.equals("supervise") && !supervise) {
+                    advance();
+                    supervise = true;
+                } else {
+                    throw error(peek(), "task scope accepts deadline(ms) and supervise, each at most once");
+                }
+            }
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock(), deadline, supervise);
             match(SEMICOLON);
             return scoped;
         }
