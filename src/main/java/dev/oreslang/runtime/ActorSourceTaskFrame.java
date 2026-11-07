@@ -162,9 +162,11 @@ final class ActorSourceTaskFrame {
         requireOwnerTurn();
         requireRunningFrame();
         Objects.requireNonNull(arguments, "arguments");
-        if (scalarOwner == ScalarOwner.NONE
-                || (scalarOwner == ScalarOwner.SOURCE_LOCALS && arguments.isEmpty())) {
-            return; // Zero arguments or explicit reference/wide fallback.
+        if (scalarOwner == ScalarOwner.NONE || scalarOwner == ScalarOwner.SOURCE_LOCALS) {
+            // No parameter image was stored: the source args were empty,
+            // referenced guest objects or exceeded the typed frame capacity.
+            // Actor-owned lexical scalar slots may still exist independently.
+            return;
         }
         if (scalarOwner != ScalarOwner.SOURCE_PARAMETERS) {
             arena.poisonFromGuestGuard();
