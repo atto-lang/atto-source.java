@@ -211,6 +211,13 @@ public final class TypeChecker {
      * device effects, owned memory loans and completion fences are verified.
      */
     private static void rejectGpuKernelExecutionUntilProviderProof(Ast.Program program) {
+        // Bind canonical kernel declarations to source launch sites before
+        // rejecting execution. No untyped lexical argument is device proof.
+        boolean hasGpuKernel = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .anyMatch(decl -> decl instanceof Ast.GpuKernelDecl);
+        if (hasGpuKernel)
+            dev.oreslang.compiler.GpuKernelSourceLinkV1.audit(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.GpuKernelDecl kernel) {
