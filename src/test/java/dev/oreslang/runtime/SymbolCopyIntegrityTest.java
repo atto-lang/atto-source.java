@@ -50,6 +50,21 @@ class SymbolCopyIntegrityTest {
         assertTrue(failure.getCause().getMessage().contains("duplicate logical"));
     }
 
+    @Test void sharedFreezeReusesImmutableSymbolWhilePrivateCopyDetaches()
+            throws ReflectiveOperationException {
+        OresSymbol original = OresSymbol.process("ready");
+        // Trusted SHARED actor transport may reuse a deeply immutable value.
+        assertSame(original, ActorRuntime.freeze(original));
+        // PRIVATE/UNTRUSTED transport must preserve logical identity without
+        // exposing the source actor's scalar object reference.
+        Method copier = ActorRuntime.class.getDeclaredMethod("isolateCopy", Object.class);
+        copier.setAccessible(true);
+        Object detached = copier.invoke(null, original);
+        assertEquals(original, detached);
+        assertNotSame(original, detached);
+        assertEquals(OresSymbol.Kind.PROCESS, ((OresSymbol) detached).kind());
+    }
+
     @Test void privateTransportCopiesProcessAndStableSymbolValuesByIdentity()
             throws ReflectiveOperationException {
         Method copier = ActorRuntime.class.getDeclaredMethod("isolateCopy", Object.class);
