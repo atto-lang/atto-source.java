@@ -61,18 +61,27 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           from xml.etree import ElementTree
-          names = (
-              "ExplicitLambdaReturnContractTest",
-              "NamedCallableBindingSignatureTest",
-              "CallableReturnParserBoundaryTest",
-              "TypedLambdaTreeShakerContractTest",
-          )
+          expected_minimum = {
+              "ExplicitLambdaReturnContractTest": 16,
+              "NamedCallableBindingSignatureTest": 10,
+              "CallableReturnParserBoundaryTest": 8,
+              "TypedLambdaTreeShakerContractTest": 4,
+          }
           totals = dict.fromkeys(("tests", "errors", "failures", "skipped"), 0)
-          for name in names:
+          for name, minimum in expected_minimum.items():
               path = Path("target/surefire-reports") / f"TEST-dev.oreslang.{name}.xml"
               if not path.is_file() or path.is_symlink():
                   raise SystemExit(f"NOT_EXECUTED: missing official JUnit report for {name}")
               root = ElementTree.parse(path).getroot()
+              if root.tag != "testsuite":
+                  raise SystemExit(f"NOT_CERTIFIED: invalid Surefire XML root for {name}")
+              reported = int(root.attrib["tests"])
+              cases = root.findall("testcase")
+              identities = [(case.get("classname"), case.get("name")) for case in cases]
+              if (reported < minimum or len(cases) != reported
+                      or any(not cls or not method for cls, method in identities)
+                      or len(set(identities)) != len(cases)):
+                  raise SystemExit(f"NOT_CERTIFIED: incomplete or duplicate JUnit cases for {name}")
               for key in totals:
                   totals[key] += int(root.attrib[key])
           print("OFFICIAL_JUNIT_COUNTS", totals)
@@ -153,6 +162,11 @@ jobs:
               return;
           }
           ATTO
+          # Prove the checker accepts the same valid guest before relying on
+          # its rejection of the deliberately invalid callable signature.
+          ./target/ores-aot --check target/typed-callable-evidence/valid.atto \
+            > target/typed-callable-evidence/valid-check.stdout \
+            2> target/typed-callable-evidence/valid-check.stderr
           ./target/ores-aot target/typed-callable-evidence/valid.atto \
             > target/typed-callable-evidence/actual.stdout
           printf 'cleanup\n42\n' > target/typed-callable-evidence/expected.stdout
@@ -163,6 +177,8 @@ jobs:
             exit 1
           fi
           test -s target/typed-callable-evidence/negative.stderr
+          # An unrelated CLI/permission/source failure must not pass this test.
+          grep -Fq 'lambda declared return type' target/typed-callable-evidence/negative.stderr
           echo 'AOT_GUEST_EXECUTED=TRUE'
       - name: Assert exact source head remained unchanged
         env:
