@@ -145,4 +145,52 @@ final class GpuKernelTypedSourceControlFlowV1Test {
     @Test void plainBindingWithoutGpuLaunchDoesNotMintEvidence() {
         rejects("const int x = 5;\nreturn;\n", "unproven host statement");
     }
+
+    @Test void unrelatedLogicalOverSymbolCannotStandInForKernelN() {
+        rejects(LAUNCH.replace("over: [n]", "over: [m]") + "return;\n",
+                "over extent must use source parameter n");
+    }
+
+    @Test void arithmeticLogicalOverIsNotYetAnOwnershipOrCapacityProof() {
+        rejects(LAUNCH.replace("over: [n]", "over: [n + 0]") + "return;\n",
+                "over extent must use source parameter n");
+    }
+
+    @Test void literalOverCannotClaimRuntimeNCapacity() {
+        rejects(LAUNCH.replace("over: [n]", "over: [256]") + "return;\n",
+                "over extent must use source parameter n");
+    }
+
+    @Test void dynamicWorkgroupSizeRequiresTypedDeviceLimitsProof() {
+        rejects(LAUNCH.replace("group: [256]", "group: [threads]") + "return;\n",
+                "static positive group size");
+    }
+
+    @Test void nontrivialSecondaryLogicalExtentCannotUse1dTailProof() {
+        rejects(LAUNCH.replace("over: [n]", "over: [n, 2]") + "return;\n",
+                "one-dimensional padded launch geometry");
+    }
+
+    @Test void nontrivialSecondaryGroupAxisCannotUse1dTailProof() {
+        rejects(LAUNCH.replace("group: [256]", "group: [256, 2]") + "return;\n",
+                "one-dimensional padded launch geometry");
+    }
+
+    @Test void physicalGridAndBlockAreNotEquivalentToLogicalOverNProof() {
+        rejects(LAUNCH.replace("over: [n], group: [256]",
+                "grid: [1], block: [256]") + "return;\n",
+                "logical over/group");
+    }
+
+    @Test void explicitUnitTrailingAxesPreserveCanonicalOneDimensionalSource() {
+        var reference = canonical();
+        String explicitAxes = LAUNCH
+                .replace("over: [n]", "over: [n, 1, 1]")
+                .replace("group: [256]", "group: [256, 1, 1]");
+        var report = GpuKernelTypedSourceArgsV1.audit(
+                parsedCaller(explicitAxes + "return;\n"),
+                reference.kernel(), reference.link());
+        assertFalse(report.executable());
+        assertEquals(5, report.bindings().size());
+    }
 }
