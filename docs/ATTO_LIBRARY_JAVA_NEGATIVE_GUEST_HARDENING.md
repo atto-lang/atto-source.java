@@ -25,3 +25,14 @@ JUnit tests cover canonical/legacy spellings, Windows-style separators,
 dot-segment traversal and a project-local shadow file. Relative local
 imports (`./std/...`) retain separate explicit-path semantics.
 These are authored compiler-resolver checks, not stepful hosted CI proof.
+
+## Trailing separator canonicalization fix
+
+Java `String.split("/")` silently drops trailing empty segments, so
+the shared Core/Std path parser previously accepted the noncanonical
+`atto.core/numeric/` spelling as the valid `numeric` module. The
+validator now calls `split("/", -1)` and rejects every empty path
+segment. Three new JUnit regression groups cover trailing and doubled
+separators on all canonical/historical roots, while explicitly preserving
+correct `.atto`/`.ores` identity aliases. The language compiler and
+full guest tests still require an allocated GitHub runner to certify.

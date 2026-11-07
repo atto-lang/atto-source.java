@@ -179,6 +179,61 @@ final class AttoLibraryNamespaceResolutionTest {
     }
 
     @Test
+    void trailingSlashCannotCanonicalizeIntoCompilerOwnedLibraryIdentity() throws Exception {
+        for (String prefix : new String[] {
+                "atto.core/numeric", "ores.core/numeric",
+                "atto.std/testing", "ores.std/testing", "std/testing"
+        }) {
+            String invalid = prefix + "/";
+            assertTrue(CoreLibrarySources.isReservedOresLibraryImport(invalid), invalid);
+            if (prefix.contains(".core/")) {
+                assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.oresCoreUnitId(invalid), invalid);
+                assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.oresCoreSource(invalid), invalid);
+            } else {
+                assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.unitId(invalid), invalid);
+                assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.source(invalid), invalid);
+            }
+        }
+    }
+
+    @Test
+    void repeatedAndTrailingPathSeparatorsNeverCollapseToValidModuleIds() {
+        for (String alias : new String[] {
+                "atto.core/numeric//", "atto.core/numeric/.atto/",
+                "ores.core/numeric/", "atto.core/numeric/ ",
+                "atto.std/testing//", "ores.std/testing/",
+                "std/testing/", "std/testing//"
+        }) {
+            if (alias.contains(".core/"))
+                assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.oresCoreUnitId(alias), alias);
+            else
+                assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.unitId(alias), alias);
+        }
+    }
+
+    @Test
+    void legitimateExplicitFileExtensionsRemainOnePackagedUnit() throws Exception {
+        for (String alias : new String[] {
+                "atto.core/numeric", "atto.core/numeric.atto",
+                "atto.core/numeric.ores", "ores.core/numeric.ores"
+        }) {
+            assertEquals("@ores.core/numeric.ores", CoreLibrarySources.oresCoreUnitId(alias));
+            assertEquals("numeric.atto", CoreLibrarySources.oresCoreFileName(alias));
+        }
+        for (String alias : new String[] {
+                "atto.std/testing", "atto.std/testing.atto",
+                "ores.std/testing.ores", "std/testing"
+        })
+            assertEquals("@std/testing.ores", CoreLibrarySources.unitId(alias));
+    }
+
+    @Test
     void unsupportedNamespacesAndTraversalAreNeverAmbientFilesystemImports() {
         for (String path : new String[] {
                 "atto.core", "atto.alloc", "atto.alloc/int_buffer",

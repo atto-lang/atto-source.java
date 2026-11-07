@@ -200,7 +200,11 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException("Oreslang library import must name a module");
         }
 
-        String[] segments = raw.split("/");
+        // Java's one-argument String.split discards trailing empty fields:
+        // "numeric/".split("/") gives only ["numeric"], accidentally
+        // admitting a noncanonical library namespace spelling. Preserve all
+        // fields so trailing and repeated separators fail validation.
+        String[] segments = raw.split("/", -1);
         if (segments.length > MAX_MODULE_SEGMENTS) {
             throw new IllegalArgumentException("Oreslang library import nesting is too deep");
         }
