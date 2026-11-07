@@ -4680,8 +4680,31 @@ public final class Parser {
         if (resultType != null && check(LBRACE)) {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, resultType);
         }
+        // Scalar type names are contextual IDENTs, so '|| -> int;' would
+        // otherwise be accepted as an expression-bodied lambda returning an
+        // identifier named 'int'. Refuse an unambiguous bare scalar type
+        // followed by an expression terminator: typed lambdas need '{...}'.
+        // Do not reject '|| -> int + 1' or any other legitimate expression.
+        if (resultType != null
+                && resultType.arguments().isEmpty()
+                && !resultType.inferArguments()
+                && isBareScalarReturnType(resultType.name())
+                && (check(SEMICOLON) || check(COMMA) || check(RPAREN)
+                    || check(RBRACE) || check(EOF))) {
+            throw error(peek(), "explicit lambda result type requires a braced body");
+        }
         current = start;
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+    }
+
+    private static boolean isBareScalarReturnType(String name) {
+        return switch (name) {
+            case "int", "uint", "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64",
+                    "bool", "boolean", "string", "float",
+                    "f32", "f64", "decimal", "bigint" -> true;
+            default -> false;
+        };
     }
 
     private boolean looksLikeLambda() {
