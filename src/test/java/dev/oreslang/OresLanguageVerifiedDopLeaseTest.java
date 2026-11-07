@@ -183,6 +183,35 @@ final class OresLanguageVerifiedDopLeaseTest {
     }
 
     @Test
+    void thirtyTwoFreshSourceLeasesAgreeWithIndependentSwapDeleteModel()
+            throws Exception {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            for (int seed = 1; seed <= 32; seed++) {
+                long expected = -((long) seed);
+                String name = "verified-dop-iteration-" + seed + ".atto";
+                String code = CODE.replace(
+                        "rows.push(11, 100);\n    rows.set(0, value, 42);\n"
+                      + "    return rows.get(0, value);",
+                        "rows.push(11, 100);\n    rows.push(" + expected + ", 7);\n"
+                      + "    rows.erase_swap(0);\n    return rows.get(0, value);");
+                assertTrue(code.contains("rows.erase_swap(0)"),
+                        "test mutation did not replace source for seed " + seed);
+                var guest = Source.newBuilder(OresLanguage.ID, code, name)
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .cached(false)
+                        .build();
+                try (var scope = OresLanguage.openVerifiedDopSource(name, code)) {
+                    assertEquals(expected, context.eval(guest).asLong(),
+                            "synchronous OresLanguage execution seed=" + seed);
+                }
+                assertThrows(PolyglotException.class, () -> context.eval(guest),
+                        "unscoped execution must be denied seed=" + seed);
+            }
+        }
+    }
+
+    @Test
     void invalidSourceFailsBeforeCreatingAnyAuthority() {
         String invalid = CODE.replace("with_capacity(2)", "with_capacity(257)");
         assertThrows(IllegalArgumentException.class, () ->
