@@ -4635,6 +4635,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ObjectExpr object,
                 Env env,
                 SourceValueCont continuation) {
+            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                throw new IllegalArgumentException("unverified aggregate spread cannot execute");
+            }
             ArrayList<Object> values = new ArrayList<>();
             evalSuspendableObjectField(
                     task,
@@ -7665,6 +7668,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
+                if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                    throw new IllegalArgumentException("unverified aggregate spread cannot execute");
+                }
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {

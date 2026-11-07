@@ -1891,13 +1891,27 @@ public final class Ast {
      * <p>The field name is part of the compile-time struct shape. Runtime or
      * computed field names are intentionally not representable in the AST.</p>
      */
-    public record ObjectField(String name, Expr value) {
+    public record ObjectField(String name, Expr value, boolean spread) {
         public ObjectField {
-            requireStaticFieldName(name);
+            if (spread) {
+                if (name != null) {
+                    throw new IllegalArgumentException("aggregate spread must not carry a field name");
+                }
+            } else {
+                requireStaticFieldName(name);
+            }
             java.util.Objects.requireNonNull(value, "value");
         }
+        /** Preserve the named-field AST builder for existing source and tests. */
+        public ObjectField(String name, Expr value) {
+            this(name, value, false);
+        }
         public static ObjectField named(String name, Expr value) {
-            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value);
+            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value, false);
+        }
+        /** Statically checked aggregate spread operand; not call-argument spread. */
+        public static ObjectField spreading(Expr value) {
+            return new ObjectField(null, value, true);
         }
     }
 
@@ -1943,7 +1957,7 @@ public final class Ast {
             // construction, not merely during parser/type-checker traversal.
             java.util.Set<String> fieldNames = new java.util.HashSet<>();
             for (ObjectField field : fields) {
-                if (!fieldNames.add(field.name())) {
+                if (!field.spread() && !fieldNames.add(field.name())) {
                     throw new IllegalArgumentException("duplicate struct field '" + field.name() + "'");
                 }
             }

@@ -4560,9 +4560,15 @@ public final class Parser {
                             "struct fields must be statically named for AOT compilation; "
                                     + "computed/backtick field names are not supported");
                 }
-                String name = consumeStaticObjectKeyName("expected struct field name");
-                consume(COLON, "expected ':' after struct field name");
-                fields.add(Ast.ObjectField.named(name, parseExpression()));
+                if (match(ELLIPSIS)) {
+                    // Preserve spread as a checked aggregate item, never a magic
+                    // field name or a call-argument tuple expansion.
+                    fields.add(Ast.ObjectField.spreading(parseExpression()));
+                } else {
+                    String name = consumeStaticObjectKeyName("expected struct field name");
+                    consume(COLON, "expected ':' after struct field name");
+                    fields.add(Ast.ObjectField.named(name, parseExpression()));
+                }
             } while (match(COMMA));
         }
         consume(RBRACE, explicitStruct

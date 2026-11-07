@@ -4486,6 +4486,11 @@ public final class TypeChecker {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
+            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                throw new IllegalArgumentException(
+                        "aggregate spread is parsed but not yet type/ownership/lowering checked; "
+                                + "use explicit static field initializers until the v1 contract is implemented");
+            }
             if (object.explicitStruct()) {
                 Map<String, Type> members = new LinkedHashMap<>();
                 for (Ast.StructFieldSpec field : object.declaredFields()) {
