@@ -163,7 +163,7 @@ public final class DopInvertedScalarCompilerV1 {
                 || binding.declaredType() != null
                 || binding.mutableReferent()
                 || binding.inferredTypeName() != null
-                || binding.name().isBlank()
+                || binding.name().isBlank() || binding.name().equals("_")
                 || !(binding.initializer() instanceof Ast.NewExpr alloc)
                 || !"InvertedArray".equals(alloc.type().name())
                 || alloc.type().inferArguments()
