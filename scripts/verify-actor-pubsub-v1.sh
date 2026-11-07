@@ -28,6 +28,7 @@ command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 # empty suites; we additionally inspect the exact suite reports below.
 suites=(
   dev.oreslang.SourceActorPubSubExecutionTest
+  dev.oreslang.CanonicalSuspendsPubSubGuestTest
   dev.oreslang.ChannelCallableTransportTest
   dev.oreslang.runtime.ActorPubSubV1ContractTest
   dev.oreslang.runtime.ActorPubSubConcurrencyTest
@@ -35,7 +36,7 @@ suites=(
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
@@ -66,6 +67,10 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 expected = {
+    "dev.oreslang.CanonicalSuspendsPubSubGuestTest": {
+        "canonicalSuspendsSourceMatchesPinnedFormalFixture",
+        "canonicalSuspendsFncExecutesThroughGraalPolyglot",
+    },
     "dev.oreslang.SourceActorPubSubExecutionTest": {
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
         "portableTryPublishRejectedUntilNativeLowering",
@@ -103,4 +108,5 @@ PY
 # The fixture is not a portable try_publish implementation. Preserve its
 # exact on-disk hash alongside the executed JUnit methods in CI logs.
 sha256sum contracts/v1/fixtures/actor-pubsub-legacy-fanout-two.atto
+sha256sum contracts/v1/fixtures/actor-pubsub-formal-suspends-v1.atto
 echo "ACTOR_PUBSUB_EXACT_HEAD_PASS sha=$actual executed_tests=$total"
