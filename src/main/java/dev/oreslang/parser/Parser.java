@@ -1008,6 +1008,13 @@ public final class Parser {
                         + "and cross-backend lowering; not yet enabled");
             }
         }
+        // Do not silently lower the requested syntax to legacy isoactor,
+        // which does not certify a physical actor-owned heap or sealed state.
+        if (name.equals("isolated") && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == ACTOR) {
+            throw error(peek(), "define isolated actor requires compiler-owned "
+                    + "arena isolation and sealed state-loan lowering; not yet enabled");
+        }
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
             if (current + 2 < tokens.size()
@@ -1073,6 +1080,13 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            // A typed state schema is not a legacy actor field/method.
+            // Reject it with an explicit admission error until the AST,
+            // checker, lifetime rules and runtime-owned loan are integrated.
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                throw error(peek(), "actor state schema requires compiler-sealed "
+                        + "state ownership and handle_state lowering; not yet enabled");
+            }
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
                         || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
@@ -1184,6 +1198,13 @@ public final class Parser {
                 }
                 methods.add(teardown);
                 continue;
+            }
+            // handle_state is reserved for a future intrinsic. A user
+            // method with this name can spoof the critical-loan API, so no
+            // actor may declare it while compiler-owned lowering is absent.
+            if (check(IDENT) && peek().lexeme().equals("handle_state")) {
+                throw error(peek(), "actor handle_state is compiler-owned; "
+                        + "user-defined state-loan authority is forbidden");
             }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
