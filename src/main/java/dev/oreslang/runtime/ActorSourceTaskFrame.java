@@ -40,7 +40,8 @@ final class ActorSourceTaskFrame {
     // and carrier migration. Neither foreign tasks nor separate Env scopes
     // may manufacture duplicate offsets.
     private record LexicalKey(long scopeEpoch, String name) { }
-    private final Map<LexicalKey, Integer> lexicalOffsets = new HashMap<>();
+    private record LexicalSlot(int offset, byte typeTag) { }
+    private final Map<LexicalKey, LexicalSlot> lexicalOffsets = new HashMap<>();
     private int nextLexicalOffset;
     private boolean retired;
 
@@ -219,7 +220,7 @@ final class ActorSourceTaskFrame {
             return false; // Existing interpreter fallback; not a partial slot.
         }
         arena.write(execution, frame, offset, encoded);
-        lexicalOffsets.put(key, offset);
+        lexicalOffsets.put(key, new LexicalSlot(offset, encoded[0]));
         nextLexicalOffset = offset + GuestScalarFrameCodec.SLOT_BYTES;
         if (scalarOwner == ScalarOwner.NONE) scalarOwner = ScalarOwner.SOURCE_LOCALS;
         return true;
@@ -228,13 +229,17 @@ final class ActorSourceTaskFrame {
     synchronized Object readLexicalScalar(long scopeEpoch, String name) {
         requireOwnerTurn();
         requireRunningFrame();
-        Integer offset = lexicalOffsets.get(new LexicalKey(scopeEpoch, name));
-        if (offset == null) {
+        LexicalSlot local = lexicalOffsets.get(new LexicalKey(scopeEpoch, name));
+        if (local == null) {
             arena.poisonFromGuestGuard();
             throw new IllegalStateException("unbound actor lexical scalar slot");
         }
-        byte[] encoded = arena.read(execution, frame, offset,
+        byte[] encoded = arena.read(execution, frame, local.offset(),
                 GuestScalarFrameCodec.SLOT_BYTES);
+        if (encoded[0] != local.typeTag()) {
+            arena.poisonFromGuestGuard();
+            throw new IllegalStateException("actor lexical scalar slot type tag was changed");
+        }
         try {
             return GuestScalarFrameCodec.decode(encoded).getFirst();
         } catch (IllegalArgumentException invalidTag) {
@@ -246,8 +251,8 @@ final class ActorSourceTaskFrame {
     synchronized void writeLexicalScalar(long scopeEpoch, String name, Object value) {
         requireOwnerTurn();
         requireRunningFrame();
-        Integer offset = lexicalOffsets.get(new LexicalKey(scopeEpoch, name));
-        if (offset == null) {
+        LexicalSlot local = lexicalOffsets.get(new LexicalKey(scopeEpoch, name));
+        if (local == null) {
             arena.poisonFromGuestGuard();
             throw new IllegalStateException("missing actor lexical scalar slot");
         }
@@ -256,13 +261,14 @@ final class ActorSourceTaskFrame {
             arena.poisonFromGuestGuard();
             throw new IllegalStateException("owned scalar slot cannot accept references");
         }
-        byte[] existing = arena.read(execution, frame, offset,
+        byte[] existing = arena.read(execution, frame, local.offset(),
                 GuestScalarFrameCodec.SLOT_BYTES);
-        if (existing[0] != replacement[0]) {
+        if (existing[0] != local.typeTag()
+                || replacement[0] != local.typeTag()) {
             arena.poisonFromGuestGuard();
             throw new IllegalStateException("typed actor lexical slot changed primitive kind");
         }
-        arena.write(execution, frame, offset, replacement);
+        arena.write(execution, frame, local.offset(), replacement);
     }
 
     synchronized int lexicalScalarCount() {
