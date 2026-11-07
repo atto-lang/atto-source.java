@@ -15,6 +15,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorCriticalGateIdentityTest.java'
       - 'src/test/java/dev/oreslang/CriticalActorGuestExecutionTest.java'
+      - 'src/test/java/dev/oreslang/ActorBorrowCompilerAdmissionTest.java'
       - 'examples/critical-actor-checked-v1.ores'
       - 'examples/critical-actor-checked-v1.atto'
       - 'examples/critical-actor-early-return-v1.ores'
@@ -53,7 +54,7 @@ jobs:
           set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=java \
             -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
-            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,TaskCaptureAdmissionIdentityTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,TaskCaptureAdmissionIdentityTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest,ActorBorrowCompilerAdmissionTest \
             clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
@@ -63,7 +64,8 @@ jobs:
           syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
           capture_report=target/surefire-reports/TEST-dev.oreslang.TaskCaptureAdmissionIdentityTest.xml
           cleanup_report=target/surefire-reports/TEST-dev.oreslang.nodes.CriticalTicketCleanupTest.xml
-          for report in "$guest_report" "$syntax_report" "$capture_report" "$cleanup_report" \
+          borrow_report=target/surefire-reports/TEST-dev.oreslang.ActorBorrowCompilerAdmissionTest.xml
+          for report in "$guest_report" "$syntax_report" "$capture_report" "$cleanup_report" "$borrow_report" \
             target/surefire-reports/TEST-dev.oreslang.CriticalBodyEffectsTest.xml \
             target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
@@ -77,6 +79,11 @@ jobs:
           grep -Fq 'name="canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput' "$guest_report"
           grep -Fq 'name="canonicalAttoEarlyReturnGuestReleasesBeforeStop' "$guest_report"
           grep -Fq 'name="canonicalAttoGuestOutputTracksARealSourceMutation' "$guest_report"
+          grep -Fq 'name="twoSharedBorrowsCanCoexistWithoutExclusiveWriter' "$borrow_report"
+          grep -Fq 'name="independentExclusiveBorrowIsAllowedWhenNoReadLoanExists' "$borrow_report"
+          grep -Fq 'name="exclusiveWriterIsRejectedWhenTwoReadBorrowsAreLive' "$borrow_report"
+          grep -Fq 'name="ownershipTransferFailsWhileSharedBorrowIsLive' "$borrow_report"
+          grep -Fq 'name="sourceOwnerIsUnusableAfterRtTakeMove' "$borrow_report"
           grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
           grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
           grep -Fq 'name="criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation' "$syntax_report"
