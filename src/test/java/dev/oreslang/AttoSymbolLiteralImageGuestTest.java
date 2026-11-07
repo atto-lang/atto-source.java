@@ -46,6 +46,34 @@ final class AttoSymbolLiteralImageGuestTest {
         assertEquals("equal", execute(program));
     }
 
+    @Test void literalMatchesPatternUsesSameCheckedImageAsExpression() throws Exception {
+        assertEquals("pattern", execute("""
+                pub routine main(): void {
+                  const Symbol tag = #ready;
+                  if tag matches #"ready" then
+                    stdio.stdout.write("pattern");
+                  else
+                    stdio.stdout.write("miss");
+                  fi
+                  return;
+                }
+                """));
+    }
+
+    @Test void quotedLiteralPatternPreservesStringSymbolSeparation() throws Exception {
+        assertEquals("string-distinct", execute("""
+                pub routine main(): void {
+                  const string tag = "ready";
+                  if tag matches #ready then
+                    stdio.stdout.write("bad");
+                  else
+                    stdio.stdout.write("string-distinct");
+                  fi
+                  return;
+                }
+                """));
+    }
+
     @Test void compiledSymbolsAreNotStringValues() throws Exception {
         assertEquals("distinct", execute("""
                 pub routine main(): void {
