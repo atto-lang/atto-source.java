@@ -75,6 +75,13 @@ required = {
         "bracedAndOverEndFormsLowerToEquivalentSelectShape",
         "overEndBlockingFormsExecuteThroughTheExistingSelectRuntime",
         "nonblockingOverEndKeepsExistingActorAdmissionSemantics",
+        "overEndReadAndWriteArmsUseTheExistingAtomicSelectRuntime",
+        "doSelectOverReturnAndDeferPreserveProceduralControlFlow",
+        "nestedOverEndSelectionsOwnTheirEndsStructurally",
+        "overEndAwaitArmUsesTheExistingFutureSelectRuntime",
+        "overEndBreakAndFinallyPropagateThroughProceduralSelect",
+        "overEndContinueAfterCooperateDoesNotReplaySelectedArm",
+        "immediateTrySelectOverRetainsImmediateWaitMode",
     },
     "dev.oreslang.NamespaceModuleBoundaryTest": {
         "namespaceIsSourceMetadataAndNamedModuleRemainsLinkable",
