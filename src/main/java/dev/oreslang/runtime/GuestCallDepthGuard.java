@@ -160,6 +160,13 @@ public final class GuestCallDepthGuard {
         return requireInvocationScope(enteredDepth).arena != null;
     }
 
+    /** A corrupted or unbalanced trusted evaluator frame cannot be recovered by guest code. */
+    static void poisonMalformedInvocation(int enteredDepth) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (scope.actorStack != null) scope.actorStack.poison();
+        if (scope.arena != null) scope.arena.poisonFromGuestGuard();
+    }
+
     /** Package-private read returns a defensive copy, never frame backing bytes. */
     static byte[] readInvocationDescriptor(int enteredDepth) {
         Scope scope = requireInvocationScope(enteredDepth);
