@@ -20,9 +20,21 @@ public final class InvertedSchemaStorageBridge implements AutoCloseable {
     private final List<String> fields;
     private final boolean[] mutable;
     private final InvertedColumnStore store;
+    private final int rowLimit;
 
     public InvertedSchemaStorageBridge(Ast.InvertedStructDecl schema) {
+        this(schema, Integer.MAX_VALUE);
+    }
+
+    /** Restricted compiler-owned bounded owner; no implicit growth past the limit. */
+    public InvertedSchemaStorageBridge(Ast.InvertedStructDecl schema, int rowLimit) {
         Objects.requireNonNull(schema, "nominal inverted schema");
+        if (rowLimit < 0 || rowLimit > 4096) {
+            if (rowLimit != Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("DOP v1 row capacity outside bound");
+            }
+        }
+        this.rowLimit = rowLimit;
         if (schema.columns().size() != 2) {
             throw new IllegalArgumentException("DOP v1 requires exactly two int columns");
         }
@@ -46,6 +58,9 @@ public final class InvertedSchemaStorageBridge implements AutoCloseable {
         // as i64 for the native inverted pair (not a general primitive ABI).
         store = new InvertedColumnStore(
                 InvertedColumnStore.Kind.I64, InvertedColumnStore.Kind.I64);
+        if (rowLimit != Integer.MAX_VALUE) {
+            store.reserve(rowLimit);
+        }
     }
 
     public String schemaName() { return schemaName; }
@@ -64,6 +79,9 @@ public final class InvertedSchemaStorageBridge implements AutoCloseable {
     }
 
     public InvertedColumnStore.Handle push(long first, long second) {
+        if (store.size() >= rowLimit) {
+            throw new IllegalStateException("DOP v1 inverted row capacity exceeded");
+        }
         return store.push(first, second);
     }
 
