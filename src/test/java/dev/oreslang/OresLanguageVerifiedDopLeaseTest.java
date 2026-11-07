@@ -145,6 +145,26 @@ final class OresLanguageVerifiedDopLeaseTest {
     }
 
     @Test
+    void privateLeaseTokenCannotAuthorizeAnotherThread() throws Exception {
+        try (var scope = OresLanguage.openVerifiedDopSource(UNIT, CODE)) {
+            Object token = OresLanguage.consumeVerifiedDopSource(UNIT, CODE);
+            OresLanguage.requireLiveVerifiedDopLease(token);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread other = Thread.ofPlatform().start(() -> {
+                try {
+                    OresLanguage.requireLiveVerifiedDopLease(token);
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                }
+            });
+            other.join();
+            assertInstanceOf(SecurityException.class, failure.get());
+            // A foreign attempt must not consume or steal the owning scope.
+            OresLanguage.requireLiveVerifiedDopLease(token);
+        }
+    }
+
+    @Test
     void overlappingCheckedProgramAndDopScopesAreDenied() {
         String regular = "pub fnc main(): void { return; }";
         Ast.Program parsed = Parser.parse(regular);
