@@ -68,6 +68,24 @@ final class ActorFrameArena {
     /** Runtime-only domain for minting a matching logical ExecutionContext. */
     ExecutionContext.AllocationDomain allocationDomain() { return owner; }
 
+    /**
+     * Mint one logical identity for a synchronous interpreter call chain.
+     * Never reuse an execution ID within an actor incarnation. This is NOT a
+     * SourceTask continuation identity and must not be resumed across await.
+     */
+    private long nextSynchronousExecution = 1L;
+
+    synchronized ExecutionContext newSynchronousExecution() {
+        if (retired) throw new IllegalStateException("retired actor frame arena");
+        requireExecutable();
+        if (nextSynchronousExecution == Long.MAX_VALUE) {
+            poisoned = true;
+            throw new BudgetExceeded("actor synchronous execution IDs exhausted");
+        }
+        return ExecutionContext.actor(owner.domain(), nextSynchronousExecution++,
+                owner.domain(), owner.owner(), owner.generation(), 0, 0);
+    }
+
     private IllegalStateException invalidProtocol(String reason) {
         poisoned = true;
         return new IllegalStateException(reason);
