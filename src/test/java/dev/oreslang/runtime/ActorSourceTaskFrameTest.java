@@ -297,6 +297,51 @@ final class ActorSourceTaskFrameTest {
     }
 
     @Test
+    void sourceTaskStackQuotaFailureCannotKillSiblingOnTheSharedCarrier()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> failedArena = new AtomicReference<>();
+            AtomicReference<ActorFrameArena> healthyArena = new AtomicReference<>();
+            AtomicInteger healthyResponses = new AtomicInteger();
+            var overflowing = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                failedArena.set(ActorRuntime.currentActorFrameArena());
+                runtime.startActorTask(resume -> {
+                    int[] depths = new int[GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS];
+                    int entered = 0;
+                    try {
+                        for (; entered < depths.length; entered++) {
+                            depths[entered] = GuestCallDepthGuard.enter();
+                        }
+                        return OresScheduler.done(0);
+                    } finally {
+                        while (entered > 0) {
+                            GuestCallDepthGuard.leave(depths[--entered]);
+                        }
+                    }
+                });
+            });
+            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                healthyArena.set(ActorRuntime.currentActorFrameArena());
+                healthyResponses.incrementAndGet();
+                turn.self().stop();
+            });
+            overflowing.send("quota");
+            assertTrue(overflowing.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(overflowing.failure().isPresent(),
+                    "source-task frame quota must terminate only this actor");
+            assertTrue(failedArena.get().isRetired(),
+                    "actor failure must not reclaim before scheduler quiescence");
+            assertEquals(0, failedArena.get().usedBytes());
+            sibling.send("alive");
+            assertTrue(sibling.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(sibling.failure().isEmpty());
+            assertEquals(1, healthyResponses.get());
+            assertNotSame(failedArena.get(), healthyArena.get());
+        }
+    }
+
+    @Test
     void physicalQuiescenceCallbacksObserveLiveFrameBeforeZeroization()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(
