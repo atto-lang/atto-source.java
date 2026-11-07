@@ -219,4 +219,33 @@ final class GuestScalarCallFrameTest {
             assertEquals(1, siblingRuns.get());
         }
     }
+    @Test
+    void malformedTypedFrameCannotBeSwallowedToContinueActor() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<ActorFrameArena> poisoned = new AtomicReference<>();
+            AtomicInteger unprocessed = new AtomicInteger();
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
+                poisoned.set(arena);
+                try (GuestInvocationFrame frame =
+                        GuestInvocationFrame.enterWithArguments(0, List.of(1L))) {
+                    assertThrows(IllegalStateException.class,
+                            () -> frame.restoreScalarArguments(List.of(1L, 2L)));
+                    assertTrue(arena.isPoisoned());
+                }
+                unprocessed.incrementAndGet();
+                // Even though the host caught the invalid compiler-frame
+                // exception, the next mailbox message cannot be admitted.
+            });
+            actor.send("invalid");
+            actor.send("must-not-run");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertInstanceOf(ActorFrameArena.BudgetExceeded.class,
+                    actor.failure().orElseThrow());
+            assertEquals(1, unprocessed.get());
+            assertTrue(poisoned.get().isRetired());
+        }
+    }
+
 }
