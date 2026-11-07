@@ -36,3 +36,15 @@ segment. Three new JUnit regression groups cover trailing and doubled
 separators on all canonical/historical roots, while explicitly preserving
 correct `.atto`/`.ores` identity aliases. The language compiler and
 full guest tests still require an allocated GitHub runner to certify.
+
+## Real compiler namespace admission negative group
+
+Five negative `LinkedProgramRunner.validate` cases now compile
+actual `.atto` entrypoints importing malformed `atto.core/`,
+`ores.core/`, `atto.std/`, `ores.std/` and `std/` spellings
+with trailing directory separators. The imported module names match
+their target modules, so rejection cannot be explained by a synthetic
+mismatched alias. These complement the path-helper tests and guard
+against compiler call sites that might accidentally bypass the strict
+library registry. They remain authored guest compiler tests until CI
+runner admission is restored.

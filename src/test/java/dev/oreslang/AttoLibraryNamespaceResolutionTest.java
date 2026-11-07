@@ -179,6 +179,28 @@ final class AttoLibraryNamespaceResolutionTest {
     }
 
     @Test
+    void compilerRejectsNoncanonicalCoreAndStdImportsBeforeGuestExecution() throws Exception {
+        String[][] denied = {
+                {"atto.core/numeric/", "numeric"},
+                {"ores.core/numeric/", "numeric"},
+                {"atto.std/testing/", "testing"},
+                {"ores.std/testing/", "testing"},
+                {"std/testing/", "testing"}
+        };
+        for (int i = 0; i < denied.length; i++) {
+            Path source = temp.resolve("reject-trailing-import-" + i + ".atto");
+            Files.writeString(source, """
+                    import module %s from "%s";
+                    pub fnc main(): void {
+                      return;
+                    }
+                    """.formatted(denied[i][1], denied[i][0]), StandardCharsets.UTF_8);
+            assertThrows(Exception.class,
+                    () -> LinkedProgramRunner.validate(source, Map.of()), denied[i][0]);
+        }
+    }
+
+    @Test
     void trailingSlashCannotCanonicalizeIntoCompilerOwnedLibraryIdentity() throws Exception {
         for (String prefix : new String[] {
                 "atto.core/numeric", "ores.core/numeric",
