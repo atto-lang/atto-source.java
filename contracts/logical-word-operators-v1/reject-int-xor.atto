@@ -1,0 +1,3 @@
+fnc bad(): bool {
+  return true xor 1;
+}
