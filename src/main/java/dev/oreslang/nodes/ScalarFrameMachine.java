@@ -96,6 +96,7 @@ final class ScalarFrameMachine {
 
     private static boolean eligible(Ast.FunctionDecl fn) {
         if (fn == null || fn.kind() != Ast.CallableKind.FNC
+                || fn.name().equals("init")
                 || fn.actorKind() != Ast.ActorKind.NONE
                 || fn.async() || fn.suspends() || fn.generator()
                 || fn.structural() || fn.nonLexical() || fn.trapped()
@@ -105,8 +106,10 @@ final class ScalarFrameMachine {
                 || fn.returnType() == null || !plainInt(fn.returnType())) {
             return false;
         }
+        java.util.HashSet<String> parameterNames = new java.util.HashSet<>();
         for (Ast.Param param : fn.parameters()) {
-            if (!plainInt(param.type()) || param.structural() || param.mutable()) {
+            if (!plainInt(param.type()) || param.structural() || param.mutable()
+                    || param.name() == null || !parameterNames.add(param.name())) {
                 return false;
             }
         }
