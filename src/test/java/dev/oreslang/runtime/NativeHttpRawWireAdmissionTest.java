@@ -36,7 +36,16 @@ final class NativeHttpRawWireAdmissionTest {
                 header = lines.readLine();
                 assertNotNull(header, "response headers must be terminated");
             } while (!header.isEmpty());
-            assertEquals(-1, lines.read(), "Connection: close must terminate the response");
+            // JDK's *pre-handler parser* writes a bounded explanatory body
+            // for some rejected framing (for example duplicate Content-Length).
+            // Consume that body before requiring EOF; do not assume every
+            // HTTP 400 has an empty response body.
+            int responseBodyChars = 0;
+            while (lines.read() != -1) {
+                if (++responseBodyChars > 65_536) {
+                    fail("unexpectedly long HTTP error response body");
+                }
+            }
             return statusLine;
         }
     }
