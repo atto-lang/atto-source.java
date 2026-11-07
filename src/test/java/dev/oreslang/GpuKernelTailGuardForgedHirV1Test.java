@@ -137,13 +137,14 @@ final class GpuKernelTailGuardForgedHirV1Test {
 
     @Test void malformedTypedGpuGlobalIdAxisIsDenied() {
         var source = canonical();
-        var wrongAxis = value(GpuKernelSourceHirV1.Type.I64, "gpu.global_id", "9");
-        var alpha = value(GpuKernelSourceHirV1.Type.F32, "local", "alpha");
-        var illicit = value(GpuKernelSourceHirV1.Type.F32, "arith.+", null, alpha,
-                value(GpuKernelSourceHirV1.Type.F32, "buffer.load", null,
-                        value(GpuKernelSourceHirV1.Type.BUFFER_READ_F32, "local", "x"),
-                        wrongAxis));
-        denied(withStore(source, "out", illicit), "buffer read");
+        var wrongAxis = new GpuKernelSourceHirV1.Instruction(
+                "LET", "i",
+                value(GpuKernelSourceHirV1.Type.I64, "gpu.global_id", "9"),
+                List.of());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                source.symbol(), source.parameters(), source.returnType(),
+                List.of(wrongAxis, source.body().get(1)), source.evidence());
+        denied(forged, "GPU global lane identity");
     }
 
     @Test void forgedLocalWithUnboundNameIsDenied() {
@@ -248,5 +249,72 @@ final class GpuKernelTailGuardForgedHirV1Test {
                 c.symbol(), c.parameters(), c.returnType(),
                 List.of(malformed, c.body().get(1)), c.evidence());
         denied(forged, "malformed scalar binding");
+    }
+
+    @Test void forgedGpuGlobalIdCannotHaveExtraOperands() {
+        var c = canonical();
+        var extraAxisArg = value(GpuKernelSourceHirV1.Type.I64,
+                "gpu.global_id", "0",
+                value(GpuKernelSourceHirV1.Type.I64, "i64.literal", "0"));
+        var badLet = new GpuKernelSourceHirV1.Instruction(
+                "LET", "i", extraAxisArg, List.of());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(badLet, c.body().get(1)), c.evidence());
+        denied(forged, "malformed typed GPU value operands");
+    }
+
+    @Test void forgedComparisonCannotMixScalarTypes() {
+        var c = canonical();
+        var alpha = value(GpuKernelSourceHirV1.Type.F32, "local", "alpha");
+        var n = value(GpuKernelSourceHirV1.Type.I64, "local", "n");
+        var predicate = value(GpuKernelSourceHirV1.Type.BOOL, "compare.<",
+                null, alpha, n);
+        var branch = new GpuKernelSourceHirV1.Instruction(
+                "IF", null, predicate, c.body().get(1).body());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(c.body().getFirst(), branch), c.evidence());
+        denied(forged, "comparison typed source operands mismatch");
+    }
+
+    @Test void forgedBooleanLiteralCannotUseUnknownSpelling() {
+        var c = canonical();
+        var predicate = value(GpuKernelSourceHirV1.Type.BOOL,
+                "bool.literal", "truthy");
+        var branch = new GpuKernelSourceHirV1.Instruction(
+                "IF", null, predicate, c.body().get(1).body());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(c.body().getFirst(), branch), c.evidence());
+        denied(forged, "invalid typed boolean source literal");
+    }
+
+    @Test void forgedBufferReadReceiverCannotInventStrongerCapabilityType() {
+        var c = canonical();
+        var index = c.body().get(1).body().getFirst().value().operands().getFirst();
+        var forgedReceiver = value(
+                GpuKernelSourceHirV1.Type.BUFFER_READ_WRITE_F32, "local", "x");
+        var forgedLoad = value(GpuKernelSourceHirV1.Type.F32, "buffer.load",
+                null, forgedReceiver, index);
+        denied(withStore(c, "out", forgedLoad), "buffer read");
+    }
+
+    @Test void forgedArithmeticOpcodeMustHaveExactlyTwoOperands() {
+        var c = canonical();
+        var alpha = value(GpuKernelSourceHirV1.Type.F32, "local", "alpha");
+        var bogus = value(GpuKernelSourceHirV1.Type.F32, "arith.+", null, alpha);
+        denied(withStore(c, "out", bogus), "malformed typed GPU value operands");
+    }
+
+    @Test void forgedIntegerLiteralCannotHaveNonNumericSourceSpelling() {
+        var c = canonical();
+        var bogus = new GpuKernelSourceHirV1.Instruction(
+                "LET", "i", value(GpuKernelSourceHirV1.Type.I64,
+                        "i64.literal", "not-an-integer"), List.of());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(bogus, c.body().get(1)), c.evidence());
+        denied(forged, "invalid typed integer source literal");
     }
 }
