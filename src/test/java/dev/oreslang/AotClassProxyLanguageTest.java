@@ -172,7 +172,7 @@ final class AotClassProxyLanguageTest {
 
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "aot-class-proxy.atto")
+        Source source = Source.newBuilder(OresLanguage.ID, program, "aot-class-proxy.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
