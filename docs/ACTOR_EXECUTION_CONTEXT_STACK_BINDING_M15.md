@@ -20,6 +20,8 @@ slice**, not an implementation of physical per-actor stacks.
   admission), never merely because a Future was completed/cancelled.
 - Cancellation cleanup retains `CleanupAwareTask` and the UNTRUSTED
   wall-time/quiescence gate is preserved.
+- Actor finalization explicitly waits for zero live task roots before native
+  memory release; a leaked root holds/quarantines the incarnation instead.
 - Task roots have a separate 64-root cap; actor synchronous call-depth limits
   and native carrier stack limits remain independently enforced.
 

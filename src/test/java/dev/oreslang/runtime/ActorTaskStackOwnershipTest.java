@@ -61,6 +61,17 @@ final class ActorTaskStackOwnershipTest {
             assertTrue(enteredAwait.await(3, TimeUnit.SECONDS));
             assertEquals(1, owner.get().activeTaskRoots(),
                     "awaited Future completion is not a stack-retirement receipt");
+            // The sole carrier must be available to a sibling while A awaits.
+            var siblingFinished = new CountDownLatch(1);
+            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                assertNotSame(owner.get(), ActorRuntime.currentActorGuestStack());
+                siblingFinished.countDown();
+                turn.self().stop();
+            });
+            sibling.send("run");
+            assertTrue(siblingFinished.await(3, TimeUnit.SECONDS),
+                    "a suspended Task must not pin the shared carrier");
+            assertTrue(sibling.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(awaited.completeFromRuntime(42));
             assertEquals(42, taskFuture.get().get(3, TimeUnit.SECONDS));
             actor.stop();
@@ -78,10 +89,14 @@ final class ActorTaskStackOwnershipTest {
             var aObserved = new CountDownLatch(1);
             var bObserved = new CountDownLatch(1);
             var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
-                stolen.set(ActorRuntime.currentActorGuestStack()
-                        .reserveTaskRoot(turn.self().generation()));
-                aObserved.countDown();
-                turn.self().stop();
+                if ("own".equals(message)) {
+                    stolen.set(ActorRuntime.currentActorGuestStack()
+                            .reserveTaskRoot(turn.self().generation()));
+                    aObserved.countDown();
+                } else if ("retire".equals(message)) {
+                    stolen.get().retire();
+                    turn.self().stop();
+                }
             });
             a.send("own");
             assertTrue(aObserved.await(3, TimeUnit.SECONDS));
@@ -94,7 +109,8 @@ final class ActorTaskStackOwnershipTest {
             b.send("foreign");
             assertTrue(bObserved.await(3, TimeUnit.SECONDS));
             assertTrue(b.awaitTermination(3, TimeUnit.SECONDS));
-            stolen.get().retire();
+            a.send("retire");
+            assertTrue(a.awaitTermination(3, TimeUnit.SECONDS));
             assertThrows(SecurityException.class, stolen.get()::requireCurrentOwner,
                     "retired generation cannot be reactivated by a stale callback");
         }

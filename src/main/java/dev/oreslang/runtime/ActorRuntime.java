@@ -8212,6 +8212,9 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
                 return;
             }
+            // Root handles must be retired before any actor-owned storage
+            // becomes reclaimable. Future completion is insufficient.
+            if (guestStack.activeTaskRoots() != 0) return;
             if (scheduler != null && (!scheduler.actorStopPhysicallyQuiescent()
                     || activeUntrustedSourceTaskCount != 0
                     || activeUntrustedTimedAdmissions != 0)) return;

@@ -108,7 +108,7 @@ final class ActorGuestStack {
         }
 
         void requireCurrentOwner() {
-            if (retired.get()
+            if (retired.get() || owner.isPoisoned()
                     || ActorRuntime.currentActorGuestStack() != owner
                     || ActorRuntime.currentActorGeneration() != actorGeneration) {
                 throw new SecurityException(
