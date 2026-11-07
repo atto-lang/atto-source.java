@@ -4371,7 +4371,7 @@ public final class Parser {
 
     private Ast.Expr parseLogicalOr() {
         Ast.Expr expr = parseLogicalXor();
-        while (!isChannelCallbackDelimiter() && matchAdjacentPair(PIPE)) {
+        while (match(OR) || (!isChannelCallbackDelimiter() && matchAdjacentPair(PIPE))) {
             expr = new Ast.BinaryExpr("||", expr, parseLogicalXor());
         }
         return expr;
@@ -4387,13 +4387,13 @@ public final class Parser {
 
     private Ast.Expr parseLogicalXor() {
         Ast.Expr expr = parseLogicalAnd();
-        while (matchAdjacentPair(CARET)) expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
+        while (match(XOR)) expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
         return expr;
     }
 
     private Ast.Expr parseLogicalAnd() {
         Ast.Expr expr = parseBitwiseOr();
-        while (matchAdjacentPair(AMP)) expr = new Ast.BinaryExpr("&&", expr, parseBitwiseOr());
+        while (match(AND) || matchAdjacentPair(AMP)) expr = new Ast.BinaryExpr("&&", expr, parseBitwiseOr());
         return expr;
     }
 
