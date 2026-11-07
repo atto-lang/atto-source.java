@@ -203,16 +203,67 @@ final class ActorNativeStorageStandaloneTest {
     void crossActorRegionAuthorityCannotBeStoredInAnotherArena() {
         AtomicLong leftCharge = new AtomicLong();
         AtomicLong rightCharge = new AtomicLong();
-        AtomicBoolean owner = new AtomicBoolean(true);
+        AtomicBoolean leftOwner = new AtomicBoolean(true);
+        AtomicBoolean rightOwner = new AtomicBoolean(true);
         Object uninitialized = new Object();
-        try (ActorNativeArena left = arena(256 * 1024, leftCharge, owner);
-             ActorNativeArena right = arena(256 * 1024, rightCharge, owner)) {
+        ActorNativeArena left = arena(256 * 1024, leftCharge, leftOwner);
+        ActorNativeArena right = arena(256 * 1024, rightCharge, rightOwner);
+        try {
             ActorNativeArena.Region leftRegion = left.region(32);
             Map<String, Object> rightFields = right.fields(List.of("foreign"), uninitialized);
             assertThrows(SecurityException.class, () -> rightFields.put("foreign", leftRegion));
             assertSame(uninitialized, rightFields.get("foreign"));
             leftRegion.writeLong(0, 314L);
             assertEquals(314L, leftRegion.readLong(0));
+
+            // Both actors have guest-linear offset zero, but their physical pages,
+            // owner checks, field authority, and read-only leases must remain private.
+            ActorLinearMemory leftMemory = left.linearMemory(1, 1);
+            ActorLinearMemory rightMemory = right.linearMemory(1, 1);
+            leftMemory.writeLong(0, 111L);
+            rightMemory.writeLong(0, 222L);
+            assertEquals(111L, leftMemory.readLong(0));
+            assertEquals(222L, rightMemory.readLong(0));
+
+            leftOwner.set(false);
+            assertThrows(SecurityException.class, () -> leftMemory.readLong(0));
+            assertThrows(SecurityException.class, () -> leftMemory.writeLong(0, 333L));
+            rightMemory.writeLong(0, 223L);
+            assertEquals(223L, rightMemory.readLong(0),
+                    "peer actor must remain live when the other actor is off-turn");
+            leftOwner.set(true);
+            assertEquals(111L, leftMemory.readLong(0));
+
+            try (var leftLoan = leftMemory.leaseReadOnlyPage(0, 0, Long.BYTES)) {
+                assertThrows(IllegalStateException.class,
+                        () -> leftMemory.writeLong(0, 333L));
+                rightOwner.set(false);
+                assertThrows(SecurityException.class, () -> rightMemory.readLong(0));
+                rightOwner.set(true);
+                rightMemory.writeLong(0, 224L);
+                assertEquals(111L, leftMemory.readLong(0));
+                assertEquals(224L, rightMemory.readLong(0));
+            }
+            leftMemory.writeLong(0, 112L);
+            assertEquals(112L, leftMemory.readLong(0));
+            assertEquals(224L, rightMemory.readLong(0));
+
+            left.close();
+            assertTrue(left.closed());
+            assertEquals(0, leftCharge.get());
+            assertThrows(IllegalStateException.class, () -> leftMemory.readLong(0));
+            assertFalse(right.closed());
+            assertTrue(rightCharge.get() > 0,
+                    "retiring one actor must not refund the peer actor's storage");
+            assertEquals(224L, rightMemory.readLong(0));
+            rightMemory.writeLong(0, 225L);
+            assertEquals(225L, rightMemory.readLong(0),
+                    "peer actor storage must survive another actor's retirement");
+        } finally {
+            leftOwner.set(true);
+            rightOwner.set(true);
+            if (!left.closed()) left.close();
+            if (!right.closed()) right.close();
         }
         assertEquals(0, leftCharge.get());
         assertEquals(0, rightCharge.get());
