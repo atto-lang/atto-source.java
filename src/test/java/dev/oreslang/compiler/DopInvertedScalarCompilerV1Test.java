@@ -49,6 +49,20 @@ final class DopInvertedScalarCompilerV1Test {
     }
 
     @Test
+    void exactSharedColumnWriteFixtureLowersToTypedStorageOperations() throws Exception {
+        String atto = contract("column-write-42.atto");
+        var plan = OresCompiler.compileDopInvertedScalarI64(atto);
+        assertEquals(4, plan.instructions().size());
+        assertEquals(DopInvertedScalarCompilerV1.Op.WRITE,
+                plan.instructions().get(2).op());
+        assertEquals("value", plan.instructions().get(2).field());
+        assertEquals(42L, plan.executeHostReference());
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(atto))
+                .getMessage().contains("DOP_INVERTED_BACKEND_UNSUPPORTED"));
+    }
+
+    @Test
     void canonicalRemovedIndexTriggersActualLengthGuard() throws Exception {
         DopInvertedScalarCompilerV1.Plan plan =
                 OresCompiler.compileDopInvertedScalarI64(contract("removed-index-trap.atto"));
