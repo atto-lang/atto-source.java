@@ -7302,7 +7302,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (literal.value() instanceof dev.oreslang.runtime.OresSymbol symbol) {
                     // Same immutable linked source image is used across trusted
                     // actor carriers; no process-wide dynamic interning.
-                    return codeImage().staticLiteralValue(symbol);
+                    return codeImage().literalForActor(symbol, ActorRuntime.currentActorKind());
                 }
                 return literal.value();
             }
