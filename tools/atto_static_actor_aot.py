@@ -20,7 +20,7 @@ NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z", re.ASCII)
 MAX_SOURCE = 32768
 MAX_ACTORS = 16
 MAX_ACTOR_INSTANCES = 64  # Prevent an unbounded number of per-actor native arenas.
-MAX_SENDS = 10000
+MAX_SENDS = 1024  # Reachable below 32 KiB source / 50k-token caps; bounds native work.
 
 
 class CompileError(ValueError):
