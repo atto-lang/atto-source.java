@@ -74,6 +74,11 @@ expected = {
     "dev.oreslang.SourceActorPubSubExecutionTest": {
         "positivePubSubFixturesUseSuspendsOnlyEntrypoints",
         "suspendsTopicCapabilityFailsTaskSendBoundaryAfterParserAdmission",
+        "suspendsTaskBoundaryRejectsOtherAndNestedNonSendCapabilities",
+        "suspendsTaskReturnCannotExportActorOwnedTopic",
+        "suspendsActorReceiveRetainsActorLocalTopicAndSubscriptionUse",
+        "sharedActorSubscribesAndReceivesTypedInMemoryPublication",
+        "attolangFilenameExecutesExistingPubSubGuest",
         "pubSubHandlesCannotCrossIndependentSuspendsTaskBoundary",
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
         "portableTryPublishRejectedUntilNativeLowering",

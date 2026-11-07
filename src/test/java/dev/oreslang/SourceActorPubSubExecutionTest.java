@@ -21,6 +21,51 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SourceActorPubSubExecutionTest {
     @Test
+    void suspendsTaskBoundaryRejectsOtherAndNestedNonSendCapabilities() {
+        for (String type : new String[] {
+                "Topic<String>",
+                "Subscription<String>",
+                "ActorGroup",
+                "Option<Topic<String>>",
+                "Option<Subscription<String>>"
+        }) {
+            String source = "suspends fnc bad(" + type
+                    + " handle): void { return; } pub fnc main(): void { return; }";
+            Ast.Program parsed = Parser.parse(source);
+            Ast.FunctionDecl bad = (Ast.FunctionDecl)
+                    parsed.modules().getFirst().declarations().getFirst();
+            assertTrue(bad.suspends(), type);
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), type);
+            assertTrue(denied.getMessage().contains("must be concrete owned task-safe data"),
+                    type + ": " + denied.getMessage());
+        }
+    }
+
+    @Test
+    void suspendsTaskReturnCannotExportActorOwnedTopic() {
+        String source = "suspends fnc leak(): Topic<String> {"
+                + " return actor.group(\"restricted\").topic<String>(\"events\", \"reliable\", 1);"
+                + " } pub fnc main(): void { return; }";
+        Parser.parse(source);
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains("must be concrete owned task-safe data"),
+                denied.getMessage());
+    }
+
+    @Test
+    void suspendsActorReceiveRetainsActorLocalTopicAndSubscriptionUse() throws Exception {
+        // Direct actor-owned handle use must remain legal; only crossing the
+        // independent SourceTask boundary is denied.
+        String source = fixture("actor-pubsub-v1.atto");
+        Parser.parse(source);
+        OresCompiler.parseAndTypeCheck(source);
+    }
+
+    @Test
     void suspendsTopicCapabilityFailsTaskSendBoundaryAfterParserAdmission() throws Exception {
         String source = fixture("actor-pubsub-reject-suspends-capability.atto");
         assertEquals(fixture("actor-pubsub-reject-suspends-capability.ores"), source);
