@@ -85,6 +85,9 @@ final class GpuKernelSourceCapacityJoinV1Test {
         change.put(3, view("out", 1024, Access.READ));
         assertThrows(IllegalArgumentException.class,
                 () -> audit(subject(HOST), change, 256, 256));
+        // Restore out before testing x so this negative exercises the
+        // SOURCE-READ parameter check, not the earlier out-read failure.
+        change.put(3, view("out", 1024, Access.WRITE));
         change.put(1, view("x", 1024, Access.WRITE));
         assertThrows(IllegalArgumentException.class,
                 () -> audit(subject(HOST), change, 256, 256));
@@ -174,5 +177,63 @@ final class GpuKernelSourceCapacityJoinV1Test {
         assertFalse(subject.plan().executable());
         assertFalse(subject.link().executable());
         assertFalse(audit(subject, views(), 0, 0).executable());
+    }
+
+    @Test void sameReadOnlySourceAliasAndSameViewDoNotMintExclusiveLoan() {
+        var repeated = subject(HOST.replace("saxpy(alpha, x, y, out, n)",
+                                             "saxpy(alpha, x, x, out, n)"));
+        var same = new HashMap<>(views());
+        same.put(2, same.get(1));
+        var report = audit(repeated, same, 256, 256);
+        assertEquals(3, report.checkedViews());
+        assertFalse(report.executable());
+    }
+
+    @Test void readOnlyAliasesWithDifferentGenerationAreRejected() {
+        var repeated = subject(HOST.replace("saxpy(alpha, x, y, out, n)",
+                                             "saxpy(alpha, x, x, out, n)"));
+        var mismatched = new HashMap<>(views());
+        mismatched.put(2, new View("tenant", "gpu", "x", 3,
+                                  1024, 0, 1024, 4, Access.READ));
+        assertThrows(IllegalArgumentException.class,
+                () -> audit(repeated, mismatched, 256, 256));
+    }
+
+    @Test void f32RequiresAlignedByteExtent() {
+        var mutated = new HashMap<>(views());
+        mutated.put(3, new View("tenant", "gpu", "out", 5,
+                                1026, 0, 1026, 4, Access.WRITE));
+        assertThrows(IllegalArgumentException.class,
+                () -> audit(subject(HOST), mutated, 256, 256));
+    }
+
+    @Test void sourceNByteMultiplicationCannotOverflowSignedLong() {
+        var original = subject(HOST);
+        assertThrows(IllegalArgumentException.class,
+                () -> audit(original, views(), Long.MAX_VALUE, Long.MAX_VALUE));
+    }
+
+    @Test void emptyLogicalSourceStillRejectsForeignTenant() {
+        var mutated = new HashMap<>(views());
+        mutated.put(3, new View("foreign", "gpu", "out", 5,
+                                1024, 0, 1024, 4, Access.WRITE));
+        assertThrows(SecurityException.class,
+                () -> audit(subject(HOST), mutated, 0, 0));
+    }
+
+    @Test void emptyLogicalSourceStillRejectsReadWriteOverlap() {
+        var mutated = new HashMap<>(views());
+        mutated.put(3, new View("tenant", "gpu", "x", 5,
+                                1024, 0, 1024, 4, Access.WRITE));
+        assertThrows(IllegalArgumentException.class,
+                () -> audit(subject(HOST), mutated, 0, 0));
+    }
+
+    @Test void foreignDeviceScopeIsRejectedEvenWhenBytesFit() {
+        var mutated = new HashMap<>(views());
+        mutated.put(3, new View("tenant", "different-gpu", "out", 5,
+                                1024, 0, 1024, 4, Access.WRITE));
+        assertThrows(SecurityException.class,
+                () -> audit(subject(HOST), mutated, 256, 256));
     }
 }
