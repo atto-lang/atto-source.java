@@ -337,7 +337,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
-                "print", "Some", "None", "Ok", "Err", "task_context", "And", "Or", "Xor", "BooleanOps",
+                "print", "Some", "None", "Ok", "Err", "task_context", "task_cancel_requested", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
@@ -3166,12 +3166,19 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.NameExpr contextCall
                     && (contextCall.name().equals("task_context")
+                        || contextCall.name().equals("task_cancel_requested")
                         || contextCall.name().equals("$task_context_enter")
                         || contextCall.name().equals("$task_context_exit"))) {
                 Type symbol = new Named("$builtin$Symbol", List.of());
                 List<Type> arguments = call.arguments().stream()
                         .map(argument -> typeOf(argument, env, generics, self)).toList();
                 switch (contextCall.name()) {
+                    case "task_cancel_requested" -> {
+                        if (!arguments.isEmpty()) {
+                            throw new IllegalArgumentException("task_cancel_requested() takes no arguments");
+                        }
+                        return Primitive.BOOL;
+                    }
                     case "task_context" -> {
                         if (arguments.size() != 1 || !arguments.getFirst().equals(symbol)) {
                             throw new IllegalArgumentException("task_context(#key) expects one Symbol key");

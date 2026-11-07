@@ -102,6 +102,16 @@ public final class SourceTaskHandles {
         return true;
     }
 
+    /**
+     * {@code task_cancel_requested()} (Kotlin {@code isActive} inverted): true
+     * when the task block currently running has been asked to cancel. Lets
+     * long work stop early on its own terms; cancellation is still delivered
+     * at the next suspension point or loop back-edge regardless.
+     */
+    public static boolean currentTaskCancelRequested() {
+        return TaskHandle.currentCancellationRequested();
+    }
+
     /** {@code task scope deadline(ms)}: cancel the scope's children on expiry. */
     public static java.util.concurrent.ScheduledFuture<?> cancelScopeAfter(
             TaskScope scope, long millis) {

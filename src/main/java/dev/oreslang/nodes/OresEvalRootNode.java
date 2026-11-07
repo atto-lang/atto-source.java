@@ -7360,6 +7360,10 @@ public final class OresEvalRootNode extends RootNode {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
                 };
+                if (name.name().equals("task_cancel_requested")) return (Invokable) args -> {
+                    requireZero(args, "task_cancel_requested");
+                    return SourceTaskHandles.currentTaskCancelRequested();
+                };
                 if (name.name().equals("task_context")) return (Invokable) args -> {
                     requireOne(args, "task_context");
                     if (!(args.getFirst() instanceof dev.oreslang.runtime.OresSymbol key)) {

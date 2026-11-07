@@ -21,17 +21,31 @@ final class SourceTaskCancelTest {
     @Test
     void cancellingASuspendedTaskRunsItsDeferAndReportsCancelled() throws Exception {
         assertEquals("started|cleanup|#cancelled", run("""
+                define class Flag as
+                  pub let int value = 0;
+                end
                 pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
                   let Future<void> child = task {
                     defer stdio.stdout.write("|cleanup");
                     stdio.stdout.write("started");
+                    block {
+                      val g = flag.lock();
+                      g.value = 1;
+                    }
                     loop {
                       rt cooperate;
                     }
                     return;
                   };
-                  rt cooperate;
-                  rt cooperate;
+                  let mut int started = 0;
+                  while started == 0 {
+                    rt cooperate;
+                    block {
+                      val g = flag.lock();
+                      started = g.value;
+                    }
+                  }
                   child.cancel();
                   val outcome = await child.get_done();
                   stdio.stdout.write("|");
@@ -80,16 +94,31 @@ final class SourceTaskCancelTest {
     @Test
     void cancellingInsideATaskScopeLetsTheScopeExit() throws Exception {
         assertEquals("cleanup|after-scope", run("""
+                define class Flag as
+                  pub let int value = 0;
+                end
                 pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
                   task scope {
                     let Future<void> child = task {
                       defer stdio.stdout.write("cleanup");
+                      block {
+                      val g = flag.lock();
+                      g.value = 1;
+                    }
                       loop {
                         rt cooperate;
                       }
                       return;
                     };
+                    let mut int started = 0;
+                  while started == 0 {
                     rt cooperate;
+                    block {
+                      val g = flag.lock();
+                      started = g.value;
+                    }
+                  }
                     child.cancel();
                   }
                   stdio.stdout.write("|after-scope");
@@ -143,8 +172,14 @@ final class SourceTaskCancelTest {
                     }
                     return;
                   };
-                  rt cooperate;
-                  rt cooperate;
+                  let mut int seen = 0;
+                  while seen == 0 {
+                    rt cooperate;
+                    block {
+                      val g = mutex.lock();
+                      seen = g.value;
+                    }
+                  }
                   child.cancel();
                   stdio.stdout.write(await child.get_done());
                   val again = mutex.lock();
@@ -294,6 +329,87 @@ final class SourceTaskCancelTest {
                 }
                 """));
         assertTrue(error.getMessage().contains("Option::unwrap"), error::getMessage);
+    }
+
+    /** Loop back-edges are soft-preemption points, so CPU loops are cancellable too. */
+    @Test
+    void tightCpuLoopWithoutAwaitIsStillCancellable() throws Exception {
+        // Handshake through a SharedMutex so the cancel lands after the child
+        // is inside its loop (a cancel before its first turn has no frames).
+        assertEquals("cleanup|#cancelled", run("""
+                define class Flag as
+                  pub let int value = 0;
+                end
+                pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
+                  let Future<void> child = task {
+                    defer stdio.stdout.write("cleanup");
+                    block {
+                      val g = flag.lock();
+                      g.value = 1;
+                    }
+                    let mut int n = 0;
+                    loop {
+                      n = n + 1;
+                    }
+                    return;
+                  };
+                  let mut int started = 0;
+                  while started == 0 {
+                    rt cooperate;
+                    block {
+                      val g = flag.lock();
+                      started = g.value;
+                    }
+                  }
+                  child.cancel();
+                  val outcome = await child.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outcome);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void taskCanObserveItsOwnCancellationRequestAndStopEarly() throws Exception {
+        // A task that returns after its cancellation was requested still
+        // reports #cancelled (Kotlin semantics): the request won.
+        assertEquals("false|stopped-early|#cancelled", run("""
+                define class Flag as
+                  pub let int value = 0;
+                end
+                pub async fnc main(): void {
+                  val flag = SharedMutex.new(new Flag());
+                  stdio.stdout.write(task_cancel_requested());
+                  let Future<void> child = task {
+                    block {
+                      val g = flag.lock();
+                      g.value = 1;
+                    }
+                    loop {
+                      if task_cancel_requested() then
+                        stdio.stdout.write("|stopped-early");
+                        return;
+                      fi
+                    }
+                    return;
+                  };
+                  let mut int started = 0;
+                  while started == 0 {
+                    rt cooperate;
+                    block {
+                      val g = flag.lock();
+                      started = g.value;
+                    }
+                  }
+                  child.cancel();
+                  val outcome = await child.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outcome);
+                  return;
+                }
+                """));
     }
 
     private static String run(String sourceText) throws Exception {
