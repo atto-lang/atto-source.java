@@ -3,6 +3,9 @@ package dev.oreslang.compiler;
 import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -26,6 +29,30 @@ final class DopInvertedSharedEnvelopeTest {
 
     private static String fixture(String name) throws Exception {
         return Files.readString(Path.of("contracts", "dop-inverted-v1", name));
+    }
+
+    /**
+     * Git's blob identity is SHA1("blob " + rawByteCount + NUL + rawBytes).
+     * An in-repo source edit must not silently become cross-backend parity.
+     * SHA-256 evidence for hosted execution is an independent later gate.
+     */
+    private static String gitBlobId(String name) throws Exception {
+        byte[] bytes = Files.readAllBytes(Path.of(
+                "contracts", "dop-inverted-v1", name));
+        MessageDigest digest = MessageDigest.getInstance("SHA-1");
+        digest.update(("blob " + bytes.length + "\u0000")
+                .getBytes(StandardCharsets.US_ASCII));
+        return HexFormat.of().formatHex(digest.digest(bytes));
+    }
+
+    @Test
+    void sharedFixtureBytesMatchPinnedJavaAndLlvmGitBlobIdentities() throws Exception {
+        assertEquals("5392eed2f33be3c8c69809f0521efe9c7a20440f",
+                gitBlobId("capacity-256-42.atto"));
+        assertEquals("e052544a6cde137cabe0db6bc7f73b1e072db174",
+                gitBlobId("capacity-257-rejected.atto"));
+        assertEquals("793b29a0e190124137aebe293629d18c82ae5f08",
+                gitBlobId("capacity-zero-rejected.atto"));
     }
 
     @Test
