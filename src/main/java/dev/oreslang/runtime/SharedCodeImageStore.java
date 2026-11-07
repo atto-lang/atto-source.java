@@ -105,6 +105,13 @@ public final class SharedCodeImageStore implements AutoCloseable {
          */
         public OresSymbol literalForActor(
                 OresSymbol value, ActorRuntime.ActorKind actorKind) {
+            // Actor execution kind comes from the runtime TLS, never from a
+            // caller-chosen enum. A foreign host adapter must not turn an
+            // untrusted/private turn into a SHARED static literal borrow.
+            if (ActorRuntime.inActorExecution()
+                    && actorKind != ActorRuntime.currentActorKind()) {
+                throw new SecurityException("Symbol image actor-kind spoofing");
+            }
             OresSymbol pooled = staticLiteralValue(value);
             if (actorKind == ActorRuntime.ActorKind.UNTRUSTED) {
                 if (!pooled.publicToUntrustedCoreV1()) {
