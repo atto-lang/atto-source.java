@@ -8506,6 +8506,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // carrier identity. Stale replay is inert even if invoked from
                 // inside another legitimate actor turn on the same worker.
                 ACTOR_CARRIER.set(Boolean.TRUE);
+                RuntimeBlockingGuard.enterActorCarrier();
 
                 // Only the admitted owner may have its native CPU affinity
                 // changed. An obsolete queued runnable is inert, even if the
@@ -8593,6 +8594,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 } finally {
                     if (carrierEntered) {
+                        RuntimeBlockingGuard.exitActorCarrier();
                         if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
                         else ACTOR_CARRIER.remove();
                     }
