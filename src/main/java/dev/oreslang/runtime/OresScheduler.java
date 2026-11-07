@@ -1398,11 +1398,13 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the Task registered until the callback has actually
                 // finished: it may revoke actor-owned loans and can fail.
                 if (cleanupIncomplete.get()) return;
-                // After actual physical guest-turn exit, clear the source
-                // frame before freeing actor scheduler receipts. A completed
-                // Future alone is never sufficient to reclaim these bytes.
-                if (actorFrame != null) actorFrame.retireAfterQuiescence();
+                // A runtime cleanup hook may still revoke source loans or
+                // depend on the actor-owned frame. Run it before zeroizing the
+                // frame. If the hook fails, preserve both task and frame in
+                // quarantine: an incomplete cleanup is NOT a retirement proof.
                 onQuiescent.run();
+                if (cleanupIncomplete.get()) return;
+                if (actorFrame != null) actorFrame.retireAfterQuiescence();
                 if (!cleanupIncomplete.get()) tasks.remove(this);
             } catch (Throwable retirementFailure) {
                 // Do not publish a preceding successful guest result when
