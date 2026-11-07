@@ -156,6 +156,24 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
+    void siblingPublicCallableCannotOverrideLexicalLocalWithSameName() {
+        // Equal names in two modules must not turn the unqualified call into
+        // ambient cross-module lookup: the local module owns its namespace.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module internal as
+                  pub fnc secret(): int { return 999; }
+                end
+
+                define module worker as
+                  fnc secret(): int { return 42; }
+                  pub fnc run(): int {
+                    return secret();
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void moduleCanCallItsOwnMembersWithoutGlobalAccess() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module worker as
