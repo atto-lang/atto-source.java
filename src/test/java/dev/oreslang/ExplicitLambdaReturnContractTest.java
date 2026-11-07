@@ -112,8 +112,8 @@ final class ExplicitLambdaReturnContractTest {
                 .allowAllAccess(false).out(output).build()) {
             ctx.eval(source);
         }
-        assertEquals("142\\n102",
-                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("142\n102",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
     @Test
@@ -143,8 +143,8 @@ final class ExplicitLambdaReturnContractTest {
                 .allowAllAccess(false).out(output).build()) {
             ctx.eval(source);
         }
-        assertEquals("141\\n101",
-                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("141\n101",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
     @Test
