@@ -322,7 +322,15 @@ pipeline_stage  = IDENT [ call_suffix ]
    The left operand is evaluated once, and pipeline stages associate leftwards. *)
 
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
-logic_or        = equality { "|" equality } ;
+(* Canonical bool expression operators are reserved, lowercase words.
+   Precedence: and > xor > or; left associative within each tier.
+   and/or short-circuit and xor evaluates both operands left-to-right.
+   The &&/|| spellings are legacy compatibility; ^/^^ are removed from the
+   canonical language despite older Java parser compatibility paths.
+   All logical operands must type-check as bool: no truthiness. *)
+logic_or        = logic_xor { ( "or" | "||" ) logic_xor } ;
+logic_xor       = logic_and { "xor" logic_and } ;
+logic_and       = equality { ( "and" | "&&" ) equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
                   { ( "<" | "<=" | ">" | ">=" ) additive
