@@ -845,17 +845,28 @@ public final class OresEvalRootNode extends RootNode {
             // AND reserves native-carrier recursion headroom transactionally.
             // Proper tail transfers rewrite the same actor-owned frame.
             try (dev.oreslang.runtime.GuestInvocationFrame frame =
-                    dev.oreslang.runtime.GuestInvocationFrame.enter(
-                            initial.kind().ordinal(), initial.arguments().size())) {
+                    dev.oreslang.runtime.GuestInvocationFrame.enterWithArguments(
+                            initial.kind().ordinal(), initial.arguments())) {
                 Invocation current = initial;
                 long tailHops = 0;
                 while (true) {
+                    // For exact primitive-wrapper calls, bind values decoded
+                    // from actor-owned bytes instead of the original JVM
+                    // argument list. Objects/closures stay on the legacy
+                    // path until root-safe lowering is implemented.
+                    List<Object> fromActorFrame =
+                            frame.restoreScalarArguments(current.arguments());
+                    if (fromActorFrame != current.arguments()) {
+                        current = new Invocation(
+                                current.owner(), current.kind(), current.receiver(),
+                                current.target(), fromActorFrame);
+                    }
                     Object result = current.owner().executeRaw(current);
                     if (!(result instanceof TailCall tail)) return result;
                     current = tail.invocation();
                     tailHops++;
-                    frame.tailTransfer(
-                            current.kind().ordinal(), current.arguments().size(), tailHops);
+                    frame.tailTransferWithArguments(
+                            current.kind().ordinal(), current.arguments(), tailHops);
                     if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
                         current.owner().context.schedulerSafepoint();
                     }
