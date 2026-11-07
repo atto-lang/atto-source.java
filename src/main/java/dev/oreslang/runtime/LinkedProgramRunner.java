@@ -166,6 +166,28 @@ public final class LinkedProgramRunner {
                 PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(), out, err);
     }
 
+    /**
+     * Explicit trusted-embedding entrypoint. The service is consumed by the
+     * first OresContext initialized on the calling thread, exactly once.
+     * No class lookup, polyglot bindings or JNI pointers are exposed to guests.
+     * Guest execution still needs a typed compiler/evaluator intrinsic.
+     */
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err,
+            WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, trustedWorkflowService);
+    }
+
     public static RunResult runWithExitStatus(
             Path entryFile,
             IsolatePolicy policy,
@@ -176,6 +198,22 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, null);
+    }
+
+    private static RunResult runWithExitStatusInternal(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err,
+            WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -222,6 +260,15 @@ public final class LinkedProgramRunner {
                 if (err != null) builder.err(forwardingStream(err));
 
                 try (Context context = builder.build()) {
+                    // Provision only the intended Oreslang context, before any
+                    // user source is parsed/initialized. A scoped one-shot
+                    // ThreadLocal must never surround mixed-source compilation.
+                    if (trustedWorkflowService != null) {
+                        try (WorkflowHostServiceRegistry.ProvisioningScope ignored =
+                                     WorkflowHostServiceRegistry.provisionForHost(trustedWorkflowService)) {
+                            context.initialize(OresLanguage.ID);
+                        }
+                    }
                     LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
                     List<String> ids = new ArrayList<>(build.units().keySet());
                     ids.sort(String::compareTo);

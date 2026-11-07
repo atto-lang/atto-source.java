@@ -41,7 +41,12 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    // Host-provisioned at context creation; default is DENY with no service.
+    private final WorkflowHostServiceRegistry workflowHostServices =
+            WorkflowHostServiceRegistry.forNewContext();
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    /** Internal runtime port only; never export this registry via host interop. */
+    public WorkflowHostServiceRegistry workflowHostServices() { return workflowHostServices; }
     private final OutboundEgressPolicy.Policy outboundHttpPolicy =
             OutboundEgressPolicy.Policy.loopbackOnly();
     private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
@@ -510,6 +515,16 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        // Revoke workflow admission and drain callbacks before JNI teardown.
+        // On timeout, retain the context rather than freeing live host state.
+        try {
+            workflowHostServices.close();
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "workflow host service retirement incomplete; context quarantined",
+                    incomplete);
+        }
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
