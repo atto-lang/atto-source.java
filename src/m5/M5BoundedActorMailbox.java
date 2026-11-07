@@ -25,6 +25,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
     private long rejectedClosed;
     private long processed;
     private long abandoned;
+    private long failedTurns;
     private long controlNotices;
     private long workerThreadId;
     private Throwable fault;
@@ -94,6 +95,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
         } catch (Throwable error) {
             synchronized (gate) {
                 fault = error;
+                failedTurns++;
                 controlNotices++; // Supervisor-only CONTROL result; actor cannot consume.
                 abandoned += queued;
                 queued = 0;
@@ -127,7 +129,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
             // Reading the actor-owned state is permitted only after retirement.
             long v = closed ? state.get(ValueLayout.JAVA_LONG, 0) : Long.MIN_VALUE;
             return new Snapshot(accepted, processed, rejectedFull, rejectedClosed,
-                abandoned, controlNotices, maximumDepth, capacity, queued,
+                abandoned, failedTurns, controlNotices, maximumDepth, capacity, queued,
                 closed, v, workerThreadId, fault != null);
         }
     }
@@ -139,7 +141,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
 
     public record Snapshot(
         long accepted, long processed, long rejectedFull, long rejectedClosed,
-        long abandoned, long supervisorControlNotices, int maxDepth, int capacity,
+        long abandoned, long failedTurns, long supervisorControlNotices, int maxDepth, int capacity,
         int remaining, boolean closed, long finalState, long workerThreadId,
         boolean failed
     ) {}
