@@ -92,7 +92,8 @@ plan**, *backed by Java host storage*. It is **not**
 tenant-safe, actor-safe, AOT, or general compiler parity. Do **not** use this
 as a guest-parity receipt. The original host-reference `Plan.executeHostReference`
 remains for differential checks. The dedicated JUnit class
-`DopInvertedScalarTruffleRootV1Test` has seven authored cases and is
+`DopInvertedScalarTruffleRootV1Test` has eight authored cases (including 64 independently compiled roots and
+320 repeated root calls) and is
 included in the exact-head CI gate; no hosted execution pass is yet proven.
 
 ## Promotion gates
