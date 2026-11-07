@@ -80,6 +80,11 @@ SHA-256 of the canonical `critical-actor-checked-v1.atto` fixture, alongside
 original PR-head/tree/run/attempt. These values are written **only after**
 structural inspection of real Surefire XML.
 
+The verifier requires the named checkout
+`Checkout immutable original Java PR head` and named compiler/test execution
+`Compile critical AST, Task authority and .ores Truffle guest tests`; a
+successful setup-only step cannot satisfy the independent reviewer pin.
+
 The independent gate in
 [compiler-parity-website PR #7](https://github.com/ores-truffle-oreslang/compiler-parity-website/pull/7),
 `tools/verify-assurance-receipt.mjs`, checks these fields against **reviewer-pinned**
