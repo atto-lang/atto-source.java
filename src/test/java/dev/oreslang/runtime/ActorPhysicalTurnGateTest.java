@@ -7,10 +7,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.ResourceAccessMode;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 @Timeout(20)
+@ResourceLock(value = Resources.SYSTEM_PROPERTIES, mode = ResourceAccessMode.READ_WRITE)
 final class ActorPhysicalTurnGateTest {
     @Test
     void saturatedGateDoesNotOccupyAnotherWorker() throws Exception {
@@ -448,4 +453,124 @@ final class ActorPhysicalTurnGateTest {
             else System.setProperty(key, prior);
         }
     }
+
+    @Test
+    void globalPhysicalGateNeverOverlapsTurnsWithinOneActor() throws Exception {
+        String key = "ores.runtime.actor.max-active-turns";
+        String prior = System.getProperty(key);
+        System.setProperty(key, "3");
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        try {
+            var config = new ActorRuntime.DispatcherConfig(3, 3, 8, 32);
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+                CountDownLatch firstEntered = new CountDownLatch(1);
+                CountDownLatch laterEntered = new CountDownLatch(1);
+                CountDownLatch delivered = new CountDownLatch(3);
+                AtomicInteger active = new AtomicInteger();
+                AtomicInteger maximum = new AtomicInteger();
+                AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+
+                ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                        factory -> (mail, turn) -> {
+                            int now = active.incrementAndGet();
+                            maximum.accumulateAndGet(now, Math::max);
+                            try {
+                                if (mail == 0) {
+                                    firstEntered.countDown();
+                                    assertTrue(releaseFirst.await(5, TimeUnit.SECONDS));
+                                } else {
+                                    laterEntered.countDown();
+                                }
+                            } catch (Throwable failure) {
+                                callbackFailure.compareAndSet(null, failure);
+                                if (failure instanceof InterruptedException) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            } finally {
+                                active.decrementAndGet();
+                                delivered.countDown();
+                            }
+                        });
+
+                actor.send(0);
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+                actor.send(1);
+                actor.send(2);
+
+                assertFalse(laterEntered.await(100, TimeUnit.MILLISECONDS),
+                        "a global physical-turn budget >1 must not create same-actor overlap");
+                assertEquals(1, maximum.get(),
+                        "sealed actor state remains single-flight until per-turn isolation is proven");
+
+                releaseFirst.countDown();
+                assertTrue(delivered.await(5, TimeUnit.SECONDS));
+                assertEquals(1, maximum.get());
+                assertNull(callbackFailure.get(),
+                        "a worker-thread failure must fail the actor serialization test");
+            }
+        } finally {
+            releaseFirst.countDown();
+            if (prior == null) System.clearProperty(key);
+            else System.setProperty(key, prior);
+        }
+    }
+
+    @Test
+    void globalPhysicalGateAllowsDistinctActorsToOverlap() throws Exception {
+        String key = "ores.runtime.actor.max-active-turns";
+        String prior = System.getProperty(key);
+        System.setProperty(key, "2");
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            var config = new ActorRuntime.DispatcherConfig(2, 2, 8, 32);
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+                CountDownLatch entered = new CountDownLatch(2);
+                CountDownLatch delivered = new CountDownLatch(2);
+                AtomicInteger active = new AtomicInteger();
+                AtomicInteger maximum = new AtomicInteger();
+                AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+
+                ActorRuntime.BehaviorFactory<Integer> handler =
+                        ignored -> (mail, turn) -> {
+                            int now = active.incrementAndGet();
+                            maximum.accumulateAndGet(now, Math::max);
+                            entered.countDown();
+                            try {
+                                assertTrue(release.await(5, TimeUnit.SECONDS));
+                            } catch (Throwable failure) {
+                                callbackFailure.compareAndSet(null, failure);
+                                if (failure instanceof InterruptedException) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            } finally {
+                                active.decrementAndGet();
+                                delivered.countDown();
+                            }
+                        };
+
+                ActorRuntime.ActorRef<Integer> first =
+                        runtime.spawnSharedTrusted(handler);
+                ActorRuntime.ActorRef<Integer> second =
+                        runtime.spawnSharedTrusted(handler);
+
+                first.send(1);
+                second.send(1);
+
+                assertTrue(entered.await(5, TimeUnit.SECONDS),
+                        "two distinct actors should consume two admitted physical turns");
+                assertEquals(2, maximum.get(),
+                        "cross-actor physical parallelism must be real, not only logical admission");
+
+                release.countDown();
+                assertTrue(delivered.await(5, TimeUnit.SECONDS));
+                assertNull(callbackFailure.get(),
+                        "a worker-thread failure must fail the cross-actor overlap test");
+            }
+        } finally {
+            release.countDown();
+            if (prior == null) System.clearProperty(key);
+            else System.setProperty(key, prior);
+        }
+    }
+
 }
