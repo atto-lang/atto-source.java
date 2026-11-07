@@ -37,7 +37,15 @@ final class VerifyAssuranceSurefire {
             "independentExclusiveBorrowIsAllowedWhenNoReadLoanExists",
             "exclusiveWriterIsRejectedWhenTwoReadBorrowsAreLive",
             "ownershipTransferFailsWhileSharedBorrowIsLive",
-            "sourceOwnerIsUnusableAfterRtTakeMove"
+            "sourceOwnerIsUnusableAfterRtTakeMove",
+            "evenOneSharedReaderBlocksExclusiveWriter",
+            "exclusiveWriterBlocksNewSharedReader",
+            "secondExclusiveWriterIsNeverAdmitted",
+            "reassignmentOfOwnerDuringReadBorrowIsRejected",
+            "lexicalReadBorrowReleaseAllowsLaterExclusiveWriter",
+            "lexicalExclusiveBorrowReleaseAllowsLaterReader",
+            "lexicalReadBorrowReleaseAllowsOwnershipTake",
+            "doubleRtTakeOfSameOwnedBindingIsRejected"
         )),
         new Suite("dev.oreslang.CriticalSuspendsV1SyntaxTest", List.of(
             "concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission",
@@ -151,12 +159,23 @@ final class VerifyAssuranceSurefire {
             throw new IllegalStateException("Failed, skipped or empty test suite: "
                 + expected.className);
         }
-        NodeList cases = suite.getElementsByTagName("testcase");
-        if (cases.getLength() != declared) throw new IllegalStateException(
-            "Testcase count does not match Surefire declaration: " + expected.className);
+        // Descendant queries can count a fake <testcase> nested inside <system-out>
+        // or other unrelated XML. Only direct test-suite testcase children qualify.
+        NodeList nodes = suite.getChildNodes();
+        java.util.ArrayList<Element> cases = new java.util.ArrayList<>();
+        for (int i = 0; i < nodes.getLength(); i++) {
+            if (!(nodes.item(i) instanceof Element child)) continue;
+            String tag = child.getTagName();
+            if ("testcase".equals(tag)) {
+                cases.add(child);
+            } else if (!Set.of("properties", "system-out", "system-err").contains(tag)) {
+                throw new IllegalStateException("Unexpected Surefire suite child: " + tag);
+            }
+        }
+        if (cases.size() != declared) throw new IllegalStateException(
+            "Direct testcase count does not match Surefire declaration: " + expected.className);
         Set<String> observed = new HashSet<>();
-        for (int i = 0; i < cases.getLength(); i++) {
-            Element test = (Element) cases.item(i);
+        for (Element test : cases) {
             if (!expected.className.equals(test.getAttribute("classname"))) {
                 throw new IllegalStateException("Testcase class mismatch in " + expected.className);
             }
