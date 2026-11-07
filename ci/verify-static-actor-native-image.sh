@@ -17,6 +17,7 @@ test -x "$JAVA_HOME/bin/native-image" && test -x "$JAVA_HOME/bin/javac" || {
   echo 'ATTO_STATIC_AOT_NOT_EXECUTED: actual GraalVM Native Image JDK required' >&2; exit 2;
 }
 python3 -m unittest discover -s tests -p test_static_actor_aot.py -v
+python3 -m unittest discover -s tests -p test_static_actor_aot_hardening.py -v
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 source="${ATTO_M4_FIXTURE:-fixtures/actor_counter.atto}"
