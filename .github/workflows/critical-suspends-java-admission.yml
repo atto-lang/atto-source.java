@@ -55,6 +55,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Self-verification must be in the immutable workflow, not solely
+          # inside a script whose own worktree bytes might have been replaced.
+          for input in tools/verify-critical-guest-inputs.sh tools/test-critical-guest-inputs.sh; do
+            test "$(git hash-object --no-filters "$input")" = "$(git rev-parse "HEAD:$input")"
+          done
           bash -n tools/verify-critical-guest-inputs.sh tools/test-critical-guest-inputs.sh
           bash tools/test-critical-guest-inputs.sh
           bash tools/verify-critical-guest-inputs.sh
@@ -77,6 +82,9 @@ jobs:
           java tools/VerifyAssuranceSurefire.java target/surefire-reports
           # No pass-only receipt after altered compiler/fixture inputs, even if
           # a Git assume-unchanged/skip-worktree bit hides them from git status.
+          for input in tools/verify-critical-guest-inputs.sh tools/test-critical-guest-inputs.sh; do
+            test "$(git hash-object --no-filters "$input")" = "$(git rev-parse "HEAD:$input")"
+          done
           bash tools/verify-critical-guest-inputs.sh
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
           test -z "$(git status --porcelain --untracked-files=no)"
