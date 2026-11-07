@@ -19,3 +19,7 @@ The AttoLang guest source import spellings, `.atto` and legacy `.ores` formats, 
 `bash scripts/verify-atto-java-namespace.sh` checks tracked Java paths against declarations, rejects stale Java package references, checks JPMS identity, resource placement and the deliberate Maven-coordinate compatibility. The `atto-java-namespace` workflow checks out the immutable PR head and records its tree before running that static gate.
 
 A successful static gate is not compiler-backed evidence. Before this PR can be marked ready or merged, require Maven compilation/tests, native-image metadata/resource loading, exact-head workflows with **nonzero executed steps**, and independent review. `steps=[]` or `steps=null` is a runner-admission failure, never a Java/guest success.
+
+## JNI binding hardening
+
+The first migration commit moved `dev.oreslang.runtime.NativeCarrierExecutor` without changing C JNI exports. This would cause `UnsatisfiedLinkError` when loading `liboresthread`. The follow-up changes all ten `Java_dev_oreslang_runtime_NativeCarrierExecutor_*` exports to `Java_dev_atto_runtime_NativeCarrierExecutor_*`. `scripts/verify-atto-jni-bindings.sh` compares the declared native methods with the C symbol multiset; `scripts/test-atto-jni-bindings.sh` adds negative mutation fixtures for old package, missing symbol, duplicate symbol, and missing declaration. The exact-head namespace workflow also includes a native C syntax check with the runner JDK's JNI headers. Authored checks are not counted as executed until runner admission succeeds.

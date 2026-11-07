@@ -116,7 +116,7 @@ static void free_pool(JNIEnv *env, ores_carrier_pool *pool) {
 }
 
 JNIEXPORT jlong JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeCreate(
         JNIEnv *env,
         jclass cls,
         jobject executor,
@@ -232,7 +232,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeStart(
         JNIEnv *env, jclass cls, jlong handle) {
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
@@ -251,7 +251,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeSetDesired(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeSetDesired(
         JNIEnv *env, jclass cls, jlong handle, jint desired_threads) {
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
@@ -267,7 +267,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeSetDesired(
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeAwaitEnabled(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeAwaitEnabled(
         JNIEnv *env, jclass cls, jlong handle, jint slot) {
     (void)env;
     (void)cls;
@@ -311,7 +311,7 @@ static void *carrier_reaper_main(void *raw) {
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeShutdown(
         JNIEnv *env, jclass cls, jlong handle) {
     (void)env;
     (void)cls;
@@ -340,7 +340,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
 }
 
 JNIEXPORT jlong JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadId(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeCurrentThreadId(
         JNIEnv *env, jclass cls) {
     (void)env;
     (void)cls;
@@ -348,7 +348,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadId(
 }
 
 JNIEXPORT jlong JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadCpuNanos(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeCurrentThreadCpuNanos(
         JNIEnv *env, jclass cls) {
     (void)env;
     (void)cls;
@@ -356,7 +356,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadCpuNanos(
 }
 
 JNIEXPORT jlong JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCarrierCpuTimeNanos(
+Java_dev_atto_runtime_NativeCarrierExecutor_nativeCarrierCpuTimeNanos(
         JNIEnv *env, jclass cls, jlong handle, jint slot) {
     (void)env;
     (void)cls;
@@ -394,7 +394,7 @@ static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
 }
 
 /* Validate against the caller's allowed CPUs before creating any actor workers. */
-JNIEXPORT jint JNICALL Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCpuAffinity(
+JNIEXPORT jint JNICALL Java_dev_atto_runtime_NativeCarrierExecutor_nativeCpuAffinity(
         JNIEnv *env, jclass cls, jint cpu, jboolean bind) {
     (void)env; (void)cls;
 #if defined(__linux__)
@@ -410,7 +410,7 @@ JNIEXPORT jint JNICALL Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCpu
 #endif
 }
 
-JNIEXPORT jint JNICALL Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentCpu(
+JNIEXPORT jint JNICALL Java_dev_atto_runtime_NativeCarrierExecutor_nativeCurrentCpu(
         JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
 #if defined(__linux__)

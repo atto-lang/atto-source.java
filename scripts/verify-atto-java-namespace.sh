@@ -47,4 +47,6 @@ test -f src/main/resources/dev/atto/core/numeric.atto
 test ! -e src/main/resources/dev/oreslang/core/numeric.atto
 grep -Fq '"module": "dev.atto"' src/main/resources/META-INF/native-image/dev.oreslang/oreslang/reachability-metadata.json
 
+bash scripts/verify-atto-jni-bindings.sh
+
 echo "Java namespace paths and declarations verified: ${main_count} main, ${test_count} test"

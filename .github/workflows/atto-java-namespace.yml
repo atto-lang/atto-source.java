@@ -31,3 +31,13 @@ jobs:
       - name: Verify Atto Java namespace consistency
         shell: bash
         run: bash scripts/verify-atto-java-namespace.sh
+      - name: Reject broken JNI namespace mutations
+        shell: bash
+        run: bash scripts/test-atto-jni-bindings.sh
+      - name: Compile JNI carrier bridge for current JDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac_path="$(readlink -f "$(command -v javac)")"
+          java_home="$(dirname "$(dirname "$javac_path")")"
+          cc -std=c11 -fsyntax-only -I"$java_home/include" -I"$java_home/include/linux" src/main/c/oresthread.c
