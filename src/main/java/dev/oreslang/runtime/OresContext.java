@@ -268,6 +268,12 @@ public final class OresContext implements AutoCloseable {
         return sharedCodeImages.publish(codeUnitId, immutableProgram);
     }
 
+    /** Compiler-owned, source-checked immutable Symbol literal catalog. */
+    public SharedCodeImageStore.CodeImage registerSharedCodeImage(
+            String codeUnitId, Ast.Program immutableProgram, java.util.List<OresSymbol> literals) {
+        return sharedCodeImages.publish(codeUnitId, immutableProgram, literals);
+    }
+
     public SharedCodeImageStore.CodeImage sharedCodeImage(String codeUnitId) {
         return sharedCodeImages.get(codeUnitId);
     }
