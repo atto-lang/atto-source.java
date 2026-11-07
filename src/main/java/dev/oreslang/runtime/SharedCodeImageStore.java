@@ -25,6 +25,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Truffle Engines or independent hot-reload generations.</p>
  */
 public final class SharedCodeImageStore implements AutoCloseable {
+    // Bound the VM-level code image registry independently of each code unit's
+    // 4096-entry / 1 MiB Symbol snapshot. This is NOT a quota on AST/native
+    // instruction bytes or on dynamic Symbol values.
+    public static final int MAX_CODE_IMAGES = 4_096;
+    public static final long MAX_TOTAL_LITERAL_BYTES = 64L * 1_048_576L;
 
     /**
      * Opaque capability minted only by this store. Callers may observe the
@@ -130,6 +135,26 @@ public final class SharedCodeImageStore implements AutoCloseable {
 
     private final Map<String, CodeImage> images = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final int maxCodeImages;
+    private final long maxLiteralBytes;
+    // Guarded by the same images monitor as registry admission and retirement.
+    private long activeLiteralBytes;
+
+    public SharedCodeImageStore() {
+        this(MAX_CODE_IMAGES, MAX_TOTAL_LITERAL_BYTES);
+    }
+
+    // Trusted test-only constructor: lets quota edge cases run without
+    // allocating 64 MiB of symbols or thousands of linked AST objects.
+    SharedCodeImageStore(int maxCodeImages, long maxLiteralBytes) {
+        if (maxCodeImages < 1 || maxCodeImages > MAX_CODE_IMAGES
+                || maxLiteralBytes < 0 || maxLiteralBytes > MAX_TOTAL_LITERAL_BYTES) {
+            throw new IllegalArgumentException("invalid VM Symbol image quotas");
+        }
+        this.maxCodeImages = maxCodeImages;
+        this.maxLiteralBytes = maxLiteralBytes;
+    }
+
     // A caller-provided List may execute arbitrary iterator callbacks during
     // snapshotting. Do not permit recursive publication on the same thread:
     // it could insert an unexpected code unit before the outer transaction
@@ -167,9 +192,25 @@ public final class SharedCodeImageStore implements AutoCloseable {
                     }
                     return prior;
                 }
+                if (images.size() >= maxCodeImages) {
+                    throw new IllegalStateException("VM linked code-image count quota exceeded");
+                }
+                long candidateBytes = 0L;
+                for (OresSymbol literal : sealedCatalog) {
+                    candidateBytes += literal.name().getBytes(StandardCharsets.UTF_8).length;
+                }
+                if (candidateBytes > maxLiteralBytes - activeLiteralBytes) {
+                    throw new IllegalStateException("VM aggregate static Symbol payload quota exceeded");
+                }
                 CodeImage image = new CodeImage(codeUnitId, immutableProgram, sealedCatalog);
-                images.put(codeUnitId, image);
-                return image;
+                try {
+                    images.put(codeUnitId, image);
+                    activeLiteralBytes += candidateBytes;
+                    return image;
+                } catch (RuntimeException | Error failed) {
+                    image.close();
+                    throw failed;
+                }
             }
         } finally {
             staging.remove();
@@ -209,12 +250,20 @@ public final class SharedCodeImageStore implements AutoCloseable {
         return images.size();
     }
 
+    /** Only the canonical Symbol payload portion, not complete VM memory. */
+    long activeLiteralPayloadBytes() {
+        synchronized (images) {
+            return activeLiteralBytes;
+        }
+    }
+
     @Override
     public void close() {
         synchronized (images) {
             if (!closed.compareAndSet(false, true)) return;
             for (CodeImage image : images.values()) image.close();
             images.clear();
+            activeLiteralBytes = 0L;
         }
     }
 }
