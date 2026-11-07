@@ -102,14 +102,25 @@ per-listener admission check. Embedders that initialize another JDK HTTP server
 first must set the properties before that initialization; the backend cannot
 retroactively reconfigure JDK static limits. See NativeHttp.configureTransportDefaults.
 
-The admission layer also rejects duplicate or comma-joined HTTP/1.1 Host
-values, HTTP/1.1 requests without Host, negative Content-Length, and
-individual header name+value pairs over 8192 characters; the existing
-100-field and 32768-character aggregate limits remain. These post-parse
-checks complement but cannot replace JVM-wide JDK parser limits. A malformed
-request-body framing read (IOException while reading an inbound body) maps to
-HTTP 400 instead of 500, without relabeling response-side I/O failures.
-The local regression cases live in NativeHttpFramingAdmissionTest.
+The admission layer requires one unambiguous HTTP/1.1 Host and rejects
+duplicate/joined, blank, whitespace/control or URI-delimiter Host values.
+HTTP/1.0 may omit Host, but a Host value supplied by the caller must still be
+well formed. Exactly one nonnegative decimal Content-Length is allowed. A
+duplicate, comma-joined, nondecimal or oversized Content-Length is rejected;
+any Content-Length together with Transfer-Encoding is forbidden. For this
+HTTP/1.1 adapter the only permitted Transfer-Encoding is a single `chunked`.
+The 8192-character per-field, 100-field and 32768-character aggregate limits
+remain. Header denials happen before the guest exchange enters admission.
+
+These post-parse checks complement but cannot replace JVM-wide JDK parser
+limits. The JDK may itself reject ambiguous framing before invoking our
+handler. Inbound body-reading IOExceptions (including malformed chunk lengths)
+map to HTTP 400 instead of 500; unlike header denial, this can occur *after*
+guest admission, so no pre-dispatch claim is made. Response-side I/O failures
+remain server errors. NativeHttpFramingAdmissionTest checks decoded header
+policy; NativeHttpRawWireAdmissionTest uses a JDK loopback socket and tracks
+headers admitted versus bodies successfully processed. Neither host test is
+equivalent to native AttoLang guest-backed Spin integration.
 
 **Proof status:** These are staged host-admission safeguards, not certification
 of a complete HTTP/1.1 parser. Exact-head CI, a live raw-wire Spin replay,
