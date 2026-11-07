@@ -366,7 +366,9 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda | "fnc" typed_legacy_lambda ) ;
+(* Anonymous "fnc(args) -> Type { ... }" is syntactic sugar for a lambda,
+   not a separate callable or dispatch return destination. *)
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
 (* "const fnc name = |...| -> ...;" declares an immutable inferred callable binding. *)
 lambda_param    = IDENT | type_ref IDENT | IDENT ":" type_ref ;
