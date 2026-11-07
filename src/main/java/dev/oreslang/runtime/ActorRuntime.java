@@ -63,6 +63,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** Unique frame allocation domain across independent ActorRuntime instances. */
+    private static final AtomicLong NEXT_ACTOR_FRAME_DOMAIN = new AtomicLong(1);
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -93,7 +95,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             Object executionDomain,
-            ActorGuestStack guestStack) { }
+            ActorGuestStack guestStack,
+            ActorFrameArena frameArena) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -214,6 +217,12 @@ public final class ActorRuntime implements AutoCloseable {
     static ActorGuestStack currentActorGuestStack() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.guestStack();
+    }
+
+    /** Host/compiler bridge only: never expose a raw frame capability to guest source. */
+    static ActorFrameArena currentActorFrameArena() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.frameArena();
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
@@ -7696,6 +7705,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRef<M> ref;
         /** Unique per actor incarnation; independent of scheduler carrier. */
         private final ActorGuestStack guestStack = new ActorGuestStack();
+        /** Bounded actor-owned managed frame bytes, separate from carrier stack. */
+        private final ActorFrameArena frameArena;
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
@@ -7834,6 +7845,16 @@ public final class ActorRuntime implements AutoCloseable {
                 String codeActorType,
                 ActorCell<?> parent) {
             this.ref = ref;
+            long frameDomainId = NEXT_ACTOR_FRAME_DOMAIN.getAndIncrement();
+            if (frameDomainId <= 0) {
+                throw new IllegalStateException("actor frame allocation domain exhausted");
+            }
+            this.frameArena = new ActorFrameArena(
+                    new ExecutionContext.AllocationDomain(
+                            ExecutionContext.AllocationKind.ACTOR,
+                            frameDomainId, ref.generation(), ref.generation()),
+                    ActorFrameArena.DEFAULT_MAX_FRAMES,
+                    ActorFrameArena.DEFAULT_MAX_BYTES);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -8220,6 +8241,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             finalized = true;
+            // All physical turns and source tasks are proven quiescent above.
+            // No stale continuation may read an actor's reclaimed frame bytes.
+            frameArena.retireQuiesced();
             sourceScheduler = null;
             sourceTaskMailbox.close();
             try { drainMailboxReservations(); }
@@ -8604,7 +8628,7 @@ public final class ActorRuntime implements AutoCloseable {
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain,
-                    guestStack));
+                    guestStack, frameArena));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
@@ -8685,6 +8709,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (guestStack.isPoisoned()) {
                     throw new GuestCallDepthExceededException(
                             GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
+                }
+                if (frameArena.isPoisoned()) {
+                    throw new ActorFrameArena.BudgetExceeded(
+                            "actor-owned frame byte quota exhausted");
                 }
 
                 int processed = 0;
@@ -8784,6 +8812,10 @@ public final class ActorRuntime implements AutoCloseable {
                     if (guestStack.isPoisoned()) {
                         throw new GuestCallDepthExceededException(
                                 GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
+                    }
+                    if (frameArena.isPoisoned()) {
+                        throw new ActorFrameArena.BudgetExceeded(
+                                "actor-owned frame byte quota exhausted");
                     }
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
