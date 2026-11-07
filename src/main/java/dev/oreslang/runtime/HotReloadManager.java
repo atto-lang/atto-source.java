@@ -110,6 +110,15 @@ public final class HotReloadManager implements AutoCloseable {
         if (!unit.dependencies().isEmpty()) {
             throw new SecurityException("compiled hot-load requires a verified import closure");
         }
+        // Fail closed on actual imports before invoking compiler validation:
+        // caller-supplied CompiledUnit dependencies/AST are never an import
+        // closure and an unresolved import must not enter a loader.
+        var sourceProgram = dev.oreslang.parser.Parser.parse(unit.sourceText());
+        if (!sourceProgram.imports().isEmpty()) {
+            throw new SecurityException("compiled hot-load with imports requires a verified import closure");
+        }
+        // Preserve current-main postvalidation defense in depth: no macro or
+        // transform may introduce an import hidden from source admission.
         var checked = OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
         if (!checked.imports().isEmpty()) {
             throw new SecurityException("compiled hot-load with imports requires a verified import closure");
