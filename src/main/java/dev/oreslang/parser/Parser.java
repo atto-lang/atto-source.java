@@ -19,6 +19,9 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    // Restricted production parser admission only. Ordinary Parser.parse and
+    // all general execution paths remain fail-closed for inverted storage.
+    private final boolean dopInvertedScalarV1;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -40,11 +43,21 @@ public final class Parser {
             new java.util.IdentityHashMap<>();
 
     public Parser(List<Token> tokens) {
+        this(tokens, false);
+    }
+
+    private Parser(List<Token> tokens, boolean dopInvertedScalarV1) {
         this.tokens = List.copyOf(tokens);
+        this.dopInvertedScalarV1 = dopInvertedScalarV1;
     }
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    /** A narrow, explicit compiler parser gate, not general guest admission. */
+    public static Ast.Program parseDopInvertedScalarV1(String source) {
+        return new Parser(new Lexer(source).scan(), true).parseProgram();
     }
 
     /**
@@ -4306,15 +4319,41 @@ public final class Parser {
         return false;
     }
 
+    /**
+     * Parse the canonical typed factory as a dedicated AST shape instead of
+     * token-text substitution or untyped Java reflection. Only the opt-in
+     * DOP compiler may consume the resulting NewExpr; TypeChecker remains
+     * fail-closed for the ordinary language path.
+     */
+    private Ast.Expr parseDopInvertedOwnerV1() {
+        consumeContextualIdentifier("InvertedArray", "expected InvertedArray");
+        consume(LT, "expected '<' after InvertedArray");
+        Ast.TypeRef row = parseTypeRef();
+        consume(GT, "expected '>' after inverted row schema");
+        consume(DOT, "expected '.with_capacity' after inverted row schema");
+        consumeContextualIdentifier("with_capacity", "expected with_capacity");
+        consume(LPAREN, "expected '(' after with_capacity");
+        List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+        consume(RPAREN, "expected ')' after inverted capacity");
+        if (args.size() != 1) {
+            throw error(previous(), "DOP v1 requires one bounded capacity argument");
+        }
+        return new Ast.NewExpr(new Ast.TypeRef(
+                "InvertedArray", List.of(row), false), args);
+    }
+
     private Ast.Expr parsePostfix() {
         // Canonical LLVM currently uses a typed static storage receiver:
         // InvertedArray<Row>.with_capacity(...). Java has no checked ABI for
         // it yet; recognize the token structure and fail closed instead of
         // misparsing it as comparisons or invoking host reflection.
         if (looksLikeUnloweredInvertedOwner()) {
-            throw error(peek(), "DOP_INVERTED_BACKEND_UNSUPPORTED: "
-                    + "InvertedArray<T> guest allocation needs typed row ownership "
-                    + "and compiler-to-storage lowering");
+            if (!dopInvertedScalarV1) {
+                throw error(peek(), "DOP_INVERTED_BACKEND_UNSUPPORTED: "
+                        + "InvertedArray<T> guest allocation needs typed row ownership "
+                        + "and compiler-to-storage lowering");
+            }
+            return parseDopInvertedOwnerV1();
         }
         Ast.Expr expr = parsePrimary();
         while (true) {
