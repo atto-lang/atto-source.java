@@ -857,7 +857,7 @@ final class PointerlessFncOwnershipTest {
     void rtTakeStillTransfersFreshConstructorOwnership() {
         // A constructor result is a fresh owned temporary. It has no
         // existing named source binding to invalidate.
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
                 define class Box as
                   pub let int value = 42;
                 end
