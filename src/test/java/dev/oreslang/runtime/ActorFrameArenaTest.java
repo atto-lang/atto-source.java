@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.io.Serializable;
-import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -255,7 +254,8 @@ final class ActorFrameArenaTest {
             assertTrue(b.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(b.failure().isEmpty());
             assertEquals(1, liveResponses.get());
-            assertFalse(survivor.get().isPoisoned() && !survivor.get().isRetired());
+            assertTrue(survivor.get().isRetired(), "sibling's successful STOP reclaims frames");
+            assertEquals(0, survivor.get().usedBytes());
         }
     }
 }
