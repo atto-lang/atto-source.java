@@ -1056,6 +1056,9 @@ public final class OresScheduler implements AutoCloseable {
                 if (step instanceof Await<?> await) {
                     if (actorFrame != null) {
                         try {
+                            // A carrier-local guarded fnc invocation cannot be
+                            // retained as a logical SourceTask continuation.
+                            GuestCallDepthGuard.requireNoLiveSynchronousCallsAtSourceSuspension();
                             actorFrame.suspend();
                         } catch (RuntimeException invalidFrame) {
                             failTerminal(invalidFrame);
@@ -1069,6 +1072,9 @@ public final class OresScheduler implements AutoCloseable {
                 if (step instanceof Cooperate<?>) {
                     if (actorFrame != null) {
                         try {
+                            // A carrier-local guarded fnc invocation cannot be
+                            // retained as a logical SourceTask continuation.
+                            GuestCallDepthGuard.requireNoLiveSynchronousCallsAtSourceSuspension();
                             actorFrame.suspend();
                         } catch (RuntimeException invalidFrame) {
                             failTerminal(invalidFrame);
