@@ -9080,56 +9080,6 @@ public final class TypeChecker {
      * and sequence shape arguments are deliberately separate syntax channels.
      * This routine performs no guest evaluation and publishes no partial bindings.
      */
-    private List<Ast.TypeRef> bindNominalTypeArguments(
-            Ast.TypeRef ref, List<String> parameters, String owner) {
-        validateGenericArity(ref, parameters, owner);
-        List<Ast.TypeRef> ordered = new ArrayList<>(
-                java.util.Collections.nCopies(parameters.size(), null));
-        boolean sawNamed = false;
-        int nextPositional = 0;
-        for (Ast.TypeRef argument : ref.arguments()) {
-            final int index;
-            final Ast.TypeRef typeArgument;
-            if (argument.isNamedParameter()) {
-                sawNamed = true;
-                String label = argument.namedParameterName();
-                index = parameters.indexOf(label);
-                if (index < 0) {
-                    throw new IllegalArgumentException(
-                            owner + " has no generic parameter named '" + label + "'");
-                }
-                typeArgument = argument.namedParameterValue();
-            } else {
-                if (sawNamed) {
-                    throw new IllegalArgumentException(
-                            owner + " has a positional generic argument after a named one");
-                }
-                index = nextPositional++;
-                typeArgument = argument;
-            }
-            if (typeArgument.isNamedParameter() || typeArgument.isSequenceShape()
-                    || typeArgument.isIntLiteral() || typeArgument.isStringLiteral()
-                    || typeArgument.isBoolLiteral()) {
-                throw new IllegalArgumentException(
-                        owner + " requires a type, not metadata or a literal, for generic parameter '"
-                                + parameters.get(index) + "'");
-            }
-            if (ordered.get(index) != null) {
-                throw new IllegalArgumentException(
-                        owner + " binds generic parameter '" + parameters.get(index)
-                                + "' more than once");
-            }
-            ordered.set(index, typeArgument);
-        }
-        for (int i = 0; i < parameters.size(); i++) {
-            if (ordered.get(i) == null) {
-                throw new IllegalArgumentException(
-                        owner + " is missing generic parameter '" + parameters.get(i) + "'");
-            }
-        }
-        return List.copyOf(ordered);
-    }
-
     private Map<String, Type> classGenericBindings(Ast.ClassDecl klass, Named actual) {
         if (actual.arguments().size() != klass.genericParameters().size()) {
             throw new IllegalArgumentException("class " + klass.name() + " expects " + klass.genericParameters().size()
