@@ -44,3 +44,27 @@ These are compiler ownership checks, not actor heap generation-fencing runtime e
 ## Follow-up formal refinement
 
 Complete ACT-BORROW-001..005 with actual actor-owned runtime tests for read/write exclusion, transfer generation fencing, cancellation and actor termination. An ordinary `rt take` of an array is a compile-time move; it does not prove a supervisor-mediated actor transfer. Execute identical canonical .atto blobs on LLVM, .NET NativeAOT, Wasm and Forge, retaining backend-specific guest receipts. These requirements remain **NOT_EXECUTED**.
+
+## Hardened exact-head CI XML evidence audit
+
+The compiler/guest workflow no longer qualifies a test by grep-searching for
+a method name inside an arbitrary XML string. It now runs a JDK 21 source-mode
+validator in `tools/VerifyAssuranceSurefire.java`.
+
+The validator requires nonempty, reasonably bounded reports for all eight
+expected test suites, matching suite and testcase class identities, an exact
+executed-test count, zero errors/failures/skips, unique testcase names, and
+every required security method exactly once. It uses a hardened JAXP parser:
+DOCTYPE, external entities, XInclude, and external DTD/schema access are
+disabled. Before Maven runs it also rejects synthetic XML containing a
+fabricated failure, skipped test, missing method, inconsistent count, or XXE.
+
+A separate `suite-gate-completed.json` file is written **only after** the
+actual JUnit XML passes structural validation. The workflow may upload a
+candidate-only checkout/fixture record on failed attempts, but the existence
+of that artifact is never promoted to a passed guest test. The test gate and
+run/attempt/head/tree must all be checked by an independent verifier.
+
+This parser is a safeguard against accidental/malformed test XML and misleading
+grep matches; it is not a cryptographic attestation and does not make a
+compromised compiler, malicious test suite, or CI runner trustworthy.
