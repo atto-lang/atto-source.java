@@ -17,7 +17,7 @@ define actor FanoutSubscriber as
   }
 end
 
-pub async routine main(): void {
+pub suspends fnc main(): void {
   val group = actor.group("fanout-group");
   val topic = group.topic<String>("events", "reliable", 4);
   val a = spawn FanoutSubscriber();

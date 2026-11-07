@@ -72,6 +72,7 @@ expected = {
         "canonicalSuspendsFncExecutesThroughGraalPolyglot",
     },
     "dev.oreslang.SourceActorPubSubExecutionTest": {
+        "positivePubSubFixturesUseSuspendsOnlyEntrypoints",
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
         "portableTryPublishRejectedUntilNativeLowering",
         "attoMultiGroupGuestPreservesOtherGroupAfterLeave",

@@ -12,10 +12,31 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SourceActorPubSubExecutionTest {
+    @Test
+    void positivePubSubFixturesUseSuspendsOnlyEntrypoints() throws Exception {
+        // A lexical migration guard, not a runtime proof. The selected
+        // Polyglot tests below must still execute these source bytes.
+        for (String name : new String[] {
+                "actor-pubsub-v1.ores",
+                "actor-pubsub-v1.atto",
+                "actor-pubsub-multigroup-v1.ores",
+                "actor-pubsub-multigroup-v1.atto",
+                "actor-pubsub-legacy-fanout-two.atto"
+        }) {
+            String source = fixture(name);
+            assertTrue(source.contains("pub suspends fnc main(): void {"),
+                    "missing canonical suspending entrypoint in " + name);
+            assertFalse(source.contains("pub async routine main()"),
+                    "retired async entrypoint remains in positive fixture " + name);
+        }
+    }
+
+
     @Test
     void sharedActorSubscribesAndReceivesTypedInMemoryPublication() throws Exception {
         assertEquals(

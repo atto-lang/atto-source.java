@@ -14,7 +14,7 @@ define actor MultiSubscriber as
   }
 end
 
-pub async routine main(): void {
+pub suspends fnc main(): void {
   val a = actor.group("room-a");
   val b = actor.group("room-b");
   a.topic<String>("events", "latest", 1);
