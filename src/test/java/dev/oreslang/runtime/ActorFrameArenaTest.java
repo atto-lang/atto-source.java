@@ -1,8 +1,13 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.OresLanguage;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -416,6 +421,82 @@ final class ActorFrameArenaTest {
         assertFalse(TrapFailurePolicy.isGuestCatchable(
                 new RuntimeException("host wrapper", failure), RuntimeException.class));
         assertFalse(TrapFailurePolicy.isTrappable(failure, RuntimeException.class));
+    }
+
+    @Test
+    void compiledLegacyGuestRecursionChargesActorFramesAndPreservesSibling()
+            throws Exception {
+        // The Java compiler still accepts legacy .ores here; canonical .atto
+        // source/suspend/true stack-switched behavior remains a separate gate.
+        Source recursive = Source.newBuilder(OresLanguage.ID, """
+                fnc descend(int n): int {
+                  if n == 0; do
+                    return 0;
+                  else
+                    return 1 + descend(n - 1);
+                  fi
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(descend(10000));
+                  return;
+                }
+                """, "actor-frame-recursion.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        Source healthy = Source.newBuilder(OresLanguage.ID, """
+                pub routine main(): void {
+                  stdio.stdout.write(42);
+                  return;
+                }
+                """, "actor-frame-sibling.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<ActorFrameArena> exhaustedFrames = new AtomicReference<>();
+            AtomicInteger siblingRuns = new AtomicInteger();
+            var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
+                exhaustedFrames.set(frames);
+                try (Context context = IsolatePolicy.developer()
+                        .restrictedContextBuilder(ExecutionProfile.serverJit()).build()) {
+                    RuntimeException failure = assertThrows(RuntimeException.class,
+                            () -> context.eval(recursive));
+                    assertTrue(failure.toString().contains("guest call depth exceeded"),
+                            "expected compiler-backed guest budget failure: " + failure);
+                }
+                assertTrue(frames.isPoisoned(),
+                        "actual evaluator calls must charge and poison actor byte frames");
+                // Host swallowed the polyglot failure, but the actor may not
+                // continue another mailbox turn or regain guest admission.
+            });
+            var b = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                assertNotSame(exhaustedFrames.get(), ActorRuntime.currentActorFrameArena());
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                try (Context context = IsolatePolicy.developer()
+                        .restrictedContextBuilder(ExecutionProfile.serverJit())
+                        .out(output)
+                        .build()) {
+                    context.eval(healthy);
+                }
+                assertEquals("42", output.toString(StandardCharsets.UTF_8));
+                siblingRuns.incrementAndGet();
+                turn.self().stop();
+            });
+
+            a.send("recurse");
+            assertTrue(a.awaitTermination(3, TimeUnit.SECONDS));
+            assertInstanceOf(GuestCallDepthExceededException.class,
+                    a.failure().orElseThrow());
+            assertTrue(exhaustedFrames.get().isRetired());
+            assertEquals(0, exhaustedFrames.get().usedBytes());
+
+            b.send("healthy");
+            assertTrue(b.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(b.failure().isEmpty());
+            assertEquals(1, siblingRuns.get());
+        }
     }
 
 }
