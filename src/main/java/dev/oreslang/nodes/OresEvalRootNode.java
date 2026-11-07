@@ -55,6 +55,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final List<dev.oreslang.runtime.OresSymbol> staticSymbolLiterals;
     /** Ownership epoch captured when this executable root is created. */
     private final long taskAdmissionEpoch;
     private volatile Evaluator evaluator;
@@ -64,9 +65,17 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, List.of());
+    }
+
+    public OresEvalRootNode(
+            OresLanguage language, Ast.Program program, String codeUnitId,
+            List<dev.oreslang.runtime.OresSymbol> staticSymbolLiterals) {
         super(language);
         this.program = Objects.requireNonNull(program, "checked Oreslang program");
         this.codeUnitId = codeUnitId;
+        this.staticSymbolLiterals = List.copyOf(
+                Objects.requireNonNull(staticSymbolLiterals, "staticSymbolLiterals"));
         this.taskAdmissionEpoch =
                 Ast.CheckedTaskCaptures.requireProgramEpoch(program);
     }
@@ -131,7 +140,8 @@ public final class OresEvalRootNode extends RootNode {
                                 program,
                                 context,
                                 codeUnitId,
-                                taskAdmissionEpoch);
+                                taskAdmissionEpoch,
+                                staticSymbolLiterals);
             }
             return current;
         }
@@ -147,6 +157,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final long taskAdmissionEpoch;
+        private final List<dev.oreslang.runtime.OresSymbol> staticSymbolLiterals;
         private final AtomicLong nextTaskLaunchId = new AtomicLong();
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
@@ -232,11 +243,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Program program,
                 OresContext context,
                 String codeUnitId,
-                long taskAdmissionEpoch) {
+                long taskAdmissionEpoch,
+                List<dev.oreslang.runtime.OresSymbol> staticSymbolLiterals) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
+            this.staticSymbolLiterals = staticSymbolLiterals;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -516,7 +529,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("cannot relink failed code unit " + codeUnitId);
             }
             SharedCodeImageStore.CodeImage image =
-                    context.registerSharedCodeImage(codeUnitId, program);
+                    context.registerSharedCodeImage(codeUnitId, program, staticSymbolLiterals);
             if (image.program() != program) {
                 throw new IllegalStateException(
                         "code image changed under active evaluator " + codeUnitId);
@@ -7286,6 +7299,11 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof dev.oreslang.runtime.OresSymbol symbol) {
+                    // Same immutable linked source image is used across trusted
+                    // actor carriers; no process-wide dynamic interning.
+                    return codeImage().staticLiteralValue(symbol);
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
