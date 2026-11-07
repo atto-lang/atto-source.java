@@ -99,6 +99,78 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void hostileCatalogCannotRecursivelyPublishAnUnreviewedCodeUnit() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var baseline = store.publish("trusted.atto", program,
+                    List.of(OresSymbol.process("ready")));
+            List<OresSymbol> malicious = new java.util.AbstractList<>() {
+                @Override public int size() { return 1; }
+                @Override public OresSymbol get(int i) {
+                    throw new AssertionError("iterator, not indexed access, is required");
+                }
+                @Override public java.util.Iterator<OresSymbol> iterator() {
+                    return new java.util.Iterator<>() {
+                        boolean next = true;
+                        @Override public boolean hasNext() { return next; }
+                        @Override public OresSymbol next() {
+                            next = false;
+                            store.publish("injected.atto", program,
+                                    List.of(OresSymbol.process("injected")));
+                            return OresSymbol.process("attacker");
+                        }
+                    };
+                }
+            };
+            var failure = assertThrows(IllegalStateException.class,
+                    () -> store.publish("outer.atto", program, malicious));
+            assertTrue(failure.getMessage().contains("recursive"));
+            assertEquals(1, store.imageCount(), "nested publication must not commit");
+            assertNull(store.get("injected.atto"));
+            assertNull(store.get("outer.atto"));
+            assertSame(baseline, store.get("trusted.atto"));
+            // Exceptions from user collection callbacks cannot poison a VM
+            // carrier's ThreadLocal publishing guard on its next operation.
+            var recovered = store.publish("recovered.atto", program,
+                    List.of(OresSymbol.process("recovered")));
+            assertEquals(OresSymbol.process("recovered"),
+                    recovered.requireGuestStaticLiteral(
+                            OresSymbol.process("recovered"), ActorRuntime.ActorKind.SHARED));
+            assertEquals(2, store.imageCount());
+        }
+    }
+
+    @Test
+    void swallowedReentrantCallbackStillCannotInjectAnotherCodeUnit() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            List<OresSymbol> attempted = new java.util.AbstractList<>() {
+                @Override public int size() { return 1; }
+                @Override public OresSymbol get(int i) { return OresSymbol.process("ready"); }
+                @Override public java.util.Iterator<OresSymbol> iterator() {
+                    return new java.util.Iterator<>() {
+                        boolean next = true;
+                        @Override public boolean hasNext() { return next; }
+                        @Override public OresSymbol next() {
+                            next = false;
+                            assertThrows(IllegalStateException.class,
+                                    () -> store.publish("injected.atto", program,
+                                            List.of(OresSymbol.process("forbidden"))));
+                            return OresSymbol.process("ready");
+                        }
+                    };
+                }
+            };
+            var image = store.publish("checked.atto", program, attempted);
+            assertEquals(OresSymbol.process("ready"),
+                    image.requireGuestStaticLiteral(
+                            OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+            assertNull(store.get("injected.atto"));
+            assertEquals(1, store.imageCount());
+        }
+    }
+
+    @Test
     void hostileCatalogCannotHoldCodeRegistryLockOrResurrectClosedStore() throws Exception {
         Ast.Program slowProgram = Parser.parse("pub routine main(): void { return; }");
         Ast.Program fastProgram = Parser.parse("pub routine other(): void { return; }");
