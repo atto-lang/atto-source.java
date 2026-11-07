@@ -69,27 +69,32 @@ final class ImmutableDefaultScalarLocalTest {
         }) rejected(body);
     }
 
-    @Test void readonlyRuntimeInitializerFromHelperIsNotACopyOfConstSyntax()
+    @Test void runtimeHelperInitializerKeepsReadonlyBindingSeparateFromConstValueProof()
             throws Exception {
-        String source = """
-                fnc increment(int p): int { return p + 1; }
-                pub fnc main(): void {
-                    int computed = increment(41);
-                    stdio.println(computed);
-                    return;
-                }
-                """;
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
-        var program = Source.newBuilder(OresLanguage.ID, source,
-                "readonly-runtime-helper.ores")
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).build()) {
-            assertDoesNotThrow(() -> context.eval(program));
+        // Normative common-source #203: local const is a readonly binding,
+        // not a requirement that its initializer be compile-time evaluable.
+        // All three forms must actually execute the real helper in Graal.
+        for (String declaration : new String[] {
+                "int computed = increment(41);",
+                "const computed = increment(41);",
+                "const int computed = increment(41);"
+        }) {
+            String source = "fnc increment(int p): int { return p + 1; } "
+                    + "pub fnc main(): void { " + declaration
+                    + " stdio.println(computed); return; }";
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                    declaration);
+            var program = Source.newBuilder(OresLanguage.ID, source,
+                    "readonly-runtime-helper.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                assertDoesNotThrow(() -> context.eval(program), declaration);
+            }
+            assertEquals("42" + System.lineSeparator(),
+                    output.toString(StandardCharsets.UTF_8), declaration);
         }
-        assertEquals("42" + System.lineSeparator(),
-                output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void actualGraalGuestRunsImmutableDefaultBindings() throws Exception {
@@ -116,6 +121,43 @@ final class ImmutableDefaultScalarLocalTest {
                     output.toString(StandardCharsets.UTF_8),
                     "guest value mismatch for " + declaration);
         }
+    }
+
+    @Test void readonlyAssignmentParsesBeforeSemanticRejection() {
+        // Failing the lexer/parser is not evidence that the compiler resolved
+        // an immutable binding and correctly denied its reassignment.
+        for (String body : new String[] {
+                "int x = 7; x = 8; return x;",
+                "const x = 7; x = 8; return x;",
+                "const int x = 7; x = 8; return x;",
+                "bool flag = true; flag = false; return 7;"
+        }) {
+            var ast = assertDoesNotThrow(() -> Parser.parse(program(body)),
+                    "readonly negative must pass parsing: " + body);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(ast),
+                    "readonly reassignment must fail at semantic checking: " + body);
+        }
+    }
+
+    @Test void actualGraalGuestMustExecuteExplicitMutableLetPositiveControl()
+            throws Exception {
+        // A compiler that rejects *all* assignment statements can falsely
+        // appear to enforce immutable defaults. This positive control must
+        // really execute the mutation and print 8 via the Graal guest.
+        String source = "pub fnc main(): void { "
+                + "let int x = 7; x = 8; stdio.println(x); return; }";
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        var program = Source.newBuilder(OresLanguage.ID, source,
+                "mutable-let-positive-control.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            assertDoesNotThrow(() -> context.eval(program));
+        }
+        assertEquals("8" + System.lineSeparator(),
+                output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void explicitMutableLetSemanticsRemainSeparate() {
