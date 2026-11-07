@@ -7118,7 +7118,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
-                List<Object> frozen = new ArrayList<>(length);
+                // Do not allocate an attacker-sized array snapshot ahead of
+                // actual copied-node budget enforcement.
+                requireGraphNodeCapacity(copiedNodes[0], length);
+                List<Object> frozen = new ArrayList<>();
                 for (int i = 0; i < length; i++) {
                     frozen.add(freeze(Array.get(value, i), visiting, depth + 1, copiedNodes));
                 }
@@ -7154,6 +7157,15 @@ public final class ActorRuntime implements AutoCloseable {
         requireGraphDepth(depth);
         requireGraphNodeCapacity(copiedNodes[0], 1L);
         copiedNodes[0]++;
+        // Even immutable Symbol scalars must not retain a source actor's
+        // object identity across PRIVATE/UNTRUSTED heap boundaries. Logical
+        // PROCESS/STABLE identity stays nominal and NFC-canonical; unlike
+        // SHARED freeze, the private copy must own a separate Symbol value.
+        if (value instanceof OresSymbol symbol) {
+            return symbol.kind() == OresSymbol.Kind.PROCESS
+                    ? OresSymbol.process(symbol.name())
+                    : OresSymbol.stable(symbol.name());
+        }
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
@@ -7204,7 +7216,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
-                List<Object> copy = new ArrayList<>(length);
+                // A shared wrapper may reveal an array only after preflight.
+                // Refuse excessive length before reserving backing capacity.
+                requireGraphNodeCapacity(copiedNodes[0], length);
+                List<Object> copy = new ArrayList<>();
                 for (int i = 0; i < length; i++) {
                     copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1, copiedNodes));
                 }
