@@ -90,6 +90,31 @@ def validate_command(command):
         raise ValueError("compiler command must contain exactly one {source}")
     return argv
 
+def verify_checkout_revision(revision):
+    """Refuse a semantic report detached from the actual clean tracked Git tree."""
+    repo = ROOT.parents[2].resolve()
+    def git(*args):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo), *args], capture_output=True,
+                text=True, check=False, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("semantic runner cannot inspect Git checkout") from exc
+        if result.returncode:
+            raise ValueError("semantic runner cannot inspect Git checkout")
+        return result.stdout.strip()
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != repo:
+        raise ValueError("semantic runner is not rooted at its Git checkout")
+    if git("rev-parse", "--verify", "HEAD") != revision:
+        raise ValueError("semantic report revision differs from actual Git checkout")
+    if git("status", "--porcelain=v1", "--untracked-files=no"):
+        raise ValueError("semantic runner checkout contains tracked modifications")
+    tree = git("rev-parse", "--verify", "HEAD^{tree}")
+    if not re.fullmatch(r"[a-f0-9]{40}", tree):
+        raise ValueError("semantic runner cannot verify Git tree identity")
+    return tree
+
 def requires_guest_runner(suite, backend):
     return backend == "graal" and any(
         case["kind"] == "native_exit" and case["backends"]["graal"] == "required"
@@ -99,7 +124,7 @@ def requires_guest_runner(suite, backend):
 def check_diagnostic(returncode, stdout, stderr, category, backend):
     # A crash, missing compiler, signal or setup failure cannot satisfy a rejection.
     # A valid rejection must also identify the intended semantic error.
-    if returncode != 1 or (backend == "llvm" and stdout.strip()):
+    if returncode != 1 or stdout.strip():
         return False
     return bool(re.search(CLASSES[backend][category], stderr, flags=re.IGNORECASE))
 
@@ -164,15 +189,19 @@ def main():
     p.add_argument("--validate", action="store_true")
     p.add_argument("--backend", choices=["llvm", "graal"])
     p.add_argument("--command", help="shell-free argv with one {source} placeholder")
-    p.add_argument("--clang", default="")
+    p.add_argument("--clang", default=None)
     p.add_argument("--run-command", help="Graal OresMain guest process argv with one {source}")
     p.add_argument("--revision", help="40-character Git commit SHA for the compiled backend")
-    p.add_argument("--timeout", type=int, default=30)
+    p.add_argument("--timeout", type=int, default=None,
+                   help="compiler/guest timeout in seconds (default: 30; execution only)")
     p.add_argument("--report", type=Path)
     args = p.parse_args()
     suite, checksum = validate_suite()
     if args.validate:
-        if args.backend or args.command or args.report:
+        if (args.backend is not None or args.command is not None or
+                args.report is not None or args.run_command is not None or
+                args.revision is not None or args.clang is not None or
+                args.timeout is not None):
             p.error("--validate cannot be combined with an execution option")
         print(f"Validated {len(suite['cases'])} semantic cases, SHA256={checksum}")
         return 0
@@ -180,6 +209,8 @@ def main():
         p.error("--backend, --command and --revision are required")
     if not re.fullmatch("[a-f0-9]{40}", args.revision):
         p.error("--revision must be a 40-character Git commit SHA")
+    if args.timeout is None:
+        args.timeout = 30
     if not 1 <= args.timeout <= 300:
         p.error("--timeout must be 1..300 seconds")
     argv = validate_command(args.command)
@@ -188,6 +219,8 @@ def main():
     run_argv = validate_command(args.run_command) if args.run_command else None
     if requires_guest_runner(suite, args.backend) and run_argv is None:
         p.error("--run-command is mandatory for required Graal native_exit cases")
+    initial_tree = verify_checkout_revision(args.revision)
+    print(f"Verified semantic checkout commit={args.revision} tree={initial_tree}")
     results = []
     for case in suite["cases"]:
         if case["backends"][args.backend] == "pending":
@@ -198,6 +231,11 @@ def main():
         results.append(result)
         print(f"{result['status'].upper()} {case['id']} ({args.backend})"
               + (f": {result.get('detail','')}" if result["status"] == "fail" else ""))
+    if verify_checkout_revision(args.revision) != initial_tree:
+        raise ValueError("semantic runner checkout tree changed during fixture execution")
+    _, final_checksum = validate_suite()
+    if final_checksum != checksum:
+        raise ValueError("semantic fixture or schema bytes changed during execution")
     report = {"schema_version":"1.1.0", "backend":args.backend, "suite_sha256":checksum,
               "source_revision":args.revision, "results":results}
     if args.report:
@@ -207,6 +245,23 @@ def main():
     pending = sum(x["status"] == "pending" for x in results)
     failed = sum(x["status"] == "fail" for x in results)
     print(f"SUMMARY pass={passed} pending={pending} fail={failed}; pending is NOT pass")
+    if passed == 0 and failed == 0:
+        print("INCOMPLETE: zero conformance cases passed; no execution proof", file=sys.stderr)
+        return 1
+    # Diagnostic-only success is not evidence that any compiled guest ran.
+    # A backend with every native_exit feature still pending must fail closed,
+    # even if all of its required rejection/diagnostic checks passed.
+    native_verified = sum(
+        case["kind"] == "native_exit" and
+        case["backends"][args.backend] == "required" and
+        result["status"] == "pass" and
+        result.get("observed_exit") == case["expected_exit"]
+        for case, result in zip(suite["cases"], results)
+    )
+    if native_verified == 0:
+        print("INCOMPLETE: no required native_exit case verified by guest execution",
+              file=sys.stderr)
+        return 1
     return 1 if failed else 0
 
 if __name__ == "__main__":

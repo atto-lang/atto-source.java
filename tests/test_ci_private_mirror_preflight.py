@@ -178,6 +178,38 @@ class MirrorGateTest(unittest.TestCase):
         with self.assertRaisesRegex(admission.MirrorPreflightError, "invalid repository metadata"):
             admission.fetch_metadata("private/dst", "test", opener=bad)
 
+    def test_duplicate_and_nonfinite_github_metadata_denied(self):
+        # Trust decisions must not depend on whichever duplicate JSON key a
+        # particular parser happens to retain. This is a source-free test.
+        malformed = (
+            b'{"private":true,"private":false}',
+            b'{"id":34,"id":34}',
+            b'{"visibility":"private","visibility":"public"}',
+            b'{"permissions":{"contents":"read","contents":"write"}}',
+            b'{"size":NaN}',
+            b'{"size":Infinity}',
+            b'{"size":-Infinity}',
+            b'{"size":1e999}',
+            b'{"size":-1e999}',
+        )
+        for body in malformed:
+            with self.subTest(body=body):
+                def fake(req, timeout):
+                    self.assertEqual(timeout, 8)
+                    return FakeResponse(req.full_url, body)
+                with self.assertRaises(admission.MirrorPreflightError):
+                    admission.fetch_metadata("private/dst", "TEST_CANARY", opener=fake)
+
+    def test_canonical_github_metadata_still_admitted(self):
+        body = (b'{"private":true,"visibility":"private",'
+                b'"full_name":"private/dst","id":34,'
+                b'"archived":false,"disabled":false}')
+        def fake(req, timeout):
+            return FakeResponse(req.full_url, body)
+        parsed = admission.fetch_metadata("private/dst", "TEST_CANARY", opener=fake)
+        admission.validate_metadata(parsed, "private/dst", 34)
+        self.assertEqual(parsed["id"], 34)
+
     def test_cli_missing_tokens_fails_closed_without_echoing_values(self):
         args = ["--source", "private/src", "--destination", "private/dst",
                 "--source-id", "21", "--destination-id", "34"]
