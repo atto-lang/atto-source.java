@@ -308,4 +308,114 @@ final class ActorFrameArenaTest {
             assertEquals(0, survivor.get().usedBytes());
         }
     }
+    @Test
+    void guardedSynchronousCallsReserveAndUnwindActorFrames() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicInteger observed = new AtomicInteger();
+            var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
+                assertNotNull(frames);
+                int outer = GuestCallDepthGuard.enter();
+                try {
+                    assertEquals(1, frames.liveFrames());
+                    assertEquals(GuestCallDepthGuard.MANAGED_FRAME_CHARGE_BYTES, frames.usedBytes());
+                    int inner = GuestCallDepthGuard.enter();
+                    try {
+                        assertEquals(2, frames.liveFrames());
+                        assertEquals(2 * GuestCallDepthGuard.MANAGED_FRAME_CHARGE_BYTES,
+                                frames.usedBytes());
+                        assertFalse(frames.isPoisoned());
+                    } finally {
+                        GuestCallDepthGuard.leave(inner);
+                    }
+                    assertEquals(1, frames.liveFrames());
+                } finally {
+                    GuestCallDepthGuard.leave(outer);
+                }
+                assertEquals(0, frames.liveFrames());
+                assertEquals(0, frames.usedBytes());
+                observed.incrementAndGet();
+                turn.self().stop();
+            });
+            a.send("guarded-invocation");
+            assertTrue(a.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(a.failure().isEmpty(), "guarded byte-frame admission must not fail");
+            assertEquals(1, observed.get());
+        }
+    }
+
+    @Test
+    void swallowedGuardDepthFailurePoisonsActorArenaAndPreservesSibling() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<ActorFrameArena> failedArena = new AtomicReference<>();
+            AtomicInteger siblingResponses = new AtomicInteger();
+            var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
+                failedArena.set(frames);
+                int[] depths = new int[GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS];
+                int entered = 0;
+                try {
+                    for (; entered < depths.length; entered++) {
+                        depths[entered] = GuestCallDepthGuard.enter();
+                    }
+                    assertEquals(depths.length, frames.liveFrames());
+                    assertThrows(GuestCallDepthExceededException.class,
+                            GuestCallDepthGuard::enter);
+                    assertTrue(frames.isPoisoned(),
+                            "guard exhaustion must also poison the byte arena");
+                    assertThrows(ActorFrameArena.BudgetExceeded.class,
+                            () -> frames.newSynchronousExecution());
+                } finally {
+                    while (entered > 0) {
+                        GuestCallDepthGuard.leave(depths[--entered]);
+                    }
+                }
+                assertEquals(0, frames.usedBytes());
+                // The host callback swallowed the typed failure. Dispatch
+                // must still fail-stop this actor before a second mailbox turn.
+            });
+            var b = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                assertNotSame(failedArena.get(), ActorRuntime.currentActorFrameArena());
+                siblingResponses.incrementAndGet();
+                turn.self().stop();
+            });
+            a.send("overflow");
+            assertTrue(a.awaitTermination(3, TimeUnit.SECONDS));
+            assertInstanceOf(GuestCallDepthExceededException.class, a.failure().orElseThrow());
+            assertTrue(failedArena.get().isRetired());
+            assertEquals(0, failedArena.get().usedBytes());
+            b.send("survived");
+            assertTrue(b.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(b.failure().isEmpty());
+            assertEquals(1, siblingResponses.get());
+        }
+    }
+
+    @Test
+    void synchronousGuardExecutionIdentityIsNeverReusedWithinActor() {
+        ExecutionContext actor = actor(7, 1, 1);
+        ActorFrameArena frames = arena(actor, 4, 64);
+        ExecutionContext first = frames.newSynchronousExecution();
+        var previous = frames.push(first, 16);
+        frames.pop(first, previous);
+        ExecutionContext second = frames.newSynchronousExecution();
+        assertNotEquals(first.id(), second.id());
+        var current = frames.push(second, 16);
+        assertThrows(SecurityException.class, () -> frames.read(first, current, 0, 1));
+        assertFalse(frames.isPoisoned(), "foreign execution cannot destroy the owner");
+        frames.pop(second, current);
+    }
+
+    @Test
+    void guardByteFrameFailureCannotBeGuestCaughtEvenWhenWrapped() {
+        ActorFrameArena.BudgetExceeded failure =
+                new ActorFrameArena.BudgetExceeded("guest frame accounting");
+        assertFalse(TrapFailurePolicy.isGuestCatchable(failure, RuntimeException.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new RuntimeException("host wrapper", failure), RuntimeException.class));
+        assertFalse(TrapFailurePolicy.isTrappable(failure, RuntimeException.class));
+    }
+
 }
