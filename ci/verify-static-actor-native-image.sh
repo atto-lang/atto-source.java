@@ -19,7 +19,14 @@ test -x "$JAVA_HOME/bin/native-image" && test -x "$JAVA_HOME/bin/javac" || {
 python3 -m unittest discover -s tests -p test_static_actor_aot.py -v
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-source="fixtures/actor_counter.atto"
+source="${ATTO_M4_FIXTURE:-fixtures/actor_counter.atto}"
+if [[ "$source" == "fixtures/m4/shared_actor_counter.atto" ]]; then
+  exact_blob="$(git hash-object "$source")"
+  if [[ "$exact_blob" != "0f9aca24deb195d7f604a1bfb944e237629803f4" ]]; then
+    echo "ATTO_M4_JAVA_REFUSED: not the identical M4 source Git blob" >&2; exit 2;
+  fi
+  echo "ATTO_M4_IDENTICAL_SOURCE_GIT_BLOB=$exact_blob"
+fi
 source_pin="$(sha256sum "$source" | cut -d ' ' -f 1)"
 python3 tools/atto_static_actor_aot.py "$source" --source-sha256 "$source_pin" --out "$tmp/generated"
 python3 - "$tmp/generated" "$source_pin" <<'PY'
