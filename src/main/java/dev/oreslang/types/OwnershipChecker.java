@@ -5390,6 +5390,11 @@ public final class OwnershipChecker {
         private boolean borrowLease;
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
         private VarState aliasSource;
+        // One compiler-checked lexical declaration, never a source-chosen ID.
+        // Zero denotes unminted. Allocation/heap origin remains unknown (0)
+        // until a separate typed-MIR constructor/move proof is implemented.
+        private long bindingId;
+        private long allocationOriginId;
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
@@ -5410,6 +5415,8 @@ public final class OwnershipChecker {
 
     private static final class Scope {
         private final Scope parent;
+        private final Scope identityRoot;
+        private long nextBindingId = 1L;
         private final boolean descendantsNonLexical;
         private final Map<String,VarState> locals = new LinkedHashMap<>();
         private final Map<String,Ast.TypeRef> inferredTypes = new LinkedHashMap<>();
@@ -5428,12 +5435,22 @@ public final class OwnershipChecker {
         private Scope(Scope parent) { this(parent, parent != null && parent.descendantsNonLexical); }
         private Scope(Scope parent, boolean descendantsNonLexical) {
             this.parent = parent;
+            this.identityRoot = parent == null ? this : parent.identityRoot;
             this.descendantsNonLexical = descendantsNonLexical;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
 
         private void define(String name, VarState state) {
-            if (locals.putIfAbsent(name, state) != null) throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");
+            if (locals.containsKey(name))
+                throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");
+            if (state.bindingId == 0L) {
+                if (identityRoot.nextBindingId <= 0L)
+                    throw new IllegalArgumentException("Oreslang ownership error: exhausted compiler binding identities");
+                state.bindingId = identityRoot.nextBindingId++;
+            }
+            // Existing alias states may keep their identity, but a fresh
+            // syntactic name is never proof of an independent allocation.
+            locals.put(name, state);
             state.debugName = name;
         }
 
