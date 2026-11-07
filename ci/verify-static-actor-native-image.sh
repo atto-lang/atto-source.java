@@ -38,13 +38,14 @@ assert m["schema"]=="atto.static-actor-graal-aot-pilot.v1"
 assert m["status"]=="GENERATED_SOURCE_NOT_YET_EXECUTED"
 assert m["source_sha256"]==sys.argv[2]
 assert m["generated_java_sha256"]==hashlib.sha256(java).hexdigest()
-assert m["actor_kinds"]==1 and m["actor_sends"]==3 and m["expected_guest_result"]==43
+assert m["actor_kinds"]==1 and m["actor_instances"]==2 and m["actor_sends"]==3 and m["expected_guest_result"]==43
 print("ATTO_STATIC_SOURCE_MANIFEST_VERIFIED=1")
 print("ATTO_GUEST_SOURCE_SHA256="+m["source_sha256"])
 print("ATTO_GENERATED_JAVA_SHA256="+m["generated_java_sha256"])
 PY
 mkdir -p "$tmp/classes"
-"$JAVA_HOME/bin/javac" -d "$tmp/classes" "$tmp/generated/AttoGeneratedMain.java"
+"$JAVA_HOME/bin/javac" -d "$tmp/classes" "$tmp/generated/AttoGeneratedMain.java" "$repo/tests/AttoGeneratedAtomicityProbe.java"
+"$JAVA_HOME/bin/java" -cp "$tmp/classes" AttoGeneratedAtomicityProbe
 (
   cd "$tmp"
   "$JAVA_HOME/bin/native-image" --no-fallback --gc=epsilon \
