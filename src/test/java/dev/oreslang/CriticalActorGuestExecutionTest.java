@@ -56,6 +56,31 @@ final class CriticalActorGuestExecutionTest {
         assertEquals("43", runGuestSource(mutated, "critical-actor-checked-v1-mutant.atto"));
     }
 
+    @Test void canonicalAttoGuestCriticalBodyMutationChangesOutput()
+            throws Exception {
+        // A source-independent print stub fails even if it reads the scalar
+        // initializer: the change is inside an admitted actor critical body.
+        String canonical = Files.readString(
+                Path.of("examples", "critical-actor-checked-v1.atto"));
+        String original = "value = value + 2;";
+        assertEquals(1, canonical.split(java.util.regex.Pattern.quote(original), -1).length - 1,
+                "critical arithmetic operation must appear exactly once");
+        String changed = canonical.replace(original, "value = value + 3;");
+        assertNotEquals(canonical, changed);
+        assertEquals("42", runGuestSource(canonical, "critical-actor-body-original.atto"));
+        assertEquals("43", runGuestSource(changed, "critical-actor-body-mutant.atto"));
+    }
+
+    @Test void canonicalAttoGuestSourceMutationWorksInBothDirections()
+            throws Exception {
+        String canonical = Files.readString(
+                Path.of("examples", "critical-actor-checked-v1.atto"));
+        String original = "let int value = 40;";
+        assertEquals(1, canonical.split(java.util.regex.Pattern.quote(original), -1).length - 1);
+        String decreased = canonical.replace(original, "let int value = 39;");
+        assertEquals("41", runGuestSource(decreased, "critical-actor-decremented.atto"));
+    }
+
     private static String runGuest(String file) throws Exception {
         String source = Files.readString(Path.of("examples", file));
         return runGuestSource(source, file);
