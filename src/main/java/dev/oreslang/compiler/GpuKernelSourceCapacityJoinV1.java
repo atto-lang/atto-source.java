@@ -45,6 +45,36 @@ public final class GpuKernelSourceCapacityJoinV1 {
         public boolean executable() { return false; }
     }
 
+    /**
+     * Stronger declaration-only composition. The caller's explicit parameter
+     * declarations are rechecked alongside the source HIR and view shape.
+     * This must not be confused with TypeChecker authority, a runtime loan,
+     * or a trusted provider-issued allocation identity.
+     */
+    public record TypedReport(Report capacity,
+                              GpuKernelTypedSourceArgsV1.Report sourceTypes) {
+        public TypedReport {
+            Objects.requireNonNull(capacity, "source-only capacity");
+            Objects.requireNonNull(sourceTypes, "source-only host argument declarations");
+            if (capacity.executable() || sourceTypes.executable())
+                throw invalid("source proof cannot be promoted to a GPU permit");
+        }
+        public boolean executable() { return false; }
+    }
+
+    public static TypedReport auditTypedSource(dev.oreslang.ast.Ast.FunctionDecl caller,
+                                              GpuKernelSourceHirV1.Plan plan,
+                                              GpuKernelSourceLinkV1.Link link,
+                                              QueueScope scope, long logicalOver,
+                                              long canonicalN,
+                                              Map<Integer, View> viewsByParameterIndex,
+                                              Limits limits) {
+        var typed = GpuKernelTypedSourceArgsV1.audit(caller, plan, link);
+        var capacity = audit(plan, link, scope, logicalOver,
+                canonicalN, viewsByParameterIndex, limits);
+        return new TypedReport(capacity, typed);
+    }
+
     private static IllegalArgumentException invalid(String reason) {
         return new IllegalArgumentException("GPU-LAUNCH-005: " + reason);
     }
