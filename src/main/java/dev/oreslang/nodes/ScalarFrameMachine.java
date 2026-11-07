@@ -234,8 +234,40 @@ final class ScalarFrameMachine {
 
         Activation(Code code, long[] params, GuestInvocationFrame lease) {
             this.code = code;
-            this.params = params;
             this.lease = lease;
+            lease.writeScalarArguments(params);
+            // For actors, read actual scalar parameters from owned frame
+            // bytes. The Java array is kept only for non-actor host calls.
+            this.params = lease.hasActorOwnedScalarSlots() ? null : params.clone();
+        }
+
+        long parameter(int index) {
+            return params == null
+                    ? lease.readScalarArgument(index)
+                    : params[index];
+        }
+
+        void transfer(Code next, long[] arguments) {
+            lease.tailTransfer(0, arguments.length, ++tailHops);
+            lease.writeScalarArguments(arguments);
+            code = next;
+            params = lease.hasActorOwnedScalarSlots() ? null : arguments.clone();
+            pc = 0;
+            operands.clear();
+        }
+    }
+
+    private static Activation activate(Code code, long[] args) {
+        GuestInvocationFrame lease = GuestInvocationFrame.enter(0, args.length);
+        try {
+            return new Activation(code, args, lease);
+        } catch (RuntimeException | Error failure) {
+            try {
+                lease.close();
+            } catch (RuntimeException | Error cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
     }
 
@@ -279,7 +311,7 @@ final class ScalarFrameMachine {
         long instructions = 0;
         try {
             Code first = program.code.get(program.entry);
-            frames.addLast(new Activation(first, args, GuestInvocationFrame.enter(0, args.length)));
+            frames.addLast(activate(first, args));
             while (!frames.isEmpty()) {
                 Activation frame = frames.peekLast();
                 if (frame.pc < 0 || frame.pc >= frame.code.ops().size()) {
@@ -289,7 +321,7 @@ final class ScalarFrameMachine {
                 Op op = frame.code.ops().get(frame.pc++);
                 switch (op.kind) {
                     case LITERAL -> push(frame, op.data);
-                    case PARAM -> push(frame, frame.params[op.position]);
+                    case PARAM -> push(frame, frame.parameter(op.position));
                     case BINARY -> {
                         Object right = frame.operands.removeLast();
                         Object left = frame.operands.removeLast();
@@ -309,14 +341,9 @@ final class ScalarFrameMachine {
                         if (next == null) throw new IllegalStateException("uncompiled scalar callee");
                         long[] callArgs = takeArguments(frame, op.position);
                         if (op.kind == Kind.TAIL_CALL) {
-                            frame.lease.tailTransfer(0, callArgs.length, ++frame.tailHops);
-                            frame.code = next;
-                            frame.params = callArgs;
-                            frame.pc = 0;
-                            frame.operands.clear();
+                            frame.transfer(next, callArgs);
                         } else {
-                            GuestInvocationFrame lease = GuestInvocationFrame.enter(0, callArgs.length);
-                            frames.addLast(new Activation(next, callArgs, lease));
+                            frames.addLast(activate(next, callArgs));
                         }
                     }
                     case RETURN -> {
