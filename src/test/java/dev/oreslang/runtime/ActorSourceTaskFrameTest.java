@@ -236,6 +236,96 @@ final class ActorSourceTaskFrameTest {
     }
 
     @Test
+    void guestInvocationFramesUseTheSameSourceTaskIdentityAcrossAwait()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> owner = new AtomicReference<>();
+            AtomicReference<ExecutionContext> taskIdentity = new AtomicReference<>();
+            AtomicReference<ExecutionContext> resumedIdentity = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> taskResult = new AtomicReference<>();
+            AtomicInteger resumes = new AtomicInteger();
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
+                owner.set(arena);
+                taskResult.set(runtime.startActorTask(resume -> {
+                    ExecutionContext current = OresScheduler.currentExecutionContext();
+                    if (resumes.getAndIncrement() == 0) {
+                        taskIdentity.set(current);
+                    } else {
+                        resumedIdentity.set(current);
+                    }
+                    try (GuestInvocationFrame call = GuestInvocationFrame.enter(0, 2)) {
+                        assertSame(current,
+                                GuestCallDepthGuard.currentInvocationExecutionContext(),
+                                "nested synchronous call must join the SourceTask execution");
+                        assertEquals(2, arena.liveFrames(),
+                                "one retained task frame and one invocation descriptor");
+                        assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES
+                                        + GuestCallDepthGuard.MANAGED_FRAME_CHARGE_BYTES,
+                                arena.usedBytes());
+                        for (int i = 1; i <= 1_000; i++) {
+                            call.tailTransfer(0, 2, i);
+                        }
+                        assertEquals(2, arena.liveFrames(),
+                                "tail transfers must not allocate new frames");
+                    }
+                    assertEquals(1, arena.liveFrames(),
+                            "invocation frame must unwind before an await");
+                    assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, arena.usedBytes());
+                    return resumes.get() == 1
+                            ? OresScheduler.await(gate) : OresScheduler.done(17);
+                }));
+            });
+            actor.send("run");
+            awaitCondition(() -> taskIdentity.get() != null && owner.get() != null
+                    && owner.get().usedBytes() == ActorSourceTaskFrame.FRAME_CHARGE_BYTES);
+            assertEquals(1, owner.get().liveFrames(), "await retains task root");
+            gate.completeFromRuntime(7);
+            awaitCondition(() -> taskResult.get() != null && taskResult.get().isDone());
+            assertEquals(17, taskResult.get().get(3, TimeUnit.SECONDS));
+            assertSame(taskIdentity.get(), resumedIdentity.get(),
+                    "same SourceTask identity before and after await");
+            assertEquals(0, owner.get().usedBytes());
+            assertEquals(0, owner.get().liveFrames());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void physicalQuiescenceCallbacksObserveLiveFrameBeforeZeroization()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> owner = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> taskResult = new AtomicReference<>();
+            AtomicInteger chargedDuringCallback = new AtomicInteger(-1);
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
+                owner.set(arena);
+                taskResult.set(runtime.startActorTaskWithQuiescence(
+                        resume -> OresScheduler.done(17),
+                        () -> chargedDuringCallback.set(arena.usedBytes())));
+            });
+            actor.send("run");
+            awaitCondition(() -> taskResult.get() != null && taskResult.get().isDone());
+            assertEquals(17, taskResult.get().get(3, TimeUnit.SECONDS));
+            assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES, chargedDuringCallback.get(),
+                    "host loan release must finish before frame storage is zeroized");
+            assertEquals(0, owner.get().usedBytes(),
+                    "successful callback must release the frame before Future publication");
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
     void actorTaskAndSynchronousCallIdentifiersNeverAliasWithinOneArena() {
         ExecutionContext actor = ExecutionContext.actor(90, 1, 90, 7, 1, 0, 0);
         ActorFrameArena frames = new ActorFrameArena(actor.allocationDomain(), 4, 256);
