@@ -22,7 +22,7 @@ ORESLANG_PUBSUB_EXPECTED_SHA="$expected" bash scripts/verify-actor-pubsub-v1.sh
 # Then require actor-critical safety and the mixed guest program on the
 # SAME source tree, not separate PR receipts.
 mvn -B -ntp -Dores.runtime.carriers=java \
-  "-Dtest=CriticalPubSubIntegrationGuestTest,CriticalActorGuestExecutionTest,CriticalSuspendsV1SyntaxTest,CriticalBodyEffectsTest,TaskCaptureAdmissionIdentityTest,CriticalTicketCleanupTest,CriticalGateTest,ActorCriticalGateIdentityTest" \
+  "-Dtest=CriticalPubSubIntegrationGuestTest,CriticalActorGuestExecutionTest,CriticalSuspendsV1SyntaxTest,CriticalBodyEffectsTest,TaskCaptureAdmissionIdentityTest,CriticalTicketCleanupTest,CriticalGateTest,ActorCriticalGateIdentityTest,ActorAsyncSendAdmissionRaceTest,ActorAsyncSendBackpressureTest,SealedActorStateAdmissionTest,SelectOverEndSyntaxTest,NamespaceModuleBoundaryTest" \
   -Dsurefire.failIfNoSpecifiedTests=true -DskipTests=false -Dmaven.test.skip=false test
 python3 - <<'PY'
 from pathlib import Path
@@ -45,6 +45,42 @@ required = {
         "asyncIsNotAnAliasOfSuspends",
         "criticalAndSuspendsCannotBothModifyACallable",
         "criticalBlockHasDistinctAstAndRequiresActorOwnedGate",
+    },
+    # Newest mainline actor mail credit handoff/cancellation tests must run
+    # on the same merged head as the critical/pubsub guest tests.
+    "dev.oreslang.runtime.ActorAsyncSendAdmissionRaceTest": {
+        "wholeCohortQuotaRejectsBeforeTraversingAnotherPayload",
+        "concurrentCancellationHasExactlyOneWithdrawalWinner",
+    },
+    "dev.oreslang.runtime.ActorAsyncSendBackpressureTest": {
+        "fullMailboxSuspendsProducerUntilARealSlotIsTransferred",
+        "cancellationDetachesPendingProducerAndReturnsNoPhantomMail",
+        "pendingProducerRegistrationsAreBoundedIndependentlyOfMailboxDepth",
+        "gracefulStopFailsUnadmittedProducerWithoutWaitingForItsPayload",
+        "multiplePendingProducersReceiveCreditsInRegistrationOrder",
+        "pendingSendHoldsPhysicalAdmissionLoanUntilItIsRetired",
+        "cancellationAfterCreditTransferCannotRollBackAdmission",
+        "releaseRacingWaiterRegistrationCannotLoseTheWakeup",
+        "pendingSendObserversNeverRunUnderActorAdmissionLocks",
+        "serialActorCannotAwaitCapacityThatOnlyItsOwnTurnCanRelease",
+    },
+    "dev.oreslang.SealedActorStateAdmissionTest": {
+        "isolatedActorDoesNotSilentlyBecomeLegacyIsoactor",
+        "typedStateSchemaDoesNotBecomeAnOrdinaryActorField",
+        "userCannotSpoofSealedStateAuthorityWithActorMethod",
+        "ordinaryActorMethodsAndLegacySpellingRemainAsBefore",
+    },
+    "dev.oreslang.SelectOverEndSyntaxTest": {
+        "supportsBlockingProceduralAndNonblockingOverEndForms",
+        "bracedAndOverEndFormsLowerToEquivalentSelectShape",
+        "overEndBlockingFormsExecuteThroughTheExistingSelectRuntime",
+        "nonblockingOverEndKeepsExistingActorAdmissionSemantics",
+    },
+    "dev.oreslang.NamespaceModuleBoundaryTest": {
+        "namespaceIsSourceMetadataAndNamedModuleRemainsLinkable",
+        "syntheticFileRootCannotBeSelectedAsAnImportedModule",
+        "userCannotDefineSyntheticRootModule",
+        "namespacesAreFlatAndAppearOnlyBeforeImportsAndDeclarations",
     },
 }
 extra = [
