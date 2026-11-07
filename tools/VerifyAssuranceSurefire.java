@@ -63,6 +63,10 @@ final class VerifyAssuranceSurefire {
     );
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && "--self-test".equals(args[0])) {
+            selfTest();
+            return;
+        }
         if (args.length != 1) throw new IllegalArgumentException(
             "Usage: java tools/VerifyAssuranceSurefire.java <surefire-directory>");
         Path reportRoot = Path.of(args[0]).toAbsolutePath().normalize();
@@ -76,6 +80,43 @@ final class VerifyAssuranceSurefire {
         System.out.println("PASS " + SUITES.size() + " real XML suites, "
             + cases + " executed testcases, all named security gates present");
         System.out.println("SCOPED_JVM_SOURCE_AND_TEST_METADATA_ONLY; guest attestation NOT_VERIFIED");
+    }
+
+    private static void selfTest() throws Exception {
+        Suite expected = new Suite("dev.oreslang.SecurityFixture", List.of("mustExecute"));
+        Path report = Files.createTempFile("atto-xml-gate-", ".xml");
+        String good = "<testsuite name=\"dev.oreslang.SecurityFixture\" tests=\"1\" " +
+            "failures=\"0\" errors=\"0\" skipped=\"0\">" +
+            "<testcase classname=\"dev.oreslang.SecurityFixture\" " +
+            "name=\"mustExecute\"/></testsuite>";
+        try {
+            Files.writeString(report, good);
+            if (verify(report, expected) != 1) {
+                throw new IllegalStateException("Valid Surefire fixture was not accepted");
+            }
+            expectRejected(report, expected, good.replace("failures=\"0\"", "failures=\"1\""));
+            expectRejected(report, expected, good.replace("skipped=\"0\"", "skipped=\"1\""));
+            expectRejected(report, expected, good.replace("name=\"mustExecute\"", "name=\"wrong\""));
+            expectRejected(report, expected, good.replace("tests=\"1\"", "tests=\"2\""));
+            expectRejected(report, expected, "<!DOCTYPE testsuite [<!ENTITY data SYSTEM " +
+                "\"file:///etc/passwd\">]>" + good);
+        } finally {
+            Files.deleteIfExists(report);
+        }
+        System.out.println("PASS Surefire XML negative controls: failure, skip, missing case, " +
+            "count mismatch and external entity rejection");
+    }
+
+    private static void expectRejected(Path report, Suite expected, String xml) throws Exception {
+        Files.writeString(report, xml);
+        boolean rejected = false;
+        try {
+            verify(report, expected);
+        } catch (Exception invalid) {
+            rejected = true;
+        }
+        if (!rejected) throw new IllegalStateException(
+            "Forged or invalid XML was accepted as evidence");
     }
 
     private static int verify(Path path, Suite expected) throws Exception {
