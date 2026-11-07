@@ -54,7 +54,9 @@ public final class GuestCallDepthGuard {
                 || (scope != null
                 && (scope.actorStack != actorStack || scope.arena != arena))) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
             if (actorStack != null) actorStack.poison();
+            if (arena != null) arena.poisonFromGuestGuard();
             CURRENT.remove();
             throw new IllegalStateException(
                     "actor execution context changed inside a live guest invocation");
@@ -63,6 +65,7 @@ public final class GuestCallDepthGuard {
         int prior = scope == null ? 0 : scope.depth;
         if (prior >= MAX_SYNCHRONOUS_GUEST_CALLS) {
             if (actorStack != null) actorStack.poison();
+            if (arena != null) arena.poisonFromGuestGuard();
             throw new GuestCallDepthExceededException(MAX_SYNCHRONOUS_GUEST_CALLS);
         }
         if (scope == null) scope = new Scope(actorStack, arena);
@@ -70,7 +73,13 @@ public final class GuestCallDepthGuard {
         // Reserve the logical invocation first. If byte admission fails, undo
         // only this reservation, poison the actor and leave outer frames for
         // their own finally/unwind paths.
-        int chargedDepth = actorStack == null ? 0 : actorStack.reserveFrame();
+        int chargedDepth;
+        try {
+            chargedDepth = actorStack == null ? 0 : actorStack.reserveFrame();
+        } catch (RuntimeException failure) {
+            if (arena != null) arena.poisonFromGuestGuard();
+            throw failure;
+        }
         try {
             if (arena != null) {
                 scope.frames.addLast(
@@ -85,6 +94,7 @@ public final class GuestCallDepthGuard {
                 }
                 actorStack.poison();
             }
+            if (arena != null) arena.poisonFromGuestGuard();
             throw failure;
         }
 
@@ -100,6 +110,7 @@ public final class GuestCallDepthGuard {
                 || scope.actorStack != ActorRuntime.currentActorGuestStack()
                 || scope.arena != ActorRuntime.currentActorFrameArena()) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
             CURRENT.remove();
             throw new IllegalStateException(
                     "unbalanced synchronous guest-call guard on carrier");
@@ -117,6 +128,7 @@ public final class GuestCallDepthGuard {
             scope.depth--;
         } catch (RuntimeException failure) {
             if (scope.actorStack != null) scope.actorStack.poison();
+            if (scope.arena != null) scope.arena.poisonFromGuestGuard();
             CURRENT.remove();
             throw failure;
         }
