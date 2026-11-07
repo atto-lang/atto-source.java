@@ -4494,8 +4494,16 @@ public final class Parser {
         }
         if (match(NLEX)) {
             if (check(PIPE)) return parsePipeLambda(true);
+            if (check(FNC) && checkNext(LPAREN)) {
+                advance(); // anonymous fnc expression shares the lambda AST
+                return parseLambda(true);
+            }
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        }
+        if (check(FNC) && checkNext(LPAREN)) {
+            advance(); // explicit anonymous fnc expression, not a declaration
+            return parseLambda(false);
         }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
