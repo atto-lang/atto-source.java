@@ -9,6 +9,18 @@ public final class Types {
 
     public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
+    /** Distinguishes runtime records, internal structural contracts, and concrete structs. */
+    public enum AggregateKind { RECORD, CONTRACT, STRUCT }
+
+    private static boolean compatibleAggregateKinds(AggregateKind left, AggregateKind right) {
+        // Concrete structs are a distinct exact-shape value domain. RECORD and
+        // CONTRACT share structural row semantics; CONTRACT only carries
+        // compiler-internal method-signature metadata in addition to data fields.
+        return left == AggregateKind.STRUCT || right == AggregateKind.STRUCT
+                ? left == right
+                : true;
+    }
+
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
     }
@@ -41,32 +53,85 @@ public final class Types {
      * structural compatibility dimension: it prevents mutation from being
      * regained through aliases while preserving ordinary shape matching.
      */
-    public record Record(Map<String, Type> members, boolean readOnly) implements Type {
-        public Record { members = Map.copyOf(members); }
-        public Record(Map<String, Type> members) { this(members, false); }
+    public record Record(Map<String, Type> members, boolean readOnly, AggregateKind kind) implements Type {
+        public Record {
+            members = Map.copyOf(members);
+            kind = Objects.requireNonNull(kind, "aggregate kind");
+            if (kind == AggregateKind.STRUCT && readOnly) {
+                throw new IllegalArgumentException(
+                        "struct mutability is a binding/borrow capability, not a readonly structural type bit");
+            }
+        }
+        public Record(Map<String, Type> members) { this(members, false, AggregateKind.RECORD); }
+        public Record(Map<String, Type> members, boolean readOnly) {
+            this(members, readOnly, AggregateKind.RECORD);
+        }
+        public static Record struct(Map<String, Type> members) {
+            return new Record(members, false, AggregateKind.STRUCT);
+        }
+        public static Record contract(Map<String, Type> members) {
+            return new Record(members, false, AggregateKind.CONTRACT);
+        }
+    }
+
+    /** Compiler-internal resolved may-effects; source effect syntax is not admitted here. */
+    public record CheckedEffects(List<Type> throwsTypes, List<Type> raisesTypes,
+                                 List<Type> panicsTypes) {
+        public CheckedEffects {
+            throwsTypes = normalize(throwsTypes);
+            raisesTypes = normalize(raisesTypes);
+            panicsTypes = normalize(panicsTypes);
+        }
+
+        /** Effect clauses denote sets rather than declaration-order-sensitive lists. */
+        private static List<Type> normalize(List<Type> input) {
+            return List.copyOf(input).stream()
+                    .distinct()
+                    .sorted(java.util.Comparator.comparing(Type::toString))
+                    .toList();
+        }
+
+        public static CheckedEffects none() {
+            return new CheckedEffects(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+
+        /** Exact-type category preservation; nominal Error subtyping is a separate gate. */
+        public boolean isSubsetOf(CheckedEffects allowance) {
+            return allowance.throwsTypes.containsAll(throwsTypes)
+                    && allowance.raisesTypes.containsAll(raisesTypes)
+                    && allowance.panicsTypes.containsAll(panicsTypes);
+        }
     }
 
     public record Function(
             List<Type> parameters,
             List<Boolean> mutableParameters,
             boolean async,
-            Type result) implements Type {
+            Type result,
+            CheckedEffects effects) implements Type {
         public Function {
             parameters = List.copyOf(parameters);
             mutableParameters = List.copyOf(mutableParameters);
+            Objects.requireNonNull(effects, "checked function effects");
             if (parameters.size() != mutableParameters.size()) {
                 throw new IllegalArgumentException(
                         "function parameter mutability metadata must match parameter arity");
             }
         }
 
-        /**
-         * Source-level Fnc<...> types and built-in callables have no mutable
-         * parameters and are synchronous unless a declaration explicitly says
-         * otherwise.
-         */
+        /** Existing producers emit pure function values until effect inference is connected. */
+        public Function(List<Type> parameters, List<Boolean> mutableParameters,
+                        boolean async, Type result) {
+            this(parameters, mutableParameters, async, result, CheckedEffects.none());
+        }
+
         public Function(List<Type> parameters, Type result) {
-            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false,
+                    result, CheckedEffects.none());
         }
     }
 
@@ -151,6 +216,7 @@ public final class Types {
             return a != b && !(isNumeric(a) && isNumeric(b));
         }
         if (first instanceof Record a && second instanceof Record b) {
+            if (!compatibleAggregateKinds(a.kind(), b.kind())) return true;
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
                 Type candidate = b.members().get(entry.getKey());
@@ -169,7 +235,8 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean containsUncertainType(Type type) {
+    // Shared package-internal proof query for both type relations.
+    static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
@@ -178,7 +245,10 @@ public final class Types {
         if (type instanceof ListType list) return containsUncertainType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
-                || containsUncertainType(function.result());
+                || containsUncertainType(function.result())
+                || function.effects().throwsTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().raisesTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().panicsTypes().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
         if (type instanceof SelfType self) return containsUncertainType(self.bound());
         return false;
@@ -195,6 +265,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        // Unknown cannot prove a callable's checked effect contract; an
+        // effectful callable cannot discard its effects through Unknown.
+        if (from == Unknown.INSTANCE && to instanceof Function) return false;
+        if (to == Unknown.INSTANCE && from instanceof Function fn
+                && !fn.effects().isEmpty()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -231,9 +306,28 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
+            // Structs are closed concrete shapes: unlike records/contracts, they do not
+            // participate in row-width subtyping. A lexical infer<T> alias can
+            // therefore name the exact generated struct shape.
+            if (source.kind() == AggregateKind.STRUCT
+                    && source.members().size() != target.members().size()) return false;
+            // Readonly structural views may covariantly read fields, but
+            // writable destinations cannot widen even one member type:
+            // such an alias could later write a FLOAT/Unknown into an INT slot.
+            if (!target.readOnly() && source.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                if (target.readOnly()) {
+                    // Unknown/Generic are inference holes, not evidence that
+                    // a concrete readable field exists under an alias.
+                    if (!actual.equals(required.getValue())
+                            && (containsUncertainType(actual)
+                                    || !isAssignable(actual, required.getValue()))) return false;
+                } else if (!actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
@@ -254,6 +348,7 @@ public final class Types {
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
+            if (!source.effects().isSubsetOf(target.effects())) return false;
             // Parameter mutation authority is part of the callable contract.
             // Keep it invariant: callers and implementations must agree exactly
             // on which arguments may be mutated.

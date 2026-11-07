@@ -916,8 +916,11 @@ final class ActorRuntimeTest {
             assertFalse(closer.isAlive(), "runtime close must not wait for user code holding a SyncCell lock");
             assertInstanceOf(IllegalStateException.class, closeFailure.get());
             assertTrue(closeFailure.get().getMessage().contains("full actor termination"));
-            assertTrue(cell.closed());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+            assertTrue(cell.closed(), "logical SyncCell close must publish before physical actor exit");
+            assertThrows(IllegalStateException.class, cell::snapshot,
+                    "closed SyncCell must reject new readers without waiting on the held update lock");
+            assertTrue(runtime.sharedMemoryBytes() > 0L,
+                    "a still-running actor retains the original memory charge until physical retirement");
         } finally {
             release.countDown();
             closer.join(2000);
@@ -925,6 +928,8 @@ final class ActorRuntimeTest {
 
         assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
         assertDoesNotThrow(runtime::close);
+        assertEquals(0L, runtime.sharedMemoryBytes(),
+                "after physical retirement and successful close, the memory budget is released");
     }
 
 
@@ -1065,8 +1070,9 @@ final class ActorRuntimeTest {
             });
 
             ref.send((byte) 42);
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
+            // isAlive observes the logical stop flag before physical teardown.
+            // done settles after private memory and the carrier are finalized.
+            ref.done().get(2, TimeUnit.SECONDS);
             assertFalse(ref.isAlive());
             assertTrue(ref.failure().isEmpty());
             assertEquals(0L, runtime.privateMemoryBytes(), "actor teardown must release its private direct-memory quota");

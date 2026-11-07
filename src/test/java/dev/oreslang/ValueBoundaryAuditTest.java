@@ -39,7 +39,7 @@ final class ValueBoundaryAuditTest {
         assertEquals("42742", run("""
                 fnc pair(): [int,int] { return (19,23); }
                 fnc record(): {left: int, right: int} {
-                  return struct{left: int, right: int}{right: 23, left: 19};
+                  return record{right: 23, left: 19};
                 }
                 fnc add(int a, int b): int { return a+b; }
                 fnc recordArg({right: int, left: int} value): int {
@@ -188,6 +188,42 @@ final class ValueBoundaryAuditTest {
                 }
                 pub fnc main(): void { stdio.stdout.write(pick()); return; }
                 """));
+    }
+
+    @Test
+    void suspendableConjunctionUsesLeftPatternBindingsOnTheRight() throws Exception {
+        // The right operand must evaluate in the left operand's scoped
+        // environment even when the left predicate awaits a Future.
+        assertEquals("7", run("""
+                async fnc ready(): Option<int> { return Some(7); }
+                pub async fnc main(): void {
+                  if ((await ready()) matches Some(value)) && value > 3 {
+                    stdio.stdout.write(value);
+                  } fi
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void conditionBindingSnapshotPreservesNullAndDeclarationOrder() throws Exception {
+        // Directly exercise nullable host/guest values; Map.copyOf silently
+        // turns these otherwise valid bindings into a NullPointerException.
+        Class<?> evaluator = Class.forName("dev.oreslang.nodes.OresEvalRootNode$Evaluator");
+        var method = evaluator.getDeclaredMethod("immutableBindings", java.util.Map.class);
+        method.setAccessible(true);
+        var original = new java.util.LinkedHashMap<String, Object>();
+        original.put("nullable", null);
+        original.put("last", 7);
+        @SuppressWarnings("unchecked")
+        var snapshot = (java.util.Map<String, Object>) method.invoke(null, original);
+        original.put("last", 99);
+        assertEquals(java.util.List.of("nullable", "last"),
+                java.util.List.copyOf(snapshot.keySet()));
+        assertTrue(snapshot.containsKey("nullable"));
+        assertNull(snapshot.get("nullable"));
+        assertEquals(7, snapshot.get("last"));
+        assertThrows(UnsupportedOperationException.class, () -> snapshot.put("new", 1));
     }
 
     @Test
