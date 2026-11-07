@@ -85,6 +85,69 @@ final class ExplicitLambdaReturnContractTest {
     }
 
     @Test
+    void nestedValueMatchResultReturnsToLambdaBeforeOuterCallable() throws Exception {
+        String guest = """
+                fnc pick(bool selected): int {
+                    const fnc nested = || -> int {
+                        val int value = match<int> selected over {
+                            on true { return 41; }
+                            on false { return 1; }
+                        };
+                        return value + 1;
+                    };
+                    return nested() + 100;
+                }
+                pub fnc main(): void {
+                    stdio.println(pick(true));
+                    stdio.println(pick(false));
+                    return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(guest));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, guest, "lambda-value-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(source);
+        }
+        assertEquals("142\\n102",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+    }
+
+    @Test
+    void proceduralDoMatchReturnExitsNearestTypedLambdaOnly() throws Exception {
+        String guest = """
+                fnc pick(bool selected): int {
+                    const fnc nested = || -> int {
+                        do match selected over {
+                            on true { return 41; }
+                            on false { return 1; }
+                        }
+                        return -99;
+                    };
+                    return nested() + 100;
+                }
+                pub fnc main(): void {
+                    stdio.println(pick(true));
+                    stdio.println(pick(false));
+                    return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(guest));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, guest, "lambda-procedural-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(source);
+        }
+        assertEquals("141\\n101",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+    }
+
+    @Test
     void explicitScalarReturnMustAgreeWithEveryReachableResult() {
         for (String body : new String[] {
                 "return \"wrong\";",
