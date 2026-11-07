@@ -38,6 +38,50 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void checkedSymbolLiteralsReuseTheSameImmutableImageAcrossCodeObservers() {
+        String source = """
+                pub routine main(): void {
+                  const Symbol a = #ready;
+                  const Symbol b = #"ready foo";
+                  return;
+                }
+                """;
+        Ast.Program program = Parser.parse(source);
+        List<OresSymbol> literals = OresSymbolLiteralSource.collect(source);
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var image = store.publish("app/tag.atto", program, literals);
+            OresSymbol literalA = image.staticLiteralValue(OresSymbol.process("ready"));
+            OresSymbol literalB = image.staticLiteralValue(OresSymbol.process("ready"));
+            assertSame(literalA, literalB);
+            assertSame(literalA, store.get("app/tag.atto")
+                    .staticLiteralValue(OresSymbol.process("ready")));
+            assertEquals(OresSymbol.process("ready foo"),
+                    image.staticLiteralValue(OresSymbol.process("ready foo")));
+            OresSymbol dynamic = OresSymbol.process("not-in-source");
+            assertSame(dynamic, image.staticLiteralValue(dynamic),
+                    "dynamic symbols must never be added to a permanent pool");
+            assertSame(image, store.publish("app/tag.atto", program, literals));
+            assertThrows(IllegalStateException.class,
+                    () -> store.publish("app/tag.atto", program, List.of()));
+        }
+    }
+
+    @Test
+    void codeUnitsDoNotEvictEachOthersSymbolsAtEightGenerationLimit() {
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            for (int i = 0; i < 12; i++) {
+                Ast.Program program = Parser.parse(
+                        "pub routine main(): void { const Symbol a = #ready; return; }");
+                var image = store.publish("unit" + i + ".atto", program,
+                        List.of(OresSymbol.process("ready")));
+                assertEquals(OresSymbol.process("ready"),
+                        image.staticLiteralValue(OresSymbol.process("ready")));
+            }
+            assertEquals(12, store.imageCount());
+        }
+    }
+
+    @Test
     void concurrentReadersNeverConstructANewCodeImage() throws Exception {
         Ast.Program parsedOnce = Parser.parse("pub routine main(): void { return; }");
         try (SharedCodeImageStore store = new SharedCodeImageStore()) {
