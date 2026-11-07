@@ -117,7 +117,7 @@ class HardenedStaticCompilerTests(unittest.TestCase):
             self.assertEqual(result, 43, case)
             self.assertEqual(sends, len(messages), case)
             self.assertEqual(generated.count(".send("), sends, case)
-            self.assertEqual(len(re.findall(r"handle_\\d+\\.close\\(\\);", generated)), actors, case)
+            self.assertEqual(len(re.findall(r"handle_\d+\.close\(\);", generated)), actors, case)
             actual = [(a, value) for op, a, value in actions if op == "send"]
             self.assertEqual(actual, messages, case)
             self.assertIn("Arena.ofConfined()", generated, case)
