@@ -120,9 +120,10 @@ final class DopInvertedScalarTruffleRootV1Test {
 
     @Test
     void parseTimeContextUuidRejectsForeignFirstCallBeforeAnyOwnerExists() {
-        UUID parseContext = UUID.randomUUID();
-        UUID foreignFirstCaller = UUID.randomUUID();
-        assertNotEquals(parseContext, foreignFirstCaller);
+        UUID parseContext =
+                UUID.fromString("11111111-1111-4111-8111-111111111111");
+        UUID foreignFirstCaller =
+                UUID.fromString("22222222-2222-4222-8222-222222222222");
         assertDoesNotThrow(() ->
                 DopInvertedScalarTruffleRootV1.requireParsedContext(
                         parseContext, parseContext));
