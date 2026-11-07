@@ -75,12 +75,16 @@ final class ScalarFrameMachine {
                 && type.arguments().isEmpty() && !type.inferArguments();
     }
     private static boolean definitelyReturns(List<Ast.Stmt> body) {
+        return definitelyReturns(body, 0);
+    }
+    private static boolean definitelyReturns(List<Ast.Stmt> body, int depth) {
+        if (depth > 64) return false;
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt ret) return ret.value() != null;
             if (stmt instanceof Ast.IfStmt branch && !branch.elseBody().isEmpty()) {
-                boolean complete = definitelyReturns(branch.elseBody());
+                boolean complete = definitelyReturns(branch.elseBody(), depth + 1);
                 for (Ast.IfBranch arm : branch.branches()) {
-                    complete &= definitelyReturns(arm.body());
+                    complete &= definitelyReturns(arm.body(), depth + 1);
                 }
                 if (complete) return true;
             }
