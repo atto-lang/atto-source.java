@@ -131,6 +131,13 @@ final class GpuKernelCanonicalSyntaxV1Test {
         assertTrue(failure.getMessage().contains("fi"), failure::getMessage);
     }
 
+    @Test void duplicateGpuParametersGetStableGpuDiagnostic() {
+        var source = CANONICAL.replace("u64 n", "u64 n, u64 n");
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(source));
+        assertTrue(failure.getMessage().contains("GPU-KERNEL-003"), failure::getMessage);
+    }
+
     @Test void sourceIsStillRejectedAtProductionDispatchGate() {
         var failure = assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck(CANONICAL));

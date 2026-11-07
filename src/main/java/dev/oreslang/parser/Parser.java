@@ -2069,7 +2069,16 @@ public final class Parser {
             }
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
-        requireDistinctParameterNames(params);
+        if (insideGpuKernelBody) {
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (Ast.Param param : params) {
+                if (!names.add(param.name())) {
+                    throw error(previous(), "GPU-KERNEL-003: duplicate gpu fnc parameter '" + param.name() + "'");
+                }
+            }
+        } else {
+            requireDistinctParameterNames(params);
+        }
         return params;
     }
 
