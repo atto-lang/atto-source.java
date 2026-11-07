@@ -41,6 +41,7 @@ final class ScalarFrameMachineTest {
     private static final class Host implements ScalarFrameMachine.Host {
         final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         final AtomicLong safepoints = new AtomicLong();
+        final AtomicLong maxNativeCallDepth = new AtomicLong();
         Host(Ast.FunctionDecl... fncs) {
             for (var f : fncs) functions.put(f.name() + "/" + f.parameters().size(), f);
         }
@@ -67,7 +68,11 @@ final class ScalarFrameMachineTest {
             assertEquals("int", fn.returnType().name());
             return ((Number) result).longValue();
         }
-        @Override public void safepoint() { safepoints.incrementAndGet(); }
+        @Override public void safepoint() {
+            safepoints.incrementAndGet();
+            maxNativeCallDepth.accumulateAndGet(
+                    Thread.currentThread().getStackTrace().length, Math::max);
+        }
     }
 
     private static Ast.FunctionDecl sumFunction() {
@@ -87,8 +92,10 @@ final class ScalarFrameMachineTest {
         var host = new Host(fn);
         var plan = ScalarFrameMachine.prepare(fn, host);
         assertNotNull(plan);
-        assertEquals(465L, ScalarFrameMachine.run(plan, List.of(30L), host));
+        assertEquals(1830L, ScalarFrameMachine.run(plan, List.of(60L), host));
         assertTrue(host.safepoints.get() > 0);
+        assertTrue(host.maxNativeCallDepth.get() < 100,
+                "60 non-tail guest calls must not consume 60 native Java call frames");
     }
 
     @Test
@@ -176,6 +183,29 @@ final class ScalarFrameMachineTest {
                 Ast.ActorKind.NONE, List.of(),
                 List.of(new Ast.Param(INT, "n")), INT, List.of(), List.of(ret(v("n"))));
         assertNull(ScalarFrameMachine.prepare(routine, host));
+    }
+
+    @Test
+    void missingElseReturnCannotBeAdmittedAsStacklessScalar() {
+        var partial = fn("partial", List.of("n"),
+                new Ast.IfStmt(
+                        List.of(new Ast.IfBranch(b("==", v("n"), n(0)),
+                                List.of(ret(n(1))))),
+                        List.of()));
+        assertNull(ScalarFrameMachine.prepare(partial, new Host(partial)),
+                "unproven return paths stay on the existing checked evaluator");
+    }
+
+    @Test
+    void invalidInitialArityDoesNotLeaveAStaleCarrierScope() {
+        var fn = tailFunction();
+        var host = new Host(fn);
+        var plan = ScalarFrameMachine.prepare(fn, host);
+        assertThrows(IllegalArgumentException.class,
+                () -> ScalarFrameMachine.run(plan, List.of(1L), host));
+        try (GuestInvocationFrame healthy = GuestInvocationFrame.enter(0, 0)) {
+            assertNotNull(healthy);
+        }
     }
 
     @Test
