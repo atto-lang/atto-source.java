@@ -32,6 +32,9 @@ jobs:
           set -euo pipefail
           test -n "${RUNNER_NAME:-}"
           test -n "${RUNNER_OS:-}"
+          test -n "${RUNNER_TEMP:-}"
+          test "${GITHUB_JOB:-}" = "admission"
+          test "${GITHUB_REPOSITORY_ID:-}" = "$EXPECTED_REPOSITORY_ID"
           test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
           [[ "$EXPECTED_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
