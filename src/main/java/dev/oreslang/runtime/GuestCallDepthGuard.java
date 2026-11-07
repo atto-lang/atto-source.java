@@ -145,6 +145,10 @@ public final class GuestCallDepthGuard {
      * 32-byte actor-owned guard frame. These are guest-owned integer values,
      * never Java object references. No additional frame is reserved.
      */
+    static boolean hasActorInvocationFrame(int enteredDepth) {
+        return requireInvocationScope(enteredDepth).arena != null;
+    }
+
     static void writeScalarArgument(int enteredDepth, int index, long value) {
         Scope scope = requireInvocationScope(enteredDepth);
         if (index < 0 || index >= 2) {
