@@ -65,6 +65,26 @@ final class OresLanguageVerifiedDopLeaseTest {
     }
 
     @Test
+    void retainedParsedValueCannotEscapeItsVerifiedSourceScope() throws Exception {
+        Source guest = source(CODE, UNIT);
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            org.graalvm.polyglot.Value retained;
+            try (var scope = OresLanguage.openVerifiedDopSource(UNIT, CODE)) {
+                retained = context.parse(guest);
+                assertEquals(42L, retained.execute().asLong());
+            }
+            assertThrows(PolyglotException.class, () -> retained.execute(),
+                    "a parsed function must not retain authority beyond its scope");
+            // A new lease cannot revive old parsed calltargets: their token
+            // is distinct from the newly verified source lease.
+            try (var next = OresLanguage.openVerifiedDopSource(UNIT, CODE)) {
+                assertThrows(PolyglotException.class, () -> retained.execute());
+            }
+        }
+    }
+
+    @Test
     void ordinaryPolyglotSourceWithoutTrustedScopeRemainsFailClosed()
             throws Exception {
         Source guest = source(CODE, UNIT);
