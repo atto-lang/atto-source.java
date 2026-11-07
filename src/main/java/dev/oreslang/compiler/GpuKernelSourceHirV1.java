@@ -258,7 +258,9 @@ public final class GpuKernelSourceHirV1 {
                 throw fail("003", "duplicate GPU parameter: " + param.name());
             params.add(new Parameter(param.name(), kind));
         }
-        return new Plan(fn.name(), params, Type.VOID, body(fn.body(), scope, 0),
+        Plan candidate = new Plan(fn.name(), params, Type.VOID, body(fn.body(), scope, 0),
                 Evidence.TYPED_SOURCE_ONLY_NOT_EXECUTABLE);
+        GpuKernelTailGuardV1.audit(candidate); // no provider authority; source 1D tail audit
+        return candidate;
     }
 }
