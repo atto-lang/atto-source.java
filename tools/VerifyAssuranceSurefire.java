@@ -108,11 +108,43 @@ final class VerifyAssuranceSurefire {
             expectRejected(report, expected, good.replace("tests=\"1\"", "tests=\"2\""));
             expectRejected(report, expected, "<!DOCTYPE testsuite [<!ENTITY data SYSTEM " +
                 "\"file:///etc/passwd\">]>" + good);
+            String testcase = "<testcase classname=\"dev.oreslang.SecurityFixture\" " +
+                "name=\"mustExecute\"/>";
+            expectRejected(report, expected, good.replace(
+                "name=\"dev.oreslang.SecurityFixture\"", "name=\"forged.Suite\""));
+            expectRejected(report, expected, good.replace(
+                "classname=\"dev.oreslang.SecurityFixture\"", "classname=\"forged.Suite\""));
+            expectRejected(report, expected, good.replace("tests=\"1\"", "tests=\"0\""));
+            expectRejected(report, expected, good.replace("tests=\"1\"", "tests=\"invalid\""));
+            expectRejected(report, expected, good.replace("tests=\"1\"",
+                "tests=\"999999999999999999999\""));
+            expectRejected(report, expected, good.replace(
+                "name=\"mustExecute\"", "name=\"\""));
+            expectRejected(report, expected, good.replace(
+                "<testcase classname=\"dev.oreslang.SecurityFixture\" " +
+                "name=\"mustExecute\"/>", ""));
+            expectRejected(report, expected, good.replace("tests=\"1\"", "tests=\"2\"")
+                .replace("</testsuite>", testcase + "</testsuite>"));
+            expectRejected(report, expected, good.replace(testcase,
+                "<system-out>" + testcase + "</system-out>"));
+            expectRejected(report, expected, good.replace(testcase,
+                "<testcase classname=\"dev.oreslang.SecurityFixture\" " +
+                "name=\"mustExecute\"><skipped/></testcase>"));
+            expectRejected(report, expected, good.replace(testcase,
+                "<testcase classname=\"dev.oreslang.SecurityFixture\" " +
+                "name=\"mustExecute\"><failure/></testcase>"));
+            expectRejected(report, expected, good.replace(testcase,
+                "<testcase classname=\"dev.oreslang.SecurityFixture\" " +
+                "name=\"mustExecute\"><error/></testcase>"));
+            expectRejected(report, expected, good.replace(testcase,
+                testcase + "<unexpected/>"));
+            expectRejected(report, expected, good.replace("failures=\"0\"", ""));
+
         } finally {
             Files.deleteIfExists(report);
         }
-        System.out.println("PASS Surefire XML negative controls: failure, skip, missing case, " +
-            "count mismatch and external entity rejection");
+        System.out.println("PASS Surefire XML negative controls: malformed totals, " +
+            "wrong/duplicate/missing/nested cases, forged suite names, hidden errors, and XXE");
     }
 
     private static void expectRejected(Path report, Suite expected, String xml) throws Exception {
