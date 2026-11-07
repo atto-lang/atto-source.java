@@ -79,7 +79,7 @@ class StaticActorPilotTests(unittest.TestCase):
             "return total;", "return increment;"))
 
     def test_direct_actor_state_escape_refused(self):
-        self.rejects("expected '.'", self.source.read_text().replace(
+        self.rejects("expected 'send'", self.source.read_text().replace(
             "first.send(7);", "first.total = 1;"))
 
     def test_use_after_stop_refused(self):
