@@ -330,7 +330,30 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
+    /**
+     * Opaque module metadata is retained for source tooling, but compiler
+     * directives bound to other targets cannot silently become no-ops.
+     * This is deliberately placement-specific: callable and field annotations
+     * are checked by their owning semantic passes.
+     */
+    private void rejectModuleCompilerAnnotations(List<Ast.Annotation> annotations) {
+        java.util.Set<String> invalid = java.util.Set.of(
+                "Ret", "FromJson", "AllowStructural", "structural",
+                "ActorMaxThreads", "Critical", "CallerRole", "CallableBy",
+                "ActorMiddleware", "NamedParams", "GrowthPolicy",
+                "Allocator", "Align", "InlineCapacity", "MaxCapacity",
+                "Storage", "Rank", "RequiresPermission", "Permission",
+                "GrantPermission", "Unsafe", "Trusted", "Untrusted", "AllowAll");
+        for (Ast.Annotation annotation : annotations) {
+            if (invalid.contains(annotation.name())) {
+                throw error(previous(), "@" + annotation.name()
+                        + " is not a supported module annotation; compiler annotations cannot be inert metadata");
+            }
+        }
+    }
+
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+        rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
@@ -720,6 +743,7 @@ public final class Parser {
             String className,
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
+        rejectNonCallableReturnAnnotation(annotations, "constructors");
         Token keyword = advance(); // contextual 'constructor'
         if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.trapped
                 || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted) {
@@ -1294,6 +1318,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -1331,6 +1356,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseTypeFirstClassField(
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
         boolean mutableReferent = match(MUT);
@@ -1349,6 +1375,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
@@ -1362,6 +1389,7 @@ public final class Parser {
 
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
     private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "actor fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         consumeContextualIdentifier("final", "expected 'final' actor field");
         String name = consume(IDENT, "expected field name after 'final'").lexeme();
@@ -1374,6 +1402,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectNonCallableReturnAnnotation(annotations, "module bindings");
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -1663,7 +1692,11 @@ public final class Parser {
             if (List.of("derive", "Derive", "repr", "Repr", "align",
                     "cfg", "Cfg", "inline", "Inline", "expand", "GenerateBuilder",
                     "GenerateSchema", "GenerateClient", "ActorMessage",
-                    "PipelineStage", "RequiresState").contains(name)) {
+                    "PipelineStage", "RequiresState",
+                    "Critical", "RequiresPermission", "Permission",
+                    "GrantPermission", "Unsafe", "Trusted", "Untrusted",
+                    "AllowAll", "CallerRole", "CallableBy", "ActorMiddleware",
+                    "ActorMaxThreads").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
@@ -1878,6 +1911,7 @@ public final class Parser {
         Ast.TypeRef annotated = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("Ret")) {
+                if (annotated != null) throw error(previous(), "duplicate @Ret return annotation");
                 if (annotation.arguments().size() != 1) throw error(previous(), "@Ret requires exactly one type");
                 annotated = annotation.arguments().getFirst();
             }
@@ -5095,6 +5129,15 @@ public final class Parser {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
                     + " would be silently discarded; declaration annotation storage is not implemented");
+        }
+    }
+
+    /** A return-type annotation must never survive on non-callable AST slots. */
+    private void rejectNonCallableReturnAnnotation(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("Ret")) {
+                throw error(previous(), "@Ret is only valid on callable return signatures, not " + target);
+            }
         }
     }
 
