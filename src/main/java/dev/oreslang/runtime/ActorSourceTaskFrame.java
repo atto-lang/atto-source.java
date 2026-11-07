@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.util.Objects;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -30,8 +32,14 @@ final class ActorSourceTaskFrame {
     private int savedScalarBytes;
     private boolean hasSavedScalars;
     /** An actor task cannot alias compiler parameter slots with host snapshots. */
-    private enum ScalarOwner { NONE, HOST_SNAPSHOT, SOURCE_PARAMETERS }
+    private enum ScalarOwner { NONE, HOST_SNAPSHOT, SOURCE_PARAMETERS, SOURCE_LOCALS }
     private ScalarOwner scalarOwner = ScalarOwner.NONE;
+    // Local placement is stable for the SourceTask lifetime, including await
+    // and carrier migration. Neither foreign tasks nor separate Env scopes
+    // may manufacture duplicate offsets.
+    private record LexicalKey(long scopeEpoch, String name) { }
+    private final Map<LexicalKey, Integer> lexicalOffsets = new HashMap<>();
+    private int nextLexicalOffset;
     private boolean retired;
 
     ActorSourceTaskFrame(ActorFrameArena arena, ExecutionContext execution) {
@@ -88,7 +96,8 @@ final class ActorSourceTaskFrame {
     synchronized void saveTypedScalars(List<?> values) {
         requireOwnerTurn();
         requireRunningFrame();
-        if (scalarOwner == ScalarOwner.SOURCE_PARAMETERS) {
+        if (scalarOwner == ScalarOwner.SOURCE_PARAMETERS
+                || scalarOwner == ScalarOwner.SOURCE_LOCALS) {
             // Compiler parameter state must never be overwritten by a host
             // callback masquerading as an unrelated source continuation.
             throw new IllegalStateException(
@@ -121,7 +130,8 @@ final class ActorSourceTaskFrame {
         requireOwnerTurn();
         requireRunningFrame();
         Objects.requireNonNull(arguments, "arguments");
-        if (scalarOwner != ScalarOwner.NONE || hasSavedScalars) {
+        if (scalarOwner != ScalarOwner.NONE || hasSavedScalars
+                || !lexicalOffsets.isEmpty()) {
             arena.poisonFromGuestGuard();
             throw new IllegalStateException("source parameter frame already initialized");
         }
@@ -137,6 +147,7 @@ final class ActorSourceTaskFrame {
         savedScalarBytes = encoded.length;
         hasSavedScalars = true;
         scalarOwner = ScalarOwner.SOURCE_PARAMETERS;
+        nextLexicalOffset = SCALAR_HEADER_BYTES + encoded.length;
         return restoreTypedScalars();
     }
 
@@ -151,7 +162,10 @@ final class ActorSourceTaskFrame {
         requireOwnerTurn();
         requireRunningFrame();
         Objects.requireNonNull(arguments, "arguments");
-        if (scalarOwner == ScalarOwner.NONE) return; // Explicit unsupported fallback.
+        if (scalarOwner == ScalarOwner.NONE
+                || (scalarOwner == ScalarOwner.SOURCE_LOCALS && arguments.isEmpty())) {
+            return; // Zero arguments or explicit reference/wide fallback.
+        }
         if (scalarOwner != ScalarOwner.SOURCE_PARAMETERS) {
             arena.poisonFromGuestGuard();
             throw new IllegalStateException("source parameter frame has foreign owner");
@@ -168,6 +182,92 @@ final class ActorSourceTaskFrame {
         }
         // Force full tag/length validation in addition to binary identity.
         restoreTypedScalars();
+    }
+
+    /**
+     * M3.2 source lexical scalar slots in the existing 64-byte actor task
+     * lease. This is the real source Env read/write path, not a diagnostic
+     * copy. Layout is first-binding order with stable (scope epoch,name)
+     * keys, after the already-saved scalar parameters.
+     *
+     * Unsupported values and full slots return false before writing and
+     * keep their existing JVM Env semantics. An already managed slot NEVER
+     * silently falls back on mutation or foreign task access.
+     */
+    synchronized boolean bindLexicalScalar(long scopeEpoch, String name, Object value) {
+        requireOwnerTurn();
+        requireRunningFrame();
+        if (scopeEpoch <= 0 || name == null || name.isBlank()) {
+            throw new IllegalArgumentException("invalid lexical slot identity");
+        }
+        if (scalarOwner == ScalarOwner.HOST_SNAPSHOT) return false;
+        LexicalKey key = new LexicalKey(scopeEpoch, name);
+        if (lexicalOffsets.containsKey(key)) {
+            arena.poisonFromGuestGuard();
+            throw new IllegalStateException("duplicate actor lexical slot allocation");
+        }
+        byte[] encoded = encodeOne(value);
+        if (encoded == null) return false;
+        int offset = nextLexicalOffset == 0 ? SCALAR_HEADER_BYTES : nextLexicalOffset;
+        if (offset + GuestScalarFrameCodec.SLOT_BYTES > FRAME_CHARGE_BYTES) {
+            return false; // Existing interpreter fallback; not a partial slot.
+        }
+        arena.write(execution, frame, offset, encoded);
+        lexicalOffsets.put(key, offset);
+        nextLexicalOffset = offset + GuestScalarFrameCodec.SLOT_BYTES;
+        if (scalarOwner == ScalarOwner.NONE) scalarOwner = ScalarOwner.SOURCE_LOCALS;
+        return true;
+    }
+
+    synchronized Object readLexicalScalar(long scopeEpoch, String name) {
+        requireOwnerTurn();
+        requireRunningFrame();
+        Integer offset = lexicalOffsets.get(new LexicalKey(scopeEpoch, name));
+        if (offset == null) {
+            arena.poisonFromGuestGuard();
+            throw new IllegalStateException("unbound actor lexical scalar slot");
+        }
+        byte[] encoded = arena.read(execution, frame, offset,
+                GuestScalarFrameCodec.SLOT_BYTES);
+        try {
+            return GuestScalarFrameCodec.decode(encoded).getFirst();
+        } catch (IllegalArgumentException invalidTag) {
+            arena.poisonFromGuestGuard();
+            throw invalidTag;
+        }
+    }
+
+    synchronized void writeLexicalScalar(long scopeEpoch, String name, Object value) {
+        requireOwnerTurn();
+        requireRunningFrame();
+        Integer offset = lexicalOffsets.get(new LexicalKey(scopeEpoch, name));
+        if (offset == null) {
+            arena.poisonFromGuestGuard();
+            throw new IllegalStateException("missing actor lexical scalar slot");
+        }
+        byte[] replacement = encodeOne(value);
+        if (replacement == null) {
+            arena.poisonFromGuestGuard();
+            throw new IllegalStateException("owned scalar slot cannot accept references");
+        }
+        byte[] existing = arena.read(execution, frame, offset,
+                GuestScalarFrameCodec.SLOT_BYTES);
+        if (existing[0] != replacement[0]) {
+            arena.poisonFromGuestGuard();
+            throw new IllegalStateException("typed actor lexical slot changed primitive kind");
+        }
+        arena.write(execution, frame, offset, replacement);
+    }
+
+    synchronized int lexicalScalarCount() {
+        requireOwnerTurn();
+        requireRunningFrame();
+        return lexicalOffsets.size();
+    }
+
+    private static byte[] encodeOne(Object value) {
+        if (value == null) return null;
+        return GuestScalarFrameCodec.encode(List.of(value));
     }
 
     /** Read only after authenticated resume, never from a waiting producer. */
@@ -214,6 +314,8 @@ final class ActorSourceTaskFrame {
         savedScalarBytes = 0;
         hasSavedScalars = false;
         scalarOwner = ScalarOwner.NONE;
+        lexicalOffsets.clear();
+        nextLexicalOffset = 0;
         retired = true;
     }
 
