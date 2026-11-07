@@ -1,0 +1,11 @@
+fnc right_side(): bool {
+  stdio.println("rhs");
+  return true;
+}
+
+pub fnc main(): void {
+  stdio.println(false and right_side());
+  stdio.println(true or right_side());
+  stdio.println(false xor right_side());
+  return;
+}
