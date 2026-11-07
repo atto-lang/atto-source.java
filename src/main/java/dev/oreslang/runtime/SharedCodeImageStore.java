@@ -74,6 +74,22 @@ public final class SharedCodeImageStore implements AutoCloseable {
         }
 
         /**
+         * Compiled #literals are NOT dynamic Symbol.process(...) calls.
+         * Every literal AST value must originate in the checked source image.
+         * Missing values indicate a source/AST identity mismatch, not a reason
+         * to create a new untracked runtime value or bypass image quotas.
+         */
+        public OresSymbol requireGuestStaticLiteral(
+                OresSymbol value, ActorRuntime.ActorKind actorKind) {
+            Objects.requireNonNull(value, "value");
+            if (literalLease.indexOf(value) < 0) {
+                throw new IllegalStateException(
+                        "compiled Symbol literal missing from checked code image");
+            }
+            return literalForActor(value, actorKind);
+        }
+
+        /**
          * Sharing an immutable JVM value is permitted only on the trusted
          * SHARED/root domain. PRIVATE/UNTRUSTED actors get separate scalar
          * values, not references into the VM-owned literal pool.
