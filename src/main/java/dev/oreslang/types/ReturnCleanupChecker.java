@@ -188,7 +188,7 @@ public final class ReturnCleanupChecker {
             } else if (stmt instanceof Ast.TryStmt attempted) {
                 statements(attempted.body(), scope, inFinally, inDefer, trackReturns, state);
                 Scope caught = new Scope(scope);
-                caught.define(attempted.errorName());
+                if (attempted.hasCatch()) caught.define(attempted.errorName());
                 statements(attempted.catchBody(), caught, inFinally, inDefer, trackReturns, state);
                 int enclosingLoops = state.loopsInsideFinally;
                 state.loopsInsideFinally = 0;

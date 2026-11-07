@@ -3611,6 +3611,12 @@ public final class Parser {
 
     private Ast.TryStmt parseTry() {
         List<Ast.Stmt> body = parseBlock();
+        // try { } finally { } without catch: the failure propagates after
+        // finally runs (errorName == null marks "no catch").
+        if (!check(CATCH)) {
+            if (!match(FINALLY)) throw error(peek(), "expected catch or finally after try block");
+            return new Ast.TryStmt(body, null, List.of(), parseBlock());
+        }
         consume(CATCH, "expected catch after try block");
         consume(LPAREN, "expected '(' after catch");
         String error = consume(IDENT, "expected catch binding").lexeme();

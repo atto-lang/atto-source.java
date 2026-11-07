@@ -2735,6 +2735,7 @@ public final class OresEvalRootNode extends RootNode {
                                 // try body owns it via the heap cleanup stack.
                                 t.disarmSourceCleanup(pendingFinally);
                                 if (flow.kind() == SourceFlowKind.THROW
+                                        && attempted.hasCatch()
                                         && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
                                     caught.define(
@@ -6424,7 +6425,7 @@ public final class OresEvalRootNode extends RootNode {
                     catch (RuntimeException failure) {
                         // Guest catch may recover explicit denials and other ordinary
                         // errors, but must never consume panic or scheduler control.
-                        if (!isGuestCatchableFailure(failure)) throw failure;
+                        if (!tried.hasCatch() || !isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
