@@ -27,6 +27,10 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
     // Null only for the isolated host-owned calltarget test API; language
     // executions *must* hold the exact live single-use source scope.
     private final Object sourceLease;
+    // Defense-in-depth against a parsed root being reused under another
+    // polyglot context while the same host thread still holds its lease.
+    private final java.util.concurrent.atomic.AtomicReference<java.util.UUID> boundContextId =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     @Children private final OperationNode[] instructions;
 
@@ -96,6 +100,12 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
             // general actor/tenant or adversarial-isolate execution.
             OresLanguage.requireLiveVerifiedDopLease(sourceLease);
             OresContext context = OresContext.get(this);
+            java.util.UUID currentContextId = context.contextId();
+            boundContextId.compareAndSet(null, currentContextId);
+            if (!currentContextId.equals(boundContextId.get())) {
+                throw new SecurityException(
+                        "DOP_VERIFIED_CONTEXT_MISMATCH: root cannot cross isolate context");
+            }
             if (context.isolatePolicy().adversarial()) {
                 throw new SecurityException(
                         "DOP_VERIFIED_TENANT_UNSUPPORTED: adversarial isolate admission remains closed");
