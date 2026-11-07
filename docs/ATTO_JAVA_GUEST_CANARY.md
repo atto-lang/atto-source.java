@@ -4,14 +4,16 @@ This change is an executable **compiler-backed test declaration**, not an execut
 
 ## Real guest metamorphic control
 
-The JUnit method `CriticalActorGuestExecutionTest.canonicalAttoGuestOutputTracksARealSourceMutation` loads the canonical `examples/critical-actor-checked-v1.atto` source into the real Graal/Truffle language Context through `OresCompiler.parseAndTypeCheck` and `context.eval`.
+The JUnit metamorphic tests in `CriticalActorGuestExecutionTest` load the canonical `examples/critical-actor-checked-v1.atto` source into the real Graal/Truffle language Context through `OresCompiler.parseAndTypeCheck` and `context.eval`.
 
 It compares two separate evaluations:
 
 | Variant | Source initialization | Expected observed stdout |
 | --- | --- | --- |
 | Canonical | `let int value = 40;` | `42` |
-| Mutated | `let int value = 41;` | `43` |
+| Mutated +1 | `let int value = 41;` | `43` |
+| Mutated −1 | `let int value = 39;` | `41` |
+| Critical-body mutant | `value = value + 3;` | `43` |
 
 The test requires one and only one occurrence of the source replacement target and uses a distinct polyglot Source filename for the mutated variant. A source-insensitive stub that always prints `42` cannot pass this test.
 
@@ -33,7 +35,7 @@ If GitHub reports `steps=null` or `steps=[]`, classify it as runner-admission fa
 
 ## Compiler-owned borrow admission
 
-The added `ActorBorrowCompilerAdmissionTest` defines five source/compiler admission checks: two shared borrows coexist; an exclusive borrow is admitted alone; a writer is rejected with two live readers; `rt take` is rejected while borrowed; and a stale owner use after move is rejected. These use canonical `rt borrow`, `rt mut borrow`, and `rt take` syntax already supported by the Java parser and OwnershipChecker. The tests are authored, but **have not yet executed** under hosted CI.
+The added `ActorBorrowCompilerAdmissionTest` defines **13** source/compiler admission checks: two shared borrows coexist; an exclusive borrow is admitted alone; a writer is rejected with two live readers; `rt take` is rejected while borrowed; and a stale owner use after move is rejected. Eight additional tests cover single reader/write exclusion, write/read exclusion, double mutable borrow, owner rebinding during a read, borrow cleanup across lexical blocks, and double `rt take`. These use canonical `rt borrow`, `rt mut borrow`, and `rt take` syntax already supported by the Java parser and OwnershipChecker. The tests are authored, but **have not yet executed** under hosted CI.
 
 Run with the above guest test by setting:
 
@@ -56,8 +58,9 @@ expected test suites, matching suite and testcase class identities, an exact
 executed-test count, zero errors/failures/skips, unique testcase names, and
 every required security method exactly once. It uses a hardened JAXP parser:
 DOCTYPE, external entities, XInclude, and external DTD/schema access are
-disabled. Before Maven runs it also rejects synthetic XML containing a
-fabricated failure, skipped test, missing method, inconsistent count, or XXE.
+disabled. Before Maven runs it also checks **20 invalid XML variants**, including
+fabricated failures, skipped and error children, nested/duplicate test cases,
+forged suite/class identities, incorrect and overflowing counters, and XXE.
 
 A separate `suite-gate-completed.json` file is written **only after** the
 actual JUnit XML passes structural validation. The workflow may upload a
