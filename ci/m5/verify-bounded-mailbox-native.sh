@@ -20,7 +20,7 @@ mkdir -p "$work/classes"
   src/m5/M5BoundedActorMailbox.java tests/m5/M5MailboxNativeProbe.java
 (
   cd "$work"
-  "$JAVA_HOME/bin/native-image" --no-fallback --gc=epsilon \
+  "$JAVA_HOME/bin/native-image" --no-fallback --gc=epsilon -H:+SharedArenaSupport \
     -H:Name=m5-mailbox-guest -cp "$work/classes" M5MailboxNativeProbe
 )
 test -x "$work/m5-mailbox-guest" && test -s "$work/m5-mailbox-guest" || {
