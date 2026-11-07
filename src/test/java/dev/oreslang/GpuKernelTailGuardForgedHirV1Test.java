@@ -171,4 +171,82 @@ final class GpuKernelTailGuardForgedHirV1Test {
                 List.of(source.body().getFirst(), altered), source.evidence());
         denied(forged, "unknown typed GPU source opcode");
     }
+
+    @Test void forgedKernelReturnTypeCannotClaimVoidKernelTailProof() {
+        var c = canonical();
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), GpuKernelSourceHirV1.Type.F32,
+                c.body(), c.evidence());
+        denied(forged, "cannot return non-void");
+    }
+
+    @Test void forgedLocalCannotAliasSourceReadBuffer() {
+        var c = canonical();
+        var alias = new GpuKernelSourceHirV1.Instruction(
+                "LET", "alias",
+                value(GpuKernelSourceHirV1.Type.BUFFER_READ_F32, "local", "x"),
+                List.of());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(alias, c.body().getFirst(), c.body().get(1)), c.evidence());
+        denied(forged, "must have a scalar type");
+    }
+
+    @Test void forgedLocalCannotAliasSourceWriteBuffer() {
+        var c = canonical();
+        var alias = new GpuKernelSourceHirV1.Instruction(
+                "LET", "alias",
+                value(GpuKernelSourceHirV1.Type.BUFFER_WRITE_F32, "local", "out"),
+                List.of());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(alias, c.body().getFirst(), c.body().get(1)), c.evidence());
+        denied(forged, "must have a scalar type");
+    }
+
+    @Test void forgedLocalCannotCarryHiddenNestedInstructions() {
+        var c = canonical();
+        var original = c.body().getFirst();
+        var modified = new GpuKernelSourceHirV1.Instruction(
+                "LET", original.target(), original.value(),
+                List.of(new GpuKernelSourceHirV1.Instruction(
+                        "RETURN_VOID", null, null, List.of())));
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(modified, c.body().get(1)), c.evidence());
+        denied(forged, "malformed scalar binding");
+    }
+
+    @Test void forgedIfTargetCannotHideExtraInstructionMetadata() {
+        var c = canonical();
+        var original = c.body().get(1);
+        var altered = new GpuKernelSourceHirV1.Instruction(
+                "IF", "forged-target", original.value(), original.body());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(c.body().getFirst(), altered), c.evidence());
+        denied(forged, "branch predicate or target");
+    }
+
+    @Test void forgedReturnTargetCannotAcquireUnexpectedControlFlowMeaning() {
+        var c = canonical();
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(c.body().getFirst(), c.body().get(1),
+                        new GpuKernelSourceHirV1.Instruction(
+                                "RETURN_VOID", "forged-return", null, List.of())),
+                c.evidence());
+        denied(forged, "unexpected return operands");
+    }
+
+    @Test void forgedScalarLetMustNotHaveAnEmptyTarget() {
+        var c = canonical();
+        var original = c.body().getFirst();
+        var malformed = new GpuKernelSourceHirV1.Instruction(
+                "LET", "", original.value(), List.of());
+        var forged = new GpuKernelSourceHirV1.Plan(
+                c.symbol(), c.parameters(), c.returnType(),
+                List.of(malformed, c.body().get(1)), c.evidence());
+        denied(forged, "malformed scalar binding");
+    }
 }
