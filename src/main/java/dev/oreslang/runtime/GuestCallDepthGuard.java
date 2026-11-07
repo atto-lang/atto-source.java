@@ -25,6 +25,9 @@ public final class GuestCallDepthGuard {
         final ActorGuestStack actorStack;
         final ActorFrameArena arena;
         final ExecutionContext execution;
+        // A task identity survives await; its dispatch ticket must not.
+        final ExecutionContext sourceTask;
+        final long sourceDispatch;
         final ArrayDeque<ActorFrameArena.FrameRef> frames = new ArrayDeque<>();
         int depth;
 
@@ -32,6 +35,13 @@ public final class GuestCallDepthGuard {
             this.actorStack = actorStack;
             this.arena = arena;
             this.execution = arena == null ? null : arena.newSynchronousExecution();
+            this.sourceTask = OresScheduler.currentExecutionContext();
+            this.sourceDispatch = OresScheduler.currentDispatchId();
+        }
+
+        boolean matchesCurrentSchedulerDispatch() {
+            return sourceTask == OresScheduler.currentExecutionContext()
+                    && sourceDispatch == OresScheduler.currentDispatchId();
         }
     }
 
@@ -52,7 +62,8 @@ public final class GuestCallDepthGuard {
         Scope scope = CURRENT.get();
         if ((actorStack == null) != (arena == null)
                 || (scope != null
-                && (scope.actorStack != actorStack || scope.arena != arena))) {
+                && (scope.actorStack != actorStack || scope.arena != arena
+                || !scope.matchesCurrentSchedulerDispatch()))) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
             if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
             if (actorStack != null) actorStack.poison();
@@ -133,8 +144,10 @@ public final class GuestCallDepthGuard {
         Scope scope = CURRENT.get();
         if (scope == null || enteredDepth <= 0 || scope.depth != enteredDepth
                 || scope.actorStack != ActorRuntime.currentActorGuestStack()
-                || scope.arena != ActorRuntime.currentActorFrameArena()) {
+                || scope.arena != ActorRuntime.currentActorFrameArena()
+                || !scope.matchesCurrentSchedulerDispatch()) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
             throw new IllegalStateException("guest invocation descriptor outside active frame");
         }
         return scope;
@@ -181,12 +194,28 @@ public final class GuestCallDepthGuard {
         return result;
     }
 
+    /**
+     * SourceTask may suspend only after synchronous guest frames unwind. Its
+     * own persistent 64-byte frame is managed separately by the scheduler.
+     * A leaked synchronous lease is never a resumable source continuation.
+     */
+    static void requireNoLiveSynchronousCallsAtSourceSuspension() {
+        Scope scope = CURRENT.get();
+        if (scope == null) return;
+        if (scope.actorStack != null) scope.actorStack.poison();
+        if (scope.arena != null) scope.arena.poisonFromGuestGuard();
+        CURRENT.remove(); // Never contaminate the next carrier dispatch.
+        throw new IllegalStateException(
+                "actor source task cannot suspend with an open synchronous guest invocation");
+    }
+
     /** Pop the actor-owned frame before releasing its logical guest charge. */
     public static void leave(int enteredDepth) {
         Scope scope = CURRENT.get();
         if (enteredDepth <= 0 || scope == null || scope.depth != enteredDepth
                 || scope.actorStack != ActorRuntime.currentActorGuestStack()
-                || scope.arena != ActorRuntime.currentActorFrameArena()) {
+                || scope.arena != ActorRuntime.currentActorFrameArena()
+                || !scope.matchesCurrentSchedulerDispatch()) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
             if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
             CURRENT.remove();
