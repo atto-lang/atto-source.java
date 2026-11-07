@@ -106,3 +106,36 @@ always-uploaded `checkout.json` does **not** qualify as pass-only evidence.
 Never grant a read token to PR-controlled code. Run live verification from a
 trusted independent checkout after CI runner admission is restored. Real Java
 and Graal tests are still unexecuted until GitHub returns nonzero started steps.
+
+## Scoped Bash-only exact-source gate (November 7, 2026)
+
+The Java/Graal critical guest workflow now invokes
+`tools/verify-critical-guest-inputs.sh` before Maven and immediately before
+writing the **pass-only** Surefire receipt. The gate checks the actual bytes of
+tracked compiler/test Java sources, resource inputs, Maven configuration,
+`pom.xml`, the original workflow and the canonical `.atto`/`.ores` actor
+fixtures against the immutable Git `HEAD` blobs. It rejects modified
+`assume-unchanged` and `skip-worktree` files, untracked/ignored Java source
+or Maven extensions, and missing/symlinked required inputs.
+
+Both Git index and committed-tree path inventories must be readable and
+identical, and filesystem enumeration failures are hard errors. The workflow
+independently compares the gate and its test script to original-head Git
+blobs **before invoking either script**, so a replaced gate cannot bless
+itself. It repeats those checks before creating the pass-only completion JSON.
+
+The scratch-Git negative harness at `tools/test-critical-guest-inputs.sh`
+passed **14/14 locally** with Bash and Git; the local content matches the
+corresponding exact GitHub file blobs. Cases include original-head positive
+execution, head mismatch, ordinary edits, hidden `assume-unchanged` and
+`skip-worktree` edits, ordinary and ignored injected sources, deleted
+fixtures, symlink substitution, untracked Maven extensions, truncated
+Git manifest output and a failing filesystem enumerator.
+
+This is **SOURCE_ONLY_HOST_INTEGRITY**, not a real Maven, Graal, Truffle
+guest or Native Image result. No hosted CI run was admitted during this
+audit; keep Java guest execution and borrow refinement `NOT_EXECUTED`
+until the private runner-allocation incident is resolved. This gate does
+not claim comprehensive integrity of arbitrary host environment/toolchain
+inputs outside the selected source and Maven surfaces.
+
