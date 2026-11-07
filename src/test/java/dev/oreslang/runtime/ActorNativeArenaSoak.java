@@ -124,7 +124,7 @@ public final class ActorNativeArenaSoak {
         }
         System.out.println("ATTO_NATIVE_ARENA_SOAK=PASS");
         System.out.println("actor_operations=" + (RESTARTS * TURNS_PER_ACTOR));
-        System.out.println("tenant_restarts=" + RESTARTS);
+        System.out.println("actor_arena_restarts=" + RESTARTS);\n        System.out.println("tenant_restarts=NOT_TESTED");
         System.out.println("native_charge_after=0");
         System.out.println("peak_native_charge_bytes=" + maxNativeCharge);
         System.out.println("gc_observed=" + gcObservable);
