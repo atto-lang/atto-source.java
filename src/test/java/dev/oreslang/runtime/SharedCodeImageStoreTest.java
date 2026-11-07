@@ -426,6 +426,33 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void malformedCodeUnitIdRejectsBeforeAdversarialCatalogCallback() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        List<OresSymbol> hostile = new java.util.AbstractList<>() {
+            @Override public int size() { return 1; }
+            @Override public OresSymbol get(int i) {
+                throw new AssertionError("rejected code unit id must not inspect host input");
+            }
+            @Override public java.util.Iterator<OresSymbol> iterator() {
+                throw new AssertionError("rejected code unit id must not invoke host iterator");
+            }
+        };
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            for (String invalid : List.of("", "    ", "a".repeat(8_193))) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> store.publish(invalid, program, hostile));
+            }
+            assertEquals(0, store.imageCount());
+            assertEquals(0L, store.activeLiteralPayloadBytes());
+            assertEquals(OresSymbol.process("ready"),
+                    store.publish("valid.atto", program,
+                            List.of(OresSymbol.process("ready")))
+                            .requireGuestStaticLiteral(
+                                    OresSymbol.process("ready"), ActorRuntime.ActorKind.SHARED));
+        }
+    }
+
+    @Test
     void invalidVmSymbolQuotasFailBeforeAnyImagePublication() {
         assertThrows(IllegalArgumentException.class,
                 () -> new SharedCodeImageStore(0, 0));
