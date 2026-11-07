@@ -219,6 +219,11 @@ final class ActorFrameArena {
     synchronized int usedBytes() { return usedBytes; }
     synchronized int liveFrames() { return frames; }
     synchronized int peakBytes() { return peakBytes; }
+    /** A synchronous guest guard breach is terminal for the same incarnation. */
+    synchronized void poisonFromGuestGuard() {
+        if (!retired) poisoned = true;
+    }
+
     synchronized boolean isPoisoned() { return poisoned; }
     synchronized boolean isRetired() { return retired; }
 
