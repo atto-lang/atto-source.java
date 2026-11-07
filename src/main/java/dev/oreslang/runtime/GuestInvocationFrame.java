@@ -108,15 +108,24 @@ public final class GuestInvocationFrame implements AutoCloseable {
         Objects.requireNonNull(fallback, "fallback");
         ensureOpenOnCarrier();
         if (fallback.size() != currentArity) {
+            GuestCallDepthGuard.poisonMalformedInvocation(carrierDepth);
             throw new IllegalStateException("guest call arity changed after frame admission");
         }
         if (!scalarSnapshot) return fallback;
-        List<Object> stored = GuestScalarFrameCodec.decode(
-                GuestCallDepthGuard.readScalarSlots(carrierDepth, scalarBytes));
-        if (stored.size() != fallback.size()) {
-            throw new IllegalStateException("typed guest scalar frame layout mismatch");
+        try {
+            List<Object> stored = GuestScalarFrameCodec.decode(
+                    GuestCallDepthGuard.readScalarSlots(carrierDepth, scalarBytes));
+            if (stored.size() != fallback.size()) {
+                GuestCallDepthGuard.poisonMalformedInvocation(carrierDepth);
+                throw new IllegalStateException("typed guest scalar frame layout mismatch");
+            }
+            return stored;
+        } catch (RuntimeException failure) {
+            // The actor cannot continue after malformed trusted compiler
+            // frame data, even when a host callback swallows the exception.
+            GuestCallDepthGuard.poisonMalformedInvocation(carrierDepth);
+            throw failure;
         }
-        return stored;
     }
 
     private void writeScalarSnapshot(byte[] encoded) {
