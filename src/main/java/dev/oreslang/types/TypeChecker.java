@@ -235,6 +235,10 @@ public final class TypeChecker {
         rejectGpuKernelExecutionUntilProviderProof(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
+        // GPU source kernels cannot acquire executable authority by being
+        // synthesized after initial parse admission. Apply the SAME fail-closed
+        // kernel/launch checks to the expanded AST in every public entrypoint.
+        rejectGpuKernelExecutionUntilProviderProof(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
@@ -287,6 +291,10 @@ public final class TypeChecker {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
+        // GPU source kernels cannot acquire executable authority by being
+        // synthesized after initial parse admission. Apply the SAME fail-closed
+        // kernel/launch checks to the expanded AST in every public entrypoint.
+        rejectGpuKernelExecutionUntilProviderProof(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
