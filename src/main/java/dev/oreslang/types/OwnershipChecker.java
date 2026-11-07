@@ -1045,6 +1045,17 @@ public final class OwnershipChecker {
             throw error("rt take of an assignment result cannot prove that the "
                     + "written source place was invalidated; use a checked replace operation");
         }
+        // Arithmetic/unary results are computed temporaries, not source
+        // bindings with an invalidatable ownership slot. Ordinary arithmetic
+        // still copies proven scalar operands; explicit rt take must not
+        // claim to have transferred one of those still-live owners. Fresh
+        // constructors such as rt take new Box() remain a separate owned
+        // temporary path and are deliberately not rejected here.
+        if (expression instanceof Ast.BinaryExpr
+                || expression instanceof Ast.UnaryExpr) {
+            throw error("E_TAKE_UNTRACKED_PLACE: rt take of a computed value "
+                    + "requires a tracked owned binding; materialize it first");
+        }
         // A conditional/cast/value-match expression is not a uniquely
         // addressable owned place. In particular, choosing between two Copy
         // *bindings* does not move the selected binding under checkExpr:
