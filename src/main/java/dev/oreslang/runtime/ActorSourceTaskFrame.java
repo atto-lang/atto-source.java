@@ -28,6 +28,7 @@ final class ActorSourceTaskFrame {
     private ActorFrameArena.FrameRef frame;
     private boolean waiting;
     private int savedScalarBytes;
+    private boolean hasSavedScalars;
     private boolean retired;
 
     ActorSourceTaskFrame(ActorFrameArena arena, ExecutionContext execution) {
@@ -94,12 +95,15 @@ final class ActorSourceTaskFrame {
         System.arraycopy(encoded, 0, contents, SCALAR_HEADER_BYTES, encoded.length);
         arena.write(execution, frame, 0, contents);
         savedScalarBytes = encoded.length;
+        hasSavedScalars = true;
     }
 
     /** Read only after authenticated resume, never from a waiting producer. */
     synchronized List<Object> restoreTypedScalars() {
         requireOwnerTurn();
         requireRunningFrame();
+        if (!hasSavedScalars) throw new IllegalStateException(
+                "actor source task has no saved typed scalar state");
         byte[] encoded = arena.read(execution, frame, 0, FRAME_CHARGE_BYTES);
         int length = ByteBuffer.wrap(encoded)
                 .order(ByteOrder.BIG_ENDIAN).getInt();
@@ -136,6 +140,7 @@ final class ActorSourceTaskFrame {
         frame = null;
         waiting = false;
         savedScalarBytes = 0;
+        hasSavedScalars = false;
         retired = true;
     }
 
