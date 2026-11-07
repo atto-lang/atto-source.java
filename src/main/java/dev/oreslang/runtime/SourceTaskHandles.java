@@ -1,9 +1,6 @@
 package dev.oreslang.runtime;
 
-import java.util.Collections;
-import java.util.Map;
 import java.util.Objects;
-import java.util.WeakHashMap;
 
 /**
  * Links the Future returned by a source {@code task { }} block to the
@@ -14,12 +11,12 @@ import java.util.WeakHashMap;
  * Future (I/O, timers, channel or actor results) is a borrowed producer and
  * cannot be cancelled through an observer.</p>
  *
- * <p>Entries are weak: a handle lives only as long as its Future is reachable.
- * The TaskScope or scheduler keeps the task itself alive while it runs.</p>
+ * <p>The capability is attached directly to the creating Future, not kept
+ * in a global registry. The Future/handle cycle is GC-collectible after all
+ * external references and scheduler work disappear; retaining a Future keeps
+ * its legitimate task-control capability available.</p>
  */
 public final class SourceTaskHandles {
-    private static final Map<OresFuture<?>, TaskHandle<?>> HANDLES =
-            Collections.synchronizedMap(new WeakHashMap<>());
 
     private static final OresSymbol SUCCESS = OresSymbol.process("success");
     private static final OresSymbol FAILED = OresSymbol.process("failed");
@@ -33,13 +30,13 @@ public final class SourceTaskHandles {
     public static <T> OresFuture<T> register(TaskHandle<T> handle) {
         Objects.requireNonNull(handle, "handle");
         OresFuture<T> result = handle.result();
-        HANDLES.put(result, handle);
+        result.bindSourceTaskHandle(handle);
         return result;
     }
 
     /** The owning handle, or null when the Future was not made by {@code task { }}. */
     public static TaskHandle<?> lookup(OresFuture<?> future) {
-        return HANDLES.get(future);
+        return future == null ? null : future.sourceTaskHandle();
     }
 
     /**
