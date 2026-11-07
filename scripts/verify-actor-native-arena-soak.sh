@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$root"
 if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/javac" || ! -x "$JAVA_HOME/bin/java" ]]; then
   echo "NATIVE_ARENA_NOT_EXECUTED: JAVA_HOME JDK 21+ required" >&2; exit 2
@@ -14,6 +14,32 @@ if [[ "${ATTO_EXPECTED_SOURCE_HEAD:-}" != "" ]]; then
     echo "NATIVE_ARENA_NOT_EXECUTED: source Git checkout modified" >&2; exit 2;
   }
 fi
+# Bind JNI/JVM compilation to regular, tracked files inside this checkout.
+source_paths=(
+  src/main/c/oresarena.c
+  src/main/java/dev/oreslang/runtime/ActorNativeArena.java
+  src/main/java/dev/oreslang/runtime/ActorLinearMemory.java
+  src/main/java/dev/oreslang/runtime/OresSymbol.java
+  src/main/java/dev/oreslang/runtime/NativeCarrierExecutor.java
+  src/test/java/dev/oreslang/runtime/ActorNativeArenaSoak.java
+)
+for source in "${source_paths[@]}"; do
+  [[ -f "$source" && ! -L "$source" ]] || {
+    echo "NATIVE_ARENA_NOT_EXECUTED: missing or symlinked source $source" >&2; exit 2;
+  }
+  [[ "$(realpath -e -- "$source")" == "$root/$source" ]] || {
+    echo "NATIVE_ARENA_NOT_EXECUTED: source escaped checkout $source" >&2; exit 2;
+  }
+  git ls-files --error-unmatch -- "$source" >/dev/null 2>&1 || {
+    echo "NATIVE_ARENA_NOT_EXECUTED: untracked source $source" >&2; exit 2;
+  }
+done
+if [[ -n "${ATTO_EXPECTED_SOURCE_HEAD:-}" ]]; then
+  [[ -z "$(git ls-files --others -- src/main/c src/main/java/dev/oreslang/runtime src/test/java/dev/oreslang/runtime)" ]] || {
+    echo "NATIVE_ARENA_NOT_EXECUTED: untracked or ignored compiler inputs" >&2; exit 2;
+  }
+fi
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes"

@@ -4,7 +4,9 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorNativeArena.java'
       - 'src/main/java/dev/oreslang/runtime/ActorLinearMemory.java'
-      - 'src/main/c/oresarena.c'
+      - 'src/main/c/**'
+      - 'src/main/java/dev/oreslang/runtime/OresSymbol.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeCarrierExecutor.java'
       - 'src/test/java/dev/oreslang/runtime/ActorNativeArenaSoak.java'
       - 'scripts/verify-actor-native-arena-soak.sh'
       - '.github/workflows/native-arena-soak.yml'
