@@ -101,3 +101,35 @@ compiled `.atto` guest evidence.
 
 Cross-backend parity is tracked in conformance PR #562 and issue #341;
 all five backend guest-stack evidence lanes remain `NOT_EXECUTED`.
+
+## M1.6 guarded synchronous invocation bridge (2026-11-07)
+
+`GuestCallDepthGuard.enter()` now reserves **32 bootstrap managed bytes**
+in the actor incarnation's `ActorFrameArena` for every admitted synchronous
+non-tail guest call. Each *outermost synchronous guard chain* mints a new,
+monotonic `ExecutionContext.ExecutionId` in the arena's generation-fenced
+allocation domain. Nested call frames inherit that call-chain identity. The
+matching `leave()` pops the frame in strict LIFO order before releasing the
+logical `ActorGuestStack` depth charge. Guard-depth exhaustion, cross-actor
+context misbinding, and illegal unwinds poison the actor's arena as well as
+the logical guard, including when a trusted host callback catches the exception.
+The carrier ThreadLocal guard still independently caps native JVM recursion.
+
+**Accounting, not a real guest-frame layout:** these 32 bytes are not compiled
+locals, temporary object roots, return addresses or `SourceTask` continuation
+state. This reservation is allocated on the JVM heap and creates work per call.
+Its charge is a provisional constant, not the actual frame size. The
+synchronous call-chain ID is deliberately NOT a stable await continuation
+identity: only a scheduler-minted `SourceTask` execution ID may survive
+suspension, with explicit frame retention and generation-fenced resume.
+
+Four additional authored JUnit methods cover nested guard-frame charge/unwind,
+suppressed recursion-budget failure and sibling-carrier reuse, non-reused
+logical call-chain identities, and wrapped guest trap denial (20 total in
+`ActorFrameArenaTest`). These tests are **not full Maven/JUnit executed evidence**.
+
+Next integration: introduce typed compiler frame layouts for every guest call,
+replace the fixed reservation with actual root/local/continuation accounting,
+and wire suspended `SourceTask` state to generation-checked frame leases.
+Require the exact-head A/B actor and supervisor restart fixture under a
+nonzero-step CI job before any physical stack or process isolation claim.
