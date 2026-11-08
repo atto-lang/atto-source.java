@@ -122,6 +122,8 @@ public final class ActorScalarCallMachine {
                 if (active == null) throw new IllegalStateException("empty scalar call stack");
                 Function fn = program.functions().get(active.functionId());
                 HeaderState state = readHeader(arena, execution, active);
+                if (state.sp() > fn.maxStack())
+                    throw invalid(arena, "scalar operand stack pointer beyond admitted frame");
                 if (state.pc() < 0 || state.pc() >= fn.code().size())
                     throw invalid(arena, "scalar PC outside compiled code");
                 Instruction step = fn.code().get(state.pc());
@@ -142,12 +144,12 @@ public final class ActorScalarCallMachine {
                         Object right = popValue(arena, execution, active, fn);
                         Object left = popValue(arena, execution, active, fn);
                         Object result = switch (step.op()) {
-                            case ADD -> asLong(left) + asLong(right);
-                            case SUB -> asLong(left) - asLong(right);
-                            case MUL -> asLong(left) * asLong(right);
-                            case LT -> asLong(left) < asLong(right);
-                            case LE -> asLong(left) <= asLong(right);
-                            case EQ -> Objects.equals(left, right);
+                            case ADD -> asLong(left, arena) + asLong(right, arena);
+                            case SUB -> asLong(left, arena) - asLong(right, arena);
+                            case MUL -> asLong(left, arena) * asLong(right, arena);
+                            case LT -> asLong(left, arena) < asLong(right, arena);
+                            case LE -> asLong(left, arena) <= asLong(right, arena);
+                            case EQ -> typedEqual(left, right, arena);
                             default -> throw new AssertionError();
                         };
                         pushValue(arena, execution, active, fn, result);
@@ -169,7 +171,7 @@ public final class ActorScalarCallMachine {
                         Function callee = program.functions().get(step.argument());
                         ArrayList<Long> values = new ArrayList<>(callee.parameters());
                         for (int i = 0; i < callee.parameters(); i++)
-                            values.add(0, asLong(popValue(arena, execution, active, fn)));
+                            values.add(0, asLong(popValue(arena, execution, active, fn), arena));
                         if (step.op() == Op.TAIL_CALL) {
                             arena.pop(execution, active.ref());
                             activations.removeLast();
@@ -288,9 +290,21 @@ public final class ActorScalarCallMachine {
         arena.write(execution, activation.ref(), HEADER + index * SLOT, encoded);
     }
 
-    private static long asLong(Object value) {
+    private static long asLong(Object value, ActorFrameArena arena) {
         if (value instanceof Long number) return number;
-        throw new IllegalArgumentException("scalar int operation requires long");
+        throw invalid(arena, "compiled scalar integer opcode encountered a non-int slot");
+    }
+
+    private static boolean typedEqual(Object left, Object right,
+                                       ActorFrameArena arena) {
+        if (left instanceof Long a && right instanceof Long b)
+            return a.longValue() == b.longValue();
+        if (left instanceof Boolean a && right instanceof Boolean b)
+            return a.booleanValue() == b.booleanValue();
+        // A mixed primitive-kind EQ cannot originate from the verified
+        // source lowering. Treat this as a corrupted actor activation
+        // rather than silently applying JVM object equality.
+        throw invalid(arena, "compiled scalar equality has mismatched primitive types");
     }
 
     private static IllegalStateException invalid(ActorFrameArena arena, String message) {
