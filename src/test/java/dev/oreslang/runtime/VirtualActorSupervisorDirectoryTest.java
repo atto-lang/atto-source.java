@@ -155,7 +155,7 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
-    void queuedTimeoutCancelsBeforeStartAndPreventsLateControlCapture() throws Exception {
+    void queuedTimeoutFencesLateCaptureButRetainsGlobalCreditUntilPhysicalDrain() throws Exception {
         java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
         ActorRuntime.ControlDispatcher queuedControl = turn ->
                 OresFuture.fromCallback(done -> queued.addLast(() -> {
@@ -179,13 +179,14 @@ final class VirtualActorSupervisorDirectoryTest {
             var firstFailure = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> first.get(2, TimeUnit.SECONDS));
             assertInstanceOf(java.util.concurrent.TimeoutException.class, firstFailure.getCause());
-            assertEquals(0, directory.pendingInspectionCount());
+            assertEquals(1, directory.pendingInspectionCount());
 
-            // Reuse the grant immediately. The old queued turn has lost the
-            // atomic QUEUED->RUNNING race and therefore must never capture.
+            // The grant is reusable after queued cancellation, but the old
+            // request continues to consume global CONTROL capacity until drain.
+            // Its old callback has lost the QUEUED->RUNNING race and cannot capture.
             var second = directory.requestInspect(grant, session, logical,
                     TimeUnit.SECONDS.toNanos(1)).toCompletableFuture();
-            assertEquals(1, directory.pendingInspectionCount());
+            assertEquals(2, directory.pendingInspectionCount());
             worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
             assertEquals(1, directory.pendingInspectionCount());
             worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
