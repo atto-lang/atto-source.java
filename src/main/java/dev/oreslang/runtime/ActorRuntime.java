@@ -571,6 +571,9 @@ public final class ActorRuntime implements AutoCloseable {
     /** Stable logical virtual-actor ownership; passivation does not release this edge. */
     private final ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
             new ConcurrentHashMap<>();
+    /** One canonical host directory instance per supervisor prevents split local registries. */
+    private final ConcurrentHashMap<SupervisorId, Object> virtualActorDirectoryOwners =
+            new ConcurrentHashMap<>();
     private final AtomicLong nextVirtualActorGeneration = new AtomicLong();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
@@ -3431,6 +3434,27 @@ public final class ActorRuntime implements AutoCloseable {
             if (raced != null && !raced.equals(supervisor.id()))
                 throw new SecurityException("virtual actor identity already belongs to another supervisor");
         }
+    }
+
+    void claimVirtualActorDirectory(Object directory, ActorSupervisor supervisor) {
+        requireSupervisorContext("claim virtual actor directory");
+        requireCallerRuntimeAffinity("claim virtual actor directory");
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        Object prior = virtualActorDirectoryOwners.putIfAbsent(supervisor.id(), directory);
+        if (prior != null && prior != directory)
+            throw new IllegalStateException("a virtual actor directory is already registered for this supervisor");
+    }
+
+    void releaseVirtualActorDirectory(Object directory, ActorSupervisor supervisor) {
+        requireSupervisorContext("release virtual actor directory");
+        requireCallerRuntimeAffinity("release virtual actor directory");
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (!virtualActorDirectoryOwners.remove(supervisor.id(), directory))
+            throw new IllegalStateException("virtual actor directory ownership changed");
     }
 
     long allocateVirtualActorGeneration() {
