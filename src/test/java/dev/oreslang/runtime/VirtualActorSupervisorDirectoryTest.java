@@ -466,4 +466,30 @@ final class VirtualActorSupervisorDirectoryTest {
         }
     }
 
+    @Test
+    void actorTurnCannotAcquireSupervisorVirtualActorDirectory() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            var group = runtime.createActorGroup(supervisor);
+            var denied = new java.util.concurrent.atomic.AtomicBoolean();
+            ActorRuntime.BehaviorFactory<String> behavior = factory ->
+                    (message, context) -> {
+                        try {
+                            supervisor.virtualActorDirectory(TENANT, 8, 4);
+                        } catch (SecurityException expected) {
+                            denied.set(true);
+                        }
+                    };
+            var actor = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), behavior);
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("check");
+            actor.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(denied.get());
+            actor.stop();
+            actor.done().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
 }
