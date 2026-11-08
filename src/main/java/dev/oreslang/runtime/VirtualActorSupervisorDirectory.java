@@ -266,8 +266,10 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                         "activation worker stopped or lost supervisor ownership during admission");
             }
             Binding binding = new Binding(actor, plan.activation);
-            if (bindings.putIfAbsent(plan.logical.identity(), binding) != null)
+            if (bindings.putIfAbsent(plan.logical.identity(), binding) != null) {
+                abortPlanUnderLock(plan);
                 throw new IllegalStateException("logical virtual actor activation already bound");
+            }
             try {
                 registry.publish(plan.activation);
                 if (!plan.settled.compareAndSet(false, true))
