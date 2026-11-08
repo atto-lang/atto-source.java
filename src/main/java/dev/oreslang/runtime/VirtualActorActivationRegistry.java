@@ -5,6 +5,7 @@ import java.text.Normalizer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * VM-only local virtual-actor identity and activation admission substrate.
@@ -19,6 +20,11 @@ import java.util.Objects;
  */
 public final class VirtualActorActivationRegistry implements AutoCloseable {
     public record Identity(String domain, String declaration, String key) { }
+
+    /** Immutable point-in-time view; it contains no activation capability. */
+    public record Inspection(Identity identity, long latestIncarnation,
+                             boolean activationReserved, boolean published,
+                             int outstanding, boolean registryClosed) { }
 
     private static final int MAX_KEY_BYTES = 256;
     private final Object monitor = new Object();
@@ -83,8 +89,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public LogicalRef resolve(String declaration, String key) {
         declaration = requireName(declaration, "declaration");
         Objects.requireNonNull(key, "key");
-        // A key must be bounded BEFORE normalization and UTF-8 encoding:
-        // prohibit adversarial allocations from huge untrusted identifiers.
+        // Bound before normalization and UTF-8 encoding to constrain hostile input.
         if (key.length() > MAX_KEY_BYTES * 4)
             throw new IllegalArgumentException("virtual actor key exceeds pre-normalization budget");
         checkUnicode(key, "key");
@@ -101,14 +106,41 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 if (slots.size() == maxIdentities)
                     throw new IllegalStateException("virtual actor identity capacity exhausted");
                 slot = new Slot(identity, this);
-                // Build the outward capability before consuming a bounded
-                // identity slot, so allocation failure leaves no orphan entry.
                 LogicalRef reference = new LogicalRef(slot);
                 slots.put(identity, slot);
                 return reference;
             }
             return new LogicalRef(slot);
         }
+    }
+
+    /**
+     * Side-effect-free logical lookup for supervisor/diagnostic tooling.
+     * Unlike resolve(), this never allocates an identity slot or activation.
+     */
+    public Optional<Inspection> inspectIdentity(Identity identity) {
+        Objects.requireNonNull(identity, "identity");
+        synchronized (monitor) {
+            if (!domain.equals(identity.domain())) return Optional.empty();
+            Slot slot = slots.get(identity);
+            if (slot == null) return Optional.empty();
+            return Optional.of(snapshot(slot));
+        }
+    }
+
+    /** Side-effect-free inspection of a reference issued by this registry. */
+    public Inspection inspect(LogicalRef logical) {
+        Objects.requireNonNull(logical, "logical");
+        synchronized (monitor) {
+            if (logical.slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
+            return snapshot(logical.slot);
+        }
+    }
+
+    private Inspection snapshot(Slot slot) {
+        return new Inspection(slot.identity, slot.incarnation, slot.active,
+                slot.active && slot.published, slot.outstanding, closed);
     }
 
     public final class Activation {
@@ -123,7 +155,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
 
         public boolean initializer() { return initializer; }
-
         public Identity identity() { return slot.identity; }
         public long incarnation() { return incarnation; }
         public boolean active() {
@@ -138,22 +169,19 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     /**
      * Duplicate activation requests observe the same live incarnation.
-     * Only the caller that performs actual actor initialization may publish
-     * that incarnation to the runtime; this primitive tracks admission only.
+     * Only the caller performing initialization may publish the candidate.
      */
     public Activation activate(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
         synchronized (monitor) {
             if (closed) throw new IllegalStateException("virtual actor registry closed");
             Slot slot = logical.slot;
-            if (slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
             boolean initializer = !slot.active;
             if (initializer && nextIncarnation == Long.MAX_VALUE)
                 throw new IllegalStateException("virtual actor incarnation budget exhausted");
             long candidateIncarnation = initializer ? nextIncarnation + 1 : slot.incarnation;
-            // Never mark an activation live before its capability is allocated.
-            // Out-of-memory or constructor failure must not strand a slot as
-            // active-but-unpublished with no initializer able to recover it.
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
                 nextIncarnation = candidateIncarnation;
@@ -165,7 +193,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
-    /** Commit activation only after the guest instance has initialized successfully. */
     public void publish(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -177,7 +204,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
-    /** A failed initializer fences all pending handles for that incarnation. */
+    /** A failed initializer fences all pending handles; its generation is burned. */
     public void abort(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -189,7 +216,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
-    /** An accepted turn must have an explicit observed disposition. */
     public enum Disposition { PROCESSED, FAILED_CONTROL_NOTIFIED, CANCELLED_NOTIFIED }
 
     public final class Admission {
@@ -203,12 +229,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
         public long incarnation() { return incarnation; }
 
-        /**
-         * Called only after the handler completed or after an independently
-         * recorded failure/cancellation notice. This method does NOT send
-         * notices itself and cannot attest a backend's CONTROL transport.
-         * No bare close()/drop path exists to hide accepted work.
-         */
         public void settle(Disposition result) {
             Objects.requireNonNull(result, "result");
             synchronized (monitor) {
@@ -225,7 +245,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
-    /** Null means bounded backpressure; an inactive/stale capability fails closed. */
     public Admission tryAdmit(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -234,16 +253,12 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                     slot.incarnation != activation.incarnation)
                 throw new IllegalStateException("inactive virtual actor activation");
             if (slot.outstanding == mailboxCapacity) return null;
-            // Construct the admission receipt BEFORE incrementing the accepted
-            // count. An allocation failure must not strand an unobservable
-            // outstanding credit that blocks shutdown and reincarnation.
             Admission receipt = new Admission(slot, slot.incarnation);
             slot.outstanding++;
             return receipt;
         }
     }
 
-    /** Refuse to deactivate with admitted work still outstanding. */
     public void deactivate(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -260,12 +275,12 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public int outstanding(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
         synchronized (monitor) {
-            if (logical.slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (logical.slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
             return logical.slot.outstanding;
         }
     }
 
-    /** Force-close is intentionally absent: no accepted work is discarded. */
     @Override public void close() {
         synchronized (monitor) {
             if (closed) return;
