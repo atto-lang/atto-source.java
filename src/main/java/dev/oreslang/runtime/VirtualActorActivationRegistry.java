@@ -58,6 +58,10 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     private long directoryRevision;
     private boolean closed;
 
+    private void advanceRevision() {
+        directoryRevision = Math.addExact(directoryRevision, 1L);
+    }
+
     private static final class Slot {
         final Identity identity;
         final VirtualActorActivationRegistry owner;
@@ -141,8 +145,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 // Build the outward capability before consuming a bounded
                 // identity slot, so allocation failure leaves no orphan entry.
                 LogicalRef reference = new LogicalRef(slot);
+                advanceRevision();
                 slots.put(identity, slot);
-                directoryRevision = Math.addExact(directoryRevision, 1L);
                 return reference;
             }
             return new LogicalRef(slot);
@@ -187,8 +191,10 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
             if (slot.active || slot.published || slot.outstanding != 0)
                 throw new IllegalStateException("cannot discard an activated virtual actor identity");
-            if (slots.remove(slot.identity, slot))
-                directoryRevision = Math.addExact(directoryRevision, 1L);
+            if (slots.get(slot.identity) == slot) {
+                advanceRevision();
+                slots.remove(slot.identity, slot);
+            }
         }
     }
 
@@ -273,6 +279,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             // active-but-unpublished with no initializer able to recover it.
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
+                advanceRevision();
                 nextIncarnation = Math.max(nextIncarnation, candidateIncarnation);
                 slot.incarnation = candidateIncarnation;
                 slot.active = true;
@@ -290,6 +297,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (slot.owner != this || closed || !slot.active || slot.published ||
                     slot.incarnation != activation.incarnation || !activation.initializer)
                 throw new IllegalStateException("activation publication denied");
+            advanceRevision();
             slot.published = true;
         }
     }
@@ -303,6 +311,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (slot.owner != this || closed || !slot.active || slot.published ||
                     slot.incarnation != activation.incarnation || !activation.initializer)
                 throw new IllegalStateException("activation abort denied");
+            advanceRevision();
             slot.active = false;
         }
     }
@@ -337,6 +346,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 }
                 if (slot.outstanding < 1)
                     throw new IllegalStateException("virtual actor admission accounting corrupted");
+                advanceRevision();
                 disposition = result;
                 slot.outstanding--;
             }
@@ -353,6 +363,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 throw new IllegalStateException("inactive virtual actor activation");
             if (slot.outstanding == mailboxCapacity) return null;
             Admission receipt = new Admission(slot, slot.incarnation);
+            advanceRevision();
             slot.outstanding++;
             return receipt;
         }
@@ -368,6 +379,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 throw new IllegalStateException("stale virtual actor activation");
             if (slot.outstanding != 0)
                 throw new IllegalStateException("cannot deactivate with accepted work outstanding");
+            advanceRevision();
             slot.active = false;
         }
     }
@@ -388,6 +400,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             for (Slot slot : slots.values())
                 if (slot.outstanding != 0)
                     throw new IllegalStateException("cannot close with accepted work outstanding");
+            advanceRevision();
             closed = true;
             for (Slot slot : slots.values()) slot.active = false;
         }
