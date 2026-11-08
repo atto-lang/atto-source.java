@@ -1,21 +1,40 @@
 #!/usr/bin/env bash
-# Dependency-free host arithmetic probe, NOT compiler/JUnit/guest CI evidence.
-# Run from any directory with a JDK (21+) and standard POSIX shell utilities.
+# Host-only, SHA-pinned JDK arithmetic regression gate; NOT a JUnit engine,
+# Graal guest, Native Image, cross-backend, or hosted CI execution receipt.
 set -euo pipefail
 
-command -v javac >/dev/null || { echo 'missing javac' >&2; exit 2; }
-command -v java >/dev/null || { echo 'missing java' >&2; exit 2; }
+for executable in javac java git grep sed cmp mktemp; do
+  command -v "$executable" >/dev/null || {
+    echo "missing required executable: $executable" >&2; exit 2;
+  }
+done
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 helper="$root/src/main/java/dev/oreslang/runtime/StrictIntegerArithmetic.java"
 probe="$root/src/test/java/dev/oreslang/StrictIntegerArithmeticDifferentialStressTest.java"
-test -f "$helper" && test -f "$probe"
+expected_helper='7cb1309f59310eda7dbfba0505fafce4ad0985e6'
+expected_probe='524bd02bad9b781c1403a4cbba44d66989efa941'
+
+# A clean printout of a commit SHA is not proof that the executed source files
+# match the reviewed files. Require BOTH blob identities before any compilation.
+for file in "$helper" "$probe"; do
+  test -f "$file" && test ! -L "$file" || {
+    echo "missing or symlinked source file: $file" >&2; exit 3;
+  }
+done
+actual_helper="$(git hash-object -- "$helper")"
+actual_probe="$(git hash-object -- "$probe")"
+if [[ "$actual_helper" != "$expected_helper" ||
+      "$actual_probe" != "$expected_probe" ]]; then
+  echo 'STRICT_I64_INPUT_MISMATCH: unreviewed source/test blob; gate not executed' >&2
+  exit 3
+fi
+echo "STRICT_I64_INPUT_BLOB|helper=$actual_helper|probe=$actual_probe"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/org/junit/jupiter/api"
-
-# The stored class is a JUnit 5 test. This disposable annotation-only stub
-# allows the EXACT unchanged test class to compile without a Maven download.
-# No substitute for running it with the actual JUnit engine is claimed.
+# This disposable annotation is ONLY for the dependency-free standalone main.
+# The actual committed test remains runnable by the real JUnit 5 engine in CI.
 cat > "$tmp/org/junit/jupiter/api/Test.java" <<'JAVA'
 package org.junit.jupiter.api;
 public @interface Test {}
@@ -23,46 +42,62 @@ JAVA
 
 javac -Xlint:all -d "$tmp/original" \
   "$tmp/org/junit/jupiter/api/Test.java" "$helper" "$probe"
-java -ea -cp "$tmp/original" \
+java -ea -Xmx128m -cp "$tmp/original" \
   dev.oreslang.StrictIntegerArithmeticDifferentialStressTest > "$tmp/original.log"
-grep -Fx 'STRICT_I64_DEEP_PROBE|PASS|checks=374618' "$tmp/original.log"
+if [[ "$(cat "$tmp/original.log")" != 'STRICT_I64_DEEP_PROBE|PASS|checks=454618' ]]; then
+  echo 'baseline did not produce the sole expected exact assertion-count receipt' >&2
+  cat "$tmp/original.log" >&2
+  exit 4
+fi
+cat "$tmp/original.log"
 
-# Verify that the oracle actually rejects representative semantic regressions.
-# Source mutations are temporary; neither repository source nor PR branches
-# are touched. A mutant counts as killed ONLY on a compiled assertion failure.
+# For each semantic mutation, demand exactly one matching source anchor and a
+# specific, deterministic arithmetic mismatch. Any unrelated AssertionError,
+# JVM exception, class-loading failure, compile failure or surviving mutation
+# is a FAIL, not a claimed test kill.
 for mutant in rem mod pow xor; do
   mkdir -p "$tmp/$mutant"
   changed="$tmp/$mutant/StrictIntegerArithmetic.java"
   case "$mutant" in
     rem)
+      anchor='return dividend % divisor;'
+      reason='rem mismatch: -128, 3'
       sed 's/return dividend % divisor;/return Math.floorMod(dividend, divisor);/' \
         "$helper" > "$changed" ;;
     mod)
+      anchor='return divisor > 0 ? remainder + divisor : remainder - divisor;'
+      reason='mod mismatch: -128, -127'
       sed 's/return divisor > 0 ? remainder + divisor : remainder - divisor;/return remainder;/' \
         "$helper" > "$changed" ;;
     pow)
+      anchor='result = Math.multiplyExact(result, base)'
+      reason='power overflow did not throw'
       sed 's/result = Math.multiplyExact(result, base)/result *= base/' \
         "$helper" > "$changed" ;;
     xor)
+      anchor='return left ^ right;'
+      reason='bit_xor mismatch: -128, -128'
       sed 's/return left \^ right;/return left | right;/' \
         "$helper" > "$changed" ;;
   esac
-  if cmp -s "$helper" "$changed"; then
-    echo "mutation did not change source: $mutant" >&2
-    exit 3
+  count="$(grep -Fc -- "$anchor" "$helper" || true)"
+  if [[ "$count" != '1' ]] || cmp -s -- "$helper" "$changed"; then
+    echo "mutation anchor missing/duplicated/unchanged: $mutant" >&2
+    exit 5
   fi
   javac -Xlint:all -d "$tmp/$mutant/classes" \
     "$tmp/org/junit/jupiter/api/Test.java" "$changed" "$probe"
-  if java -ea -cp "$tmp/$mutant/classes" \
+  if java -ea -Xmx128m -cp "$tmp/$mutant/classes" \
       dev.oreslang.StrictIntegerArithmeticDifferentialStressTest \
       > "$tmp/$mutant/out.log" 2>&1; then
-    echo "mutation survived: $mutant" >&2
-    exit 4
+    echo "semantic mutation survived: $mutant" >&2
+    exit 6
   fi
-  if ! grep -q 'java.lang.AssertionError:' "$tmp/$mutant/out.log"; then
-    echo "mutation failed for non-assertion reason: $mutant" >&2
+  if ! grep -Fqx -- "Exception in thread \"main\" java.lang.AssertionError: $reason" \
+      "$tmp/$mutant/out.log"; then
+    echo "mutation failed for unrelated/incorrect reason: $mutant" >&2
     cat "$tmp/$mutant/out.log" >&2
-    exit 5
+    exit 7
   fi
   echo "STRICT_I64_MUTATION|KILLED|$mutant"
 done
