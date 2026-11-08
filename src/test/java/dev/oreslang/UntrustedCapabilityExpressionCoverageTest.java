@@ -112,6 +112,13 @@ final class UntrustedCapabilityExpressionCoverageTest {
     }
 
     @Test
+    void nominalConstructorPatternCannotLaunderSharedAuthority() {
+        deny(new Ast.PatternTestExpr(new Ast.LiteralExpr(1),
+                new Ast.ConstructorPattern("SharedMutex", List.of())),
+                "SHARED_MEMORY");
+    }
+
+    @Test
     void pureValueMatchAndCastStillPassZeroAuthorityAdmission() {
         Ast.Expr pure = new Ast.MatchExpr(new Ast.LiteralExpr(1), List.of(
                 new Ast.MatchValueArm(new Ast.WildcardPattern(), null,
