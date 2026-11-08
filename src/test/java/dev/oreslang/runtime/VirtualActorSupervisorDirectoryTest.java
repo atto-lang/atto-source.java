@@ -1,0 +1,179 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(20)
+final class VirtualActorSupervisorDirectoryTest {
+    private static final String TENANT = "tenant-virtual-shop";
+
+    private static ActorRuntime runtime(ActorRuntime.ControlDispatcher dispatcher) {
+        return new ActorRuntime(IsolatePolicy.developer(),
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(), dispatcher);
+    }
+
+    private static ActorRuntime.BehaviorFactory<String> behavior() {
+        return factory -> (message, context) -> { };
+    }
+
+    private static ActorRuntime.ActorRef<String> spawnManaged(
+            ActorRuntime.ActorGroup group) throws Exception {
+        var actor = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                IsolatePolicy.developer(), behavior());
+        actor.getReady().get(5, TimeUnit.SECONDS);
+        return actor;
+    }
+
+    private static ActorRuntime.ControlDispatcher pooled(ExecutorService pool) {
+        return turn -> OresFuture.fromCallback(done -> pool.execute(() -> {
+            try {
+                turn.run();
+                done.resolve(null);
+            } catch (Throwable failure) {
+                done.reject(failure);
+            }
+        }));
+    }
+
+    @Test
+    void inspectByIdAndAddressRunsOnRealControlAndReportsActualManagedWorker() throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             var runtime = runtime(pooled(pool))) {
+            var supervisor = runtime.createSupervisor();
+            try (var group = runtime.createActorGroup(supervisor);
+                 var directory = new VirtualActorSupervisorDirectory(
+                         runtime, supervisor, TENANT, 16, 16)) {
+                var actor = spawnManaged(group);
+                var logical = directory.resolve("ShoppingCart", "cart-42");
+                long activationGeneration = directory.bindActivation(logical, actor);
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(4));
+
+                var byId = directory.requestInspect(grant, session, logical.identity(),
+                        TimeUnit.SECONDS.toNanos(3)).toCompletableFuture()
+                        .get(5, TimeUnit.SECONDS).orElseThrow();
+                assertEquals("ACTIVE", byId.lifecycle().name());
+                assertEquals(supervisor.id(), byId.supervisorId());
+                assertEquals(logical.identity(), byId.identity());
+                assertEquals(actor.id(), byId.actorId().orElseThrow());
+                assertEquals(actor.generation(), byId.actorReferenceGeneration());
+                assertEquals(activationGeneration, byId.activationGeneration());
+                assertTrue(byId.partial());
+
+                var byAddress = directory.requestInspectAddress(grant, session, byId.address(),
+                        TimeUnit.SECONDS.toNanos(3)).toCompletableFuture()
+                        .get(5, TimeUnit.SECONDS).orElseThrow();
+                assertEquals(byId, byAddress);
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+
+    @Test
+    void activationBindingRejectsWorkerOwnedByAnotherSupervisor() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var expected = runtime.createSupervisor();
+            var other = runtime.createSupervisor();
+            try (var expectedGroup = runtime.createActorGroup(expected);
+                 var otherGroup = runtime.createActorGroup(other);
+                 var directory = new VirtualActorSupervisorDirectory(
+                         runtime, expected, TENANT, 8, 4)) {
+                var worker = spawnManaged(otherGroup);
+                var logical = directory.resolve("Cart", "forged-owner");
+                assertThrows(SecurityException.class,
+                        () -> directory.bindActivation(logical, worker));
+                assertEquals(VirtualActorDirectoryInspection.Lifecycle.NEVER_ACTIVATED,
+                        new VirtualActorDirectoryInspection(new VirtualActorActivationRegistry(
+                                TENANT + "unused", 1, 1)).inspectAddress(
+                                VirtualActorAddressV1.encode(logical.identity()))
+                                .map(VirtualActorDirectoryInspection.Snapshot::lifecycle)
+                                .orElse(VirtualActorDirectoryInspection.Lifecycle.CLOSED));
+                worker.stop();
+                worker.done().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void physicalActorCompletionReleasesLogicalActivationAndReplacementGetsNewGeneration()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var group = runtime.createActorGroup(supervisor);
+                 var directory = new VirtualActorSupervisorDirectory(
+                         runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                var first = spawnManaged(group);
+                long firstGeneration = directory.bindActivation(logical, first);
+                first.stop();
+                first.done().get(5, TimeUnit.SECONDS);
+
+                // done() includes finalization and TurnExecutor exit. The directory's
+                // runtime-owned completion callback reconciles the old generation.
+                var replacement = spawnManaged(group);
+                long secondGeneration = directory.bindActivation(logical, replacement);
+                assertTrue(secondGeneration > firstGeneration);
+                assertNotEquals(first.id(), replacement.id());
+
+                replacement.stop();
+                replacement.done().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void missingControlDispatcherFailsClosedWithoutInlineFallback() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var group = runtime.createActorGroup(supervisor);
+                 var directory = new VirtualActorSupervisorDirectory(
+                         runtime, supervisor, TENANT, 8, 4)) {
+                var actor = spawnManaged(group);
+                var logical = directory.resolve("Cart", "42");
+                directory.bindActivation(logical, actor);
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(4));
+                var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> directory.requestInspect(grant, session, logical.identity(),
+                                TimeUnit.SECONDS.toNanos(2)).toCompletableFuture()
+                                .get(5, TimeUnit.SECONDS));
+                assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                        failure.getCause());
+                assertEquals(0, directory.pendingInspectionCount());
+                actor.stop();
+                actor.done().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void grantsAreBoundToSessionTenantAndSupervisorScope() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(4));
+                assertThrows(SecurityException.class, () -> directory.requestInspect(
+                        grant, new Object(), logical.identity(), 1_000_000));
+                var foreign = new VirtualActorActivationRegistry.Identity(
+                        TENANT + "@other-supervisor", "Cart", "42");
+                assertThrows(SecurityException.class, () -> directory.requestInspect(
+                        grant, session, foreign, 1_000_000));
+                directory.revoke(grant);
+                assertThrows(SecurityException.class, () -> directory.requestInspect(
+                        grant, session, logical.identity(), 1_000_000));
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+}
