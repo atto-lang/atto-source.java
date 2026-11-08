@@ -105,3 +105,32 @@ test('malformed or misleading policy bytes do not pass allowlist test', () => {
   }
   assert.deepEqual(activeCarrierLines(' # indented pseudo-comment\n'), [' # indented pseudo-comment']);
 });
+
+/** The source-free policy test must prove the workflow's checkout identity. */
+function assertPinnedPrivateCiWorkflow(contents) {
+  const exactHead = '${{ github.event.pull_request.head.sha || github.sha }}';
+  assert.match(contents,
+    /- uses: actions\/checkout@[a-f0-9]{40}\n\s+with:\n\s+ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}\n\s+persist-credentials: false/u,
+    'immutable checkout action and exact PR-head ref required');
+  assert.ok(contents.includes('EXPECTED_HEAD: ' + exactHead),
+    'same exact PR-head expression must feed the runtime assertion');
+  assert.ok(contents.includes('test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"'),
+    'the runtime must verify checked-out HEAD matches PR-head SHA');
+  assert.equal(contents.split(".github/workflows/private-ci-mirror-preflight.yml").length - 1, 2,
+    'workflow changes must trigger both pull_request and push checks');
+}
+test('private CI preflight checks the exact PR source commit', () => {
+  const workflow = readFileSync(path.join(ROOT,
+    '.github/workflows/private-ci-mirror-preflight.yml'), 'utf8');
+  assertPinnedPrivateCiWorkflow(workflow);
+});
+test('synthetic-merge or branch checkout cannot impersonate exact-head execution', () => {
+  const workflow = readFileSync(path.join(ROOT,
+    '.github/workflows/private-ci-mirror-preflight.yml'), 'utf8');
+  for (const bad of [
+    workflow.replace('ref: ${{ github.event.pull_request.head.sha || github.sha }}', 'ref: main'),
+    workflow.replace('test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"', 'echo skipped'),
+    workflow.replace('persist-credentials: false', 'persist-credentials: true'),
+    workflow.replace('actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09', 'actions/checkout@main'),
+  ]) assert.throws(() => assertPinnedPrivateCiWorkflow(bad));
+});
