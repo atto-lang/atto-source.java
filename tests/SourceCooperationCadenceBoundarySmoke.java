@@ -57,7 +57,7 @@ public final class SourceCooperationCadenceBoundarySmoke {
         require(!quantum.shouldCooperateAtCheck(false),
                 "soft deadline must not fire a nanosecond early");
         advance(quantum, clock, 257, 383, 0);
-        require(!quantum.shouldCooperateAtCheck(true) == false,
+        require(quantum.shouldCooperateAtCheck(true),
                 "watchdog notice should be visible on the slow path");
         clock.now = SourceCooperationQuantum.SOFT_DISPATCH_QUANTUM_NANOS;
         advance(quantum, clock, 384, 384, 1);
