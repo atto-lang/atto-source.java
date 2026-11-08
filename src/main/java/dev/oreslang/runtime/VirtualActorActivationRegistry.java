@@ -82,7 +82,9 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     private static String requireName(String value, String kind) {
         Objects.requireNonNull(value, kind);
-        if (value.isBlank() || value.length() > 128)
+        if (value.isBlank() || value.length() > 128
+                || value.getBytes(StandardCharsets.UTF_8).length > 128
+                || !Normalizer.isNormalized(value, Normalizer.Form.NFC))
             throw new IllegalArgumentException("invalid virtual actor " + kind);
         checkUnicode(value, kind);
         return value;
