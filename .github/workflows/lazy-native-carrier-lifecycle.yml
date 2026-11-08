@@ -5,28 +5,8 @@ on:
     branches:
       - feat/lazy-actor-pool-pthreads-20261103
       - audit/scheduler-exact-head-gate-20261108
-    paths:
-      - ".github/workflows/lazy-native-carrier-lifecycle.yml"
-      - "src/main/c/oresthread.c"
-      - "src/main/java/dev/oreslang/runtime/NativeCarrierExecutor.java"
-      - "src/main/java/dev/oreslang/runtime/ActorAffinityDispatcher.java"
-      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
-      - "src/main/java/dev/oreslang/runtime/ActorTurnWatchdog.java"
-      - "src/main/java/dev/oreslang/runtime/OresVM.java"
-      - "src/main/java/dev/oreslang/launcher/OresMain.java"
-      - "src/test/java/dev/oreslang/runtime/NativeCarrierExecutorTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorPoolLazyStartTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorJvmFirstCarrierAdmissionTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorRuntimeNativeCarrierTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorAffinityDispatcherTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorAffinitySoftSpillTest.java"
-      - "src/test/java/dev/oreslang/runtime/ActorTurnWatchdogTest.java"
-      - "src/test/java/dev/oreslang/BootThreadBudgetTest.java"
-      - "src/test/java/dev/oreslang/launcher/ThreadBudgetFlagsTest.java"
-      - ".cli-flags.toml"
-      - "src/main/resources/META-INF/native-image/dev.oreslang/oreslang/reachability-metadata.json"
-      - "pom.xml"
-      - "scripts/build-native-thread.sh"
+    # All branch updates require a new exact-HEAD receipt, including changes
+    # outside the originally focused source/test paths.
   workflow_dispatch:
 
 permissions:
@@ -92,14 +72,17 @@ jobs:
         run: |
           set -euo pipefail
           # Surefire XML is the executable receipt, not a filename-only smoke.
-          # These suites are required on each compiler matrix leg.
+          # All nine selected suites are required on each compiler matrix leg.
           for suite in \
             dev.oreslang.BootThreadBudgetTest \
             dev.oreslang.runtime.ActorTurnWatchdogTest \
             dev.oreslang.launcher.ThreadBudgetFlagsTest \
             dev.oreslang.runtime.ActorPoolLazyStartTest \
             dev.oreslang.runtime.NativeCarrierExecutorTest \
-            dev.oreslang.runtime.ActorJvmFirstCarrierAdmissionTest; do
+            dev.oreslang.runtime.ActorJvmFirstCarrierAdmissionTest \
+            dev.oreslang.runtime.ActorRuntimeNativeCarrierTest \
+            dev.oreslang.runtime.ActorAffinityDispatcherTest \
+            dev.oreslang.runtime.ActorAffinitySoftSpillTest; do
             report="target/surefire-reports/TEST-${suite}.xml"
             test -s "$report" || { echo "::error::Missing executed suite: $suite"; exit 1; }
             suite_header="$(grep -m 1 '<testsuite ' "$report")"
@@ -129,6 +112,7 @@ jobs:
           done
           printf 'scheduler_source_sha=%s\n' "$GITHUB_SHA"
           printf 'scheduler_source_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain --untracked-files=all)"
       - name: Report attempted test and source identity (non-certifying on failure)
         if: always()
         shell: bash
