@@ -51,6 +51,12 @@ public final class DataOrientedBorrowChecker {
             requireNonBlankIfPresent(component, "component");
             requireNonBlankIfPresent(field, "field");
             if (epoch < 0) throw new IllegalArgumentException("negative storage epoch");
+            // Logical place hierarchy is strict. A component without an
+            // archetype must not look independent of a whole-archetype loan.
+            // Rooted projection proof is separate from physical AoS/SoA layout.
+            if (archetype == null && component != null) {
+                throw new IllegalArgumentException("component requires archetype");
+            }
             if (component == null && field != null) {
                 throw new IllegalArgumentException("field requires component");
             }
