@@ -110,7 +110,7 @@ final class ActorSourceTaskFrame {
      */
     synchronized ActorCallContinuation callContinuation() {
         requireOwnerTurn();
-        requireRunningFrame();
+        requireTaskFrameActive();
         if (callContinuation == null) {
             callContinuation = new ActorCallContinuation(this, arena, execution, frame);
         }
@@ -336,11 +336,15 @@ final class ActorSourceTaskFrame {
         }
     }
 
-    private void requireRunningFrame() {
+    private void requireTaskFrameActive() {
         if (retired || waiting || frame == null) {
             throw new IllegalStateException(
-                    "source task scalar state requires an active owned frame");
+                    "source task frame requires an active owned scheduler turn");
         }
+    }
+
+    private void requireRunningFrame() {
+        requireTaskFrameActive();
         if (callContinuation != null && callContinuation.hasGuestFrames()) {
             throw new IllegalStateException(
                     "SourceTask root scalar slots are unavailable while nested call frames are active");
