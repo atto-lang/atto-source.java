@@ -50,8 +50,7 @@ final class VirtualActorSupervisorDirectoryTest {
              var runtime = runtime(pooled(pool))) {
             var supervisor = runtime.createSupervisor();
             try (var group = runtime.createActorGroup(supervisor);
-                 var directory = new VirtualActorSupervisorDirectory(
-                         runtime, supervisor, TENANT, 16, 16)) {
+                 var directory = supervisor.virtualActorDirectory(TENANT, 16, 16)) {
                 var actor = spawnManaged(group);
                 var logical = directory.resolve("ShoppingCart", "cart-42");
                 long activationGeneration = directory.bindActivation(logical, actor);
