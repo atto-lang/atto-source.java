@@ -114,6 +114,7 @@ final class ActorStackOverflowIsolationTest {
                 new ActorRuntime.DispatcherConfig(1, 1, 8))) {
             AtomicReference<ActorFrameArena> badArena = new AtomicReference<>();
             AtomicReference<ActorFrameArena> goodArena = new AtomicReference<>();
+            AtomicReference<Boolean> siblingArenaHealthyDuringTurn = new AtomicReference<>();
             AtomicInteger swallowed = new AtomicInteger();
             AtomicInteger extraMail = new AtomicInteger();
             var bad = runtime.<String>spawnShared(factory -> (mail, turn) -> {
@@ -135,6 +136,7 @@ final class ActorStackOverflowIsolationTest {
             AtomicInteger siblingCalls = new AtomicInteger();
             var sibling = runtime.<String>spawnShared(factory -> (mail, turn) -> {
                 goodArena.set(ActorRuntime.currentActorFrameArena());
+                siblingArenaHealthyDuringTurn.set(!goodArena.get().isPoisoned());
                 siblingCalls.incrementAndGet();
                 if (siblingCalls.get() == 2) turn.self().stop();
             });
@@ -160,7 +162,11 @@ final class ActorStackOverflowIsolationTest {
             assertEquals(2, siblingCalls.get());
             assertTrue(sibling.failure().isEmpty());
             assertNotSame(badArena.get(), goodArena.get());
-            assertFalse(goodArena.get().isPoisoned());
+            assertEquals(Boolean.TRUE, siblingArenaHealthyDuringTurn.get(),
+                    "sibling arena must be healthy while B is executing");
+            // After B stops normally, its arena is retired and marked
+            // terminal/poisoned by the lifecycle protocol: do NOT treat
+            // post-retirement isPoisoned() as evidence B failed.
         }
     }
 
