@@ -311,10 +311,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ExecutionContext mintActorExecutionContext(long storageActorOrdinal, long generation) {
-        long execution = nextActorExecution.incrementAndGet();
-        if (execution <= 0) {
-            throw new IllegalStateException("actor execution id space exhausted");
-        }
+        long execution = ExecutionContext.nextPositive(
+                nextActorExecution, "actor execution");
         // Owner 0 is the actor's root allocation owner inside its domain.
         // parentExecution/continuation stay 0 until compiler-lowered
         // continuation storage is allocated in the actor's arena.
