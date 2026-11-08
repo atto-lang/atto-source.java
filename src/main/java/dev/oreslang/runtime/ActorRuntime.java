@@ -6796,24 +6796,35 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException(
                         "untrusted actor safepoint outside active logical source-task quota");
             }
-            cell.untrustedSafepoints++;
-            if (--cell.untrustedFuelRemaining < 0) {
+            // Keep both fuel and diagnostics saturated. A caught quota failure
+            // must never decrement through Long.MIN_VALUE into a new budget.
+            if (cell.untrustedSafepoints != Long.MAX_VALUE) {
+                cell.untrustedSafepoints++;
+            }
+            if (cell.untrustedFuelRemaining <= 0) {
+                cell.untrustedFuelRemaining = 0;
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.FUEL,
                         "untrusted actor exhausted its execution fuel");
             }
+            cell.untrustedFuelRemaining--;
             long wallBudget = cell.policy.maxWallTime().toNanos();
-            if (System.nanoTime() - cell.turnStartedWallNanos > wallBudget) {
+            long wallElapsed = System.nanoTime() - cell.turnStartedWallNanos;
+            // Deadline is exclusive: zero remaining time is already expired.
+            // A wrapped monotonic delta must also fail closed, not refuel.
+            if (wallElapsed < 0 || wallElapsed >= wallBudget) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                         "untrusted actor exceeded its wall-time budget");
             }
             long cpuNow = currentThreadCpuNanos();
-            if (cpuNow >= 0 && cell.turnStartedCpuNanos >= 0
-                    && cpuNow - cell.turnStartedCpuNanos > wallBudget) {
-                throw new UntrustedActorQuotaExceededException(
-                        UntrustedActorQuotaExceededException.Resource.CPU_TIME,
-                        "untrusted actor exceeded its CPU-time budget");
+            if (cpuNow >= 0 && cell.turnStartedCpuNanos >= 0) {
+                long cpuElapsed = cpuNow - cell.turnStartedCpuNanos;
+                if (cpuElapsed < 0 || cpuElapsed >= wallBudget) {
+                    throw new UntrustedActorQuotaExceededException(
+                            UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                            "untrusted actor exceeded its CPU-time budget");
+                }
             }
         }
 
@@ -6933,13 +6944,13 @@ public final class ActorRuntime implements AutoCloseable {
             long elapsed = wallClock.getAsLong() - startedNanos;
             // Fail closed on a monotonic clock overflow instead of treating
             // overflow as a new unspent deadline.
-            if (elapsed < 0 || elapsed > wallBudgetNanos) {
+            if (elapsed < 0 || elapsed >= wallBudgetNanos) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                         "untrusted logical task exceeded wall-time budget");
             }
             long cpu = accruedCpu();
-            if (cpu > wallBudgetNanos) {
+            if (cpu >= wallBudgetNanos) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.CPU_TIME,
                         "untrusted logical task exceeded CPU-time budget");
