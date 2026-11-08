@@ -112,6 +112,11 @@ a malformed/overflowed decimal length.
 
 The admission layer requires one unambiguous HTTP/1.1 Host and rejects
 duplicate/joined, blank, whitespace/control or URI-delimiter Host values.
+The Host value must be a syntactically valid URI authority (not arbitrary
+printable ASCII): nonnumeric, empty or out-of-range ports are rejected,
+unbracketed IPv6 and malformed bracket literals fail closed, and canonical
+DNS hosts, numeric ports through 65535, and bracketed IPv6 remain accepted.
+This parses the authority locally without DNS lookups or blocking network I/O.
 HTTP/1.0 may omit Host, but a Host value supplied by the caller must still be
 well formed. Exactly one nonnegative decimal Content-Length is allowed. A
 duplicate, comma-joined, nondecimal or oversized Content-Length is rejected;
