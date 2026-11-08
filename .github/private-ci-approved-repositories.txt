@@ -7,4 +7,4 @@
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
 
 # Proposed Java #2048 carrier; effective only after the required independent review.
-beamscale/bmscl-compiler 1383937120
+# CANDIDATE ONLY, NOT APPROVED (PR #2137 merged with zero independent reviews): beamscale/bmscl-compiler 1383937120
