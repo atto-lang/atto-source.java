@@ -28,8 +28,8 @@ jobs:
         with:
           distribution: graalvm
           java-version: '25'
-      - name: Verify per-actor unsigned 32-bit offset bounds and failed-admission rollback
-        run: mvn -B -Dtest=ActorRelativeOffset32BitTest test
+      - name: Verify actor offset bounds and precompiled Java host import under AOT policy
+        run: mvn -B -Dtest=ActorRelativeOffset32BitTest,JavaPrecompiledHostImportAotPolicyTest test
       - name: Build actual Epsilon native executable and run native arena lifetime soak
         env:
           ATTO_EXPECTED_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
