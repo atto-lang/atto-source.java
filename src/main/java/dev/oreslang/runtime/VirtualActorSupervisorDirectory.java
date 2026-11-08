@@ -185,7 +185,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         namespace = requireText(namespace, "namespace", 128);
         declaration = requireText(declaration, "declaration", 128);
         String qualifiedDeclaration = namespace + "/" + declaration;
-        if (qualifiedDeclaration.length() > 128)
+        if (qualifiedDeclaration.length() > 128
+                || qualifiedDeclaration.getBytes(StandardCharsets.UTF_8).length > 128)
             throw new IllegalArgumentException("qualified virtual actor type exceeds identity budget");
         runtime.supervisorRegistryForObservation(); // host-only caller/affinity guard
         synchronized (stateLock) {
@@ -203,7 +204,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
 
     /**
      * Reserve a fresh generation before constructing the physical worker. The
-     * descriptor supplies a stable opaque storage key and epoch for trusted
+     * descriptor supplies a stable deterministic storage identifier and epoch for trusted
      * initialization code; it is data, not a capability. The returned plan is
      * single-use and must be published or explicitly aborted.
      */
