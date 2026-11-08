@@ -35,6 +35,36 @@ final class LogicalWordOperatorTest {
     }
 
     @Test
+    void keywordRecognitionUsesWholeCaseSensitiveTokensAndIgnoresCommentsAndStrings() {
+        List<Token> tokens = new Lexer(
+                "and or xor candy android origin xor_value \"and or xor\" // and or xor\\n"
+        ).scan();
+        assertEquals(List.of(
+                Token.Type.AND, Token.Type.OR, Token.Type.XOR,
+                Token.Type.IDENT, Token.Type.IDENT, Token.Type.IDENT, Token.Type.IDENT,
+                Token.Type.STRING, Token.Type.EOF),
+                tokens.stream().map(Token::type).toList());
+        assertEquals("and or xor", tokens.get(7).lexeme());
+    }
+
+    @Test
+    void operatorsAreValidInLocalsReturnsConditionsAndCallArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc accept(bool value): bool {
+                  return value;
+                }
+
+                fnc combine(bool enabled, bool ready, bool forced): bool {
+                  val result: bool = enabled and ready;
+                  if (result or forced xor false) {
+                    return accept(result and forced);
+                  } fi
+                  return result;
+                }
+                """)));
+    }
+
+    @Test
     void precedenceIsAndThenXorThenOr() {
         Ast.Expr expression = new Parser(new Lexer(
                 "false or true xor true and false").scan()).parseExpression();
