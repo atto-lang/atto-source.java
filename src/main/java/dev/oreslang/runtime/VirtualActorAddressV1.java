@@ -6,6 +6,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Objects;
+import java.text.Normalizer;
 
 /**
  * Canonical, versioned, transport-neutral address for one logical virtual actor.
@@ -33,9 +34,31 @@ public final class VirtualActorAddressV1 {
         String domain = decodePart(parts[1]);
         String declaration = decodePart(parts[2]);
         String key = decodePart(parts[3]);
+        validate(domain, "domain", 128);
+        validate(declaration, "declaration", 128);
+        validate(key, "key", 256);
+        if (!Normalizer.isNormalized(key, Normalizer.Form.NFC))
+            throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
         if (!encode(new VirtualActorActivationRegistry.Identity(domain, declaration, key)).equals(address))
             throw new IllegalArgumentException("non-canonical virtual actor address");
         return new VirtualActorActivationRegistry.Identity(domain, declaration, key);
+    }
+
+    private static void validate(String value, String kind, int maxUtf8Bytes) {
+        if (value.isBlank() || value.getBytes(StandardCharsets.UTF_8).length > maxUtf8Bytes)
+            throw new IllegalArgumentException("invalid virtual actor address " + kind);
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isISOControl(ch))
+                throw new IllegalArgumentException("control character in virtual actor address " + kind);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1)))
+                    throw new IllegalArgumentException("unpaired surrogate in virtual actor address " + kind);
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired surrogate in virtual actor address " + kind);
+            }
+        }
     }
 
     private static String part(String value) {
