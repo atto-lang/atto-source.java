@@ -1,4 +1,4 @@
-name: Borrow checker if-condition false-edge ownership
+name: Borrow checker if/for predicate ownership
 on:
   pull_request:
     paths:
@@ -35,7 +35,7 @@ jobs:
           version: '25.3'
           distribution: graalvm
           cache: maven
-      - name: Run five actual Java compiler ownership regressions
+      - name: Run seven actual Java compiler ownership regressions
         shell: bash
         run: |
           set -euo pipefail
