@@ -125,12 +125,14 @@ final class ActorScalarSourceLowering {
             throw NO;
         return new ActorScalarCallMachine.Function(
                 fn.name(), fn.parameters().size(), builder.locals.size(),
-                MAX_OPERANDS, builder.instructions);
+                Math.max(1, builder.operandPeak), builder.instructions);
     }
 
     private final class Builder {
         private final LinkedHashMap<String,Integer> locals = new LinkedHashMap<>();
         private final ArrayList<ActorScalarCallMachine.Instruction> instructions = new ArrayList<>();
+        private int operandDepth;
+        private int operandPeak;
 
         private Builder(Ast.FunctionDecl fn) {
             for (Ast.Param p : fn.parameters()) {
@@ -140,6 +142,35 @@ final class ActorScalarSourceLowering {
 
         private int emit(ActorScalarCallMachine.Instruction instruction) {
             if (instructions.size() >= MAX_CODE) throw NO;
+            // Verify the transient operand depth during lowering, before
+            // executing *any* guest instruction or allocating an actor frame.
+            // A fixed runtime bound without this analysis would poison an
+            // otherwise valid actor when deeply nested source expressions
+            // exceeded the new subset's temporary stack capacity.
+            switch (instruction.op()) {
+                case CONST, CONST_BOOL, LOAD -> operandDepth++;
+                case STORE, POP, JUMP_IF_FALSE -> operandDepth--;
+                case ADD, SUB, MUL, LT, LE, EQ -> operandDepth--;
+                case CALL, TAIL_CALL -> {
+                    int id = instruction.argument();
+                    if (id < 0 || id >= functions.size()) throw NO;
+                    operandDepth -= functions.get(id).parameters().size();
+                    if (instruction.op() == ActorScalarCallMachine.Op.CALL) {
+                        operandDepth++;
+                    } else if (operandDepth != 0) {
+                        throw NO; // a tail call cannot discard live operands
+                    }
+                }
+                case RET -> {
+                    operandDepth--;
+                    if (operandDepth != 0) throw NO;
+                }
+                case JUMP, TRAP -> {
+                    if (operandDepth != 0) throw NO;
+                }
+            }
+            if (operandDepth < 0 || operandDepth > MAX_OPERANDS) throw NO;
+            operandPeak = Math.max(operandPeak, operandDepth);
             instructions.add(instruction);
             return instructions.size() - 1;
         }
