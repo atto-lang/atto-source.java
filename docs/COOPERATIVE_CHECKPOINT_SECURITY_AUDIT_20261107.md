@@ -8,12 +8,14 @@ certification or authorization to allow untrusted automatic suspension.
 ## Separate cost amortization from security accounting
 
 * Trusted continuation-backed loops use a private `SourceCooperationQuantum`
-  counter: increment once for each **committed** backedge, check only every
-  64 completions with a power-of-two mask, normally read `nanoTime` only
-  on those checks, and force a cooperation request at 512 completions.
-  After 512, check **every** subsequent backedge until the scheduler actually
-  releases the carrier. This is preferable to `counter % 100 == 0`: 64
-  uses a simple bit mask, with a precisely bounded interval.
+  counter: increment a cheap phase for each **committed** backedge, check only
+  every **128** completions, and normally read `nanoTime` only on those
+  checks. The fairness cap is 512 completions, but remains a **soft**
+  handoff request: after 512 the expensive clock/scheduler check continues
+  every 128, never every iteration. Keep a separate cycling phase so a
+  saturating 64-bit total cannot freeze at an unpollable value. This is
+  preferable to `counter % 100 == 0`: a power-of-two phase is inexpensive
+  and produces a precise maximum 127-backedge scheduling delay.
 * A fast path is **not** permission to skip fuel, cancellation or deadlines
   for UNTRUSTED actors. The source loop calls `schedulerSafepoint()` at
   **every** UNTRUSTED backedge. Retain checks at ordinary statement, call,
@@ -90,7 +92,8 @@ fabricated Java-stack continuation.
 `UntrustedCheckpointBoundaryTest` deterministically probes exclusive
 wall and CPU deadlines (including a CPU clock changing carrier origin),
 fuel exhaustion over 32 attempted re-entries, signed clock wraps and
-backward clock samples, clock-read amortization,
+backward clock samples, clock-read amortization, and a separate periodic phase
+under saturated reduction accounting,
 the frozen-clock 512 reduction cap, guard-delayed overdue polls and
 fresh-dispatch reset. There are no sleeps or timing-race assertions.
 
