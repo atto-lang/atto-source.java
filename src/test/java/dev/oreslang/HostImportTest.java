@@ -258,4 +258,44 @@ final class HostImportTest {
                 """));
     }
 
+
+    @Test
+    void jvmAliasDoesNotGrantAuthorityWhenHostImportCapabilityIsMissing() {
+        var program = TypeChecker.check(Parser.parse("""
+                import jvm "java.util.ArrayList" as JList;
+                pub fnc main(): int { val list = new JList(); return list.size(); }
+                """));
+        IsolatePolicy withoutHostAuthority = IsolatePolicy.developer();
+        assertThrows(SecurityException.class, () ->
+                CapabilityChecker.check(program, withoutHostAuthority));
+    }
+
+    @Test
+    void privateActorCannotBypassHostRestrictionWithJvmAlias() {
+        var program = TypeChecker.check(Parser.parse("""
+                import jvm "java.util.ArrayList" as JList;
+                isoactor fnc worker(): void {
+                    val list = new JList();
+                    return;
+                }
+                """));
+        IsolatePolicy parentWithHostAuthority = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        SecurityException failure = assertThrows(SecurityException.class, () ->
+                CapabilityChecker.check(program, parentWithHostAuthority));
+        assertTrue(failure.getMessage().contains("JAVA_INTEROP"));
+    }
+
+    @Test
+    void jvmImportParsingDoesNotLoadOrInitializeForeignClasses() {
+        // Resolving a binary name to an AST is intentionally inert. Lazy host
+        // initialization while *linking* is a separate gate (Java PR #1764).
+        var program = Parser.parse("""
+                import jvm "dev.oreslang.ThisClassDoesNotExist" as Absent;
+                pub fnc main(): int { return 42; }
+                """);
+        assertEquals("java:dev.oreslang.ThisClassDoesNotExist",
+                program.imports().getFirst().path());
+    }
+
 }
