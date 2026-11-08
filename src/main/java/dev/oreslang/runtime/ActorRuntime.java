@@ -3375,6 +3375,31 @@ public final class ActorRuntime implements AutoCloseable {
                 "configured CONTROL dispatcher returned null Future");
     }
 
+    /**
+     * Verify exact direct-supervisor lifecycle ownership for a host virtual-actor
+     * activation binding. Merely belonging to an ActorGroup is insufficient:
+     * the worker must be registered as its managed child and the group must
+     * belong to this exact supervisor.
+     */
+    boolean actorManagedBySupervisor(ActorRef<?> ref, ActorSupervisor supervisor) {
+        requireSupervisorContext("verify virtual actor supervisor ownership");
+        requireCallerRuntimeAffinity("verify virtual actor supervisor ownership");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (!ref.ownedBy(this) || supervisors.get(supervisor.id()) != supervisor)
+            return false;
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref || cell.stopped.get() || cell.finalized)
+            return false;
+        ActorGroupId owner = cell.managedByGroup.get();
+        if (owner == null) return false;
+        ActorGroup group = actorGroups.get(owner);
+        return group != null && !group.closed()
+                && group.supervisor == supervisor
+                && group.managedWorkers.get(ref.id()) == ref
+                && !cell.stopped.get();
+    }
+
     /** The runtime's non-null fallback supervisor for legacy group creation. */
     public ActorSupervisor rootSupervisor() {
         requireSupervisorContext("inspect the root ActorSupervisor");
