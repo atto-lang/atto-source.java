@@ -8706,9 +8706,12 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "List.get_copy requires a Copy<int> element");
                         }
-                        // A boxed primitive is an owned Copy, not a view,
-                        // pointer or ReadLoan. Preserve explicit Some/None.
-                        return new OptionValue(true, value);
+                        // Canonical source int is signed i64. Never leak a
+                        // host boxed Byte/Short/Integer identity or infer a
+                        // smaller scalar type from the list's representation.
+                        // Only the immutable scalar VALUE crosses this call;
+                        // no interior array pointer or ReadLoan escapes.
+                        return new OptionValue(true, ((Number) value).longValue());
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
