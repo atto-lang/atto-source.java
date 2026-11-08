@@ -1320,11 +1320,22 @@ public final class OresMutex {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.requestingActorDomain = requestingActorDomain;
-                this.taskLease = registerCurrentTask
-                        ? TaskOwnedLeases.registerIfTracked(
-                                () -> releaseFromRuntime(false),
-                                () -> releaseFromRuntime(true))
-                        : inheritedLease;
+                // The live counter is incremented before lease registration:
+                // a concurrently retiring tracked Task must never release a
+                // registered guard before the increment becomes visible. But
+                // admission can fail (e.g. 4,096 live leases), so restore the
+                // counter on failure. checkedGuardAfterAcquire() owns physical
+                // permit/domain rollback and must remain the sole releaser.
+                try {
+                    this.taskLease = registerCurrentTask
+                            ? TaskOwnedLeases.registerIfTracked(
+                                    () -> releaseFromRuntime(false),
+                                    () -> releaseFromRuntime(true))
+                            : inheritedLease;
+                } catch (RuntimeException | Error admissionFailure) {
+                    LIVE_GUARDS.decrementAndGet();
+                    throw admissionFailure;
+                }
             }
 
             private void requireOwnerDomain() {
