@@ -311,4 +311,63 @@ final class VirtualActorSupervisorDirectoryTest {
         }
     }
 
+    @Test
+    void supervisorListingIsBoundedRevisionFencedAndRunsOnControl() throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             var runtime = runtime(pooled(pool))) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 16, 4)) {
+                directory.resolve("Cart", "c");
+                directory.resolve("Cart", "a");
+                directory.resolve("Cart", "b");
+
+                var session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(5));
+                var first = directory.requestList(grant, session, 1, -1, null,
+                        TimeUnit.SECONDS.toNanos(3)).toCompletableFuture()
+                        .get(5, TimeUnit.SECONDS);
+                assertEquals(1, first.entries().size());
+                assertEquals("a", first.entries().getFirst().identity().key());
+                assertTrue(first.nextAfter().isPresent());
+
+                var second = directory.requestList(grant, session, 1, first.revision(),
+                        first.nextAfter().orElseThrow(), TimeUnit.SECONDS.toNanos(3))
+                        .toCompletableFuture().get(5, TimeUnit.SECONDS);
+                assertEquals(1, second.entries().size());
+                assertEquals("b", second.entries().getFirst().identity().key());
+                assertEquals(first.revision(), second.revision());
+
+                directory.resolve("Cart", "d");
+                var stale = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> directory.requestList(grant, session, 1, second.revision(),
+                                second.nextAfter().orElseThrow(), TimeUnit.SECONDS.toNanos(3))
+                                .toCompletableFuture().get(5, TimeUnit.SECONDS));
+                assertInstanceOf(VirtualActorActivationRegistry.StaleDirectoryPageException.class,
+                        stale.getCause());
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+
+    @Test
+    void supervisorListingRejectsInvalidPageBoundsAndForeignCursor() {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(4));
+                assertThrows(IllegalArgumentException.class,
+                        () -> directory.requestList(grant, session, 0, -1, null, 1));
+                var foreign = new VirtualActorActivationRegistry.Identity(
+                        "other-tenant", "7:defaultCart", "42");
+                assertThrows(SecurityException.class,
+                        () -> directory.requestList(grant, session, 10, -1, foreign, 1));
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+
 }
