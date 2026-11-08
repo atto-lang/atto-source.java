@@ -10,6 +10,7 @@ const REQUIRED = [
   '/.github/CODEOWNERS', '/.github/private-ci-approved-repositories.txt',
   '/.github/private-ci-carrier-contracts.json',
   '/.github/workflows/private-ci-mirror-preflight.yml',
+  '/.github/workflows/source-free-private-ci-gates.yml',
   '/scripts/check-private-ci-destination.sh',
   '/scripts/run-in-private-ci-destination.sh',
   '/scripts/test-private-ci-destination.sh',
@@ -133,4 +134,18 @@ test('synthetic-merge or branch checkout cannot impersonate exact-head execution
     workflow.replace('persist-credentials: false', 'persist-credentials: true'),
     workflow.replace('actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09', 'actions/checkout@main'),
   ]) assert.throws(() => assertPinnedPrivateCiWorkflow(bad));
+});
+
+test('source-free deny-all workflow uses exact head and strict policy bytes', () => {
+  const policyGate = readFileSync(path.join(ROOT,
+    '.github/workflows/source-free-private-ci-gates.yml'), 'utf8');
+  assert.match(policyGate,
+    /- uses: actions\/checkout@[a-f0-9]{40}[^\n]*\n\s+with:\n\s+ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}\n\s+persist-credentials: false/u);
+  assert.ok(policyGate.includes('EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}'));
+  assert.ok(policyGate.includes('test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"'));
+  assert.ok(policyGate.includes('raw = path.read_bytes()'));
+  assert.ok(policyGate.includes("line.startswith(b'#')"));
+  assert.ok(!policyGate.includes("line.lstrip().startswith('#')"),
+    'never treat indented pseudo-comments as signed policy comments');
+  assert.ok(policyGate.includes('DENIED: noncanonical private-source destination policy bytes'));
 });
