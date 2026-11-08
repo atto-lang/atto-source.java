@@ -202,6 +202,11 @@ final class ActorCallContinuation {
         return activations.size();
     }
 
+    /** Internal collision guard for the separate SourceTask root scalar region. */
+    synchronized boolean hasGuestFrames() {
+        return !activations.isEmpty();
+    }
+
     synchronized int chargedBytes() {
         requireTurn();
         int bytes = 0;
