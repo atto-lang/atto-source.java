@@ -2,7 +2,11 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Field;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -95,6 +99,43 @@ final class ActorExecutionContextTest {
             assertEquals(ExecutionContext.AllocationKind.NONE, task.allocationDomain().kind(),
                     "outside an actor turn the resolver falls back to the scheduler task");
             assertNotEquals(actorContext[0].id().runtimeDomain(), task.id().runtimeDomain());
+        }
+    }
+
+    /**
+     * Regression: minting used to run after currentActor was set and before
+     * the clearing try/finally, so a mint failure leaked actor identity onto
+     * the carrier and every later dispatch on it failed nested admission.
+     */
+    @Test
+    void mintFailureFailsOnlyThatActorAndLeavesTheCarrierClean() throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 8))) {
+            Field field = ActorRuntime.class.getDeclaredField("nextActorExecution");
+            field.setAccessible(true);
+            AtomicLong executions = (AtomicLong) field.get(runtime);
+
+            ActorRuntime.ActorRef<String> doomed = runtime.spawnPrivate(
+                    () -> (message, turn) -> fail("turn must not run after a mint failure"));
+            executions.set(Long.MAX_VALUE);
+            doomed.send("x");
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> doomed.done().get(5, TimeUnit.SECONDS));
+            assertTrue(String.valueOf(failure.getCause()).contains("actor execution id space exhausted"),
+                    () -> "unexpected failure: " + failure.getCause());
+
+            executions.set(0L);
+            AtomicReference<ExecutionContext> seen = new AtomicReference<>();
+            CountDownLatch ran = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> healthy = runtime.spawnPrivate(() -> (message, turn) -> {
+                seen.set(ActorRuntime.currentActorExecutionContext());
+                ran.countDown();
+            });
+            healthy.send("y");
+            assertTrue(ran.await(5, TimeUnit.SECONDS),
+                    "the single private carrier must still admit a new actor turn");
+            assertNotNull(seen.get());
+            assertEquals(healthy.generation(), seen.get().allocationDomain().generation());
         }
     }
 

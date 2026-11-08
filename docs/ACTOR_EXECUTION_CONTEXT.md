@@ -29,10 +29,14 @@ per tenant VM they would cost too much memory.
   - `domain` is the cell's runtime-minted `storageActorOrdinal`, one per
     incarnation;
   - `owner` 0 is the actor's root allocation owner;
-  - `generation` is the `ActorRef` incarnation generation, so a restarted
-    actor never shares an allocation domain with its predecessor;
+  - `generation` is the `ActorRef` incarnation generation. The Java runtime
+    has no in-place restart: every incarnation is a new cell from the single
+    spawn path, with a new ordinal and generation, so incarnations never
+    share an allocation domain;
   - `parentExecution` and `continuation` stay 0 until continuation storage
     exists.
+- The context is minted before any carrier ThreadLocal is set, so a mint
+  failure fails the actor without leaving actor identity on the carrier.
 - `ActorRuntime.currentActorExecutionContext()` returns it inside an actor
   turn. `ActorRuntime.currentExecutionContext()` returns the innermost
   logical execution: the actor dispatch, else the `OresScheduler` task, else

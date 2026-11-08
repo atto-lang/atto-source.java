@@ -98,8 +98,9 @@ public final class ActorRuntime implements AutoCloseable {
             /*
              * Pointer-free logical identity of this physical actor dispatch.
              * Its ACTOR allocation domain names the cell's heap/arena owner
-             * and is fenced by the incarnation generation, so a restarted
-             * actor never shares an allocation domain with its predecessor.
+             * and is fenced by the incarnation generation. Every incarnation
+             * (spawn, STOP-then-respawn, hot reload) is a new cell with a new
+             * ordinal and generation, so incarnations never share a domain.
              */
             ExecutionContext logical) { }
 
@@ -9525,10 +9526,14 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "nested actor carrier admission would overwrite the current actor context");
             }
-            currentActor.set(this);
-            CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
+            // Mint before touching any ThreadLocal: this code is outside the
+            // try/finally that clears them, so a failure here must leave the
+            // carrier exactly as clean as the nested-admission check does.
+            ActorExecutionContext entered = new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain,
-                    mintActorExecutionContext(storageActorOrdinal, ref.generation())));
+                    mintActorExecutionContext(storageActorOrdinal, ref.generation()));
+            currentActor.set(this);
+            CURRENT_ACTOR_EXECUTION.set(entered);
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
