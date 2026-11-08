@@ -4249,11 +4249,34 @@ public final class OwnershipChecker {
      * </ul>
      * Unknown nominal/generic provenance fails closed.
      */
+    // TypeRef shape checking precedes AutoTraitRules inference. Give this
+    // upstream traversal its own *shared* budget so nested Option/Result,
+    // tuples and nominal fields cannot exhaust the compiler stack or reset
+    // limits for each child before reaching the canonical auto-trait lattice.
+    private static final int TASK_CAPTURE_MAX_DEPTH = 128;
+    private static final int TASK_CAPTURE_MAX_NODES = 4096;
+
+    private static final class TaskCaptureProofBudget {
+        private int remaining = TASK_CAPTURE_MAX_NODES;
+    }
+
     private AutoTraitRules.Capabilities taskCaptureCapabilities(
             Ast.TypeRef type,
             Set<Ast.ClassDecl> visitingClasses) {
+        return taskCaptureCapabilities(
+                type, visitingClasses, new TaskCaptureProofBudget(), 0);
+    }
+
+    private AutoTraitRules.Capabilities taskCaptureCapabilities(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> visitingClasses,
+            TaskCaptureProofBudget budget,
+            int depth) {
         AutoTraitRules.Capabilities none =
                 new AutoTraitRules.Capabilities(false, false, false);
+        if (depth >= TASK_CAPTURE_MAX_DEPTH || budget.remaining-- <= 0) {
+            return none;
+        }
         AutoTraitRules.Capabilities scalar =
                 AutoTraitRules.infer(AutoTraitRules.TypeModel.scalar());
 
@@ -4285,7 +4308,7 @@ public final class OwnershipChecker {
             boolean share = true;
             for (Ast.TypeRef member : type.arguments()) {
                 AutoTraitRules.Capabilities child =
-                        taskCaptureCapabilities(member, visitingClasses);
+                        taskCaptureCapabilities(member, visitingClasses, budget, depth + 1);
                 send &= child.send();
                 sync &= child.sync();
                 share &= child.share();
@@ -4297,7 +4320,7 @@ public final class OwnershipChecker {
             boolean send = true;
             for (Ast.TypeRef member : type.aggregateMembers().values()) {
                 AutoTraitRules.Capabilities child =
-                        taskCaptureCapabilities(member, visitingClasses);
+                        taskCaptureCapabilities(member, visitingClasses, budget, depth + 1);
                 send &= child.send();
             }
             // Readonly structural metadata describes a view, not a frozen
@@ -4367,18 +4390,15 @@ public final class OwnershipChecker {
 
         if (name.equals("Option") || name.equals("IteratorResult")) {
             return type.arguments().size() == 1
-                    ? taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses)
+                    ? taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1)
                     : none;
         }
         if (name.equals("Result")) {
             if (type.arguments().size() != 2) return none;
             AutoTraitRules.Capabilities left =
-                    taskCaptureCapabilities(
-                            type.arguments().get(0), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().get(0), visitingClasses, budget, depth + 1);
             AutoTraitRules.Capabilities right =
-                    taskCaptureCapabilities(
-                            type.arguments().get(1), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().get(1), visitingClasses, budget, depth + 1);
             return new AutoTraitRules.Capabilities(
                     left.send() && right.send(),
                     left.sync() && right.sync(),
@@ -4397,8 +4417,7 @@ public final class OwnershipChecker {
                     && !hasLocalTypeAliasNamed("void")
                     && findClass("void") == null;
             boolean payloadSend = emptyPayload
-                    || taskCaptureCapabilities(
-                            payload, visitingClasses).send();
+                    || taskCaptureCapabilities(payload, visitingClasses, budget, depth + 1).send();
             return new AutoTraitRules.Capabilities(
                     payloadSend, false, false);
         }
@@ -4406,8 +4425,7 @@ public final class OwnershipChecker {
         if (name.equals("Channel")) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities payload =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             return payload.send()
                     ? new AutoTraitRules.Capabilities(true, true, true)
                     : none;
@@ -4416,8 +4434,7 @@ public final class OwnershipChecker {
         if (name.equals("SharedMutex")) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities payload =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             return payload.send()
                     ? new AutoTraitRules.Capabilities(true, true, true)
                     : none;
@@ -4438,8 +4455,7 @@ public final class OwnershipChecker {
         if (wrapperKind != null && declaredClass == null) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities child =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             AutoTraitRules.TypeModel childModel =
                     TypeAutoTraits.modelFromCapabilities(child);
             boolean shareableDomain =
@@ -4459,8 +4475,7 @@ public final class OwnershipChecker {
         }) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities element =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             // Mutable sequence ownership may move when elements are Send, but
             // the sequence itself is not implicitly Sync/Share.
             return new AutoTraitRules.Capabilities(
@@ -4498,8 +4513,7 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
-                if (!taskCaptureCapabilities(
-                        fieldType, visitingClasses).send()) {
+                if (!taskCaptureCapabilities(fieldType, visitingClasses, budget, depth + 1).send()) {
                     return none;
                 }
             }
