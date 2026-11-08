@@ -155,13 +155,19 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
-    void timeoutBeforeControlStartsReleasesGrantAndPendingCapacity() throws Exception {
-        AtomicInteger dispatches = new AtomicInteger();
-        ActorRuntime.ControlDispatcher queuedForever = turn -> {
-            dispatches.incrementAndGet();
-            return OresFuture.fromCallback(done -> { /* simulate a CONTROL queue that never starts */ });
-        };
-        try (var runtime = runtime(queuedForever);
+    void timeoutRetainsControlAdmissionUntilPhysicalTurnActuallyRuns() throws Exception {
+        java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
+        ActorRuntime.ControlDispatcher queuedControl = turn ->
+                OresFuture.fromCallback(done -> queued.addLast(() -> {
+                    try {
+                        turn.run();
+                        done.resolve(null);
+                    } catch (Throwable failure) {
+                        done.reject(failure);
+                    }
+                }));
+        try (ExecutorService worker = Executors.newSingleThreadExecutor();
+             var runtime = runtime(queuedControl);
              var directory = new VirtualActorSupervisorDirectory(
                      runtime, runtime.rootSupervisor(), TENANT, 8, 4)) {
             Object session = new Object();
@@ -173,16 +179,20 @@ final class VirtualActorSupervisorDirectoryTest {
             var firstFailure = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> first.get(2, TimeUnit.SECONDS));
             assertInstanceOf(java.util.concurrent.TimeoutException.class, firstFailure.getCause());
+            assertEquals(1, directory.pendingInspectionCount());
+            assertThrows(IllegalStateException.class, () -> directory.requestInspect(
+                    grant, session, logical, TimeUnit.SECONDS.toNanos(1)));
+
+            // A timeout settles only the observer. Capacity remains reserved until
+            // the admitted CONTROL turn runs and physically releases the request.
+            worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
             assertEquals(0, directory.pendingInspectionCount());
 
-            // The same grant can be reused even though the first CONTROL Future
-            // remains unresolved and its queued runnable never executes.
             var second = directory.requestInspect(grant, session, logical,
-                    TimeUnit.MILLISECONDS.toNanos(20)).toCompletableFuture();
-            assertEquals(2, dispatches.get());
-            var secondFailure = assertThrows(java.util.concurrent.ExecutionException.class,
-                    () -> second.get(2, TimeUnit.SECONDS));
-            assertInstanceOf(java.util.concurrent.TimeoutException.class, secondFailure.getCause());
+                    TimeUnit.SECONDS.toNanos(1)).toCompletableFuture();
+            worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
+            assertEquals(logical.identity(),
+                    second.get(5, TimeUnit.SECONDS).identity());
             assertEquals(0, directory.pendingInspectionCount());
         }
     }
@@ -282,7 +292,7 @@ final class VirtualActorSupervisorDirectoryTest {
             var supervisor = runtime.createSupervisor();
             long firstGeneration;
             var identity = new VirtualActorActivationRegistry.Identity(
-                    TENANT, "default/Cart", "42");
+                    TENANT, "7:defaultCart", "42");
             try (var directory = new VirtualActorSupervisorDirectory(
                     runtime, supervisor, TENANT, 8, 4)) {
                 var logical = directory.resolve("Cart", "42");
