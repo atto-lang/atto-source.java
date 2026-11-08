@@ -83,11 +83,16 @@ final class ActorScalarBytecodeVerifierTest {
                 c(2), o(ActorScalarCallMachine.Op.RET))));
     }
     @Test void joinWithDifferentOperandDepthIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> program(fn("depth", 0, 0, 2,
-                b(true), at(ActorScalarCallMachine.Op.JUMP_IF_FALSE, 4),
-                c(1), at(ActorScalarCallMachine.Op.JUMP, 5),
-                at(ActorScalarCallMachine.Op.JUMP, 5),
-                o(ActorScalarCallMachine.Op.RET))));
+        // Deliberately end both paths in a loop, not RET: a simple
+        // underflow at the join must not satisfy this test in place of
+        // actual cross-path type/depth reconciliation.
+        var rejected = assertThrows(ActorScalarBytecodeVerifier.Rejected.class,
+                () -> program(fn("depth", 0, 0, 2,
+                        b(true), at(ActorScalarCallMachine.Op.JUMP_IF_FALSE, 4),
+                        c(1), at(ActorScalarCallMachine.Op.JUMP, 5),
+                        at(ActorScalarCallMachine.Op.JUMP, 5),
+                        at(ActorScalarCallMachine.Op.JUMP, 5))));
+        assertTrue(rejected.getMessage().contains("control-flow join"));
     }
     @Test void joinWithIntVersusBooleanOperandIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> program(fn("kinds", 0, 0, 2,
