@@ -121,6 +121,44 @@ final class UntrustedCheckpointBoundaryTest {
     }
 
     @Test
+    void positiveLookingSignedWallClockWrapStillExpiresTheQuota() {
+        // Naive subtraction yields +11 after wrapping, which is incorrectly
+        // below the wall budget. Checked subtraction must deny.
+        long started = Long.MAX_VALUE - 5;
+        AtomicLong wall = new AtomicLong(Long.MIN_VALUE + 5);
+        ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
+                100L, 100L, started, 0L, wall::get, () -> 0L);
+        assertEquals(0L, quota.remainingWallNanos(),
+                "signed clock overflow cannot mint a fresh suspended budget");
+        quota.enter();
+        try {
+            var failure = assertThrows(
+                    ActorRuntime.UntrustedActorQuotaExceededException.class, quota::check);
+            assertEquals(ActorRuntime.UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                    failure.resource());
+        } finally {
+            quota.leave();
+        }
+    }
+
+    @Test
+    void backwardsClockSampleNeverRestoresWallBudget() {
+        AtomicLong wall = new AtomicLong(9L);
+        ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
+                100L, 3L, 10L, 0L, wall::get, () -> 0L);
+        assertEquals(0L, quota.remainingWallNanos());
+        quota.enter();
+        try {
+            var failure = assertThrows(
+                    ActorRuntime.UntrustedActorQuotaExceededException.class, quota::check);
+            assertEquals(ActorRuntime.UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                    failure.resource());
+        } finally {
+            quota.leave();
+        }
+    }
+
+    @Test
     void softQuantumSamplesClockOnlyAtBatchedTrustedSafepoints() {
         AtomicLong nanos = new AtomicLong();
         AtomicInteger reads = new AtomicInteger();
