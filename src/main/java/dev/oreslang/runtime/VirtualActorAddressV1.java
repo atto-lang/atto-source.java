@@ -10,7 +10,7 @@ import java.text.Normalizer;
 
 /**
  * Canonical, versioned, transport-neutral address for one logical virtual actor.
- * An address is a locator, never an authorization or activation capability.
+ * An address is a locator, not authorization. Base64URL is encoding, not secrecy.
  */
 public final class VirtualActorAddressV1 {
     private static final String PREFIX = "atto-va1";
@@ -34,8 +34,8 @@ public final class VirtualActorAddressV1 {
         String domain = decodePart(parts[1]);
         String declaration = decodePart(parts[2]);
         String key = decodePart(parts[3]);
-        validate(domain, "domain", 128);
-        validate(declaration, "declaration", 128);
+        validate(domain, "domain", 512);
+        validate(declaration, "declaration", 512);
         validate(key, "key", 256);
         if (!Normalizer.isNormalized(key, Normalizer.Form.NFC))
             throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
