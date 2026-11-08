@@ -362,6 +362,9 @@ public final class ActorRuntime implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final Map<SupervisorFailureControl.VirtualActorLogicalId, Long> virtualActorLogicalGenerations =
             new ConcurrentHashMap<>();
+    /** Single pending next-generation reservation; abort burns rather than rewinds it. */
+    private final Map<SupervisorFailureControl.VirtualActorLogicalId, Long> virtualActorPendingGenerations =
+            new ConcurrentHashMap<>();
     /** At most one physical managed worker may serve one logical identity at a time. */
     private final Map<SupervisorFailureControl.VirtualActorLogicalId, ActorId> virtualActorActiveBindings =
             new ConcurrentHashMap<>();
@@ -1995,6 +1998,62 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Reserve the next logical generation before replacement initialization.
+         * This immediately makes any older terminal receipt stale. Aborting the
+         * reservation removes only the pending marker; the generation stays burned.
+         */
+        public void reserveVirtualActorGeneration(
+                SupervisorFailureControl.VirtualActorLogicalId identity,
+                long logicalActivationGeneration) {
+            requireSupervisorContext("reserve a virtual actor activation generation");
+            requireOpen();
+            Objects.requireNonNull(identity, "identity");
+            if (logicalActivationGeneration <= 0)
+                throw new IllegalArgumentException("virtual activation generation must be positive");
+            synchronized (authorityLock) {
+                ActorGroupId owner = virtualActorLogicalOwners.putIfAbsent(identity, id);
+                if (owner != null && !owner.equals(id))
+                    throw new SecurityException("virtual logical identity belongs to another supervisor");
+                if (virtualActorActiveBindings.containsKey(identity))
+                    throw new IllegalStateException("cannot reserve replacement while prior worker is live");
+                if (virtualActorPendingGenerations.containsKey(identity))
+                    throw new IllegalStateException("virtual activation generation already reserved");
+                Long prior = virtualActorLogicalGenerations.get(identity);
+                if (prior != null && logicalActivationGeneration <= prior)
+                    throw new IllegalStateException("virtual activation generation is not monotonic");
+                if (virtualActorPendingGenerations.putIfAbsent(identity, logicalActivationGeneration) != null)
+                    throw new IllegalStateException("virtual activation reservation raced");
+                virtualActorLogicalGenerations.put(identity, logicalActivationGeneration);
+            }
+        }
+
+        /** Aborting burns the already-published generation watermark. */
+        public void abortVirtualActorGeneration(
+                SupervisorFailureControl.VirtualActorLogicalId identity,
+                long logicalActivationGeneration) {
+            requireSupervisorContext("abort a virtual actor activation generation");
+            Objects.requireNonNull(identity, "identity");
+            synchronized (authorityLock) {
+                Long pending = virtualActorPendingGenerations.get(identity);
+                if (pending == null || pending.longValue() != logicalActivationGeneration)
+                    throw new IllegalStateException("virtual activation reservation does not match");
+                if (!virtualActorPendingGenerations.remove(identity, pending))
+                    throw new IllegalStateException("virtual activation reservation changed before abort");
+            }
+        }
+
+        /** Check a terminal receipt immediately before applying its policy decision. */
+        public boolean isCurrentVirtualActorGeneration(
+                SupervisorFailureControl.VirtualActorLogicalId identity,
+                long logicalActivationGeneration) {
+            requireSupervisorContext("check a virtual actor terminal generation");
+            Objects.requireNonNull(identity, "identity");
+            return id.equals(virtualActorLogicalOwners.get(identity))
+                    && Objects.equals(virtualActorLogicalGenerations.get(identity),
+                            logicalActivationGeneration);
+        }
+
+        /**
          * Bind a stable logical virtual actor identity and generation to this
          * exact managed worker. The values are copied into the reserved
          * terminal CONTROL receipt if this physical incarnation fails.
@@ -2028,8 +2087,15 @@ public final class ActorRuntime implements AutoCloseable {
                 if (existingOwner != null && !existingOwner.equals(id))
                     throw new SecurityException("virtual logical identity already belongs to another supervisor");
                 Long priorGeneration = virtualActorLogicalGenerations.get(identity);
-                if (priorGeneration != null && logicalActivationGeneration <= priorGeneration)
+                Long pendingGeneration = virtualActorPendingGenerations.get(identity);
+                boolean consumesReservation = pendingGeneration != null;
+                if (consumesReservation) {
+                    if (pendingGeneration.longValue() != logicalActivationGeneration)
+                        throw new IllegalStateException("virtual activation plan generation does not match reservation");
+                } else if (priorGeneration != null
+                        && logicalActivationGeneration <= priorGeneration) {
                     throw new IllegalStateException("virtual activation generation is not monotonic");
+                }
                 var logical = new SupervisorFailureControl.VirtualActorTerminalIdentity(
                         identity, logicalActivationGeneration);
                 var binding = new VirtualActorTerminalBinding(id, logical);
@@ -2040,7 +2106,12 @@ public final class ActorRuntime implements AutoCloseable {
                 try {
                     if (virtualActorTerminalBindings.putIfAbsent(worker.id(), binding) != null)
                         throw new IllegalStateException("actor incarnation already has virtual identity metadata");
-                    virtualActorLogicalGenerations.put(identity, logicalActivationGeneration);
+                    if (consumesReservation) {
+                        if (!virtualActorPendingGenerations.remove(identity, pendingGeneration))
+                            throw new IllegalStateException("virtual activation reservation changed before bind");
+                    } else {
+                        virtualActorLogicalGenerations.put(identity, logicalActivationGeneration);
+                    }
                 } catch (RuntimeException | Error failure) {
                     virtualActorTerminalBindings.remove(worker.id(), binding);
                     virtualActorActiveBindings.remove(identity, worker.id());
