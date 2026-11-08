@@ -363,6 +363,7 @@ public final class CapabilityChecker {
             } else if (stmt instanceof Ast.MatchStmt s) {
                 checkExpr(s.subject(), policy);
                 for (Ast.MatchArm arm : s.arms()) {
+                    checkPattern(arm.pattern(), policy);
                     if (arm.guard() != null) checkExpr(arm.guard(), policy);
                     checkStatements(arm.body(), policy);
                 }
@@ -409,6 +410,24 @@ public final class CapabilityChecker {
                         "capability checker does not support statement: "
                                 + stmt.getClass().getSimpleName());
             }
+        }
+    }
+
+    /** Pattern type references may contain restricted authority carriers. */
+    private void checkPattern(Ast.Pattern pattern, IsolatePolicy policy) {
+        if (pattern instanceof Ast.TypePattern p) {
+            checkType(p.type(), policy);
+        } else if (pattern instanceof Ast.StructuralPattern p) {
+            checkType(p.target(), policy);
+        } else if (pattern instanceof Ast.TuplePattern p) {
+            for (Ast.Pattern item : p.elements()) checkPattern(item, policy);
+        } else if (pattern instanceof Ast.ConstructorPattern p) {
+            for (Ast.Pattern item : p.arguments()) checkPattern(item, policy);
+        } else if (!(pattern instanceof Ast.WildcardPattern)
+                && !(pattern instanceof Ast.LiteralPattern)
+                && !(pattern instanceof Ast.BindingPattern)) {
+            throw new SecurityException("capability checker does not support pattern: "
+                    + pattern.getClass().getSimpleName());
         }
     }
 
@@ -494,6 +513,7 @@ public final class CapabilityChecker {
             }
             Ast.MethodDecl staticMethod = findStaticMethod(c.callee(), c.arguments().size());
             if (staticMethod != null) checkReferencedMethod(staticMethod, policy);
+            for (Ast.TypeRef typeArgument : c.typeArguments()) checkType(typeArgument, policy);
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
         } else if (expr instanceof Ast.MemberExpr m) {
@@ -551,6 +571,30 @@ public final class CapabilityChecker {
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
             checkExpr(e.expression(), policy);
+        } else if (expr instanceof Ast.MatchExpr e) {
+            checkExpr(e.subject(), policy);
+            checkType(e.resultType(), policy);
+            for (Ast.MatchValueArm arm : e.arms()) {
+                checkPattern(arm.pattern(), policy);
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkStatements(arm.prefixStatements(), policy);
+                checkExpr(arm.value(), policy);
+            }
+        } else if (expr instanceof Ast.TypeTestExpr e) {
+            checkExpr(e.value(), policy);
+            checkType(e.targetType(), policy);
+        } else if (expr instanceof Ast.PatternTestExpr e) {
+            checkExpr(e.value(), policy);
+            checkPattern(e.pattern(), policy);
+        } else if (expr instanceof Ast.CastExpr e) {
+            checkExpr(e.value(), policy);
+            checkType(e.targetType(), policy);
+        } else if (expr instanceof Ast.TrapExpr e) {
+            checkExpr(e.expression(), policy);
+        } else if (expr instanceof Ast.LocalAggregateConstructExpr e) {
+            checkType(Ast.TypeRef.simple(e.typeName()), policy);
+            for (Ast.Expr argument : e.positionalArguments()) checkExpr(argument, policy);
+            for (Ast.ObjectField field : e.namedArguments()) checkExpr(field.value(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
         else if (expr instanceof Ast.UnaryExpr e) checkExpr(e.operand(), policy);
         else if (expr instanceof Ast.AssignExpr e) {
@@ -576,18 +620,26 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.ChannelOpExpr e) {
             checkExpr(e.channel(), policy);
             if (e.value() != null) checkExpr(e.value(), policy);
+            checkStatements(e.callbackBody(), policy);
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) checkExpr(e.cases(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {
-            for (Ast.ObjectField f : e.fields()) {
-                checkExpr(f.value(), policy);
-            }
+            for (Ast.StructFieldSpec f : e.declaredFields()) checkType(f.type(), policy);
+            for (Ast.ObjectField f : e.fields()) checkExpr(f.value(), policy);
         }
         else if (expr instanceof Ast.LambdaExpr e) {
+            for (Ast.Param p : e.parameters()) checkType(p.type(), policy);
+            checkType(e.declaredReturnType(), policy);
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
+        } else if (!(expr instanceof Ast.LiteralExpr) && expr != null) {
+            // AST extensions must never gain zero-authority admission just
+            // because a new expression node was forgotten in this visitor.
+            throw new SecurityException(
+                    "capability checker does not support expression: "
+                            + expr.getClass().getSimpleName());
         }
     }
 
