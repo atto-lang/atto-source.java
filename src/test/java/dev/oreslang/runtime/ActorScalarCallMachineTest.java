@@ -309,4 +309,58 @@ final class ActorScalarCallMachineTest {
         for (int n = 0; n < 4; n++)
             assertEquals(n, success(tailCounter(), (long) n, 0L));
     }
+    private static void corruptTopActorFrameByte(int position, byte value) {
+        try {
+            ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
+            assertNotNull(arena, "test-only mutation requires an actor dispatch");
+            synchronized (arena) {
+                var stacksField = ActorFrameArena.class.getDeclaredField("stacks");
+                stacksField.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                var stacks = (java.util.Map<Object, java.util.ArrayDeque<Object>>)
+                        stacksField.get(arena);
+                assertEquals(1, stacks.size(), "one machine logical stack expected");
+                Object frame = stacks.values().iterator().next().peekLast();
+                assertNotNull(frame);
+                var bytesField = frame.getClass().getDeclaredField("bytes");
+                bytesField.setAccessible(true);
+                byte[] bytes = (byte[]) bytesField.get(frame);
+                bytes[position] = value;
+            }
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("test-only corruption precondition", failure);
+        }
+    }
+
+    @Test void changedActivationCalleeIdentityPoisonsOwnedActor() throws Exception {
+        AtomicInteger ticks = new AtomicInteger();
+        Outcome result = run(tailCounter(), 0, List.of(1000L, 0L), () -> {
+            if (ticks.incrementAndGet() == 1) {
+                // ABI header [magic, PC, operand SP, function ID].
+                // This valid header-sized mutation attempts to substitute
+                // another callee while keeping the actual frame capability.
+                corruptTopActorFrameByte(15, (byte) 7);
+            }
+        });
+        assertInstanceOf(IllegalStateException.class, result.failure());
+        assertTrue(result.poisoned());
+        assertEquals(1, ticks.get());
+    }
+
+    @Test void outOfRangeReturnPCFailsClosedWithoutNativeRecursion()
+            throws Exception {
+        AtomicInteger ticks = new AtomicInteger();
+        Outcome result = run(tailCounter(), 0, List.of(1000L, 0L), () -> {
+            if (ticks.incrementAndGet() == 1) {
+                // The low byte of the persisted program counter is field 7.
+                // A jump beyond the immutable function code must never
+                // restart arbitrary bytecode or follow a Java return address.
+                corruptTopActorFrameByte(7, (byte) 127);
+            }
+        });
+        assertInstanceOf(IllegalStateException.class, result.failure());
+        assertTrue(result.poisoned());
+        assertEquals(1, ticks.get());
+    }
+
 }
