@@ -358,9 +358,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, VirtualActorTerminalBinding> virtualActorTerminalBindings =
             new ConcurrentHashMap<>();
     /** Logical supervisor ownership and generation survive activation retirement for this runtime. */
-    private final Map<VirtualActorActivationRegistry.Identity, ActorGroupId> virtualActorLogicalOwners =
+    private final Map<SupervisorFailureControl.VirtualActorLogicalId, ActorGroupId> virtualActorLogicalOwners =
             new ConcurrentHashMap<>();
-    private final Map<VirtualActorActivationRegistry.Identity, Long> virtualActorLogicalGenerations =
+    private final Map<SupervisorFailureControl.VirtualActorLogicalId, Long> virtualActorLogicalGenerations =
             new ConcurrentHashMap<>();
     /** At most one physical managed worker may serve one logical identity at a time. */
     private final Map<VirtualActorActivationRegistry.Identity, ActorId> virtualActorActiveBindings =
@@ -2004,12 +2004,13 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public void bindVirtualActorIdentity(
                 ActorRef<?> worker,
-                VirtualActorActivationRegistry.Identity identity,
+                String domain, String declaration, String key,
                 long logicalActivationGeneration) {
             requireSupervisorContext("bind a virtual actor terminal identity");
             requireOpen();
             Objects.requireNonNull(worker, "worker");
-            Objects.requireNonNull(identity, "identity");
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                    domain, declaration, key);
             if (logicalActivationGeneration <= 0)
                 throw new IllegalArgumentException("virtual activation generation must be positive");
             ActorCell<?> cell = actors.get(worker.id());
