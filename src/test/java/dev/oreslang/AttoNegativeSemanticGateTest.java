@@ -32,23 +32,23 @@ final class AttoNegativeSemanticGateTest {
     private static final Case[] CASES = {
         new Case("removed-modulo", "contracts/atto-scalar-v1/negative/removed-modulo.atto",
                 "45d5794870e93074d9b11b90833a849e96aaa4c1",
-                new String[]{"%", "modulo"}, new String[]{"operator", "removed", "forbidden", "unsupported"}),
+                new String[]{"%", "modulo"}, new String[]{"operator", "removed", "forbidden", "unsupported operator"}),
         new Case("removed-caret", "contracts/atto-scalar-v1/negative/removed-caret.atto",
                 "6889c7e83c8d94b906fbfe78723caee9580da6aa",
-                new String[]{"^", "caret"}, new String[]{"operator", "removed", "forbidden", "unsupported"}),
+                new String[]{"^", "caret"}, new String[]{"operator", "removed", "forbidden", "unsupported operator"}),
         new Case("removed-double-caret", "contracts/atto-scalar-v1/negative/removed-double-caret.atto",
                 "7ee99948018e927cce74c9ad0edc1975e4251689",
-                new String[]{"^^", "caret"}, new String[]{"operator", "removed", "forbidden", "unsupported"}),
+                new String[]{"^^", "caret"}, new String[]{"operator", "removed", "forbidden", "unsupported operator"}),
         new Case("type-first-reassignment",
                 "contracts/atto-scalar-v1/negative/type-first-reassignment.atto",
                 "b118f53e68565dcb9e6acd58deb8ee47dca67606",
                 new String[]{"x", "binding", "value"},
-                new String[]{"immutable", "readonly", "const", "reassign", "cannot assign"}),
+                new String[]{"immutable", "readonly", "constant binding", "reassign", "cannot assign"}),
         new Case("typed-const-reassignment",
                 "contracts/atto-scalar-v1/negative/typed-const-reassignment.atto",
                 "784ebd47a50211e6f00cb732cc74319ed1e58fac",
                 new String[]{"x", "binding", "const"},
-                new String[]{"immutable", "readonly", "const", "reassign", "cannot assign"}),
+                new String[]{"immutable", "readonly", "constant binding", "reassign", "cannot assign"}),
         new Case("legacy-async-modifier",
                 "tests/formal-policy-atto/negative/legacy-async-modifier.atto",
                 "26d392c8f609a730e81b503d9495de7e29b46755",
@@ -98,7 +98,9 @@ final class AttoNegativeSemanticGateTest {
     }
 
     private static boolean containsAny(String actual, String[] expected) {
-        for (String term : expected) if (actual.contains(term)) return true;
+        for (String term : expected) {
+            if (term.equals("x") ? actual.matches("(?s).*\\bx\\b.*") : actual.contains(term)) return true;
+        }
         return false;
     }
 
