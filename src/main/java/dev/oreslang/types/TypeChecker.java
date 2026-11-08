@@ -7916,6 +7916,18 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
+                case "get_copy" -> {
+                    // Candidate safe-collection-access-v1: only concrete Copy<int>
+                    // is admitted until generic Copy and provenance obligations
+                    // are implemented. Legacy get(int) remains direct-value.
+                    if (!list.element().equals(Primitive.INT)) {
+                        throw new IllegalArgumentException(
+                                "collection get_copy requires a proven Copy<int> element; "
+                                        + "other element types are not admitted yet");
+                    }
+                    yield new Function(List.of(Primitive.INT),
+                            new Named("Option", List.of(Primitive.INT)));
+                }
                 case "add" -> new Function(List.of(list.element()), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
