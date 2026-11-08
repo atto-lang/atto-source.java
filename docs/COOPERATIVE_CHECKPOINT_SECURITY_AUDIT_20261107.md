@@ -38,9 +38,11 @@ one-tick disagreement between admission and execution.
 
 The ordinary physical-turn fuel balance now saturates at zero rather than
 decrementing into the negative range. The safepoint metric saturates at
-`Long.MAX_VALUE`. The physical wall/CPU delta fails closed when signed
-monotonic arithmetic returns a negative value; a wrapped delta cannot be
-treated as a fresh quota. Existing persistent SourceTask fuel already
+`Long.MAX_VALUE`. The physical wall/CPU and logical wall-time deltas now use **checked
+subtraction** with an expired sentinel on arithmetic overflow. Testing a
+wrapped subtraction only for a negative result was insufficient: a signed
+wrap from `Long.MAX_VALUE - 5` to `Long.MIN_VALUE + 5` can look like
+only 11 elapsed ticks and silently refuel an expired task. Existing persistent SourceTask fuel already
 saturates at zero, and this patch does not change its cumulative accounting.
 
 These changes deliberately **do not** make a watchdog a hard preemptor.
@@ -87,7 +89,8 @@ fabricated Java-stack continuation.
 
 `UntrustedCheckpointBoundaryTest` deterministically probes exclusive
 wall and CPU deadlines (including a CPU clock changing carrier origin),
-fuel exhaustion over 32 attempted re-entries, clock-read amortization,
+fuel exhaustion over 32 attempted re-entries, signed clock wraps and
+backward clock samples, clock-read amortization,
 the frozen-clock 512 reduction cap, guard-delayed overdue polls and
 fresh-dispatch reset. There are no sleeps or timing-race assertions.
 
