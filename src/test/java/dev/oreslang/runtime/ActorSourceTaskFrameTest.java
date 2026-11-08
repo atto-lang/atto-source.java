@@ -340,4 +340,55 @@ final class ActorSourceTaskFrameTest {
             assertTrue(actor.failure().isEmpty());
         }
     }
+
+    @Test
+    void cancellationRetiresWholeSuspendedCallChainAfterSchedulerQuiescence()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<ActorCallContinuation> chainRef = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            AtomicInteger turns = new AtomicInteger();
+
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    if (turns.getAndIncrement() == 0) {
+                        ActorSourceTaskFrame taskFrame =
+                                OresScheduler.currentActorSourceTaskFrame();
+                        ActorCallContinuation chain = taskFrame.callContinuation();
+                        chainRef.set(chain);
+                        chain.pushFrame(10, 2, 1, 1);
+                        chain.writeLocal(0, 99L);
+                        chain.setProgramCounter(4);
+                        return OresScheduler.await(gate);
+                    }
+                    fail("cancelled suspended source task must not resume guest code");
+                    return OresScheduler.done(0);
+                }));
+            });
+
+            actor.send("start");
+            awaitCondition(() -> chainRef.get() != null && arena.get() != null
+                    && arena.get().liveFrames() == 2);
+            assertEquals(64 + 28 + 18, arena.get().usedBytes());
+            assertTrue(result.get().cancel(false));
+            awaitCondition(() -> arena.get().usedBytes() == 0);
+            assertTrue(chainRef.get().retired(),
+                    "physical retirement invalidates the entire continuation owner");
+            assertEquals(0, arena.get().liveFrames());
+            assertTrue(arena.get().isPoisoned() == false);
+            gate.completeFromRuntime(1);
+            Thread.sleep(20);
+            assertEquals(0, arena.get().liveFrames(),
+                    "late producer completion cannot resurrect retired call frames");
+            assertTrue(actor.isAlive());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
 }
