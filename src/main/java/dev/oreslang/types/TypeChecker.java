@@ -2797,7 +2797,20 @@ public final class TypeChecker {
                     : narrowed;
         }
         if (expr instanceof Ast.TrapExpr trapped) {
+            // Expression trap has no continuation-owned unwind boundary yet.
+            // This traversal is deliberately conservative: no await, select,
+            // channel suspension or unaudited expression/closure may cross it.
+            if (hasSuspendingSumCallbackSyntax(trapped.expression())) {
+                throw new IllegalArgumentException(
+                        "trap expression cannot contain suspension until its continuation and cleanup are verified");
+            }
             Type inner = typeOf(trapped.expression(), env, generics, self);
+            // A Future is ordinary data until it settles. Wrapping one in
+            // Some(Future) would misleadingly appear to trap later failures.
+            if (inner instanceof Named named && named.name().equals("Future")) {
+                throw new IllegalArgumentException(
+                        "trap expression cannot wrap Future<T>; asynchronous failure capture is unsupported");
+            }
             if (inner instanceof Borrow)
                 throw new IllegalArgumentException(
                         "trap cannot wrap a borrowed value without a proven Option loan lifetime");
