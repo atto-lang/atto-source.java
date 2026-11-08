@@ -104,6 +104,39 @@ final class AttoNegativeSemanticGateTest {
         return false;
     }
 
+    @Test
+    void removedOperatorsCannotPassWithGenericUnsupportedCharacterError() {
+        for (int i = 0; i < 3; i++) {
+            Case c = CASES[i];
+            String message = "error: unsupported character " + c.requiredTerms()[0];
+            assertFalse(containsAny(message, c.policyTerms()), c.id());
+        }
+    }
+
+    @Test
+    void readonlyReassignmentsNeedAnOwnershipOrBindingDiagnostic() {
+        for (int i = 3; i < 5; i++) {
+            Case c = CASES[i];
+            assertFalse(containsAny("error: unexpected const x", c.policyTerms()), c.id());
+            assertTrue(containsAny("error: immutable binding x cannot reassign",
+                    c.policyTerms()), c.id());
+        }
+    }
+
+    @Test
+    void modifierRejectionCannotBeReplacedByGenericUnexpectedToken() {
+        for (int i = 5; i < 8; i++) {
+            Case c = CASES[i];
+            assertFalse(containsAny("error: unexpected token " + c.id(), c.policyTerms()), c.id());
+        }
+    }
+
+    @Test
+    void singleLetterBindingIdentityRequiresAnActualWordBoundary() {
+        assertFalse(containsAny("error: syntax error", new String[]{"x"}));
+        assertTrue(containsAny("error: immutable binding x", new String[]{"x"}));
+    }
+
     @TestFactory
     Stream<DynamicTest> compilerRejectsWithTheIntendedDiagnosticNotGenericSyntaxFailure() {
         return Stream.of(CASES).map(c -> DynamicTest.dynamicTest("java-atto-deny-" + c.id(), () -> {
