@@ -97,6 +97,30 @@ public final class ExecutionContext {
         }
     }
 
+    /**
+     * Reserve a positive, non-overlapping range and return its exclusive upper
+     * bound. The counter stores the last reserved ID; saturation is checked
+     * before CAS so an exhausted range allocator can never wrap and reuse IDs.
+     */
+    static long reservePositiveRangeExclusive(
+            AtomicLong counter, int count, String kind) {
+        Objects.requireNonNull(counter, "counter");
+        Objects.requireNonNull(kind, "kind");
+        if (count <= 0) {
+            throw new IllegalArgumentException("range size must be positive");
+        }
+        for (;;) {
+            long current = counter.get();
+            if (current < 0 || current > Long.MAX_VALUE - (long) count - 1L) {
+                throw new IllegalStateException(kind + " id space exhausted");
+            }
+            long last = current + count;
+            if (counter.compareAndSet(current, last)) {
+                return last + 1L;
+            }
+        }
+    }
+
     private final ExecutionId id;
     private final AllocationDomain allocationDomain;
     private final long parentExecution;
