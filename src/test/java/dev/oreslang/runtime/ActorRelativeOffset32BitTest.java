@@ -40,6 +40,11 @@ final class ActorRelativeOffset32BitTest {
             assertInstanceOf(IllegalStateException.class, exhausted.getCause());
             assertTrue(exhausted.getCause().getMessage().contains("32-bit offset"));
             assertEquals(1L << 32, cursor.getLong(first), "failed admission advanced actor cursor");
+            // An empty reservation must not publish the unrepresentable
+            // one-past-end offset as a guest pointer either.
+            assertThrows(InvocationTargetException.class,
+                    () -> reserve.invoke(first, 0, 8));
+            assertEquals(1L << 32, cursor.getLong(first));
             assertEquals(8L, cursor.getLong(second), "other actor cursor mutated");
 
             // Alignment itself must be checked before reserving bytes.
