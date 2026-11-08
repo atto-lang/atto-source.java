@@ -127,5 +127,49 @@ final class DataOrientedBorrowCheckerTest {
         assertDoesNotThrow(() ->
                 new DataOrientedBorrowChecker.Place(SOA, "\u00a0", null, null, null, null, 0));
     }
+
+    @Test
+    void unrootedCollectionProjectionsCannotForgeDisjointPlaces() {
+        for (var layout : DataOrientedBorrowChecker.Layout.values()) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    new DataOrientedBorrowChecker.Place(
+                            layout, "actor/arena", null, "Items", null, null, 7));
+            assertThrows(IllegalArgumentException.class, () ->
+                    new DataOrientedBorrowChecker.Place(
+                            layout, "actor/arena", null, "Items", "value", null, 7));
+            assertThrows(IllegalArgumentException.class, () ->
+                    new DataOrientedBorrowChecker.Place(
+                            layout, "actor/arena", "collection", null, "value", null, 7));
+        }
+    }
+
+    @Test
+    void collectionRootReadVsWriteAndSharedReadStayConservative() {
+        for (var layout : DataOrientedBorrowChecker.Layout.values()) {
+            var rootRead = loan(place(layout, null, null, null, null), READ);
+            var leafRead = loan(place(layout, "collection", "items", "value",
+                    new DataOrientedBorrowChecker.Range(0, 2)), READ);
+            var leafWrite = loan(place(layout, "collection", "items", "value",
+                    new DataOrientedBorrowChecker.Range(1, 2)), WRITE);
+            assertFalse(DataOrientedBorrowChecker.conflicts(rootRead, leafRead));
+            assertTrue(DataOrientedBorrowChecker.conflicts(rootRead, leafWrite));
+            assertThrows(IllegalArgumentException.class, () ->
+                    DataOrientedBorrowChecker.requireInternallyValid(
+                            List.of(rootRead, leafWrite)));
+        }
+    }
+
+    @Test
+    void epochMismatchedCollectionBorrowNeverAppearsDisjoint() {
+        for (var layout : DataOrientedBorrowChecker.Layout.values()) {
+            var current = place(layout, "collection", "items", "value", null);
+            var previous = new DataOrientedBorrowChecker.Place(
+                    layout, "world", "collection", "items", "value", null, 6);
+            assertThrows(IllegalArgumentException.class, () ->
+                    DataOrientedBorrowChecker.canRunConcurrently(
+                            List.of(loan(current, READ)), List.of(loan(previous, WRITE))));
+        }
+    }
+
 }
 
