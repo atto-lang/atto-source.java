@@ -30,7 +30,7 @@ public final class ActorScalarCallMachine {
 
     public enum Op {
         CONST, CONST_BOOL, LOAD, STORE, ADD, SUB, MUL, LT, LE, EQ,
-        JUMP, JUMP_IF_FALSE, CALL, TAIL_CALL, RET, POP
+        JUMP, JUMP_IF_FALSE, CALL, TAIL_CALL, RET, POP, TRAP
     }
 
     public record Instruction(Op op, int argument, long value) {
@@ -177,6 +177,7 @@ public final class ActorScalarCallMachine {
                         pushActivation(arena, execution, activations,
                                 program, step.argument(), values);
                     }
+                    case TRAP -> throw invalid(arena, "scalar function fell through without return");
                     case RET -> {
                         Object result = popValue(arena, execution, active, fn);
                         if (!(result instanceof Long value))
