@@ -91,12 +91,10 @@ public final class OresScheduler implements AutoCloseable {
 
     private static long nextDispatchId(ThreadState state) {
         if (state.dispatchNext == state.dispatchLimit) {
-            long end = NEXT_DISPATCH_ID.addAndGet(DISPATCH_ID_BLOCK);
-            if (end < DISPATCH_ID_BLOCK) { // wrapped past Long.MAX_VALUE
-                throw new IllegalStateException("OresScheduler dispatch id space exhausted");
-            }
-            state.dispatchNext = end - DISPATCH_ID_BLOCK + 1;
-            state.dispatchLimit = end + 1;
+            long exclusiveLimit = ExecutionContext.reservePositiveRangeExclusive(
+                    NEXT_DISPATCH_ID, DISPATCH_ID_BLOCK, "OresScheduler dispatch");
+            state.dispatchNext = exclusiveLimit - DISPATCH_ID_BLOCK;
+            state.dispatchLimit = exclusiveLimit;
         }
         return state.dispatchNext++;
     }
