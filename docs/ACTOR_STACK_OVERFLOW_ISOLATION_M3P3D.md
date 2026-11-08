@@ -54,6 +54,29 @@ boundary also preserves its fatal propagation behavior, so a broken
 runtime/TurnExecutor is **not** silently reclassified as a recoverable
 actor guest exception.
 
+## Carrier-local guest invocation lease audit
+
+The old `GuestCallDepthGuard` holds its active synchronous call `Scope`
+in a JVM carrier `ThreadLocal`. Normal lexical `leave()` removes it,
+but a broken native unwind or host interpreter frame can bypass the
+balanced `leave()` protocol. Without physical-turn cleanup, actor B
+might inherit A's stale `Scope` when the SHARED worker is reused:
+`GuestCallDepthGuard.enter()` previously treated that mismatch by
+poisoning **both** the stale and the new actor, violating sibling
+isolation.
+
+`GuestCallDepthGuard.quarantineLeakedActorTurnScope` is now called by
+the actor's physical-turn `finally`, before `endTurn()` releases the
+carrier. It first removes the `ThreadLocal` so that no later sibling
+can observe stale A authority, then poisons **only A's** original
+`ActorGuestStack` and `ActorFrameArena`, releases each outstanding
+logical invocation charge in descending depth order, and cancels A's
+frame bytes using the **original ExecutionContext**, even if logical
+unwind detects corruption. A stale scope causes actor A to fail-stop.
+The caller's `finally` still executes `endTurn()` and removes actor
+identity, even if malformed cleanup fails. A different actor's arena
+is never used as the reclamation destination.
+
 This is **best-effort JVM actor-turn containment**, not a guarantee of
 safe recovery after arbitrary native or JNI stack exhaustion, fatal
 OS signals, memory corruption, or resource exhaustion that prevents
@@ -65,7 +88,7 @@ sibling actor. Never market this as native physical per-actor stacks.
 
 ## New tests (AUTHORED_NOT_EXECUTED)
 
-`ActorStackOverflowIsolationTest` adds **7** host-runtime JUnit methods:
+`ActorStackOverflowIsolationTest` adds **9** host-runtime JUnit methods:
 
 - Synthetic JVM `StackOverflowError` fails only A as
   `ActorStackOverflowException`; A's arena is poisoned/retired and
@@ -80,6 +103,12 @@ sibling actor. Never market this as native physical per-actor stacks.
   after another actor exhausted its own quota.
 - An ordinary `IllegalArgumentException` guest failure is not
   misclassified as a native stack overflow.
+- An unfinished `GuestCallDepthGuard` lease is **forcibly revoked and
+  its original actor's logical depth/managed byte charges reclaimed**
+  at physical turn exit, without poisoning a sibling on the same carrier.
+- `StackOverflowError` concurrent with a deliberately leaked guest
+  guard scope does not preserve the old `ThreadLocal` across actor
+  turns; B can still enter an independent depth-one guarded call.
 - Forked `-Xss256k` JVM process runs
   `ActorStackOverflowLowStackProbe`: real native recursion causes A
   to fail, B executes on the same surviving SHARED carrier and prints
