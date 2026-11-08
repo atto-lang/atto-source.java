@@ -78,3 +78,30 @@ test('multiple owners or unreviewed final owner are rejected', () => {
 test('empty CODEOWNERS has no approval authority', () => {
   assert.throws(() => assertV3Owners('# only comments\n'), /no enforceable/u);
 });
+
+/**
+ * Until main is protected and source-export approval is independently verified,
+ * the checked-in allowlist must be deny-all. A proposed carrier is not approval.
+ * Promotion requires an explicit, reviewed policy + test change.
+ */
+function activeCarrierLines(policy) {
+  assert.equal(typeof policy, 'string');
+  assert.ok(Buffer.byteLength(policy, 'utf8') <= 16384, 'policy oversized');
+  assert.doesNotMatch(policy, /[^\x0a\x20-\x7e]/u, 'noncanonical policy bytes');
+  return policy.split('\n').filter(line => line !== '' && !line.startsWith('#'));
+}
+test('main private CI allowlist remains deny-all pending governance proof', () => {
+  const contents = readFileSync(path.join(ROOT, '.github/private-ci-approved-repositories.txt'), 'utf8');
+  assert.deepEqual(activeCarrierLines(contents), [], 'active carriers need separate approval');
+});
+test('proposed carrier comment cannot be interpreted as approval', () => {
+  assert.deepEqual(activeCarrierLines('# proposed\n# beamscale/bmscl-compiler 1383937120\n'), []);
+  assert.deepEqual(activeCarrierLines('# proposed\nbeamscale/bmscl-compiler 1383937120\n'),
+    ['beamscale/bmscl-compiler 1383937120']);
+});
+test('malformed or misleading policy bytes do not pass allowlist test', () => {
+  for (const bad of ['# comment\r\n', '# comment\u0000\n', '# comment\u00e9\n']) {
+    assert.throws(() => activeCarrierLines(bad), /noncanonical/u);
+  }
+  assert.deepEqual(activeCarrierLines(' # indented pseudo-comment\n'), [' # indented pseudo-comment']);
+});
