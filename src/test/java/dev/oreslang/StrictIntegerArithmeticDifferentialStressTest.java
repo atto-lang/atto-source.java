@@ -134,6 +134,48 @@ final class StrictIntegerArithmeticDifferentialStressTest {
         }
     }
 
+    @Test
+    void fullWidthPowerAndZeroOneIdentitiesMatchIndependentOracle() {
+        Random random = new Random(0x5A17A07B00L);
+        BigInteger min = BigInteger.valueOf(Long.MIN_VALUE);
+        BigInteger max = BigInteger.valueOf(Long.MAX_VALUE);
+        for (int i = 0; i < 20_000; i++) {
+            long base = random.nextLong();
+            int exponent = i & 7;
+            BigInteger expected = BigInteger.valueOf(base).pow(exponent);
+            if (expected.compareTo(min) < 0 || expected.compareTo(max) > 0) {
+                requireThrows(ArithmeticException.class,
+                        () -> StrictIntegerArithmetic.pow(base, exponent),
+                        "wide power overflow");
+            } else {
+                require(StrictIntegerArithmetic.pow(base, exponent) == expected.longValueExact(),
+                        "wide power mismatch: " + base + ", " + exponent);
+            }
+            require(StrictIntegerArithmetic.pow(base, 0) == 1L,
+                    "wide power identity zero: " + base);
+            require(StrictIntegerArithmetic.pow(base, 1) == base,
+                    "wide power identity one: " + base);
+        }
+    }
+
+    @Test
+    void bitwiseXorMetamorphicPropertiesCoverFullWidthValues() {
+        Random random = new Random(0xB17A16E42L);
+        for (int i = 0; i < 5_000; i++) {
+            long left = random.nextLong();
+            long right = random.nextLong();
+            long combined = StrictIntegerArithmetic.bitXor(left, right);
+            require(combined == StrictIntegerArithmetic.bitXor(right, left),
+                    "xor commutativity");
+            require(StrictIntegerArithmetic.bitXor(left, left) == 0L,
+                    "xor self cancellation");
+            require(StrictIntegerArithmetic.bitXor(left, 0L) == left,
+                    "xor zero identity");
+            require(StrictIntegerArithmetic.bitXor(combined, right) == left,
+                    "xor inverse identity");
+        }
+    }
+
     public static void main(String[] args) {
         StrictIntegerArithmeticDifferentialStressTest tests =
                 new StrictIntegerArithmeticDifferentialStressTest();
@@ -141,6 +183,8 @@ final class StrictIntegerArithmeticDifferentialStressTest {
         tests.deterministicFullWidthFuzzMatchesIndependentBigInteger();
         tests.boundedPowersMatchBigIntegerAndRejectOverflow();
         tests.extremeExponentAndFailureBoundariesAreExplicit();
+        tests.fullWidthPowerAndZeroOneIdentitiesMatchIndependentOracle();
+        tests.bitwiseXorMetamorphicPropertiesCoverFullWidthValues();
         System.out.println("STRICT_I64_DEEP_PROBE|PASS|checks=" + checks);
     }
 }
