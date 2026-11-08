@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.LongSupplier;
 
 /**
  * VM-only local virtual-actor identity and activation admission substrate.
@@ -32,6 +33,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     private final String domain;
     private final int maxIdentities;
     private final int mailboxCapacity;
+    private final LongSupplier generationSupplier;
     private long nextIncarnation;
     private boolean closed;
 
@@ -50,11 +52,17 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     }
 
     public VirtualActorActivationRegistry(String domain, int maxIdentities, int mailboxCapacity) {
+        this(domain, maxIdentities, mailboxCapacity, null);
+    }
+
+    VirtualActorActivationRegistry(String domain, int maxIdentities, int mailboxCapacity,
+                                   LongSupplier generationSupplier) {
         this.domain = requireName(domain, "domain");
         if (maxIdentities < 1 || mailboxCapacity < 1)
             throw new IllegalArgumentException("identity and mailbox bounds must be positive");
         this.maxIdentities = maxIdentities;
         this.mailboxCapacity = mailboxCapacity;
+        this.generationSupplier = generationSupplier;
     }
 
     private static void checkUnicode(String value, String kind) {
@@ -146,6 +154,19 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 slot.active && slot.published, slot.outstanding, closed);
     }
 
+    /** Remove only a newly resolved but never activated slot during failed owner admission. */
+    void discardUnactivated(LogicalRef logical) {
+        Objects.requireNonNull(logical, "logical");
+        synchronized (monitor) {
+            Slot slot = logical.slot;
+            if (slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slot.active || slot.published || slot.outstanding != 0)
+                throw new IllegalStateException("cannot discard an activated virtual actor identity");
+            slots.remove(slot.identity, slot);
+        }
+    }
+
     public final class Activation {
         private final Slot slot;
         private final long incarnation;
@@ -187,15 +208,19 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
             boolean initializer = !slot.active;
-            if (initializer && nextIncarnation == Long.MAX_VALUE)
+            if (initializer && generationSupplier == null && nextIncarnation == Long.MAX_VALUE)
                 throw new IllegalStateException("virtual actor incarnation budget exhausted");
-            long candidateIncarnation = initializer ? nextIncarnation + 1 : slot.incarnation;
+            long candidateIncarnation = initializer
+                    ? (generationSupplier == null ? nextIncarnation + 1 : generationSupplier.getAsLong())
+                    : slot.incarnation;
+            if (initializer && (candidateIncarnation <= slot.incarnation || candidateIncarnation <= 0))
+                throw new IllegalStateException("virtual actor generation is not monotonic");
             // Never mark an activation live before its capability is allocated.
             // Out-of-memory or constructor failure must not strand a slot as
             // active-but-unpublished with no initializer able to recover it.
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
-                nextIncarnation = candidateIncarnation;
+                nextIncarnation = Math.max(nextIncarnation, candidateIncarnation);
                 slot.incarnation = candidateIncarnation;
                 slot.active = true;
                 slot.published = false;
