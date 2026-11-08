@@ -222,6 +222,25 @@ final class ActorScalarSourceLoweringTest {
                 """, "supported#0"));
     }
 
+    @Test void unreachableBranchMustStillRejectUnresolvedCallGraph() {
+        // The narrow AOT subset validates every branch before allocating an
+        // actor frame. A constant true guard cannot hide an invalid callee.
+        assertNull(lower("""
+                fnc wrong(): int {
+                  if true; do return 1;
+                  else return missing(2); fi
+                }
+                """, "wrong#0"));
+    }
+
+    @Test void nestedScalarCallCannotSmuggleBooleanArgument() {
+        assertNull(lower("""
+                fnc identity(int n): int { return n; }
+                fnc inner(int n): int { return identity(n); }
+                fnc wrong(): int { return inner(1 < 2); }
+                """, "wrong#0"));
+    }
+
     @Test void syntheticJvmIntegerLiteralDoesNotImplicitlyBecomeAttoInt() {
         Ast.FunctionDecl original = null;
         for (Ast.ModuleDecl module : Parser.parse(
