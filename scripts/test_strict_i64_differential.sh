@@ -3,7 +3,7 @@
 # Graal guest, Native Image, cross-backend, or hosted CI execution receipt.
 set -euo pipefail
 
-for executable in javac java git grep sed cmp mktemp cp; do
+for executable in javac java git grep sed cmp mktemp cp chmod cat; do
   command -v "$executable" >/dev/null || {
     echo "missing required executable: $executable" >&2; exit 2;
   }
@@ -12,7 +12,7 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 helper="$root/src/main/java/dev/oreslang/runtime/StrictIntegerArithmetic.java"
 probe="$root/src/test/java/dev/oreslang/StrictIntegerArithmeticDifferentialStressTest.java"
 expected_helper='7cb1309f59310eda7dbfba0505fafce4ad0985e6'
-expected_probe='524bd02bad9b781c1403a4cbba44d66989efa941'
+expected_probe='31fe804b941435ccb8a96291c64b6d66e1e0842b'
 
 # Snapshot once, then hash AND compile only the immutable copied bytes. This
 # prevents a checkout edit between a hash check and javac from changing the
@@ -36,6 +36,9 @@ if [[ "$actual_helper" != "$expected_helper" ||
   exit 3
 fi
 echo "STRICT_I64_INPUT_BLOB|helper=$actual_helper|probe=$actual_probe"
+# Mutation and compilation are performed only on the verified private snapshot.
+chmod a-w "$helper" "$probe"
+echo "STRICT_I64_TOOLCHAIN|$(javac -version 2>&1)|$(java -version 2>&1 | sed -n 1p)"
 
 mkdir -p "$tmp/org/junit/jupiter/api"
 # This disposable annotation is ONLY for the dependency-free standalone main.
@@ -48,10 +51,11 @@ JAVA
 javac -Xlint:all -d "$tmp/original" \
   "$tmp/org/junit/jupiter/api/Test.java" "$helper" "$probe"
 java -ea -Xmx128m -cp "$tmp/original" \
-  dev.oreslang.StrictIntegerArithmeticDifferentialStressTest > "$tmp/original.log"
-if [[ "$(cat "$tmp/original.log")" != 'STRICT_I64_DEEP_PROBE|PASS|checks=454618' ]]; then
+  dev.oreslang.StrictIntegerArithmeticDifferentialStressTest > "$tmp/original.log" 2> "$tmp/original.err"
+if [[ -s "$tmp/original.err" ||
+      "$(cat "$tmp/original.log")" != 'STRICT_I64_DEEP_PROBE|PASS|checks=601343' ]]; then
   echo 'baseline did not produce the sole expected exact assertion-count receipt' >&2
-  cat "$tmp/original.log" >&2
+  cat "$tmp/original.log" "$tmp/original.err" >&2
   exit 4
 fi
 cat "$tmp/original.log"
@@ -99,7 +103,10 @@ for mutant in rem mod pow xor; do
     exit 6
   fi
   if ! grep -Fqx -- "Exception in thread \"main\" java.lang.AssertionError: $reason" \
-      "$tmp/$mutant/out.log"; then
+      "$tmp/$mutant/out.log" ||
+      ! grep -Fq -- "at dev.oreslang.StrictIntegerArithmeticDifferentialStressTest." \
+      "$tmp/$mutant/out.log" ||
+      grep -Fq -- "STRICT_I64_DEEP_PROBE|PASS" "$tmp/$mutant/out.log"; then
     echo "mutation failed for unrelated/incorrect reason: $mutant" >&2
     cat "$tmp/$mutant/out.log" >&2
     exit 7
