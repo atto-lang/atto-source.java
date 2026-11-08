@@ -568,6 +568,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    /** Stable logical virtual-actor ownership; passivation does not release this edge. */
+    private final Map<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
+            new ConcurrentHashMap<>();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
     private static final int MAX_SUPERVISOR_DEPTH = 64;
@@ -3398,6 +3401,44 @@ public final class ActorRuntime implements AutoCloseable {
                 && group.supervisor == supervisor
                 && group.managedWorkers.get(ref.id()) == ref
                 && !cell.stopped.get();
+    }
+
+    /**
+     * Atomically bind one stable virtual identity to exactly one supervisor for
+     * this runtime lifetime. The directory identity deliberately excludes the
+     * supervisor ID; management ownership is a separate authority edge.
+     */
+    void claimVirtualActorOwner(VirtualActorActivationRegistry.Identity identity,
+                                ActorSupervisor supervisor) {
+        requireSupervisorContext("claim virtual actor ownership");
+        requireCallerRuntimeAffinity("claim virtual actor ownership");
+        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            SupervisorId existing = virtualActorOwners.get(identity);
+            if (existing != null) {
+                if (!existing.equals(supervisor.id()))
+                    throw new SecurityException("virtual actor identity already belongs to another supervisor");
+                return;
+            }
+            if (virtualActorOwners.size() >= dispatcherConfig.maxActors())
+                throw new IllegalStateException("virtual actor logical identity limit exceeded");
+            SupervisorId raced = ((ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId>)
+                    virtualActorOwners).putIfAbsent(identity, supervisor.id());
+            if (raced != null && !raced.equals(supervisor.id()))
+                throw new SecurityException("virtual actor identity already belongs to another supervisor");
+        }
+    }
+
+    boolean ownsVirtualActor(VirtualActorActivationRegistry.Identity identity,
+                             ActorSupervisor supervisor) {
+        requireSupervisorContext("inspect virtual actor ownership");
+        requireCallerRuntimeAffinity("inspect virtual actor ownership");
+        return supervisors.get(supervisor.id()) == supervisor
+                && supervisor.id().equals(virtualActorOwners.get(identity));
     }
 
     /** The runtime's non-null fallback supervisor for legacy group creation. */
