@@ -391,4 +391,87 @@ final class ActorSourceTaskFrameTest {
             assertTrue(actor.failure().isEmpty());
         }
     }
+
+    @Test
+    void scalarCallMachineUsesSourceTaskContinuationInsteadOfSecondFrameStack()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<ExecutionContext> firstIdentity = new AtomicReference<>();
+            AtomicReference<ExecutionContext> secondIdentity = new AtomicReference<>();
+            AtomicReference<ActorCallContinuation> owner = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            AtomicInteger runs = new AtomicInteger();
+
+            ActorScalarCallMachine.Program nested = new ActorScalarCallMachine.Program(List.of(
+                    new ActorScalarCallMachine.Function("parent", 0, 0, 2, List.of(
+                            ActorScalarCallMachine.Instruction.constant(10),
+                            ActorScalarCallMachine.Instruction.at(
+                                    ActorScalarCallMachine.Op.CALL, 1),
+                            ActorScalarCallMachine.Instruction.constant(2),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.ADD),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.RET),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.TRAP))),
+                    new ActorScalarCallMachine.Function("child", 1, 1, 2, List.of(
+                            ActorScalarCallMachine.Instruction.at(
+                                    ActorScalarCallMachine.Op.LOAD, 0),
+                            ActorScalarCallMachine.Instruction.constant(3),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.MUL),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.RET),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.TRAP)))
+            ));
+            ActorScalarCallMachine.Program constant = new ActorScalarCallMachine.Program(List.of(
+                    new ActorScalarCallMachine.Function("again", 0, 0, 1, List.of(
+                            ActorScalarCallMachine.Instruction.constant(77),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.RET),
+                            ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.TRAP)))
+            ));
+
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame taskFrame =
+                            OresScheduler.currentActorSourceTaskFrame();
+                    assertNotNull(taskFrame);
+                    ExecutionContext current = OresScheduler.currentExecutionContext();
+                    if (runs.getAndIncrement() == 0) {
+                        firstIdentity.set(current);
+                        assertEquals(32L, ActorScalarCallMachine.execute(
+                                nested, 0, List.of(), () -> { }));
+                        owner.set(taskFrame.callContinuation());
+                        assertEquals(0, owner.get().depth(),
+                                "synchronous CALL/RET must leave the SourceTask chain empty");
+                        return OresScheduler.await(gate);
+                    }
+                    secondIdentity.set(current);
+                    assertSame(owner.get(), taskFrame.callContinuation());
+                    assertEquals(77L, ActorScalarCallMachine.execute(
+                            constant, 0, List.of(), () -> { }));
+                    assertEquals(0, owner.get().depth());
+                    return OresScheduler.done(109);
+                }));
+            });
+
+            actor.send("start");
+            awaitCondition(() -> result.get() != null && arena.get() != null
+                    && firstIdentity.get() != null
+                    && arena.get().usedBytes() == ActorSourceTaskFrame.FRAME_CHARGE_BYTES);
+            assertEquals(1, arena.get().liveFrames(),
+                    "machine activations must be popped; only the SourceTask root remains");
+            gate.completeFromRuntime(1);
+            awaitCondition(() -> result.get().isDone());
+            assertEquals(109, result.get().get(3, TimeUnit.SECONDS));
+            assertSame(firstIdentity.get(), secondIdentity.get(),
+                    "the dispatcher reuses the SourceTask logical identity");
+            assertEquals(0, arena.get().usedBytes());
+            assertEquals(0, arena.get().liveFrames());
+            assertTrue(actor.isAlive());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
 }
