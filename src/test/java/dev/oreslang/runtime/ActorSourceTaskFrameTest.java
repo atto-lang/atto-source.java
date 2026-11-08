@@ -462,7 +462,7 @@ final class ActorSourceTaskFrameTest {
             assertEquals(1, arena.get().liveFrames(),
                     "machine activations must be popped; only the SourceTask root remains");
             gate.completeFromRuntime(1);
-            awaitCondition(() -> result.get().isDone());
+            awaitCondition(() -> result.get() != null && result.get().isDone());
             assertEquals(109, result.get().get(3, TimeUnit.SECONDS));
             assertSame(firstIdentity.get(), secondIdentity.get(),
                     "the dispatcher reuses the SourceTask logical identity");
