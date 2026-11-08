@@ -499,26 +499,37 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         Thread caller = Thread.currentThread();
         CompletableFuture<T> result = new CompletableFuture<>();
         result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
-        // 0=queued, 1=running, 2=finished or cancelled-before-start.
-        // One atomic transition owns the race between timeout and CONTROL start.
+        // 0=queued, 1=running, 2=cancelled-before-start, 3=finished.
+        // Timeout can revoke a queued capture but global queue capacity remains
+        // charged until the queued CONTROL callback is physically drained (or
+        // the dispatcher reports that it will never run).
         AtomicInteger phase = new AtomicInteger(0);
-        AtomicBoolean released = new AtomicBoolean();
-        Runnable release = () -> {
-            if (released.compareAndSet(false, true)) {
+        AtomicBoolean grantReleased = new AtomicBoolean();
+        AtomicBoolean slotReleased = new AtomicBoolean();
+        Runnable releaseGrant = () -> {
+            if (grantReleased.compareAndSet(false, true))
                 grant.reading.set(false);
+        };
+        Runnable releaseSlot = () -> {
+            if (slotReleased.compareAndSet(false, true)) {
+                releaseGrant.run();
                 pendingInspections.decrementAndGet();
             }
         };
-        // If timeout/revocation wins while queued, phase 0->2 prevents a
-        // later CONTROL turn from beginning. If the worker wins 0->1, only
-        // its physical finally block releases the grant and global slot.
+        // If the caller times out before the CONTROL turn starts, the phase
+        // transition prevents capture and permits reuse of the grant. The
+        // global CONTROL admission remains charged until its queued callback
+        // runs and observes cancellation.
         result.whenComplete((ignored, failure) -> {
-            if (phase.compareAndSet(0, 2)) release.run();
+            if (phase.compareAndSet(0, 2)) releaseGrant.run();
         });
         final OresFuture<Void> dispatch;
         try {
             dispatch = runtime.dispatchSupervisorObservationControl(() -> {
-                if (!phase.compareAndSet(0, 1)) return;
+                if (!phase.compareAndSet(0, 1)) {
+                    if (phase.compareAndSet(2, 3)) releaseSlot.run();
+                    return;
+                }
                 try {
                     if (Thread.currentThread() == caller)
                         throw new IllegalStateException("INLINE_CONTROL_DISPATCH_FORBIDDEN");
@@ -527,14 +538,27 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 } catch (Throwable failure) {
                     result.completeExceptionally(failure);
                 } finally {
-                    phase.set(2);
-                    release.run();
+                    phase.set(3);
+                    releaseSlot.run();
                 }
             });
         } catch (RuntimeException | Error failure) {
             result.completeExceptionally(failure);
-            release.run();
+            if (phase.compareAndSet(0, 3) || phase.compareAndSet(2, 3))
+                releaseSlot.run();
             return result.minimalCompletionStage();
+        }
+        dispatch.whenCompleteRuntime((ignored, failure) -> {
+            if (failure != null) {
+                result.completeExceptionally(new IllegalStateException("CONTROL_DISPATCH_FAILED"));
+                // The dispatcher Future may release a queued task only when it
+                // guarantees the task will not execute later. The phase fence
+                // makes an erroneous late execution a no-op in either case.
+                if (phase.compareAndSet(0, 3) || phase.compareAndSet(2, 3))
+                    releaseSlot.run();
+            }
+        });
+        return result.minimalCompletionStage();
         }
         dispatch.whenCompleteRuntime((ignored, failure) -> {
             if (failure != null) {
