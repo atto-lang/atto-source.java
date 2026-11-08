@@ -25,3 +25,17 @@ The workflow must show nonzero executed steps and successful Surefire reports at
 3. Track real actor incarnation generation in ActorRuntime and reconcile delayed/duplicate failure receipts.
 4. Wire logical references to actual ActorRuntime mailbox invocation and generation-fenced state commit.
 5. Add source-compiled guest execution and shared VA01–VA20 parity fixtures.
+
+## Supervisor-bound worker inspection extension
+
+The follow-up host adapter `VirtualActorSupervisorDirectory` binds a logical identity to a real Java `ActorRef` only when the actor is registered as a managed worker of the exact same `ActorSupervisor` through its `ActorGroup`. Cooperative group membership alone does not prove lifecycle ownership.
+
+A successful binding mints/publishes a local activation generation and records the real ActorId, ActorRef generation and kind. It observes the worker's runtime-owned `done()` Future; only after physical finalization and turn exit does the callback retire the logical activation. A subsequent managed worker can bind to the same logical ID with a strictly newer logical activation generation. If accounting or retirement fails, the binding remains visible/quarantined instead of being reported passivated.
+
+Read access is granted by an opaque host-issued session-bound object and submitted through the already configured ActorRuntime CONTROL dispatcher. No inline fallback or new executor is created. A queued caller timeout does not free the CONTROL admission slot until the physical CONTROL turn ends. Grants are revocable and scoped to one tenant plus one exact supervisor.
+
+### Remaining limitations
+
+This integration is a local host-side management adapter. It does not intercept normal virtual-actor guest method calls, route mailbox DATA to the bound worker, participate in supervisor panic/restart policy, persist actor state, or provide a distributed directory. Activation replacement is currently an explicit trusted-host binding operation after the old worker has physically completed; it is not an autonomous restart strategy. Keep the feature opt-in and do not expose this API to guest code or a public HTTP endpoint.
+
+Exact-head JUnit coverage now additionally includes same-supervisor managed-worker binding, rejection of another supervisor's worker, generation increase after physical worker termination, CONTROL-dispatched ID/address inspection, session/scope rejection and unavailable-CONTROL fail-closed behavior.
