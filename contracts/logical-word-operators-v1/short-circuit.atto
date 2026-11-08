@@ -1,3 +1,8 @@
+fnc left_side(): bool {
+  stdio.println("lhs");
+  return false;
+}
+
 fnc right_side(): bool {
   stdio.println("rhs");
   return true;
@@ -6,6 +11,6 @@ fnc right_side(): bool {
 pub fnc main(): void {
   stdio.println(false and right_side());
   stdio.println(true or right_side());
-  stdio.println(false xor right_side());
+  stdio.println(left_side() xor right_side());
   return;
 }
