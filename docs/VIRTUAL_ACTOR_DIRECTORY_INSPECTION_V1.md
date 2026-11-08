@@ -39,3 +39,26 @@ Read access is granted by an opaque host-issued session-bound object and submitt
 This integration is a local host-side management adapter. It does not intercept normal virtual-actor guest method calls, route mailbox DATA to the bound worker, participate in supervisor panic/restart policy, persist actor state, or provide a distributed directory. Activation replacement is currently an explicit trusted-host binding operation after the old worker has physically completed; it is not an autonomous restart strategy. Keep the feature opt-in and do not expose this API to guest code or a public HTTP endpoint.
 
 Exact-head JUnit coverage now additionally includes same-supervisor managed-worker binding, rejection of another supervisor's worker, generation increase after physical worker termination, CONTROL-dispatched ID/address inspection, session/scope rejection and unavailable-CONTROL fail-closed behavior.
+
+## Stable logical identity, supervisor ownership and activation plans
+
+The follow-up `VirtualActorSupervisorDirectory` no longer embeds the supervisor UUID in the logical identity. The registry identity is tenant/domain + namespace-qualified declaration + NFC key. Supervisor ownership is a separate runtime-owned edge: `ActorRuntime` atomically claims each logical identity for one supervisor, and a second supervisor cannot claim the same identity. Cooperative ActorGroup membership does not establish this edge.
+
+Use `resolve(namespace, declaration, key)` to distinguish identical declaration/key pairs in separate application namespaces. The original two-argument overload resolves in the `default` namespace. The host-provided tenant/domain string must be stable and unique in the relevant storage/routing domain; include a stable runtime-domain qualifier when multiple runtime domains share a tenant naming space.
+
+### Activation reservation and persistent identity
+
+`prepareActivation(logical, stateSlot)` reserves a non-reusable activation generation before physical worker construction and returns a single-use host-only `ActivationPlan`. Its immutable descriptor contains:
+- the stable logical identity;
+- a runtime-local monotonically increasing logical activation generation;
+- a deterministic opaque persistence actor key (`va1_` + SHA-256-derived Base64URL), plus trusted tenant and state-slot values.
+
+The opaque actor key is independent of supervisor UUID and activation generation, so it remains the same when a supervisor/activation is recreated for the same stable tenant, namespace, actor type, and key. `publishActivation(plan, actor)` publishes only after the worker is ready, alive and registered as a managed child of the exact supervisor. `abortActivation(plan)` burns a failed candidate generation. Directory recreation within one ActorRuntime consumes the runtime-wide generation allocator, so local generations do not reset when a directory object is replaced.
+
+**Important:** this logical activation generation is runtime-local metadata, NOT a durable storage epoch and NOT provider fencing authority across process restarts. The trusted persistence provider must independently issue/recover a monotonically increasing durable epoch and enforce it at commit/restore. Do not pass the `ActivationPlan` through DATA or guest code; the descriptor is key metadata only. The existing draft [Java persistence sidecar PR #2282](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2282) provides host-side CAS/fencing and durable receipts but is not yet connected to AttoLang source lowering or this directory.
+
+### Current lifecycle connection and remaining gap
+
+The directory binds only a real ActorRuntime worker managed by the specified supervisor. It observes that worker's runtime-owned `done()` Future and passivates the logical activation only after finalization/physical turn exit. A replacement worker can then be bound under the same logical key with a higher runtime-local generation.
+
+This is still an explicit host adapter: callers must reserve a plan, construct/initialize the real actor, and publish its binding. It does not yet intercept guest virtual actor invocation, route logical mailbox DATA, schedule automatic restart according to OTP policy, or restore snapshots before activation. Persistence key metadata is ready for the trusted host bridge, but no state is saved/restored by this PR.
