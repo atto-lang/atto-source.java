@@ -64,6 +64,8 @@ class Parser:
         x = self.take()
         if not NAME.fullmatch(x):
             raise CompileError("expected an identifier")
+        if x == "guard":
+            raise CompileError("reserved AttoLang guard keyword cannot be an identifier")
         return x
 
     def integer(self):
