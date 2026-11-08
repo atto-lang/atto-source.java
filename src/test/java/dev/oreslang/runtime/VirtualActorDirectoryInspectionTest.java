@@ -109,4 +109,14 @@ final class VirtualActorDirectoryInspectionTest {
             assertTrue(new VirtualActorDirectoryInspection(registry).inspect(otherDomain).isEmpty());
         }
     }
+    @Test
+    void versionOneAddressMatchesTheCrossBackendCanonicalVector() {
+        var identity = new VirtualActorActivationRegistry.Identity(
+                "tenant-a", "7:defaultCart", "42");
+        assertEquals("atto-va1.dGVuYW50LWE.NzpkZWZhdWx0Q2FydA.NDI",
+                VirtualActorAddressV1.encode(identity));
+        assertEquals(identity, VirtualActorAddressV1.decode(
+                "atto-va1.dGVuYW50LWE.NzpkZWZhdWx0Q2FydA.NDI"));
+    }
+
 }
