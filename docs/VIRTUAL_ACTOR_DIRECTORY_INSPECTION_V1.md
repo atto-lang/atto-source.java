@@ -74,3 +74,9 @@ The cursor is valid only for its exact directory revision. The revision advances
 ### CONTROL timeout race
 
 A bounded inspection request has one atomic phase: queued, running, terminal. If timeout wins while queued, it atomically transitions queued → cancelled-before-start; the eventual queued dispatcher callback becomes a no-op and cannot inspect. The per-session grant can be reused immediately, but the global CONTROL admission credit remains charged until that stale callback is physically drained (or the dispatcher proves that it will never execute). If the CONTROL worker wins queued → running, only its physical finally path releases both grant and global slot. This prevents queued-timeout floods from creating unbounded stale CONTROL work and prevents a second concurrent capture under the same grant.
+
+## Physical termination outcome visibility
+
+When a bound worker's runtime-owned `done()` Future settles, the directory waits for that physical completion barrier, deactivates the logical activation, and retains one immutable terminal record: last physical ActorId, ActorRef generation, kind, terminal time, and (for abnormal failure) only the unwrapped exception **class name**. Cancellation is separately represented from normal passivation and failure. It never retains the Throwable, exception message, stack trace, guest payload or mutable failure graph.
+
+Inspection can therefore distinguish `ACTIVE`, `TERMINATION_PENDING_RECONCILIATION`, `PASSIVATED`, `CANCELLED` and `FAILED`. A failure result is diagnostic metadata only; it is not a supervisor policy decision, a reserved child terminal receipt, or proof that automatic restart occurred. The current Java `ActorSupervisor` substrate remains advisory and must be integrated with the durable terminal CONTROL/restart-ticket work before claiming OTP/Orleans-style recovery.
