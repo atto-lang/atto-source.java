@@ -115,14 +115,14 @@ public final class NativeHttp implements AutoCloseable {
         return true;
     }
 
-    /** An invalid request-body framing stream is a client error, not HTTP 500.
-     * Keep response-side I/O failures as server errors, and preserve 413 limits.
-     */
     /** Dedicated transport-owned quota marker: never classify by message text. */
     static final class RequestBodyTooLargeException extends IllegalArgumentException {
         RequestBodyTooLargeException() { super("body too large"); }
     }
 
+    /** An invalid request-body framing stream is a client error, not HTTP 500.
+     * Keep response-side I/O failures as server errors, and preserve 413 limits.
+     */
     static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
         if (requestBodyRead && failure instanceof RequestBodyTooLargeException) return 413;
         if (requestBodyRead && failure instanceof IOException) return 400;

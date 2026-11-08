@@ -102,6 +102,14 @@ per-listener admission check. Embedders that initialize another JDK HTTP server
 first must set the properties before that initialization; the backend cannot
 retroactively reconfigure JDK static limits. See NativeHttp.configureTransportDefaults.
 
+Quota provenance is **typed**: the transport raises the internal
+`RequestBodyTooLargeException` for both declared Content-Length over the
+listener limit and actual decoded body overflow. Only that marker qualifies
+a request-body read failure for HTTP 413; arbitrary exceptions whose message
+happens to be "body too large" do not qualify. The raw-wire suite also
+differentiates HTTP 413 for a declared length over quota from HTTP 400 for
+a malformed/overflowed decimal length.
+
 The admission layer requires one unambiguous HTTP/1.1 Host and rejects
 duplicate/joined, blank, whitespace/control or URI-delimiter Host values.
 HTTP/1.0 may omit Host, but a Host value supplied by the caller must still be

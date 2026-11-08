@@ -72,7 +72,7 @@ final class NativeHttpRawWireAdmissionTest {
                 successfulBodies.incrementAndGet();
                 status = 200;
             } catch (IllegalArgumentException badRequest) {
-                status = 400;
+                status = badRequest instanceof NativeHttp.RequestBodyTooLargeException ? 413 : 400;
             } catch (IOException malformedRequestBody) {
                 status = NativeHttp.operationFailureStatus(malformedRequestBody, true);
             }
@@ -105,6 +105,14 @@ final class NativeHttpRawWireAdmissionTest {
             assertTrue(request(address, get(
                     "Host: localhost\r\nX-Long: " + "x".repeat(12_000) + "\r\n"))
                     .startsWith("HTTP/1.1 400"), "individual 12 KiB header must be rejected");
+            assertTrue(request(address, get(
+                    "Host: localhost\r\nContent-Length: 1025\r\n"))
+                    .startsWith("HTTP/1.1 413"),
+                    "over-quota declared length must be rejected before body read as 413");
+            assertTrue(request(address, get(
+                    "Host: localhost\r\nContent-Length: 9223372036854775808\r\n"))
+                    .startsWith("HTTP/1.1 400"),
+                    "overflowed decimal length must be rejected as invalid framing, not a quota");
             assertTrue(request(address, get(
                     "Host: localhost\r\nContent-Length: 0\r\nContent-Length: 0\r\n"))
                     .startsWith("HTTP/1.1 400"), "duplicate Content-Length must be rejected");
