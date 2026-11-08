@@ -2,10 +2,13 @@ name: Virtual actor directory inspection exact-head host tests
 on:
   pull_request:
     paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/VirtualActorActivationRegistry.java'
+      - 'src/main/java/dev/oreslang/runtime/VirtualActorSupervisorDirectory.java'
       - 'src/main/java/dev/oreslang/runtime/VirtualActorAddressV1.java'
       - 'src/main/java/dev/oreslang/runtime/VirtualActorDirectoryInspection.java'
       - 'src/test/java/dev/oreslang/runtime/VirtualActorDirectoryInspectionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/VirtualActorSupervisorDirectoryTest.java'
       - 'src/test/java/dev/oreslang/ExecutableVirtualActorStateContainerTest.java'
       - '.github/workflows/virtual-actor-directory-inspection.yml'
   workflow_dispatch:
@@ -33,10 +36,13 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "HEAD_SHA=$EXPECTED_SHA"
           echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java
           git hash-object src/main/java/dev/oreslang/runtime/VirtualActorActivationRegistry.java
+          git hash-object src/main/java/dev/oreslang/runtime/VirtualActorSupervisorDirectory.java
           git hash-object src/main/java/dev/oreslang/runtime/VirtualActorAddressV1.java
           git hash-object src/main/java/dev/oreslang/runtime/VirtualActorDirectoryInspection.java
           git hash-object src/test/java/dev/oreslang/runtime/VirtualActorDirectoryInspectionTest.java
+          git hash-object src/test/java/dev/oreslang/runtime/VirtualActorSupervisorDirectoryTest.java
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'
@@ -47,9 +53,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=VirtualActorDirectoryInspectionTest,ExecutableVirtualActorStateContainerTest -DfailIfNoTests=true test
-          for suite in VirtualActorDirectoryInspectionTest ExecutableVirtualActorStateContainerTest; do
+          mvn -B -ntp -Dtest=VirtualActorDirectoryInspectionTest,VirtualActorSupervisorDirectoryTest,ExecutableVirtualActorStateContainerTest -DfailIfNoTests=true test
+          for suite in VirtualActorDirectoryInspectionTest VirtualActorSupervisorDirectoryTest ExecutableVirtualActorStateContainerTest; do
             report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
+            if [ "$suite" = "VirtualActorSupervisorDirectoryTest" ]; then
+              report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
+            fi
             if [ "$suite" = "ExecutableVirtualActorStateContainerTest" ]; then
               report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             fi
