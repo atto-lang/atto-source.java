@@ -121,14 +121,14 @@ public final class ActorScalarCallMachine {
                 Activation active = activations.peekLast();
                 if (active == null) throw new IllegalStateException("empty scalar call stack");
                 Function fn = program.functions().get(active.functionId());
-                HeaderState state = readHeader(arena, execution, active.ref());
+                HeaderState state = readHeader(arena, execution, active);
                 if (state.pc() < 0 || state.pc() >= fn.code().size())
                     throw invalid(arena, "scalar PC outside compiled code");
                 Instruction step = fn.code().get(state.pc());
                 // Persist return-PC *before* CALL or TAIL_CALL replaces the
                 // top activation; the current frame will be inaccessible
                 // while a child activation owns the top of the actor stack.
-                writeHeader(arena, execution, active.ref(), state.pc() + 1, state.sp());
+                writeHeader(arena, execution, active, state.pc() + 1, state.sp());
                 switch (step.op()) {
                     case CONST -> pushValue(arena, execution, active, fn, step.value());
                     case CONST_BOOL -> pushValue(arena, execution, active, fn,
@@ -153,16 +153,16 @@ public final class ActorScalarCallMachine {
                         pushValue(arena, execution, active, fn, result);
                     }
                     case JUMP -> {
-                        HeaderState now = readHeader(arena, execution, active.ref());
-                        writeHeader(arena, execution, active.ref(), step.argument(), now.sp());
+                        HeaderState now = readHeader(arena, execution, active);
+                        writeHeader(arena, execution, active, step.argument(), now.sp());
                     }
                     case JUMP_IF_FALSE -> {
                         Object predicate = popValue(arena, execution, active, fn);
                         if (!(predicate instanceof Boolean value))
                             throw invalid(arena, "scalar branch condition is not bool");
                         if (!value) {
-                            HeaderState now = readHeader(arena, execution, active.ref());
-                            writeHeader(arena, execution, active.ref(), step.argument(), now.sp());
+                            HeaderState now = readHeader(arena, execution, active);
+                            writeHeader(arena, execution, active, step.argument(), now.sp());
                         }
                     }
                     case CALL, TAIL_CALL -> {
@@ -212,7 +212,7 @@ public final class ActorScalarCallMachine {
         try {
             byte[] data = new byte[fn.frameBytes()];
             ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
-                    .putInt(MAGIC).putInt(0).putInt(0).putInt(0);
+                    .putInt(MAGIC).putInt(0).putInt(0).putInt(functionId);
             arena.write(execution, ref, 0, data);
             for (int i = 0; i < values.size(); i++)
                 writeValue(arena, execution, new Activation(functionId, ref), i, values.get(i));
@@ -225,42 +225,45 @@ public final class ActorScalarCallMachine {
 
     private static HeaderState readHeader(ActorFrameArena arena,
                                            ExecutionContext execution,
-                                           ActorFrameArena.FrameRef ref) {
-        ByteBuffer bytes = ByteBuffer.wrap(arena.read(execution, ref, 0, HEADER))
+                                           Activation activation) {
+        ByteBuffer bytes = ByteBuffer.wrap(
+                arena.read(execution, activation.ref(), 0, HEADER))
                 .order(ByteOrder.BIG_ENDIAN);
         int magic = bytes.getInt(), pc = bytes.getInt(), sp = bytes.getInt();
-        int reserved = bytes.getInt();
-        if (magic != MAGIC || pc < 0 || sp < 0 || reserved != 0)
-            throw invalid(arena, "corrupt scalar activation header");
+        int functionId = bytes.getInt();
+        if (magic != MAGIC || pc < 0 || sp < 0
+                || functionId != activation.functionId())
+            throw invalid(arena, "corrupt scalar activation PC or callee identity");
         return new HeaderState(pc, sp);
     }
 
     private static void writeHeader(ActorFrameArena arena, ExecutionContext execution,
-                                    ActorFrameArena.FrameRef ref, int pc, int sp) {
+                                    Activation activation, int pc, int sp) {
         if (pc < 0 || sp < 0) throw invalid(arena, "negative activation cursor");
         byte[] bytes = ByteBuffer.allocate(HEADER).order(ByteOrder.BIG_ENDIAN)
-                .putInt(MAGIC).putInt(pc).putInt(sp).putInt(0).array();
-        arena.write(execution, ref, 0, bytes);
+                .putInt(MAGIC).putInt(pc).putInt(sp)
+                .putInt(activation.functionId()).array();
+        arena.write(execution, activation.ref(), 0, bytes);
     }
 
     private static void pushValue(ActorFrameArena arena, ExecutionContext execution,
                                   Activation frame, Function fn, Object value) {
-        HeaderState state = readHeader(arena, execution, frame.ref());
+        HeaderState state = readHeader(arena, execution, frame);
         if (state.sp() >= fn.maxStack())
             throw invalid(arena, "scalar operand stack exhausted");
         writeValue(arena, execution, frame, fn.locals() + state.sp(), value);
-        writeHeader(arena, execution, frame.ref(), state.pc(), state.sp() + 1);
+        writeHeader(arena, execution, frame, state.pc(), state.sp() + 1);
     }
 
     private static Object popValue(ActorFrameArena arena, ExecutionContext execution,
                                     Activation frame, Function fn) {
-        HeaderState state = readHeader(arena, execution, frame.ref());
+        HeaderState state = readHeader(arena, execution, frame);
         if (state.sp() == 0 || state.sp() > fn.maxStack())
             throw invalid(arena, "scalar operand stack underflow");
         int index = fn.locals() + state.sp() - 1;
         Object value = readValue(arena, execution, frame, index);
         arena.write(execution, frame.ref(), HEADER + index * SLOT, new byte[SLOT]);
-        writeHeader(arena, execution, frame.ref(), state.pc(), state.sp() - 1);
+        writeHeader(arena, execution, frame, state.pc(), state.sp() - 1);
         return value;
     }
 
