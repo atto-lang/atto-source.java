@@ -17,9 +17,14 @@ on:
       - "src/test/java/dev/oreslang/runtime/NativeCarrierExecutorTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorPoolLazyStartTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorJvmFirstCarrierAdmissionTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorRuntimeNativeCarrierTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorAffinityDispatcherTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorAffinitySoftSpillTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorTurnWatchdogTest.java"
       - "src/test/java/dev/oreslang/BootThreadBudgetTest.java"
       - "src/test/java/dev/oreslang/launcher/ThreadBudgetFlagsTest.java"
+      - ".cli-flags.toml"
+      - "src/main/resources/META-INF/native-image/dev.oreslang/oreslang/reachability-metadata.json"
       - "pom.xml"
       - "scripts/build-native-thread.sh"
   workflow_dispatch:
@@ -52,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain)"
+          test -z "$(git status --porcelain --untracked-files=all)"
           echo "source_commit=$(git rev-parse HEAD)"
           echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
           echo "jni_blob=$(git rev-parse HEAD:src/main/c/oresthread.c)"
@@ -75,9 +80,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Remove stale Surefire XML and compiled JNI libraries on reused runners.
+          # A previous checkout must never be able to supply a passing receipt.
           mvn -B -ntp -Dores.runtime.carriers=native \
             '-Dtest=BootThreadBudgetTest,ActorTurnWatchdogTest,ThreadBudgetFlagsTest,ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest,ActorJvmFirstCarrierAdmissionTest' \
-            test
+            clean test
           test -s target/native/liboresthread.so
           test -n "$(find target/surefire-reports -maxdepth 1 -name 'TEST-*.xml' -print -quit)"
       - name: Fail closed unless boot, watchdog and native scheduler tests executed
@@ -95,15 +102,30 @@ jobs:
             dev.oreslang.runtime.ActorJvmFirstCarrierAdmissionTest; do
             report="target/surefire-reports/TEST-${suite}.xml"
             test -s "$report" || { echo "::error::Missing executed suite: $suite"; exit 1; }
-            grep -m 1 '<testsuite ' "$report" | grep -Eq 'tests="[1-9][0-9]*"' \
-              || { echo "::error::No test cases in $suite"; exit 1; }
-            grep -q '<testcase ' "$report" \
-              || { echo "::error::No executed testcase in $suite"; exit 1; }
+            suite_header="$(grep -m 1 '<testsuite ' "$report")"
+            if [[ ! "$suite_header" =~ tests=\"([1-9][0-9]*)\" ]]; then
+              echo "::error::No positive test count in $suite"
+              exit 1
+            fi
+            declared_tests="${BASH_REMATCH[1]}"
+            for metric in errors failures skipped; do
+              if [[ ! "$suite_header" =~ ${metric}=\"0\" ]]; then
+                echo "::error::Missing or nonzero $metric count in $suite"
+                exit 1
+              fi
+            done
+            # Surefire writes one testcase element per line; require agreement
+            # with the suite's declared count, not just a nonempty XML file.
+            executed_cases="$(grep -Ec '^[[:space:]]*<testcase[[:space:]]' "$report" || true)"
+            if [[ "$executed_cases" != "$declared_tests" ]]; then
+              echo "::error::Declared $declared_tests but found $executed_cases testcases in $suite"
+              exit 1
+            fi
             if grep -Eq '<(failure|error|skipped)([[:space:]/>])' "$report"; then
               echo "::error::Suite contains failed, errored or skipped tests: $suite"
               exit 1
             fi
-            echo "executed_suite=$suite"
+            echo "executed_suite=$suite executed_cases=$executed_cases"
           done
           printf 'scheduler_source_sha=%s\n' "$GITHUB_SHA"
           printf 'scheduler_source_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
