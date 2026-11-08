@@ -24,6 +24,17 @@ import java.util.function.Function;
 public final class SupervisorFailureControl {
     public enum Kind { TERMINAL_FAILURE, CANCELLED }
 
+    /** Logical identity/activation tuple attached to a terminal receipt when the actor is virtual. */
+    public record VirtualActorTerminalIdentity(
+            VirtualActorActivationRegistry.Identity identity,
+            long activationGeneration) {
+        public VirtualActorTerminalIdentity {
+            Objects.requireNonNull(identity, "identity");
+            if (activationGeneration <= 0)
+                throw new IllegalArgumentException("virtual activation generation must be positive");
+        }
+    }
+
     public record Notice(
             ActorRuntime.SupervisorId supervisorId,
             ActorRuntime.ActorGroupId groupId,
@@ -31,7 +42,8 @@ public final class SupervisorFailureControl {
             Optional<ActorRuntime.ActorId> spawnedBy,
             Kind kind,
             String failureType,
-            String diagnostic) {
+            String diagnostic,
+            Optional<VirtualActorTerminalIdentity> virtualActor) {
         public Notice {
             Objects.requireNonNull(supervisorId);
             Objects.requireNonNull(groupId);
@@ -40,6 +52,17 @@ public final class SupervisorFailureControl {
             Objects.requireNonNull(kind);
             failureType = bounded(Objects.requireNonNull(failureType));
             diagnostic = bounded(Objects.requireNonNull(diagnostic));
+            virtualActor = Objects.requireNonNull(virtualActor);
+        }
+
+        /** Source-compatible constructor for ordinary non-virtual actors. */
+        public Notice(ActorRuntime.SupervisorId supervisorId,
+                      ActorRuntime.ActorGroupId groupId,
+                      ActorRuntime.ActorId actorId,
+                      Optional<ActorRuntime.ActorId> spawnedBy,
+                      Kind kind, String failureType, String diagnostic) {
+            this(supervisorId, groupId, actorId, spawnedBy, kind,
+                    failureType, diagnostic, Optional.empty());
         }
     }
 
