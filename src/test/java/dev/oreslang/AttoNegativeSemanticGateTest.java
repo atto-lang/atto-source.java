@@ -47,6 +47,46 @@ final class AttoNegativeSemanticGateTest {
                 "c8bb7c921749f06e9d187a6dfbd71685952e3d88")
     };
 
+    // Same reviewed source blobs as LLVM. These are linked-source positive
+    // controls, not JIT/native execution or proof of no process GC.
+    private static final Case[] POSITIVES = {
+        new Case("canonical-add", "contracts/atto-scalar-v1/positive/canonical-add.atto",
+                "015f8b0f79aafa796a148d2adeff1574e8d6c491"),
+        new Case("pure-call", "contracts/atto-scalar-v1/positive/pure-call.atto",
+                "e5ab32f7d8f684d655a83a3df989f16c52090c05"),
+        new Case("typed-const-readonly", "contracts/atto-scalar-v1/positive/typed-const-readonly.atto",
+                "0325018c54dd3534ddac76dc29724aa61e979683"),
+        new Case("inferred-const-readonly", "contracts/atto-scalar-v1/positive/inferred-const-readonly.atto",
+                "4fe471862d90ba57e135b93728bd44690ff2c894"),
+        new Case("type-first-parameter", "contracts/atto-scalar-v1/positive/type-first-parameter.atto",
+                "3d6c16ed04aa86f954461885ec77c8f10b47fb5c"),
+        new Case("type-first-readonly", "contracts/atto-scalar-v1/positive/type-first-readonly.atto",
+                "75ff4afc98fc65a774611eb7686e893f3d28a6da")
+    };
+
+    @TestFactory
+    Stream<DynamicTest> canonicalPositiveControlsRemainAdmitted() {
+        return Stream.of(POSITIVES).map(c -> DynamicTest.dynamicTest("java-atto-positive-" + c.id(), () -> {
+            Path source = fixture(c);
+            var compiled = assertDoesNotThrow(() -> LinkedProgramRunner.validate(source, Map.of()),
+                    "valid canonical source was rejected: " + c.id());
+            assertNotNull(compiled);
+            assertEquals(1, compiled.units().size(), "exact linked source: " + c.id());
+        }));
+    }
+
+    @Test
+    void positiveControlsAreUniqueAndIndependentlyBlobPinned() throws Exception {
+        assertEquals(6, POSITIVES.length);
+        Set<String> ids = new HashSet<>();
+        for (Case c : CASES) assertTrue(ids.add(c.id()), "duplicate negative: " + c.id());
+        for (Case c : POSITIVES) {
+            assertTrue(ids.add(c.id()), "positive/negative name collision: " + c.id());
+            assertTrue(c.path().contains("/positive/"), "positive in negative directory: " + c.id());
+            fixture(c);
+        }
+    }
+
     private static String gitBlob(byte[] bytes) throws Exception {
         MessageDigest sha = MessageDigest.getInstance("SHA-1");
         sha.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.US_ASCII));
