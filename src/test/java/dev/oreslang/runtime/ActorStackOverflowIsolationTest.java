@@ -246,6 +246,92 @@ final class ActorStackOverflowIsolationTest {
     }
 
     @Test
+    void leakedGuestCallScopeIsQuarantinedBeforeSiblingReusesCarrier()
+            throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorGuestStack> brokenStack = new AtomicReference<>();
+            AtomicReference<ActorFrameArena> brokenArena = new AtomicReference<>();
+            AtomicReference<Thread> firstThread = new AtomicReference<>();
+            var broken = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                firstThread.set(Thread.currentThread());
+                brokenStack.set(ActorRuntime.currentActorGuestStack());
+                brokenArena.set(ActorRuntime.currentActorFrameArena());
+                // Simulate a malformed unwinder: deliberately never leave.
+                // The turn-exit fence MUST revoke the per-carrier ThreadLocal
+                // before allowing any independent actor onto that worker.
+                int leakedDepth = GuestCallDepthGuard.enter();
+                assertEquals(1, leakedDepth);
+            });
+            AtomicReference<Thread> nextThread = new AtomicReference<>();
+            AtomicInteger healthyCalls = new AtomicInteger();
+            var healthy = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                nextThread.set(Thread.currentThread());
+                int depth = GuestCallDepthGuard.enter();
+                try {
+                    assertEquals(1, depth,
+                            "actor B must not inherit A's stale carrier call scope");
+                    healthyCalls.incrementAndGet();
+                } finally {
+                    GuestCallDepthGuard.leave(depth);
+                    turn.self().stop();
+                }
+            });
+            broken.send("leak");
+            assertTrue(broken.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class,
+                    broken.failure().orElseThrow());
+            assertTrue(brokenStack.get().isPoisoned());
+            assertEquals(0, brokenStack.get().activeFrames());
+            assertEquals(0, brokenArena.get().usedBytes());
+            assertTrue(brokenArena.get().isRetired());
+
+            healthy.send("alive");
+            assertTrue(healthy.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertEquals(1, healthyCalls.get());
+            assertTrue(healthy.failure().isEmpty());
+            assertSame(firstThread.get(), nextThread.get());
+        }
+    }
+
+    @Test
+    void nativeOverflowWithLeakedGuardCannotContaminateAnotherActor()
+            throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorGuestStack> oldStack = new AtomicReference<>();
+            AtomicReference<ActorFrameArena> oldArena = new AtomicReference<>();
+            var broken = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                oldStack.set(ActorRuntime.currentActorGuestStack());
+                oldArena.set(ActorRuntime.currentActorFrameArena());
+                GuestCallDepthGuard.enter();
+                throw new StackOverflowError("guest failed during unbalanced native unwind");
+            });
+            AtomicInteger siblingCalls = new AtomicInteger();
+            var healthy = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                int depth = GuestCallDepthGuard.enter();
+                try {
+                    siblingCalls.incrementAndGet();
+                    assertEquals(1, depth);
+                } finally {
+                    GuestCallDepthGuard.leave(depth);
+                    turn.self().stop();
+                }
+            });
+            broken.send("overflow");
+            assertTrue(broken.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertInstanceOf(ActorStackOverflowException.class,
+                    broken.failure().orElseThrow());
+            assertEquals(0, oldStack.get().activeFrames());
+            assertEquals(0, oldArena.get().usedBytes());
+            healthy.send("continue");
+            assertTrue(healthy.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertEquals(1, siblingCalls.get());
+            assertTrue(healthy.failure().isEmpty());
+        }
+    }
+
+    @Test
     void regularGuestHandlerFailureDoesNotBecomeStackOverflow() throws Exception {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 8))) {
