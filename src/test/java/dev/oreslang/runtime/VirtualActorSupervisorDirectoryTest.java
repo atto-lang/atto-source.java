@@ -426,4 +426,45 @@ final class VirtualActorSupervisorDirectoryTest {
         }
     }
 
+    @Test
+    void failedPhysicalWorkerIsReportedAsFailedWithSanitizedTerminalMetadata() throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             var runtime = runtime(pooled(pool))) {
+            var supervisor = runtime.createSupervisor();
+            try (var group = runtime.createActorGroup(supervisor);
+                 var directory = new VirtualActorSupervisorDirectory(
+                         runtime, supervisor, TENANT, 8, 4)) {
+                ActorRuntime.BehaviorFactory<String> failing = factory ->
+                        (message, context) -> { throw new IllegalStateException("private guest failure message"); };
+                var actor = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), failing);
+                actor.getReady().get(5, TimeUnit.SECONDS);
+                var logical = directory.resolve("Cart", "failure-42");
+                directory.bindActivation(logical, actor);
+                actor.send("fail");
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> actor.done().get(5, TimeUnit.SECONDS));
+
+                Object lastSession = new Object();
+                var grant = directory.issueInspectionGrant(lastSession, TimeUnit.SECONDS.toNanos(4));
+                VirtualActorSupervisorDirectory.Snapshot snapshot = null;
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (System.nanoTime() < deadline) {
+                    snapshot = directory.requestInspect(
+                            grant, lastSession, logical.identity(), TimeUnit.SECONDS.toNanos(2))
+                            .toCompletableFuture().get(3, TimeUnit.SECONDS).orElseThrow();
+                    if (snapshot.lifecycle() != VirtualActorSupervisorDirectory.Lifecycle.TERMINATION_PENDING_RECONCILIATION)
+                        break;
+                }
+                assertNotNull(snapshot);
+                assertEquals(VirtualActorSupervisorDirectory.Lifecycle.FAILED, snapshot.lifecycle());
+                assertEquals("java.lang.IllegalStateException",
+                        snapshot.lastTerminalFailureClass().orElseThrow());
+                assertTrue(snapshot.lastTerminalAt().isPresent());
+                assertFalse(snapshot.lastTerminalFailureClass().orElseThrow()
+                        .contains("private guest failure message"));
+            }
+        }
+    }
+
 }
