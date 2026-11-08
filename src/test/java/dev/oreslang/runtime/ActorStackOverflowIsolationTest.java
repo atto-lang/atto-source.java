@@ -332,6 +332,50 @@ final class ActorStackOverflowIsolationTest {
     }
 
     @Test
+    void leakedCallDepthStopsActorBeforeSecondMessageInSameBatch() throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            var enteredFirstMessage = new java.util.concurrent.CountDownLatch(1);
+            var allowFirstToReturn = new java.util.concurrent.CountDownLatch(1);
+            AtomicInteger otherDeliveries = new AtomicInteger();
+            AtomicReference<ActorGuestStack> stack = new AtomicReference<>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                stack.set(ActorRuntime.currentActorGuestStack());
+                arena.set(ActorRuntime.currentActorFrameArena());
+                if ("first".equals(mail)) {
+                    int reserved = GuestCallDepthGuard.enter();
+                    assertEquals(1, reserved);
+                    enteredFirstMessage.countDown();
+                    try {
+                        if (!allowFirstToReturn.await(10, TimeUnit.SECONDS))
+                            throw new IllegalStateException("test admission barrier expired");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                    // Deliberately omit leave(): the actor must fail here,
+                    // before the queued "second" mail can be dispatched.
+                    return;
+                }
+                otherDeliveries.incrementAndGet();
+                turn.self().stop();
+            });
+            actor.send("first");
+            assertTrue(enteredFirstMessage.await(10, TimeUnit.SECONDS));
+            actor.send("second"); // known admitted while the first is running
+            allowFirstToReturn.countDown();
+            assertTrue(actor.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertEquals(0, otherDeliveries.get(),
+                    "an unfinished stack lease must stop the actor before its next mail");
+            assertInstanceOf(IllegalStateException.class, actor.failure().orElseThrow());
+            assertTrue(stack.get().isPoisoned());
+            assertEquals(0, stack.get().activeFrames());
+            assertEquals(0, arena.get().usedBytes());
+        }
+    }
+
+    @Test
     void regularGuestHandlerFailureDoesNotBecomeStackOverflow() throws Exception {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 8))) {
