@@ -390,17 +390,30 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
-    void activationOrAdmissionChangeInvalidatesPreviouslyIssuedPageRevision() {
-        try (var runtime = new ActorRuntime()) {
+    void activationOrAdmissionChangeInvalidatesPreviouslyIssuedPageRevision() throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             var runtime = runtime(pooled(pool))) {
             var supervisor = runtime.createSupervisor();
             try (var directory = new VirtualActorSupervisorDirectory(
                     runtime, supervisor, TENANT, 8, 4)) {
-                var logical = directory.resolve("Cart", "42");
-                // Registry listing uses the exact revision from the first page.
-                // Preparing/publishing an activation changes metadata and invalidates it.
-                var plan = directory.prepareActivation(logical, "state");
+                var first = directory.resolve("Cart", "a");
+                directory.resolve("Cart", "b");
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(5));
+                var page = directory.requestList(grant, session, 1, -1, null,
+                        TimeUnit.SECONDS.toNanos(3)).toCompletableFuture()
+                        .get(5, TimeUnit.SECONDS);
+                assertTrue(page.nextAfter().isPresent());
+
+                var plan = directory.prepareActivation(first, "state");
                 directory.abortActivation(plan);
-                assertTrue(directory.resolve("Cart", "42").identity().equals(logical.identity()));
+                var stale = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> directory.requestList(grant, session, 1, page.revision(),
+                                page.nextAfter().orElseThrow(), TimeUnit.SECONDS.toNanos(3))
+                                .toCompletableFuture().get(5, TimeUnit.SECONDS));
+                assertInstanceOf(VirtualActorActivationRegistry.StaleDirectoryPageException.class,
+                        stale.getCause());
+                assertEquals(0, directory.pendingInspectionCount());
             }
         }
     }
