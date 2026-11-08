@@ -171,5 +171,45 @@ final class DataOrientedBorrowCheckerTest {
         }
     }
 
-}
 
+    @Test
+    void collectionSourceLoansStayRootedEvenWhenDopRowsAreProvablyDisjoint() {
+        for (var layout : DataOrientedBorrowChecker.Layout.values()) {
+            var left = place(layout, "collection", "items", "value",
+                    new DataOrientedBorrowChecker.Range(0, 1));
+            var right = place(layout, "collection", "items", "value",
+                    new DataOrientedBorrowChecker.Range(1, 2));
+            // DOP may prove disjoint physical rows. Source collection v1 cannot
+            // mint independent loans merely from different source indices.
+            assertFalse(DataOrientedBorrowChecker.conflicts(loan(left, READ), loan(right, WRITE)));
+            var rootRead = DataOrientedBorrowChecker.conservativeCollectionRootLoan(left, READ);
+            var rootWrite = DataOrientedBorrowChecker.conservativeCollectionRootLoan(right, WRITE);
+            assertEquals("collection", rootRead.place().archetype());
+            assertNull(rootRead.place().component());
+            assertNull(rootRead.place().field());
+            assertNull(rootRead.place().rows());
+            assertTrue(DataOrientedBorrowChecker.conflicts(rootRead, rootWrite));
+            assertFalse(DataOrientedBorrowChecker.canRunConcurrently(
+                    List.of(rootRead), List.of(rootWrite)));
+            var anotherRead = DataOrientedBorrowChecker.conservativeCollectionRootLoan(right, READ);
+            assertDoesNotThrow(() -> DataOrientedBorrowChecker.requireInternallyValid(
+                    List.of(rootRead, anotherRead)));
+            assertEquals(7, rootRead.place().epoch());
+        }
+    }
+
+    @Test
+    void collectionRootNormalizerRequiresAnExplicitCollectionIdentity() {
+        for (var layout : DataOrientedBorrowChecker.Layout.values()) {
+            var rootless = place(layout, null, null, null, null);
+            assertThrows(IllegalArgumentException.class, () ->
+                    DataOrientedBorrowChecker.conservativeCollectionRootLoan(rootless, READ));
+            assertThrows(NullPointerException.class, () ->
+                    DataOrientedBorrowChecker.conservativeCollectionRootLoan(null, READ));
+            var rooted = place(layout, "collection", "items", null, null);
+            assertThrows(NullPointerException.class, () ->
+                    DataOrientedBorrowChecker.conservativeCollectionRootLoan(rooted, null));
+        }
+    }
+
+}
