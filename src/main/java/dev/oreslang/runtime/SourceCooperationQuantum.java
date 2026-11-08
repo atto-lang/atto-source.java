@@ -17,7 +17,7 @@ import java.util.function.LongSupplier;
  * count as a cooperation or run the task's lexical cleanup.</p>
  */
 public final class SourceCooperationQuantum {
-    public static final int LOOP_CHECK_INTERVAL = 64;
+    public static final int LOOP_CHECK_INTERVAL = 128;
     public static final int MAX_BACKEDGES_PER_DISPATCH = 512;
     public static final long SOFT_DISPATCH_QUANTUM_NANOS = 2_000_000L;
 
@@ -25,6 +25,9 @@ public final class SourceCooperationQuantum {
     private long lastCooperateAtNanos;
     private long dispatchStartedAtNanos;
     private long backedgesThisDispatch;
+    // Persistent across await/resume: short turns cannot evade cold checks.
+    private int pollPhase;
+    private boolean pollDue;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -41,6 +44,7 @@ public final class SourceCooperationQuantum {
     public void beginDispatch() {
         dispatchStartedAtNanos = monotonicNanos.getAsLong();
         backedgesThisDispatch = 0;
+        pollDue = false;
     }
 
     /**
@@ -48,17 +52,15 @@ public final class SourceCooperationQuantum {
      * Absolutely no clock reads or scheduler calls on the usual fast path.
      */
     public boolean completedBackedgeNeedsCheck() {
-        // Once a no-yield region has consumed the soft reduction budget,
-        // poll EVERY subsequent committed backedge. Otherwise a guard that
-        // closes between ordinary 64-backedge polls could delay an already
-        // overdue handoff, and a wrapped signed counter could erase the cap.
-        // Saturate at Long.MAX_VALUE rather than wrapping to a negative value.
-        long completed = backedgesThisDispatch;
-        if (completed != Long.MAX_VALUE) {
-            completed = ++backedgesThisDispatch;
+        // Charge cheap work each iteration, even when an overdue critical
+        // section prohibits suspension. Saturate the physical dispatch count.
+        if (backedgesThisDispatch != Long.MAX_VALUE) {
+            backedgesThisDispatch++;
         }
-        return completed >= MAX_BACKEDGES_PER_DISPATCH
-                || (completed & (LOOP_CHECK_INTERVAL - 1)) == 0;
+        // The cold poll remains periodic even past the 512 reduction cap.
+        pollPhase = (pollPhase + 1) & (LOOP_CHECK_INTERVAL - 1);
+        pollDue = pollPhase == 0;
+        return pollDue;
     }
 
     /** Slow path only: reduction cap, watchdog request, or active dispatch time.
@@ -70,8 +72,12 @@ public final class SourceCooperationQuantum {
     }
 
     public boolean shouldCooperateAtCheck(boolean watchdogRequested) {
-        // A pending watchdog notice is advisory and must not cause another
-        // clock read. Only the compiler-lowered caller may publish Cooperate.
+        // One ticket per 128 committed backedges: repeated or off-cycle
+        // callers must not trigger new clock reads or scheduler polls.
+        if (!pollDue) {
+            return false;
+        }
+        pollDue = false;
         if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
             return true;
         }
