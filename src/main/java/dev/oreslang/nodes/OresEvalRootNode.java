@@ -8685,6 +8685,31 @@ public final class OresEvalRootNode extends RootNode {
                         Object index = args.getFirst();
                         return rawList.get(checkedSequenceIndex(index, rawList.size()));
                     };
+                    case "get_copy" -> (Invokable) args -> {
+                        requireOne(args, "List.get_copy");
+                        // Check signed i64 before ANY narrowing to a 32-bit
+                        // slot. Unlike legacy get(), a miss is tagged None.
+                        // Invalid host values must not be coerced into indices.
+                        Object input = args.getFirst();
+                        if (!(input instanceof Byte || input instanceof Short
+                                || input instanceof Integer || input instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "List.get_copy index must be an integer");
+                        }
+                        long index = ((Number) input).longValue();
+                        if (index < 0 || index >= rawList.size()) {
+                            return new OptionValue(false, null);
+                        }
+                        Object value = rawList.get((int) index);
+                        if (!(value instanceof Byte || value instanceof Short
+                                || value instanceof Integer || value instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "List.get_copy requires a Copy<int> element");
+                        }
+                        // A boxed primitive is an owned Copy, not a view,
+                        // pointer or ReadLoan. Preserve explicit Some/None.
+                        return new OptionValue(true, value);
+                    };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
                         @SuppressWarnings("unchecked")
