@@ -69,6 +69,53 @@ final class UntrustedCheckpointBoundaryTest {
     }
 
     @Test
+    void positiveCpuClockRegressionIsTerminalAcrossCarrierSegments() {
+        AtomicLong wall = new AtomicLong(0L);
+        AtomicLong cpu = new AtomicLong(100L);
+        ActorRuntime.UntrustedLogicalQuota checked = new ActorRuntime.UntrustedLogicalQuota(
+                1000L, 10L, 0L, 0L, wall::get, cpu::get);
+        checked.enter();
+        cpu.set(99L);
+        try {
+            var failure = assertThrows(
+                    ActorRuntime.UntrustedActorQuotaExceededException.class, checked::check);
+            assertEquals(ActorRuntime.UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                    failure.resource(), "positive CPU-clock regression must expire quota");
+        } finally {
+            checked.leave();
+        }
+        cpu.set(400L);
+        checked.enter();
+        try {
+            var failure = assertThrows(
+                    ActorRuntime.UntrustedActorQuotaExceededException.class, checked::check);
+            assertEquals(ActorRuntime.UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                    failure.resource(), "leave must preserve terminal CPU debt across resume");
+        } finally {
+            checked.leave();
+        }
+
+        // Detect the same anomaly even if the host never called check()
+        // before leaving the first carrier segment.
+        cpu.set(600L);
+        ActorRuntime.UntrustedLogicalQuota unchecked = new ActorRuntime.UntrustedLogicalQuota(
+                1000L, 10L, 0L, 0L, wall::get, cpu::get);
+        unchecked.enter();
+        cpu.set(599L);
+        unchecked.leave();
+        cpu.set(700L);
+        unchecked.enter();
+        try {
+            var failure = assertThrows(
+                    ActorRuntime.UntrustedActorQuotaExceededException.class, unchecked::check);
+            assertEquals(ActorRuntime.UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                    failure.resource(), "unchecked segment regression must poison future turns");
+        } finally {
+            unchecked.leave();
+        }
+    }
+
+    @Test
     void exhaustedFuelNeverRefillsAcrossResumesOrRepeatedFailures() {
         AtomicLong clock = new AtomicLong();
         ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
