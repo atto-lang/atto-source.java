@@ -285,6 +285,11 @@ final class ActorSourceTaskFrameTest {
                         chain.pushOperand(3L);
                         assertEquals(2, chain.depth());
                         assertEquals(110, chain.chargedBytes());
+                        assertThrows(IllegalStateException.class,
+                                () -> taskFrame.bindLexicalScalar(77, "shadow", 12L),
+                                "task-root scalar slots cannot alias an active nested call chain");
+                        assertFalse(owner.isPoisoned(),
+                                "rejected root/call-frame alias must not poison the actor");
                         return OresScheduler.await(gate);
                     }
 
