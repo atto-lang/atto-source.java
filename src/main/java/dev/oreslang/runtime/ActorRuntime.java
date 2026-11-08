@@ -8818,6 +8818,17 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new ActorFrameArena.BudgetExceeded(
                                 "actor-owned frame byte quota exhausted");
                     }
+                    // A single physical actor turn may process multiple
+                    // mailbox messages. A guest-call lease cannot cross even
+                    // this *per-envelope* boundary: quarantine before the
+                    // next user mail, SourceTask or continuation dispatch.
+                    // The physical-turn finally retains a second defensive
+                    // cleanup for abrupt exceptions before this checkpoint.
+                    if (GuestCallDepthGuard.quarantineLeakedActorTurnScope(
+                            guestStack, frameArena)) {
+                        throw new IllegalStateException(
+                                "actor guest call stack leaked across mailbox delivery");
+                    }
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {
