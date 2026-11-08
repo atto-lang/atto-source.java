@@ -95,7 +95,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                                            int mailboxCapacity) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.supervisor = Objects.requireNonNull(supervisor, "supervisor");
-        this.tenant = requireText(tenant, "tenant", 128);
+        this.tenant = requireText(tenant, "tenant", 80);
         Map<ActorRuntime.SupervisorId, ActorRuntime.ActorSupervisor> registered =
                 runtime.supervisorRegistryForObservation();
         if (registered.get(supervisor.id()) != supervisor)
@@ -135,7 +135,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         runtime.supervisorRegistryForObservation();
         if (!runtime.actorManagedBySupervisor(actor, supervisor))
             throw new SecurityException("activation worker is not managed by this supervisor");
-        if (!actor.isAlive())
+        if (!actor.getReady().isDone() || !actor.isAlive())
             throw new IllegalStateException("cannot bind a terminated actor activation");
         synchronized (stateLock) {
             if (closed) throw new IllegalStateException("virtual actor supervisor directory closed");
