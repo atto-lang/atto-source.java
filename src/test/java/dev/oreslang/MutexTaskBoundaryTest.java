@@ -58,6 +58,48 @@ final class MutexTaskBoundaryTest {
     }
 
     @Test
+    void mutexCannotEscapeThroughIndirectRoutes() {
+        String counter = """
+                define class Counter as
+                  pub let mut int count = 41;
+                end
+                """;
+        // A channel of Mutex may exist inside its actor but cannot reach a task.
+        rejected(counter + """
+                pub async fnc main(): void {
+                  val Channel<Mutex<Counter>> ch = Channel.new<Mutex<Counter>>(1);
+                  val Future<int> t = task { val m = await (nb readch ch); return 1; };
+                  return;
+                }
+                """);
+        rejected(counter + "async fnc take(Channel<Mutex<Counter>> c): int { return 1; }");
+        // A closure that captured a Mutex is itself actor-local.
+        rejected(counter + """
+                pub async fnc main(): void {
+                  val Mutex<Counter> m = Mutex.new(new Counter());
+                  val f = || -> { val g = m.lock(); g.release(); return 1; };
+                  val Future<int> t = task { return f(); };
+                  return;
+                }
+                """);
+        // Results cannot carry one out of a task, and SharedMutex cannot wrap one.
+        rejected(counter + "async fnc make(): Mutex<Counter> { return Mutex.new(new Counter()); }");
+        rejected(counter + """
+                pub async fnc main(): void {
+                  val Future<Mutex<Counter>> t = task { return Mutex.new(new Counter()); };
+                  return;
+                }
+                """);
+        rejected(counter + """
+                pub fnc main(): void {
+                  val SharedMutex<Mutex<Counter>> s = SharedMutex.new(Mutex.new(new Counter()));
+                  return;
+                }
+                """);
+        rejected("actor fnc take(Mutex<int> m): int { return 1; }");
+    }
+
+    @Test
     void mutexStillWorksInsideItsOwnDomain() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Counter as
