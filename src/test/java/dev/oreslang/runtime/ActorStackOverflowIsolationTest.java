@@ -218,10 +218,10 @@ final class ActorStackOverflowIsolationTest {
         assertNotNull(classpath, "unable to locate child JVM test classpath");
         String exe = System.getProperty("os.name", "").toLowerCase().contains("win")
                 ? "java.exe" : "java";
-        String java = java.nio.file.Path.of(System.getProperty("java.home"),
+        String javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"),
                 "bin", exe).toString();
         var process = new ProcessBuilder(
-                java, "-Xss256k", "-cp", classpath,
+                javaExecutable, "-Xss256k", "-cp", classpath,
                 ActorStackOverflowLowStackProbe.class.getName())
                 .redirectErrorStream(true)
                 .start();
