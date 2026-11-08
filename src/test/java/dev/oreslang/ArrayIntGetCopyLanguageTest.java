@@ -28,6 +28,14 @@ final class ArrayIntGetCopyLanguageTest {
                 "candidate must parse before semantic ownership verification");
     }
 
+    private static void admittedByBothCheckers(String program) {
+        Ast.Program source = parsedGuest(program);
+        assertDoesNotThrow(() -> TypeChecker.check(source),
+                "without a conflicting read, the owner operation must be legal");
+        assertDoesNotThrow(() -> OwnershipChecker.check(source),
+                "standalone ownership pass must agree with integrated typing");
+    }
+
     private static void rejectedByBothCheckers(Ast.Program source, String reason) {
         IllegalArgumentException integrated = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(source));
@@ -111,6 +119,15 @@ final class ArrayIntGetCopyLanguageTest {
 
     @Test
     void movedArrayCannotReturnNoneThroughCheckedCopy() {
+        admittedByBothCheckers("""
+                fnc consume(Array<int> input): void { return; }
+                pub fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  consume(values);
+                  return;
+                }
+                """);
         Ast.Program source = parsedGuest("""
                 fnc consume(Array<int> input): void { return; }
                 pub fnc main(): void {
@@ -126,6 +143,17 @@ final class ArrayIntGetCopyLanguageTest {
 
     @Test
     void copyWhileRootMutablyBorrowedIsRejectedEvenForMiss() {
+        // Prove the declared exclusive loan itself is supported before
+        // attributing rejection to the subsequent checked-copy access.
+        admittedByBothCheckers("""
+                pub fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(42);
+                  val borrow mut Array<int> exclusive = rt mut borrow values;
+                  stdio.stdout.write(exclusive.size);
+                  return;
+                }
+                """);
         Ast.Program source = parsedGuest("""
                 pub fnc main(): void {
                   let mut Array<int> values = new Array<int>();
@@ -155,6 +183,17 @@ final class ArrayIntGetCopyLanguageTest {
 
     @Test
     void movingRootWhileEvaluatingCopyIndexIsRejectedSemantically() {
+        // Ensure moving a collection into an ordinary by-value argument
+        // is admissible without an active get_copy receiver loan.
+        admittedByBothCheckers("""
+                fnc consume(Array<int> input): int { return 0; }
+                pub fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(7);
+                  val count = consume(values);
+                  return;
+                }
+                """);
         Ast.Program source = parsedGuest("""
                 fnc consume(Array<int> input): int { return 0; }
                 pub fnc main(): void {
