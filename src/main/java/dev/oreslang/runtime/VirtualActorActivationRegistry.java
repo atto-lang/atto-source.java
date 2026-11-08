@@ -89,7 +89,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public LogicalRef resolve(String declaration, String key) {
         declaration = requireName(declaration, "declaration");
         Objects.requireNonNull(key, "key");
-        // Bound before normalization and UTF-8 encoding to constrain hostile input.
+        // A key must be bounded BEFORE normalization and UTF-8 encoding:
+        // prohibit adversarial allocations from huge untrusted identifiers.
         if (key.length() > MAX_KEY_BYTES * 4)
             throw new IllegalArgumentException("virtual actor key exceeds pre-normalization budget");
         checkUnicode(key, "key");
@@ -106,6 +107,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 if (slots.size() == maxIdentities)
                     throw new IllegalStateException("virtual actor identity capacity exhausted");
                 slot = new Slot(identity, this);
+                // Build the outward capability before consuming a bounded
+                // identity slot, so allocation failure leaves no orphan entry.
                 LogicalRef reference = new LogicalRef(slot);
                 slots.put(identity, slot);
                 return reference;
@@ -171,6 +174,11 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
      * Duplicate activation requests observe the same live incarnation.
      * Only the caller performing initialization may publish the candidate.
      */
+    /**
+     * Duplicate activation requests observe the same live incarnation.
+     * Only the caller that performs actual actor initialization may publish
+     * that incarnation to the runtime; this primitive tracks admission only.
+     */
     public Activation activate(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
         synchronized (monitor) {
@@ -182,6 +190,9 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (initializer && nextIncarnation == Long.MAX_VALUE)
                 throw new IllegalStateException("virtual actor incarnation budget exhausted");
             long candidateIncarnation = initializer ? nextIncarnation + 1 : slot.incarnation;
+            // Never mark an activation live before its capability is allocated.
+            // Out-of-memory or constructor failure must not strand a slot as
+            // active-but-unpublished with no initializer able to recover it.
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
                 nextIncarnation = candidateIncarnation;
@@ -193,6 +204,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
+    /** Commit activation only after the guest instance has initialized successfully. */
     public void publish(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -205,6 +217,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     }
 
     /** A failed initializer fences all pending handles; its generation is burned. */
+    /** A failed initializer fences all pending handles for that incarnation. */
     public void abort(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -216,6 +229,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
+    /** An accepted turn must have an explicit observed disposition. */
     public enum Disposition { PROCESSED, FAILED_CONTROL_NOTIFIED, CANCELLED_NOTIFIED }
 
     public final class Admission {
@@ -229,6 +243,12 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
         public long incarnation() { return incarnation; }
 
+        /**
+         * Called only after the handler completed or after an independently
+         * recorded failure/cancellation notice. This method does NOT send
+         * notices itself and cannot attest a backend's CONTROL transport.
+         * No bare close()/drop path exists to hide accepted work.
+         */
         public void settle(Disposition result) {
             Objects.requireNonNull(result, "result");
             synchronized (monitor) {
@@ -245,6 +265,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
+    /** Null means bounded backpressure; an inactive/stale capability fails closed. */
     public Admission tryAdmit(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -259,6 +280,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
+    /** Refuse to deactivate with admitted work still outstanding. */
     public void deactivate(Activation activation) {
         Objects.requireNonNull(activation, "activation");
         synchronized (monitor) {
@@ -281,6 +303,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
+    /** Force-close is intentionally absent: no accepted work is discarded. */
     @Override public void close() {
         synchronized (monitor) {
             if (closed) return;
