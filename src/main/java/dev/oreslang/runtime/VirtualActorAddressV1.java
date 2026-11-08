@@ -23,7 +23,9 @@ public final class VirtualActorAddressV1 {
         validate(identity.domain(), "domain", 128);
         validate(identity.declaration(), "declaration", 128);
         validate(identity.key(), "key", 256);
-        if (!Normalizer.isNormalized(identity.key(), Normalizer.Form.NFC))
+        if (!Normalizer.isNormalized(identity.domain(), Normalizer.Form.NFC)
+                || !Normalizer.isNormalized(identity.declaration(), Normalizer.Form.NFC)
+                || !Normalizer.isNormalized(identity.key(), Normalizer.Form.NFC))
             throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
         String result = PREFIX + "." + part(identity.domain()) + "." + part(identity.declaration())
                 + "." + part(identity.key());
@@ -45,7 +47,9 @@ public final class VirtualActorAddressV1 {
         validate(domain, "domain", 128);
         validate(declaration, "declaration", 128);
         validate(key, "key", 256);
-        if (!Normalizer.isNormalized(key, Normalizer.Form.NFC))
+        if (!Normalizer.isNormalized(domain, Normalizer.Form.NFC)
+                || !Normalizer.isNormalized(declaration, Normalizer.Form.NFC)
+                || !Normalizer.isNormalized(key, Normalizer.Form.NFC))
             throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
         if (!encode(new VirtualActorActivationRegistry.Identity(domain, declaration, key)).equals(address))
             throw new IllegalArgumentException("non-canonical virtual actor address");
