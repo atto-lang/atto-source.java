@@ -90,6 +90,21 @@ final class ActorScalarSourceLowering {
         return true;
     }
 
+    private static boolean exhaustiveReturns(List<Ast.Stmt> body) {
+        if (body.isEmpty()) return false;
+        Ast.Stmt terminal = body.getLast();
+        if (terminal instanceof Ast.ReturnStmt) return true;
+        if (terminal instanceof Ast.IfStmt conditional) {
+            if (conditional.branches().isEmpty()
+                    || !exhaustiveReturns(conditional.elseBody())) return false;
+            for (Ast.IfBranch branch : conditional.branches()) {
+                if (!exhaustiveReturns(branch.body())) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     private static boolean isInt(Ast.TypeRef type) {
         return type != null && type.name().equals("int")
                 && type.arguments().isEmpty() && !type.inferArguments();
@@ -97,11 +112,15 @@ final class ActorScalarSourceLowering {
 
     private ActorScalarCallMachine.Function lower(Ast.FunctionDecl fn) {
         Builder builder = new Builder(fn);
-        // M3.3a: require an explicit final return. The broader language
-        // supports other exhaustive control-flow forms, but admitting those
-        // without a checked control-flow graph could fall off compiled code.
-        if (!(fn.body().getLast() instanceof Ast.ReturnStmt)) throw NO;
+        // Admission requires every path to reach an explicit return.
+        // A canonical if/else function is exhaustive when every arm and
+        // the else body return; a missing else must have a later return.
+        if (!exhaustiveReturns(fn.body())) throw NO;
         builder.body(fn.body(), 0, true);
+        // Never synthesize a silent zero on malformed control-flow. An
+        // unreachable terminal trap makes branch-to-end targets valid,
+        // and will poison the actor if compilation invariants are broken.
+        builder.emit(ActorScalarCallMachine.Op.TRAP);
         if (builder.instructions.isEmpty() || builder.instructions.size() > MAX_CODE)
             throw NO;
         return new ActorScalarCallMachine.Function(
