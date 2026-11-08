@@ -28,8 +28,7 @@ final class ActorStackOverflowIsolationTest {
     }
 
     private static ActorScalarCallMachine.Program quotaProgram() {
-        var op = ActorScalarCallMachine.Op.class;
-        return new ActorScalarCallMachine.Program(List.of(
+         return new ActorScalarCallMachine.Program(List.of(
                 new ActorScalarCallMachine.Function("deep", 1, 1, 3, List.of(
                         ActorScalarCallMachine.Instruction.at(ActorScalarCallMachine.Op.LOAD, 0),
                         ActorScalarCallMachine.Instruction.constant(0),
@@ -140,7 +139,13 @@ final class ActorStackOverflowIsolationTest {
                 if (siblingCalls.get() == 2) turn.self().stop();
             });
             bad.send("overflow");
-            bad.send("extra");
+            try {
+                bad.send("extra");
+            } catch (ActorRuntime.ActorTerminatedException alreadyStopped) {
+                // Both outcomes are valid: STOP can win before the second
+                // send, or a queued second mail must be discarded after
+                // the first message poisons its actor generation.
+            }
             assertTrue(bad.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS));
             assertInstanceOf(ActorFrameArena.BudgetExceeded.class, bad.failure().orElseThrow());
             assertEquals(1, swallowed.get());
