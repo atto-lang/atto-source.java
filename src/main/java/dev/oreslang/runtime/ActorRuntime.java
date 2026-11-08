@@ -362,6 +362,9 @@ public final class ActorRuntime implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final Map<VirtualActorActivationRegistry.Identity, Long> virtualActorLogicalGenerations =
             new ConcurrentHashMap<>();
+    /** At most one physical managed worker may serve one logical identity at a time. */
+    private final Map<VirtualActorActivationRegistry.Identity, ActorId> virtualActorActiveBindings =
+            new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
@@ -2029,9 +2032,18 @@ public final class ActorRuntime implements AutoCloseable {
                 var logical = new SupervisorFailureControl.VirtualActorTerminalIdentity(
                         identity, logicalActivationGeneration);
                 var binding = new VirtualActorTerminalBinding(id, logical);
-                if (virtualActorTerminalBindings.putIfAbsent(worker.id(), binding) != null)
-                    throw new IllegalStateException("actor incarnation already has virtual identity metadata");
-                virtualActorLogicalGenerations.put(identity, logicalActivationGeneration);
+                ActorId currentActivation = virtualActorActiveBindings.putIfAbsent(identity, worker.id());
+                if (currentActivation != null)
+                    throw new IllegalStateException(
+                            "logical virtual actor already has a physically live activation");
+                try {
+                    if (virtualActorTerminalBindings.putIfAbsent(worker.id(), binding) != null)
+                        throw new IllegalStateException("actor incarnation already has virtual identity metadata");
+                    virtualActorLogicalGenerations.put(identity, logicalActivationGeneration);
+                } catch (RuntimeException | Error failure) {
+                    virtualActorActiveBindings.remove(identity, worker.id());
+                    throw failure;
+                }
             }
         }
 
@@ -4349,14 +4361,20 @@ public final class ActorRuntime implements AutoCloseable {
                         failure.getMessage() == null ? "" : failure.getMessage(),
                         virtualBinding == null
                                 ? Optional.empty() : Optional.of(virtualBinding.logical())));
-                if (virtualBinding != null)
+                if (virtualBinding != null) {
                     virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
+                    virtualActorActiveBindings.remove(
+                            virtualBinding.logical().identity(), cell.ref.id());
+                }
             }
         }
         if (lane != null && failure == null) {
             lane.releaseReservation(cell.ref.id());
-            if (virtualBinding != null)
+            if (virtualBinding != null) {
                 virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
+                virtualActorActiveBindings.remove(
+                        virtualBinding.logical().identity(), cell.ref.id());
+            }
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
