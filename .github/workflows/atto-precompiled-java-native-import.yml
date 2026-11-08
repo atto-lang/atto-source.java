@@ -35,7 +35,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           git rev-parse 'HEAD^{tree}'
       - name: Test real AttoLang to precompiled Java library import under JVM AOT policy
-        run: mvn -B -ntp -Dtest=JavaPrecompiledHostImportAotPolicyTest -DfailIfNoTests=true test
+        run: mvn -B -ntp -Dtest=JavaPrecompiledHostImportAotPolicyTest,SafeHostMemberManifestTest -DfailIfNoTests=true test
       - name: Build true native binary without JVM/JIT fallback
         run: mvn -B -ntp -Pnative-aot -DskipTests package
       - name: Execute native-image AttoLang guest with pinned JDK host-library import
