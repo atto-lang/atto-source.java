@@ -340,7 +340,19 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.BlockStmt s) checkStatements(s.body(), policy);
-            else if (stmt instanceof Ast.TaskScopeStmt s) checkStatements(s.body(), policy);
+            else if (stmt instanceof Ast.TaskScopeStmt s) {
+                // Deadline expressions run with the actor's authority before
+                // children are admitted: they are not capability-free metadata.
+                if (s.deadlineMillis() != null) checkExpr(s.deadlineMillis(), policy);
+                checkStatements(s.body(), policy);
+            }
+            else if (stmt instanceof Ast.UsingBorrowStmt s) {
+                // Even when runtime borrow lowering is unavailable, static
+                // effect admission must not silently skip the resource or body.
+                checkExpr(s.resource(), policy);
+                checkStatements(s.body(), policy);
+            }
+            else if (stmt instanceof Ast.LocalTypeDeclStmt s) checkType(s.target(), policy);
             else if (stmt instanceof Ast.LoopStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
@@ -385,13 +397,17 @@ public final class CapabilityChecker {
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
             } else if (stmt instanceof Ast.DoWhileStmt s) {
-                // SECURITY: post-test loops execute their body at least once.
-                // The old switch silently omitted DoWhileStmt, so UNTRUSTED
-                // actors could hide restricted capabilities in either their
-                // mandatory body or condition. Admit both through exactly the
-                // same transitive effect graph as for/loop statements.
+                // Post-test loop bodies always run at least once.
                 checkStatements(s.body(), policy);
                 checkExpr(s.condition(), policy);
+            } else if (!(stmt instanceof Ast.BreakStmt)
+                    && !(stmt instanceof Ast.ContinueStmt)) {
+                // Security admission must never silently skip a future AST
+                // statement kind when the language grows. Only these two
+                // control-only nodes have no nested effects to inspect.
+                throw new SecurityException(
+                        "capability checker does not support statement: "
+                                + stmt.getClass().getSimpleName());
             }
         }
     }
