@@ -569,7 +569,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /** Stable logical virtual-actor ownership; passivation does not release this edge. */
-    private final Map<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
+    private final ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
             new ConcurrentHashMap<>();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
@@ -3426,8 +3426,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (virtualActorOwners.size() >= dispatcherConfig.maxActors())
                 throw new IllegalStateException("virtual actor logical identity limit exceeded");
-            SupervisorId raced = ((ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId>)
-                    virtualActorOwners).putIfAbsent(identity, supervisor.id());
+            SupervisorId raced = virtualActorOwners.putIfAbsent(identity, supervisor.id());
             if (raced != null && !raced.equals(supervisor.id()))
                 throw new SecurityException("virtual actor identity already belongs to another supervisor");
         }
