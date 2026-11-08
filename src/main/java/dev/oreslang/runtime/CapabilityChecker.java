@@ -384,6 +384,14 @@ public final class CapabilityChecker {
                 if (s.condition() != null) checkExpr(s.condition(), policy);
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
+            } else if (stmt instanceof Ast.DoWhileStmt s) {
+                // SECURITY: post-test loops execute their body at least once.
+                // The old switch silently omitted DoWhileStmt, so UNTRUSTED
+                // actors could hide restricted capabilities in either their
+                // mandatory body or condition. Admit both through exactly the
+                // same transitive effect graph as for/loop statements.
+                checkStatements(s.body(), policy);
+                checkExpr(s.condition(), policy);
             }
         }
     }
