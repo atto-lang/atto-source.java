@@ -54,7 +54,9 @@ public final class VirtualActorAddressV1 {
 
     private static void validate(String value, String kind, int maxUtf8Bytes) {
         Objects.requireNonNull(value, "address " + kind);
-        if (value.isBlank() || value.getBytes(StandardCharsets.UTF_8).length > maxUtf8Bytes)
+        // Bound UTF-16 length before allocating the UTF-8 representation.
+        if (value.length() > maxUtf8Bytes || value.isBlank()
+                || value.getBytes(StandardCharsets.UTF_8).length > maxUtf8Bytes)
             throw new IllegalArgumentException("invalid virtual actor address " + kind);
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
