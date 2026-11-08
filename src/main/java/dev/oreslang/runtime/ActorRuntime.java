@@ -3245,6 +3245,20 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Acquire this supervisor's host-only virtual-actor directory.
+         * Actor turns and ActorGroup Mailmen are explicitly denied by the
+         * existing supervisor-context checks. A supervisor has one active
+         * directory facade; its logical registry remains runtime-owned.
+         */
+        public VirtualActorSupervisorDirectory virtualActorDirectory(
+                String tenant, int maxIdentities, int mailboxCapacity) {
+            requireSupervisorContext("open a virtual actor directory");
+            requireCallerRuntimeAffinity("open a virtual actor directory");
+            return new VirtualActorSupervisorDirectory(
+                    ActorRuntime.this, this, tenant, maxIdentities, mailboxCapacity);
+        }
+
+        /**
          * Associate exactly one owner CONTROL code slot with this stable
          * supervisor. Source-level guest policy loading remains compiler-gated.
          */
