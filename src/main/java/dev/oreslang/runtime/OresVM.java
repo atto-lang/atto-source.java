@@ -29,6 +29,9 @@ public final class OresVM implements AutoCloseable {
     // Explicit -Dores.runtime.control.parallelism overrides remain supported.
     // This counts Oreslang CONTROL workers, not all JVM or OS threads.
     private static final int DEFAULT_CONTROL_PARALLELISM = 2;
+    // Do not allow a malformed/hostile runtime property to request an
+    // unbounded number of eagerly created platform threads.
+    private static final int MAX_CONTROL_PARALLELISM = 128;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
     // Resource revokers may block. They must never occupy the CONTROL pool.
     // One bounded, VM-owned executor serves all actors and supervisors.
@@ -99,8 +102,9 @@ public final class OresVM implements AutoCloseable {
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         ActorHeapAdmission.requireSupportedTenantIsolationMode(
                 System.getProperty("ores.runtime.tenant.isolation", "trusted-inprocess"));
-        if (controlParallelism <= 0) {
-            throw new IllegalArgumentException("control parallelism must be positive");
+        if (controlParallelism < 1 || controlParallelism > MAX_CONTROL_PARALLELISM) {
+            throw new IllegalArgumentException(
+                    "control parallelism must be in [1," + MAX_CONTROL_PARALLELISM + "]");
         }
 
         AtomicInteger carrierId = new AtomicInteger();
@@ -161,24 +165,51 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
+    /**
+     * Resolve the process-level override once at VM creation, using a bounded
+     * decimal integer. Unlike Integer.getInteger, malformed overrides must
+     * fail closed rather than silently fall back to the default.
+     */
+    static int configuredControlParallelism(String configured) {
+        if (configured == null) return DEFAULT_CONTROL_PARALLELISM;
+        final int requested;
+        try {
+            requested = Integer.parseInt(configured);
+        } catch (NumberFormatException malformed) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.control.parallelism must be a decimal integer in [1,"
+                            + MAX_CONTROL_PARALLELISM + "]", malformed);
+        }
+        if (requested < 1 || requested > MAX_CONTROL_PARALLELISM) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.control.parallelism must be in [1,"
+                            + MAX_CONTROL_PARALLELISM + "]");
+        }
+        return requested;
+    }
+
     static OresVM create(OresScheduler.TurnExecutor turnExecutor) {
         return create(turnExecutor, null);
     }
 
     static OresVM create(OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
         return new OresVM(
-                Integer.getInteger(
-                        "ores.runtime.control.parallelism",
-                        DEFAULT_CONTROL_PARALLELISM),
+                configuredControlParallelism(
+                        System.getProperty("ores.runtime.control.parallelism")),
                 turnExecutor,
                 rootAdmission);
+    }
+
+    /** Test-only deterministic CONTROL count; does not mutate global properties. */
+    static OresVM createWithControlParallelismForTests(int controlParallelism) {
+        return new OresVM(controlParallelism, Runnable::run, null);
     }
 
     /** Test-only deterministic executor limits; no global property mutation. */
     static OresVM createWithPhysicalStopLimits(int parallelism, int queueCapacity) {
         return new OresVM(
-                Integer.getInteger("ores.runtime.control.parallelism",
-                        DEFAULT_CONTROL_PARALLELISM),
+                configuredControlParallelism(
+                        System.getProperty("ores.runtime.control.parallelism")),
                 Runnable::run,
                 null, parallelism, queueCapacity);
     }
