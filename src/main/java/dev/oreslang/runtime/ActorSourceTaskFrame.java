@@ -59,7 +59,7 @@ final class ActorSourceTaskFrame {
     ExecutionContext executionContext() { return execution; }
 
     /** Package-private admission check used only by the unified call-chain owner. */
-    synchronized void requireContinuationTurn() {
+    void requireContinuationTurn() {
         if (ActorRuntime.currentActorFrameArena() != arena
                 || OresScheduler.currentExecutionContext() != execution) {
             throw new SecurityException(
