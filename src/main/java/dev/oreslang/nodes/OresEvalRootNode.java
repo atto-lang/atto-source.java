@@ -8685,6 +8685,29 @@ public final class OresEvalRootNode extends RootNode {
                         Object index = args.getFirst();
                         return rawList.get(checkedSequenceIndex(index, rawList.size()));
                     };
+                    case "get_copy" -> (Invokable) args -> {
+                        requireOne(args, "List.get_copy");
+                        Object index = args.getFirst();
+                        // Source admission restricts this to Array<int>; keep
+                        // host/dynamic paths fail-closed instead of coercing
+                        // Float/NaN/string/boolean into a trusted index.
+                        if (!(index instanceof Byte || index instanceof Short
+                                || index instanceof Integer || index instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "List.get_copy index must be an exact integer");
+                        }
+                        long at = ((Number) index).longValue();
+                        if (at < 0 || at >= rawList.size()) {
+                            return new OptionValue(false, null);
+                        }
+                        Object value = rawList.get((int) at);
+                        if (!(value instanceof Byte || value instanceof Short
+                                || value instanceof Integer || value instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "List.get_copy requires Copy<int> elements");
+                        }
+                        return new OptionValue(true, value);
+                    };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
                         @SuppressWarnings("unchecked")
