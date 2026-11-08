@@ -134,7 +134,7 @@ final class AttoNegativeSemanticGateTest {
                     wholeWord(d, "x")
                     && any(d, "immutable", "readonly", "read-only", "constant binding",
                             "const binding", "const variable")
-                    && any(d, "assign", "rebind", "mutation", "write");
+                    && any(d, "assign", "rebind", "mutation");
             case "legacy-async-modifier" ->
                     wholeWord(d, "async")
                     && any(d, "unsupported", "forbidden", "disallowed",
