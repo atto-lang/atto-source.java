@@ -142,6 +142,11 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             VirtualActorActivationRegistry.Activation activation = registry.activate(logical);
             if (!activation.initializer())
                 throw new IllegalStateException("logical virtual actor already has an activation");
+            if (!actor.isAlive() || !runtime.actorManagedBySupervisor(actor, supervisor)) {
+                registry.abort(activation);
+                throw new IllegalStateException(
+                        "activation worker stopped or lost supervisor ownership during admission");
+            }
             Binding binding = new Binding(actor, activation);
             try {
                 if (bindings.putIfAbsent(logical.identity(), binding) != null)
