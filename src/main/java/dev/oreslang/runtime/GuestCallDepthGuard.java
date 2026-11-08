@@ -188,6 +188,38 @@ public final class GuestCallDepthGuard {
         return scope;
     }
 
+    /**
+     * Physical actor TURN exit fence, not a guest instruction. No synchronous
+     * invocation Scope may survive a physical carrier turn or migrate to
+     * another actor scheduled on the same worker.
+     *
+     * @return true if an unfinished scope was found and quarantined. The
+     *         caller MUST fail the owning actor; silently continuing would
+     *         let a later actor inherit a stale ThreadLocal lease.
+     */
+    static boolean quarantineLeakedActorTurnScope(
+            ActorGuestStack expectedStack, ActorFrameArena expectedArena) {
+        Scope leaked = CURRENT.get();
+        if (leaked == null) return false;
+        // Revoke the carrier authority BEFORE touching an actor's frame store.
+        // Even when arena cleanup fails, the next actor never inherits it.
+        CURRENT.remove();
+        if (leaked.actorStack != null) leaked.actorStack.poison();
+        if (leaked.arena != null) leaked.arena.poisonFromGuestGuard();
+        if (leaked.actorStack != expectedStack || leaked.arena != expectedArena) {
+            // Do not poison the healthy current actor's arena simply because
+            // a different incarnation left its ThreadLocal on this worker.
+            throw new IllegalStateException(
+                    "foreign actor guest-call scope escaped its carrier turn");
+        }
+        if (leaked.arena != null) {
+            // Remove all outstanding leased byte frames by the scope's
+            // ORIGINAL execution ID, never by a new actor's identity.
+            leaked.arena.cancel(leaked.execution);
+        }
+        return true;
+    }
+
     /** Pop the actor-owned frame before releasing its logical guest charge. */
     public static void leave(int enteredDepth) {
         Scope scope = CURRENT.get();
