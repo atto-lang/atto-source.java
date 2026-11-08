@@ -56,6 +56,13 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
+    // Visited set for class-hierarchy walks (cycle detection). Identity-based:
+    // Ast.ClassDecl is a record, so a hash set would hash the whole class AST
+    // on every field or method lookup.
+    private static java.util.Set<Ast.ClassDecl> classVisitSet() {
+        return java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    }
+
     private final Ast.Program program;
     private final String codeUnitId;
     /** Ownership epoch captured when this executable root is created. */
@@ -574,7 +581,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             List<Ast.FieldDecl> classFields =
-                    effectiveFields(klass, new LinkedHashSet<>());
+                    effectiveFields(klass, classVisitSet());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
@@ -587,7 +594,7 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : classFields) {
                 if (field.initializer() == null) continue;
                 OwnedField owned =
-                        findField(klass, field.name(), new LinkedHashSet<>());
+                        findField(klass, field.name(), classVisitSet());
                 Ast.ClassDecl fieldOwner =
                         owned == null ? klass : owned.owner();
                 Env initializerEnv =
@@ -1012,7 +1019,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expression instanceof Ast.MemberExpr member) {
                 Ast.ClassDecl owner = staticClassView(member.receiver(), env);
                 if (owner == null) return null;
-                OwnedField field = findField(owner, member.member(), new LinkedHashSet<>());
+                OwnedField field = findField(owner, member.member(), classVisitSet());
                 if (field == null) return null;
                 if (field.field().type() != null) {
                     return staticClassView(field.field().type());
@@ -1066,7 +1073,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl sourceClass = staticClassView(sourceExpression, env);
             if (sourceClass == null) return null;
             OwnedField field = findField(
-                    sourceClass, memberName, new LinkedHashSet<>());
+                    sourceClass, memberName, classVisitSet());
             if (field == null) return null;
             if (field.field().type() != null) {
                 return staticClassView(field.field().type());
@@ -5426,7 +5433,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 OwnedField ownedField = object.owner.findField(
-                        object.klass, member.member(), new LinkedHashSet<>());
+                        object.klass, member.member(), classVisitSet());
                 if (ownedField != null) {
                     object.owner.requireClassMemberVisible(
                             ownedField.field().visibility(), ownedField.owner(),
@@ -5541,7 +5548,7 @@ public final class OresEvalRootNode extends RootNode {
                             checkedComputedClassView(receiverExpression);
                     Ast.ClassDecl staticClass = staticView.klass();
                     OwnedField ownedField = staticView.owner().findField(
-                            staticClass, key, new LinkedHashSet<>());
+                            staticClass, key, classVisitSet());
                     if (ownedField == null) {
                         throw new IllegalArgumentException(
                                 "unknown class field key " + staticClass.name() + "." + key);
@@ -5668,7 +5675,7 @@ public final class OresEvalRootNode extends RootNode {
                         checkedComputedClassView(receiverExpression);
                 Ast.ClassDecl staticClass = staticView.klass();
                 OwnedField targetField = staticView.owner().findField(
-                        staticClass, fieldName, new LinkedHashSet<>());
+                        staticClass, fieldName, classVisitSet());
                 if (targetField == null) {
                     throw new IllegalArgumentException(
                             "unknown class field key " + staticClass.name() + "." + fieldName);
@@ -5743,7 +5750,7 @@ public final class OresEvalRootNode extends RootNode {
                             object.owner.findField(
                                     object.klass,
                                     member.member(),
-                                    new LinkedHashSet<>());
+                                    classVisitSet());
                     if (targetField == null) {
                         throw new IllegalArgumentException(
                                 "unknown field " + member.member());
@@ -7149,7 +7156,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     OwnedField ownedField = object.owner.findField(
-                            object.klass, methodCall.member(), new LinkedHashSet<>());
+                            object.klass, methodCall.member(), classVisitSet());
                     if (ownedField != null) {
                         object.owner.requireClassMemberVisible(
                                 ownedField.field().visibility(),
@@ -7554,7 +7561,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
                         OwnedField ownedField = object.owner.findField(
-                                object.klass, target.member(), new LinkedHashSet<>());
+                                object.klass, target.member(), classVisitSet());
                         if (ownedField == null) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
@@ -8624,7 +8631,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
-                List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
+                List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, classVisitSet());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
                     klass.owner().requireClassMemberVisible(
@@ -8648,7 +8655,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
-                            object.klass, name, new LinkedHashSet<>());
+                            object.klass, name, classVisitSet());
                     if (ownedField != null) {
                         object.owner.requireClassMemberVisible(
                                 ownedField.field().visibility(),
@@ -8665,7 +8672,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return value;
                 }
-                if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
+                if (object.owner.hasInstanceMethodNamed(object.klass, name, classVisitSet())) {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
@@ -9383,7 +9390,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Compatibility path for classes authored before explicit
                 // constructor syntax: positional fields form a synthesized
                 // constructor whose visibility follows the class.
-                List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+                List<Ast.FieldDecl> classFields = effectiveFields(klass, classVisitSet());
                 if (args.size() > classFields.size()) {
                     throw new IllegalArgumentException(
                             "too many constructor arguments for " + klass.name());
@@ -9405,7 +9412,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         value = args.get(i);
                     } else if (field.initializer() != null) {
-                        OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                        OwnedField owned = findField(klass, field.name(), classVisitSet());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                         // The object must remain unobservable while fields
                         // are being initialized. Static analysis never binds
@@ -9433,7 +9440,7 @@ public final class OresEvalRootNode extends RootNode {
                                 + constructor.arity() + " argument(s), got " + args.size());
             }
 
-            List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+            List<Ast.FieldDecl> classFields = effectiveFields(klass, classVisitSet());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
@@ -9479,7 +9486,7 @@ public final class OresEvalRootNode extends RootNode {
             // parent-field initializers.
             for (Ast.FieldDecl field : classFields) {
                 if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                OwnedField owned = findField(klass, field.name(), classVisitSet());
                 Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                 // Do not bind self. Constructor parameters are scalar-only,
                 // and the partly built instance is not an initializer value.
@@ -9944,7 +9951,7 @@ public final class OresEvalRootNode extends RootNode {
                 // erased into an ordinary structural object view.
                 if (object.klass.actorKind() != Ast.ActorKind.NONE) return Env.MISSING;
                 OwnedField owned = object.owner.findField(
-                        object.klass, name, new LinkedHashSet<>());
+                        object.klass, name, classVisitSet());
                 if (owned == null
                         || owned.field().visibility() != Ast.Visibility.PUBLIC) {
                     return Env.MISSING;
@@ -10096,7 +10103,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
-                if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, new LinkedHashSet<>());
+                if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, classVisitSet());
                 Ast.InterfaceDecl targetInterface = findInterface(name);
                 if (targetInterface != null) {
                     return object.owner.classImplements(object.klass, targetInterface, new LinkedHashSet<>(), new LinkedHashSet<>());
@@ -10639,7 +10646,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object destructureMember(Object value, String name, Env env) {
             if (value instanceof OresObject object) {
                 OwnedField ownedField = object.owner.findField(
-                        object.klass, name, new LinkedHashSet<>());
+                        object.klass, name, classVisitSet());
                 if (ownedField != null) {
                     object.owner.requireClassMemberVisible(
                             ownedField.field().visibility(),
