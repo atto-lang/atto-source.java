@@ -37,7 +37,7 @@ final class LogicalWordOperatorTest {
     @Test
     void keywordRecognitionUsesWholeCaseSensitiveTokensAndIgnoresCommentsAndStrings() {
         List<Token> tokens = new Lexer(
-                "and or xor candy android origin xor_value \"and or xor\" // and or xor\\n"
+                "and or xor candy android origin xor_value \"and or xor\" // and or xor\n"
         ).scan();
         assertEquals(List.of(
                 Token.Type.AND, Token.Type.OR, Token.Type.XOR,
