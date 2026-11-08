@@ -83,6 +83,7 @@ final class ProcessGroupRegistryRetirementTest {
              ProcessGroupRegistry pg = new ProcessGroupRegistry(runtime, 4)) {
             Object monitor = privateField(ProcessGroupRegistry.class, "lock").get(pg);
             CountDownLatch completed = new CountDownLatch(1);
+            CountDownLatch callback = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
             AtomicBoolean underMonitor = new AtomicBoolean();
             AtomicReference<ActorEventBus> bus = new AtomicReference<>();
@@ -92,13 +93,11 @@ final class ProcessGroupRegistryRetirementTest {
                         try {
                             ActorEventBus.Subscription<Integer> sub =
                                     bus.get().subscribe("leave");
-                            CountDownLatch callback = new CountDownLatch(1);
                             sub.readAsync().whenCompleteRuntime((ignored, terminal) -> {
                                 underMonitor.set(Thread.holdsLock(monitor));
                                 callback.countDown();
                             });
                             pg.leaveCurrent("local", "solo");
-                            assertTrue(callback.await(2, TimeUnit.SECONDS));
                         } catch (Throwable problem) {
                             failure.compareAndSet(null, problem);
                         } finally {
@@ -113,6 +112,8 @@ final class ProcessGroupRegistryRetirementTest {
             bus.set(group.events());
             actor.send(1);
             assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertTrue(callback.await(5, TimeUnit.SECONDS),
+                    "leave must settle pending read");
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
             assertFalse(underMonitor.get(),
                     "leave must release registry monitor before callback-capable teardown");
