@@ -174,5 +174,25 @@ final class NativeHttpFramingAdmissionTest {
                 new IllegalArgumentException("body too large"), true));
         assertEquals(500, NativeHttp.operationFailureStatus(
                 new IllegalStateException("handler failure"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("body too large"), false),
+                "response-side argument failure must not be presented as HTTP 413");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IOException("body too large"), false),
+                "response-side socket error must not become HTTP 413");
+        assertEquals(400, NativeHttp.operationFailureStatus(
+                new IOException("body too large"), true),
+                "request-body I/O failures are malformed framing, not a quota violation");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalStateException("body too large"), true),
+                "arbitrary state failures must not become HTTP 413");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new RuntimeException("body too large"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new Error("body too large"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("invalid framing"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException((String) null), true));
     }
 }

@@ -119,7 +119,10 @@ public final class NativeHttp implements AutoCloseable {
      * Keep response-side I/O failures as server errors, and preserve 413 limits.
      */
     static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
-        if ("body too large".equals(failure.getMessage())) return 413;
+        // Response-side failures must never be mislabeled as a client payload
+        // violation merely because an exception has the same message.
+        if (requestBodyRead && failure instanceof IllegalArgumentException
+                && "body too large".equals(failure.getMessage())) return 413;
         if (requestBodyRead && failure instanceof IOException) return 400;
         return 500;
     }
