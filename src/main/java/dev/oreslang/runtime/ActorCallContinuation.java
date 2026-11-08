@@ -142,6 +142,11 @@ final class ActorCallContinuation {
         return readHeader(requireTopActivation()).getInt(8);
     }
 
+    synchronized int functionId() {
+        requireTurn();
+        return requireTopActivation().functionId();
+    }
+
     synchronized int returnProgramCounter() {
         requireTurn();
         return readHeader(requireTopActivation()).getInt(12);
