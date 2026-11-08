@@ -84,8 +84,9 @@ final class NativeHttpFramingAdmissionTest {
                 () -> NativeHttp.validateHeadersForAdmission(negative, "HTTP/1.1", 1024));
         Headers oversized = valid();
         oversized.add("Content-Length", "1025");
-        assertThrows(IllegalArgumentException.class,
-                () -> NativeHttp.validateHeadersForAdmission(oversized, "HTTP/1.1", 1024));
+        assertThrows(NativeHttp.RequestBodyTooLargeException.class,
+                () -> NativeHttp.validateHeadersForAdmission(oversized, "HTTP/1.1", 1024),
+                "header quota denial must use the typed transport-owned marker");
     }
 
     @Test
@@ -165,13 +166,38 @@ final class NativeHttpFramingAdmissionTest {
     }
 
     @Test
+    void quotaMarkerCannotBeSpoofedByExceptionMessageOrErrorType() {
+        Throwable[] forged = {
+                new IllegalArgumentException("body too large"),
+                new RuntimeException("body too large"),
+                new IllegalStateException("body too large"),
+                new IllegalArgumentException((String) null),
+                new AssertionError("body too large")
+        };
+        for (Throwable failure : forged) {
+            assertEquals(500, NativeHttp.operationFailureStatus(failure, true),
+                    "only the transport-owned marker may become 413: " + failure);
+        }
+        NativeHttp.RequestBodyTooLargeException quota =
+                new NativeHttp.RequestBodyTooLargeException();
+        assertEquals(413, NativeHttp.operationFailureStatus(quota, true));
+        assertEquals(500, NativeHttp.operationFailureStatus(quota, false));
+    }
+
+    @Test
     void mapsMalformedRequestBodyStreamToClientErrorOnly() {
         IOException malformedChunk = new IOException("invalid chunk size");
         assertEquals(400, NativeHttp.operationFailureStatus(malformedChunk, true));
         assertEquals(500, NativeHttp.operationFailureStatus(malformedChunk, false),
                 "response-side I/O failures must not be disguised as client framing errors");
         assertEquals(413, NativeHttp.operationFailureStatus(
-                new IllegalArgumentException("body too large"), true));
+                new NativeHttp.RequestBodyTooLargeException(), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("body too large"), true),
+                "a forged message must not acquire request-body quota provenance");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new NativeHttp.RequestBodyTooLargeException(), false),
+                "even a quota marker must not label response-side failures as 413");
         assertEquals(500, NativeHttp.operationFailureStatus(
                 new IllegalStateException("handler failure"), true));
         assertEquals(500, NativeHttp.operationFailureStatus(
