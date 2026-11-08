@@ -220,4 +220,74 @@ final class ActorGuestReturnRecordTest {
         }
     }
 
+    private static void corruptReturnRecord(
+            ActorGuestReturnRecord record, int offset, byte[] replacement)
+            throws ReflectiveOperationException {
+        var klass = ActorGuestReturnRecord.class;
+        var arenaField = klass.getDeclaredField("arena");
+        var executionField = klass.getDeclaredField("execution");
+        var handleField = klass.getDeclaredField("handle");
+        arenaField.setAccessible(true);
+        executionField.setAccessible(true);
+        handleField.setAccessible(true);
+        var arena = (ActorFrameArena) arenaField.get(record);
+        var execution = (ExecutionContext) executionField.get(record);
+        var handle = (ActorFrameArena.FrameRef) handleField.get(record);
+        arena.write(execution, handle, offset, replacement);
+    }
+
+    @Test
+    void forgedReturnPcRecordMagicPoisonsOnlyOwningActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> brokenArena = new AtomicReference<>();
+            AtomicInteger siblingCalls = new AtomicInteger();
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                var arena = ActorRuntime.currentActorFrameArena();
+                brokenArena.set(arena);
+                try (var record = ActorGuestReturnRecord.enter(
+                        new ActorGuestReturnRecord.Cursor(8, 12, 23, 1))) {
+                    corruptReturnRecord(record, 0, new byte[] { 0 });
+                    assertThrows(IllegalStateException.class, record::readCursor);
+                    assertTrue(arena.isPoisoned(), "corrupt ABI header must fail-stop owner");
+                }
+            });
+            var good = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                siblingCalls.incrementAndGet();
+                turn.self().stop();
+            });
+            actor.send("corrupt");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(brokenArena.get().isRetired());
+            good.send("alive");
+            assertTrue(good.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(good.failure().isEmpty());
+            assertEquals(1, siblingCalls.get());
+        }
+    }
+
+    @Test
+    void changedLogicalExecutionIdentityInReturnBytesFailsClosed()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                arena.set(ActorRuntime.currentActorFrameArena());
+                try (var record = ActorGuestReturnRecord.enter(
+                        new ActorGuestReturnRecord.Cursor(0, 1, 2, 3))) {
+                    // The final eight bytes encode the unique execution ID.
+                    // Replace them with zero even while the magic and cursor
+                    // fields remain fully well formed.
+                    corruptReturnRecord(record, 40, new byte[8]);
+                    assertThrows(IllegalStateException.class, record::readCursor);
+                    assertTrue(arena.get().isPoisoned());
+                }
+            });
+            actor.send("altered-execution");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(arena.get().isRetired());
+        }
+    }
+
 }
