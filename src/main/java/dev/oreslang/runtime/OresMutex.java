@@ -146,8 +146,9 @@ public final class OresMutex {
     // Guards created and not yet released, process-wide. The interpreter
     // deep-scans lexical slots for live guards on every statement; when this
     // is zero no live guard exists anywhere, so the scan can be skipped.
-    // Increment happens before any release path can run, so the count never
-    // under-reports; a guard whose construction fails only over-reports.
+    // Increment before publishing a guard to Task lease cleanup, so count
+    // never under-reports. Both local and shared guard acquisition roll back
+    // this increment if Task lease registration rejects the new guard.
     private static final java.util.concurrent.atomic.AtomicLong LIVE_GUARDS =
             new java.util.concurrent.atomic.AtomicLong();
 
