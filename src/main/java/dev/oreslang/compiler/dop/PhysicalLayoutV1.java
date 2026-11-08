@@ -1,5 +1,6 @@
 package dev.oreslang.compiler.dop;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -20,7 +21,7 @@ public final class PhysicalLayoutV1 {
     public record Field(String name, int bytes, int alignment) {
         public Field {
             Objects.requireNonNull(name, "field name");
-            if (name.isBlank() || name.length() > 1024 || name.indexOf('\0') >= 0
+            if (!validFieldName(name)
                     || !powerOfTwo(bytes) || !powerOfTwo(alignment)
                     || bytes > alignment || alignment > 4096) {
                 throw new IllegalArgumentException("invalid physical scalar field");
@@ -75,6 +76,23 @@ public final class PhysicalLayoutV1 {
             }
             return new Cell(loc.segment(), relative, Math.addExact(segment.base(), relative));
         }
+    }
+
+    /** Valid Unicode scalar sequence; max 1,024 UTF-8 bytes, no NUL.
+     * Opaque field names are not normalized or restricted to identifier syntax.
+     */
+    private static boolean validFieldName(String name) {
+        if (name.isEmpty() || name.length() > 1024) return false;
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c == 0 || Character.isLowSurrogate(c)) return false;
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= name.length() || !Character.isLowSurrogate(name.charAt(i))) {
+                    return false;
+                }
+            }
+        }
+        return name.getBytes(StandardCharsets.UTF_8).length <= 1024;
     }
 
     private static boolean powerOfTwo(int n) {
