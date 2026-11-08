@@ -3,7 +3,7 @@
 # Graal guest, Native Image, cross-backend, or hosted CI execution receipt.
 set -euo pipefail
 
-for executable in javac java git grep sed cmp mktemp; do
+for executable in javac java git grep sed cmp mktemp cp; do
   command -v "$executable" >/dev/null || {
     echo "missing required executable: $executable" >&2; exit 2;
   }
@@ -14,13 +14,20 @@ probe="$root/src/test/java/dev/oreslang/StrictIntegerArithmeticDifferentialStres
 expected_helper='7cb1309f59310eda7dbfba0505fafce4ad0985e6'
 expected_probe='524bd02bad9b781c1403a4cbba44d66989efa941'
 
-# A clean printout of a commit SHA is not proof that the executed source files
-# match the reviewed files. Require BOTH blob identities before any compilation.
+# Snapshot once, then hash AND compile only the immutable copied bytes. This
+# prevents a checkout edit between a hash check and javac from changing the
+# executed source without changing the receipt.
 for file in "$helper" "$probe"; do
   test -f "$file" && test ! -L "$file" || {
     echo "missing or symlinked source file: $file" >&2; exit 3;
   }
 done
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "$tmp"' EXIT
+cp -- "$helper" "$tmp/StrictIntegerArithmetic.java"
+cp -- "$probe" "$tmp/StrictIntegerArithmeticDifferentialStressTest.java"
+helper="$tmp/StrictIntegerArithmetic.java"
+probe="$tmp/StrictIntegerArithmeticDifferentialStressTest.java"
 actual_helper="$(git hash-object -- "$helper")"
 actual_probe="$(git hash-object -- "$probe")"
 if [[ "$actual_helper" != "$expected_helper" ||
@@ -30,8 +37,6 @@ if [[ "$actual_helper" != "$expected_helper" ||
 fi
 echo "STRICT_I64_INPUT_BLOB|helper=$actual_helper|probe=$actual_probe"
 
-tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/org/junit/jupiter/api"
 # This disposable annotation is ONLY for the dependency-free standalone main.
 # The actual committed test remains runnable by the real JUnit 5 engine in CI.
