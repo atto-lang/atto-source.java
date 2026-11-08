@@ -363,7 +363,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<SupervisorFailureControl.VirtualActorLogicalId, Long> virtualActorLogicalGenerations =
             new ConcurrentHashMap<>();
     /** At most one physical managed worker may serve one logical identity at a time. */
-    private final Map<VirtualActorActivationRegistry.Identity, ActorId> virtualActorActiveBindings =
+    private final Map<SupervisorFailureControl.VirtualActorLogicalId, ActorId> virtualActorActiveBindings =
             new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
