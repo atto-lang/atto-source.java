@@ -152,6 +152,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         this.registry = new VirtualActorActivationRegistry(
                 this.tenant, maxIdentities, mailboxCapacity, runtime::allocateVirtualActorGeneration);
         this.localInspection = new VirtualActorDirectoryInspection(registry);
+        runtime.claimVirtualActorDirectory(this, supervisor);
     }
 
     private static String requireText(String value, String name, int max) {
@@ -558,6 +559,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             if (!bindings.isEmpty())
                 throw new IllegalStateException("cannot close while supervised activations remain bound");
             registry.close();
+            runtime.releaseVirtualActorDirectory(this, supervisor);
             closed = true;
         }
     }
