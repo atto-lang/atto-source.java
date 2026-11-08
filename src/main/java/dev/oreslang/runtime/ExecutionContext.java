@@ -72,11 +72,29 @@ public final class ExecutionContext {
     private static final AtomicLong NEXT_RUNTIME_DOMAIN = new AtomicLong();
 
     static long allocateRuntimeDomain() {
-        long value = NEXT_RUNTIME_DOMAIN.incrementAndGet();
-        if (value <= 0) {
-            throw new IllegalStateException("execution runtime-domain id space exhausted");
+        return nextPositive(NEXT_RUNTIME_DOMAIN, "execution runtime-domain");
+    }
+
+    /**
+     * Allocate a monotonically increasing positive identity without mutating
+     * the counter on exhaustion. A plain incrementAndGet() wraps Long.MAX_VALUE
+     * to a negative value before throwing; after a complete wraparound that
+     * could eventually reissue old positive identities. Saturation is
+     * permanent and therefore fail-closed.
+     */
+    static long nextPositive(AtomicLong counter, String kind) {
+        Objects.requireNonNull(counter, "counter");
+        Objects.requireNonNull(kind, "kind");
+        for (;;) {
+            long current = counter.get();
+            if (current < 0 || current == Long.MAX_VALUE) {
+                throw new IllegalStateException(kind + " id space exhausted");
+            }
+            long next = current + 1;
+            if (counter.compareAndSet(current, next)) {
+                return next;
+            }
         }
-        return value;
     }
 
     private final ExecutionId id;
