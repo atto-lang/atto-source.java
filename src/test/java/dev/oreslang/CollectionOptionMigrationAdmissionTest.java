@@ -13,9 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *
  * <p>These tests deliberately DO NOT prove Option or ReadLoan lowering.
  * They pin the current direct-value Array.get contract and ensure a
- * half-implemented get_copy name is not admitted as a guest member.
- * Replace this gate only alongside a reviewed source-language migration
- * with real Option tag, rooted loan, and executable guest evidence.
+ * only the first concrete get_copy<int> lane is admitted. Other element
+ * types and borrowed get/ReadLoan remain unimplemented and fail closed.
+ * A typed regression is not proof of JVM/AOT execution on its own.
  */
 final class CollectionOptionMigrationAdmissionTest {
     @Test
@@ -31,16 +31,26 @@ final class CollectionOptionMigrationAdmissionTest {
     }
 
     @Test
-    void candidateGetCopyCannotBeAdmittedByParserAlone() {
-        // Parsing a member spelling is not proof of typed API admission.
-        Ast.Program program = Parser.parse("""
+    void checkedCopyIntIsTypedOptionButOtherElementsRemainUnadmitted() {
+        // The new, restricted Copy<int> case is admitted in both compiler
+        // passes. This is distinct from a borrowed get/ReadLoan.
+        Ast.Program permitted = Parser.parse("""
                 pub fnc main(): int {
                   let mut Array<int> values = new Array<int>();
                   values.add(42);
-                  return values.get_copy(0);
+                  return values.get_copy(0).unwrap_or(0);
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(permitted));
+
+        Ast.Program denied = Parser.parse("""
+                pub fnc main(): bool {
+                  let mut Array<String> values = new Array<String>();
+                  values.add("secret");
+                  return values.get_copy(0).is_some();
                 }
                 """);
         assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(program));
+                () -> TypeChecker.check(denied));
     }
 }
