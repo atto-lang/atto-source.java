@@ -1,6 +1,10 @@
 package dev.oreslang.runtime;
 
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -75,6 +79,47 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         }
     }
 
+    /** Stable storage key data; it is not a persistence capability or write authority. */
+    public record PersistenceKey(String tenant, String actor, String state) {
+        public PersistenceKey {
+            Objects.requireNonNull(tenant, "tenant");
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(state, "state");
+        }
+    }
+
+    /** Immutable description available to trusted actor initialization. */
+    public record ActivationDescriptor(
+            VirtualActorActivationRegistry.Identity identity,
+            long logicalGeneration,
+            PersistenceKey persistenceKey) {
+        public ActivationDescriptor {
+            Objects.requireNonNull(identity, "identity");
+            Objects.requireNonNull(persistenceKey, "persistenceKey");
+            if (logicalGeneration <= 0)
+                throw new IllegalArgumentException("invalid logical activation generation");
+        }
+    }
+
+    /** Single-use host reservation; never pass this object through actor DATA. */
+    public final class ActivationPlan {
+        private final VirtualActorSupervisorDirectory owner = VirtualActorSupervisorDirectory.this;
+        private final VirtualActorActivationRegistry.LogicalRef logical;
+        private final VirtualActorActivationRegistry.Activation activation;
+        private final ActivationDescriptor descriptor;
+        private final AtomicBoolean settled = new AtomicBoolean();
+
+        private ActivationPlan(VirtualActorActivationRegistry.LogicalRef logical,
+                               VirtualActorActivationRegistry.Activation activation,
+                               ActivationDescriptor descriptor) {
+            this.logical = logical;
+            this.activation = activation;
+            this.descriptor = descriptor;
+        }
+
+        public ActivationDescriptor descriptor() { return descriptor; }
+    }
+
     private record Binding(ActorRuntime.ActorRef<?> actor,
                            VirtualActorActivationRegistry.Activation activation) { }
 
@@ -87,6 +132,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     private final Map<VirtualActorActivationRegistry.Identity, Binding> bindings = new HashMap<>();
     private final AtomicInteger pendingInspections = new AtomicInteger();
     private volatile boolean closed;
+    private int pendingPlans;
 
     public VirtualActorSupervisorDirectory(ActorRuntime runtime,
                                            ActorRuntime.ActorSupervisor supervisor,
@@ -124,46 +170,129 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     }
 
     /**
-     * Bind a real actor worker as this logical virtual actor's activation.
-     * The worker must be a managed child of this exact supervisor. It is never
-     * enough that it merely belongs to a cooperative ActorGroup.
+     * Reserve a fresh generation before constructing the physical worker. The
+     * descriptor supplies a stable opaque storage key and epoch for trusted
+     * initialization code; it is data, not a capability. The returned plan is
+     * single-use and must be published or explicitly aborted.
      */
-    public long bindActivation(VirtualActorActivationRegistry.LogicalRef logical,
-                               ActorRuntime.ActorRef<?> actor) {
+    public ActivationPlan prepareActivation(
+            VirtualActorActivationRegistry.LogicalRef logical, String stateSlot) {
         Objects.requireNonNull(logical, "logical");
-        Objects.requireNonNull(actor, "actor");
+        stateSlot = requireText(stateSlot, "stateSlot", 128);
         runtime.supervisorRegistryForObservation();
-        if (!runtime.actorManagedBySupervisor(actor, supervisor))
-            throw new SecurityException("activation worker is not managed by this supervisor");
-        if (!actor.getReady().isDone() || !actor.isAlive())
-            throw new IllegalStateException("cannot bind a terminated actor activation");
+        if (!logical.identity().domain().equals(tenant + "@" + supervisor.id().value()))
+            throw new SecurityException("virtual actor reference outside supervisor scope");
+        PersistenceKey persistenceKey = new PersistenceKey(
+                tenant, stablePersistenceActorKey(logical.identity()), stateSlot);
         synchronized (stateLock) {
             if (closed) throw new IllegalStateException("virtual actor supervisor directory closed");
             VirtualActorActivationRegistry.Activation activation = registry.activate(logical);
             if (!activation.initializer())
                 throw new IllegalStateException("logical virtual actor already has an activation");
+            ActivationDescriptor descriptor = new ActivationDescriptor(
+                    logical.identity(), activation.incarnation(), persistenceKey);
+            ActivationPlan plan = new ActivationPlan(logical, activation, descriptor);
+            pendingPlans++;
+            return plan;
+        }
+    }
+
+    /** Abort a candidate after worker initialization/admission fails; the generation is burned. */
+    public void abortActivation(ActivationPlan plan) {
+        Objects.requireNonNull(plan, "plan");
+        runtime.supervisorRegistryForObservation();
+        synchronized (stateLock) {
+            requirePlan(plan);
+            if (!plan.settled.compareAndSet(false, true))
+                throw new IllegalStateException("activation plan already settled");
+            if (bindings.containsKey(plan.logical.identity()))
+                throw new IllegalStateException("cannot abort a published activation");
+            registry.abort(plan.activation);
+            pendingPlans--;
+        }
+    }
+
+    /** Publish only an initialized live worker managed by this exact supervisor. */
+    public long publishActivation(ActivationPlan plan, ActorRuntime.ActorRef<?> actor) {
+        Objects.requireNonNull(plan, "plan");
+        Objects.requireNonNull(actor, "actor");
+        runtime.supervisorRegistryForObservation();
+        if (!actor.getReady().isDone() || !actor.isAlive()
+                || !runtime.actorManagedBySupervisor(actor, supervisor))
+            throw new SecurityException("activation worker is not ready and managed by this supervisor");
+        synchronized (stateLock) {
+            requirePlan(plan);
+            if (plan.settled.get())
+                throw new IllegalStateException("activation plan already settled");
             if (!actor.isAlive() || !runtime.actorManagedBySupervisor(actor, supervisor)) {
-                registry.abort(activation);
+                abortPlanUnderLock(plan);
                 throw new IllegalStateException(
                         "activation worker stopped or lost supervisor ownership during admission");
             }
-            Binding binding = new Binding(actor, activation);
+            Binding binding = new Binding(actor, plan.activation);
+            if (bindings.putIfAbsent(plan.logical.identity(), binding) != null)
+                throw new IllegalStateException("logical virtual actor activation already bound");
             try {
-                if (bindings.putIfAbsent(logical.identity(), binding) != null)
-                    throw new IllegalStateException("logical virtual actor activation already bound");
-                registry.publish(activation);
+                registry.publish(plan.activation);
+                if (!plan.settled.compareAndSet(false, true))
+                    throw new IllegalStateException("activation plan settlement raced publication");
+                pendingPlans--;
             } catch (RuntimeException | Error failure) {
-                bindings.remove(logical.identity(), binding);
-                try { registry.abort(activation); }
-                catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+                bindings.remove(plan.logical.identity(), binding);
+                if (!plan.settled.get()) {
+                    try { abortPlanUnderLock(plan); }
+                    catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+                }
                 throw failure;
             }
-            long generation = activation.incarnation();
             // done() settles only after finalization and physical TurnExecutor exit.
             // The callback only changes trusted metadata; it never runs guest code.
             actor.done().whenCompleteRuntime((ignored, failure) ->
-                    retireAfterPhysicalCompletion(logical.identity(), binding));
-            return generation;
+                    retireAfterPhysicalCompletion(plan.logical.identity(), binding));
+            return plan.activation.incarnation();
+        }
+    }
+
+    /** Convenience host binding for workers constructed without a persistence plan. */
+    public long bindActivation(VirtualActorActivationRegistry.LogicalRef logical,
+                               ActorRuntime.ActorRef<?> actor) {
+        ActivationPlan plan = prepareActivation(logical, "default");
+        try {
+            return publishActivation(plan, actor);
+        } catch (RuntimeException | Error failure) {
+            if (!plan.settled.get()) {
+                try { abortActivation(plan); }
+                catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+            }
+            throw failure;
+        }
+    }
+
+    private void requirePlan(ActivationPlan plan) {
+        if (plan.owner != this || plan.logical == null || plan.activation == null
+                || plan.settled.get())
+            throw new SecurityException("foreign or settled virtual actor activation plan");
+    }
+
+    private void abortPlanUnderLock(ActivationPlan plan) {
+        if (!plan.settled.compareAndSet(false, true)) return;
+        registry.abort(plan.activation);
+        pendingPlans--;
+    }
+
+    private static String stablePersistenceActorKey(
+            VirtualActorActivationRegistry.Identity identity) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(identity.domain().getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(identity.declaration().getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(identity.key().getBytes(StandardCharsets.UTF_8));
+            return "va1_" + Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 unavailable", impossible);
         }
     }
 
@@ -327,6 +456,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             if (closed) return;
             if (pendingInspections.get() != 0)
                 throw new IllegalStateException("cannot close with pending CONTROL inspections");
+            if (pendingPlans != 0)
+                throw new IllegalStateException("cannot close with reserved activation plans");
             if (!bindings.isEmpty())
                 throw new IllegalStateException("cannot close while supervised activations remain bound");
             registry.close();
