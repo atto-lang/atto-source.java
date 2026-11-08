@@ -65,9 +65,11 @@ might inherit A's stale `Scope` when the SHARED worker is reused:
 poisoning **both** the stale and the new actor, violating sibling
 isolation.
 
-`GuestCallDepthGuard.quarantineLeakedActorTurnScope` is now called by
-the actor's physical-turn `finally`, before `endTurn()` releases the
-carrier. It first removes the `ThreadLocal` so that no later sibling
+`GuestCallDepthGuard.quarantineLeakedActorTurnScope` now executes
+**after each mailbox envelope/continuation**, before any additional
+message in the same physical batch. An independent second fence runs
+in the actor's physical-turn `finally`, before `endTurn()` releases
+the carrier. It first removes the `ThreadLocal` so that no later sibling
 can observe stale A authority, then poisons **only A's** original
 `ActorGuestStack` and `ActorFrameArena`, releases each outstanding
 logical invocation charge in descending depth order, and cancels A's
@@ -88,7 +90,7 @@ sibling actor. Never market this as native physical per-actor stacks.
 
 ## New tests (AUTHORED_NOT_EXECUTED)
 
-`ActorStackOverflowIsolationTest` adds **9** host-runtime JUnit methods:
+`ActorStackOverflowIsolationTest` adds **10** host-runtime JUnit methods:
 
 - Synthetic JVM `StackOverflowError` fails only A as
   `ActorStackOverflowException`; A's arena is poisoned/retired and
@@ -109,6 +111,10 @@ sibling actor. Never market this as native physical per-actor stacks.
 - `StackOverflowError` concurrent with a deliberately leaked guest
   guard scope does not preserve the old `ThreadLocal` across actor
   turns; B can still enter an independent depth-one guarded call.
+- A deterministic two-mail same-batch test uses a bounded admission
+  barrier to prove that actor A cannot process **its own second mail**
+  after the first mail leaks a guest-call lease; the per-envelope fence
+  fails A before continuing its batch.
 - Forked `-Xss256k` JVM process runs
   `ActorStackOverflowLowStackProbe`: real native recursion causes A
   to fail, B executes on the same surviving SHARED carrier and prints
