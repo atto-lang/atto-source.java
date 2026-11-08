@@ -109,3 +109,34 @@ independent review accepts the change. Compiler-backed guest execution,
 native-image/AOT, broad stress and cross-backend parity are
 **NOT_EXECUTED / NOT_CERTIFIED** by this audit. The UNTRUSTED implicit-loop
 cooperation gate remains **disabled**.
+
+
+## 2026-11-08 additional untrusted source-admission hardening
+
+Security boundary in `CapabilityChecker` previously traversed its
+statement visitor incompletely and its expression visitor could silently
+accept AST nodes containing nested restricted effects. The draft now:
+- charges hard fuel for **every UNTRUSTED tail-call trampoline hop**;
+  trusted 64-hop trampoline batching and 128-backedge soft fairness are
+  separate policies, not a replacement for untrusted cumulative fuel.
+- traverses `do-while` bodies/conditions, task-scope deadlines,
+  borrowed resource/body, and local type aliases; unknown statements
+  fail closed.
+- traverses value-match subject, guards, prefix and result expressions,
+  type/pattern/cast targets, `trap` operands, aggregate arguments and
+  type declarations, call type arguments, channel callback bodies and
+  lambda parameter/return types; unknown expressions and patterns fail
+  closed.
+- adds 4 do-while negative tests, 6 statement-admission tests and 9
+  direct AST expression-admission tests. Constructed ASTs intentionally
+  exercise the capability checker without relying on parser-side
+  rejection or the runtime evaluator.
+
+A deterministic read-only exact-head source audit matched all **26**
+`Ast.Expr`, **22** `Ast.Stmt`, and **7** `Ast.Pattern` sealed
+variants to explicit `CapabilityChecker` references. This is a
+**structural coverage check only**, not proof that all branches or
+tests execute correctly. The new 19 JUnit cases, full source guest
+tests, JDK25/GraalVM Native Image and exact-head CI are still
+**NOT_EXECUTED** due to pre-runner Actions admission. All security
+gates remain fail-closed and the PR remains a draft.
