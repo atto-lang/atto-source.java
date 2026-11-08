@@ -12,8 +12,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICIES = #[".github/private-ci-approved-repositories.txt"]#
-FORMER_CANDIDATES = #["beamscale/bmscl-compiler","1383937120"]#
+POLICIES = [".github/private-ci-approved-repositories.txt"]
+FORMER_CANDIDATES = ["beamscale/bmscl-compiler","1383937120"]
 PROFILE = 'java'
 
 
