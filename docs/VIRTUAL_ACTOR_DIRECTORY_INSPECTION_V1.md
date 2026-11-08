@@ -44,6 +44,8 @@ Exact-head JUnit coverage now additionally includes same-supervisor managed-work
 
 The follow-up `VirtualActorSupervisorDirectory` no longer embeds the supervisor UUID in the logical identity. The registry identity is tenant/domain + namespace-qualified declaration + NFC key. Supervisor ownership is a separate runtime-owned edge: `ActorRuntime` atomically claims each logical identity for one supervisor, and a second supervisor cannot claim the same identity. Cooperative ActorGroup membership does not establish this edge.
 
+The actual `VirtualActorActivationRegistry` is retained by `ActorRuntime`, not by the replaceable directory facade. Only one facade can be active for a given supervisor at a time. Closing a facade releases its service ownership token but preserves logical identity records, activation history and directory revision for the remaining runtime lifetime. Reopening with incompatible identity/mailbox bounds is rejected.
+
 Use `resolve(namespace, declaration, key)` to distinguish identical declaration/key pairs in separate application namespaces. The original two-argument overload resolves in the `default` namespace. The host-provided tenant/domain string must be stable and unique in the relevant storage/routing domain; include a stable runtime-domain qualifier when multiple runtime domains share a tenant naming space.
 
 ### Activation reservation and persistent identity
@@ -62,3 +64,13 @@ The opaque actor key is independent of supervisor UUID and activation generation
 The directory binds only a real ActorRuntime worker managed by the specified supervisor. It observes that worker's runtime-owned `done()` Future and passivates the logical activation only after finalization/physical turn exit. A replacement worker can then be bound under the same logical key with a higher runtime-local generation.
 
 This is still an explicit host adapter: callers must reserve a plan, construct/initialize the real actor, and publish its binding. It does not yet intercept guest virtual actor invocation, route logical mailbox DATA, schedule automatic restart according to OTP policy, or restore snapshots before activation. Persistence key metadata is ready for the trusted host bridge, but no state is saved/restored by this PR.
+
+## Supervisor enumeration and cursor semantics
+
+`VirtualActorSupervisorDirectory.requestList(...)` provides bounded pagination on the configured CONTROL dispatcher. It accepts page sizes 1–128, returns immutable enriched snapshots, a directory revision and an optional last-identity cursor. The registry's lower-level page limit is 256. Ordering is deterministic by namespace-qualified declaration then canonical key; one supervisor registry has one tenant/domain.
+
+The cursor is valid only for its exact directory revision. The revision advances on logical identity admission/discard, activation reservation, publish, abort, mailbox admission/settlement, passivation and registry close. Any intervening change makes continuation fail with `StaleDirectoryPageException`; callers restart from the first page rather than mixing snapshots from different revisions. There is no unbounded list-all operation. Enumeration is limited to the one registry retained for that exact supervisor.
+
+### CONTROL timeout race
+
+A bounded inspection request has one atomic phase: queued, running, terminal. If timeout or revocation wins while queued, it atomically transitions queued → terminal; the eventual queued dispatcher callback becomes a no-op and cannot inspect. Capacity can then be released because the operation is provably prevented from starting. If the CONTROL worker wins queued → running, only its physical finally path releases the grant and global slot. This avoids releasing a read grant while a CONTROL capture is concurrently beginning.
