@@ -14,6 +14,12 @@ must be explicit, capability checked and linked before native publication.
 Do not equate importing Java code on the JVM with Native Image supporting
 runtime Java source compilation. The Java mixed-source `java { ... }` island
 uses `javax.tools.JavaCompiler`, which is JIT/source-mode only today.
+`JavaPrecompiledHostImportAotPolicyTest` now exercises an exact allowlisted
+`java.lang.Long.sum(long,long)` JDK host call using the same `.atto` source
+under JVM JIT and AOT-policy execution profiles, and asserts denied lookup
+without an allowlist. **It is not a GraalVM Native Image executable proof.**
+A full Native Image import and member-level capability proof is tracked in
+[issue #2678](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/2678).
 Native Image requires precompiled, statically reachable classes and explicit
 registration. Classpath scanning, `URLClassLoader` plugin loading and arbitrary
 reflection cannot be silently re-enabled. In the .NET backend, arbitrary
