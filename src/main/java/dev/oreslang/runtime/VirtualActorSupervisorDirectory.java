@@ -440,6 +440,15 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 pendingInspections.decrementAndGet();
             }
         };
+        // A timeout can win while the request is still queued in CONTROL.
+        // In that case no dispatcher callback may ever run to execute its
+        // finally block. Release the admission immediately, but only while
+        // the turn has not started; a running turn retains its slot until its
+        // own finally block completes. The started/released atomics close the
+        // timeout-vs-dispatch race without permitting a second live capture.
+        result.whenComplete((ignored, failure) -> {
+            if (!started.get()) release.run();
+        });
         final OresFuture<Void> dispatch;
         try {
             dispatch = runtime.dispatchSupervisorObservationControl(() -> {
