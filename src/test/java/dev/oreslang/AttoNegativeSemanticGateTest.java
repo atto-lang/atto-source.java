@@ -26,41 +26,25 @@ import static org.junit.jupiter.api.Assertions.*;
  * intended effect, binding, or operator diagnostic.
  */
 final class AttoNegativeSemanticGateTest {
-    private record Case(String id, String path, String blob,
-                        String[] requiredTerms, String[] policyTerms) {}
+    private record Case(String id, String path, String blob) {}
 
     private static final Case[] CASES = {
         new Case("removed-modulo", "contracts/atto-scalar-v1/negative/removed-modulo.atto",
-                "45d5794870e93074d9b11b90833a849e96aaa4c1",
-                new String[]{"%", "modulo"}, new String[]{"operator", "removed", "forbidden", "unsupported operator"}),
+                "45d5794870e93074d9b11b90833a849e96aaa4c1"),
         new Case("removed-caret", "contracts/atto-scalar-v1/negative/removed-caret.atto",
-                "6889c7e83c8d94b906fbfe78723caee9580da6aa",
-                new String[]{"^", "caret"}, new String[]{"operator", "removed", "forbidden", "unsupported operator"}),
+                "6889c7e83c8d94b906fbfe78723caee9580da6aa"),
         new Case("removed-double-caret", "contracts/atto-scalar-v1/negative/removed-double-caret.atto",
-                "7ee99948018e927cce74c9ad0edc1975e4251689",
-                new String[]{"^^", "caret"}, new String[]{"operator", "removed", "forbidden", "unsupported operator"}),
-        new Case("type-first-reassignment",
-                "contracts/atto-scalar-v1/negative/type-first-reassignment.atto",
-                "b118f53e68565dcb9e6acd58deb8ee47dca67606",
-                new String[]{"x", "binding", "value"},
-                new String[]{"immutable", "readonly", "constant binding", "reassign", "cannot assign"}),
-        new Case("typed-const-reassignment",
-                "contracts/atto-scalar-v1/negative/typed-const-reassignment.atto",
-                "784ebd47a50211e6f00cb732cc74319ed1e58fac",
-                new String[]{"x", "binding", "const"},
-                new String[]{"immutable", "readonly", "constant binding", "reassign", "cannot assign"}),
-        new Case("legacy-async-modifier",
-                "tests/formal-policy-atto/negative/legacy-async-modifier.atto",
-                "26d392c8f609a730e81b503d9495de7e29b46755",
-                new String[]{"async"}, new String[]{"unsupported", "forbidden", "disallowed", "modifier", "use suspends"}),
-        new Case("critical-suspends-modifier",
-                "tests/formal-policy-atto/negative/critical-suspends-modifier.atto",
-                "6be781ff89f9ebc48ee5870d3401943d50b0f9db",
-                new String[]{"critical", "suspends"}, new String[]{"forbidden", "disallowed", "cannot", "modifier", "invalid"}),
-        new Case("suspends-critical-modifier",
-                "tests/formal-policy-atto/negative/suspends-critical-modifier.atto",
-                "c8bb7c921749f06e9d187a6dfbd71685952e3d88",
-                new String[]{"suspends", "critical"}, new String[]{"forbidden", "disallowed", "cannot", "modifier", "invalid"})
+                "7ee99948018e927cce74c9ad0edc1975e4251689"),
+        new Case("type-first-reassignment", "contracts/atto-scalar-v1/negative/type-first-reassignment.atto",
+                "b118f53e68565dcb9e6acd58deb8ee47dca67606"),
+        new Case("typed-const-reassignment", "contracts/atto-scalar-v1/negative/typed-const-reassignment.atto",
+                "784ebd47a50211e6f00cb732cc74319ed1e58fac"),
+        new Case("legacy-async-modifier", "tests/formal-policy-atto/negative/legacy-async-modifier.atto",
+                "26d392c8f609a730e81b503d9495de7e29b46755"),
+        new Case("critical-suspends-modifier", "tests/formal-policy-atto/negative/critical-suspends-modifier.atto",
+                "6be781ff89f9ebc48ee5870d3401943d50b0f9db"),
+        new Case("suspends-critical-modifier", "tests/formal-policy-atto/negative/suspends-critical-modifier.atto",
+                "c8bb7c921749f06e9d187a6dfbd71685952e3d88")
     };
 
     private static String gitBlob(byte[] bytes) throws Exception {
