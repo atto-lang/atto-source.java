@@ -108,7 +108,14 @@ public final class AutoTraitRules {
     public static Capabilities infer(TypeModel type) {
         Objects.requireNonNull(type, "type");
         Capabilities base = switch (type.kind()) {
-            case SCALAR -> new Capabilities(true, true, true);
+            case SCALAR -> {
+                // A scalar has no nested storage. Otherwise a fabricated
+                // scalar carrying Rc/borrowed metadata could bypass the
+                // transitive Send/Sync/Share check at a Task/actor boundary.
+                yield type.parameters().isEmpty() && type.dynBounds().isEmpty()
+                        ? new Capabilities(true, true, true)
+                        : new Capabilities(false, false, false);
+            }
             case NOMINAL -> {
                 boolean send = all(type.parameters(), AutoTrait.SEND);
                 boolean sync = all(type.parameters(), AutoTrait.SYNC);
@@ -154,11 +161,13 @@ public final class AutoTraitRules {
                 // Concurrent readers expose shared T, so T must also be Sync.
                 yield new Capabilities(nested.send(), nested.send() && nested.sync(), false);
             }
-            case DYN -> new Capabilities(
-                    type.dynBounds().contains(AutoTrait.SEND),
-                    type.dynBounds().contains(AutoTrait.SYNC),
-                    type.shareableDomain()
-                            && type.dynBounds().contains(AutoTrait.SHARE));
+            case DYN -> type.parameters().isEmpty()
+                    ? new Capabilities(
+                            type.dynBounds().contains(AutoTrait.SEND),
+                            type.dynBounds().contains(AutoTrait.SYNC),
+                            type.shareableDomain()
+                                    && type.dynBounds().contains(AutoTrait.SHARE))
+                    : new Capabilities(false, false, false);
         };
         return base.without(type.negative());
     }
