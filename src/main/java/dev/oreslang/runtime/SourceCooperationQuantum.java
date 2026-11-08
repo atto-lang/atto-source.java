@@ -6,8 +6,8 @@ import java.util.function.LongSupplier;
 /**
  * Soft, per-dispatch loop quantum for a single heap-backed Oreslang source task.
  *
- * <p>One cheap counter increment and mask per completed backedge; monotonic
- * clock reads occur only after an amortized batch. This class decides when a
+ * <p>One cheap saturating reduction update and phase increment per completed backedge; monotonic
+ * clock reads occur only after an amortized 128-backedge batch. This class decides when a
  * checkpoint is due, NOT where suspension is legal. Only SourceTask's proven
  * post-commit continuation can publish OresScheduler.cooperate().</p>
  *
@@ -17,7 +17,7 @@ import java.util.function.LongSupplier;
  * count as a cooperation or run the task's lexical cleanup.</p>
  */
 public final class SourceCooperationQuantum {
-    public static final int LOOP_CHECK_INTERVAL = 64;
+    public static final int LOOP_CHECK_INTERVAL = 128;
     public static final int MAX_BACKEDGES_PER_DISPATCH = 512;
     public static final long SOFT_DISPATCH_QUANTUM_NANOS = 2_000_000L;
 
@@ -25,6 +25,8 @@ public final class SourceCooperationQuantum {
     private long lastCooperateAtNanos;
     private long dispatchStartedAtNanos;
     private long backedgesThisDispatch;
+    // Separate wrapping phase: the saturated long must not freeze polling.
+    private int pollPhase;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -41,6 +43,7 @@ public final class SourceCooperationQuantum {
     public void beginDispatch() {
         dispatchStartedAtNanos = monotonicNanos.getAsLong();
         backedgesThisDispatch = 0;
+        pollPhase = 0;
     }
 
     /**
@@ -48,17 +51,22 @@ public final class SourceCooperationQuantum {
      * Absolutely no clock reads or scheduler calls on the usual fast path.
      */
     public boolean completedBackedgeNeedsCheck() {
-        // Once a no-yield region has consumed the soft reduction budget,
-        // poll EVERY subsequent committed backedge. Otherwise a guard that
-        // closes between ordinary 64-backedge polls could delay an already
-        // overdue handoff, and a wrapped signed counter could erase the cap.
-        // Saturate at Long.MAX_VALUE rather than wrapping to a negative value.
-        long completed = backedgesThisDispatch;
-        if (completed != Long.MAX_VALUE) {
-            completed = ++backedgesThisDispatch;
+        // Every committed backedge pays only for saturating reduction
+        // accounting and a tiny counter. The expensive safepoint is eligible
+        // only on every 128th backedge, including after the soft 512 cap.
+        // A no-yield region may delay handoff by up to 127 more reductions,
+        // never turn the expensive poll into a per-iteration operation.
+        // Unlike masking the saturated long, an independent phase keeps
+        // polling even when total reductions reach Long.MAX_VALUE.
+        if (backedgesThisDispatch != Long.MAX_VALUE) {
+            backedgesThisDispatch++;
         }
-        return completed >= MAX_BACKEDGES_PER_DISPATCH
-                || (completed & (LOOP_CHECK_INTERVAL - 1)) == 0;
+        pollPhase++;
+        if (pollPhase == LOOP_CHECK_INTERVAL) {
+            pollPhase = 0;
+            return true;
+        }
+        return false;
     }
 
     /** Slow path only: reduction cap, watchdog request, or active dispatch time.
