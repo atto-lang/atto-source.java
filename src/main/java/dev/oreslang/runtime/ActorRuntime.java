@@ -2259,6 +2259,10 @@ public final class ActorRuntime implements AutoCloseable {
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
                 if (!managedWorkers.containsKey(worker.id())) return false;
+                if (virtualActorTerminalBindings.containsKey(worker.id())) {
+                    throw new IllegalStateException(
+                            "cannot transfer a worker while it owns a virtual actor activation");
+                }
                 ActorCell<?> cell = actors.get(worker.id());
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("cannot transfer a stopped worker");
@@ -4326,12 +4330,15 @@ public final class ActorRuntime implements AutoCloseable {
         // The control lane survives removal of a closed ActorGroup registry.
         SupervisorFailureControl lane = cell.supervision.get();
         Throwable failure = cell.ref.terminationCause.get();
+        VirtualActorTerminalBinding virtualBinding =
+                virtualActorTerminalBindings.get(cell.ref.id());
         if (lane != null && failure != null) {
             SupervisorFailureControl.Kind failureKind =
                     failure instanceof CancellationException
                             ? SupervisorFailureControl.Kind.CANCELLED
                             : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
-            ActorGroupId ownerGroup = cell.managedByGroup.get();
+            ActorGroupId ownerGroup = virtualBinding != null
+                    ? virtualBinding.groupId() : cell.managedByGroup.get();
             if (ownerGroup != null) {
                 lane.publish(new SupervisorFailureControl.Notice(
                         lane.supervisorId(), ownerGroup, cell.ref.id(),
@@ -4339,11 +4346,17 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? Optional.empty() : Optional.of(cell.parent.ref.id()),
                         failureKind,
                         failure.getClass().getName(),
-                        failure.getMessage() == null ? "" : failure.getMessage()));
+                        failure.getMessage() == null ? "" : failure.getMessage(),
+                        virtualBinding == null
+                                ? Optional.empty() : Optional.of(virtualBinding.logical())));
+                if (virtualBinding != null)
+                    virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
             }
         }
         if (lane != null && failure == null) {
             lane.releaseReservation(cell.ref.id());
+            if (virtualBinding != null)
+                virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
