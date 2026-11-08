@@ -8881,7 +8881,24 @@ public final class ActorRuntime implements AutoCloseable {
                     ActorTurnWatchdog.Lease lease = watchdogLease;
                     watchdogLease = null;
                     if (lease != null) lease.close();
-                    if (turnActive) endTurn();
+                    try {
+                        // A malformed/unwound host guest call may leave its
+                        // ThreadLocal Scope alive after a StackOverflowError.
+                        // Revoke it *before* this shared carrier is released.
+                        // Otherwise sibling B could inherit A's stack lease
+                        // and be poisoned when it enters GuestCallDepthGuard.
+                        if (GuestCallDepthGuard.quarantineLeakedActorTurnScope(
+                                guestStack, frameArena)) {
+                            fail(new IllegalStateException(
+                                    "actor physical turn exited with an active guest stack lease"));
+                        }
+                    } catch (RuntimeException leakedScopeFailure) {
+                        fail(leakedScopeFailure);
+                    } finally {
+                        // An invariant failure while releasing stale frames
+                        // must never skip actor turn/capability release.
+                        if (turnActive) endTurn();
+                    }
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
                     // throw; never strand actor authority on a reused carrier.
