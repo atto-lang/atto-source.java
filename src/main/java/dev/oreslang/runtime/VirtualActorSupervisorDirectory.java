@@ -402,6 +402,57 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 () -> enrich(localInspection.inspect(logical)));
     }
 
+    /** Immutable bounded page returned by the supervisor's virtual-actor directory view. */
+    public record SnapshotPage(java.util.List<Snapshot> entries, long revision,
+                               Optional<VirtualActorActivationRegistry.Identity> nextAfter) {
+        public SnapshotPage {
+            entries = java.util.List.copyOf(entries);
+            Objects.requireNonNull(nextAfter, "nextAfter");
+            if (revision < 0) throw new IllegalArgumentException("invalid virtual actor page revision");
+        }
+    }
+
+    /**
+     * Enumerate only logical identities registered in this supervisor's local
+     * directory. A continuation cursor is bound to the directory revision;
+     * any new identity admission/discard between pages rejects the cursor.
+     */
+    public CompletionStage<SnapshotPage> requestList(
+            Grant grant, Object authenticatedSession, int limit,
+            long expectedRevision,
+            VirtualActorActivationRegistry.Identity after,
+            long timeoutNanos) {
+        runtime.supervisorRegistryForObservation();
+        if (limit < 1 || limit > 128)
+            throw new IllegalArgumentException("supervisor virtual actor page size must be 1..128");
+        if (after != null && (!tenant.equals(after.domain())
+                || !runtime.ownsVirtualActor(after, supervisor)))
+            throw new SecurityException("virtual actor page cursor outside supervisor scope");
+        return request(grant, authenticatedSession, timeoutNanos, () -> {
+            VirtualActorActivationRegistry.Page page = registry.listPage(
+                    limit, expectedRevision, after);
+            java.util.ArrayList<Snapshot> entries = new java.util.ArrayList<>(page.entries().size());
+            for (VirtualActorActivationRegistry.Inspection item : page.entries()) {
+                VirtualActorDirectoryInspection.Snapshot local = new VirtualActorDirectoryInspection.Snapshot(
+                        1, item.identity(), VirtualActorAddressV1.encode(item.identity()),
+                        lifecycle(item), item.latestIncarnation(), item.outstanding(),
+                        Instant.now(), true);
+                entries.add(enrich(local));
+            }
+            return new SnapshotPage(entries, page.revision(), page.nextAfter());
+        });
+    }
+
+    private static VirtualActorDirectoryInspection.Lifecycle lifecycle(
+            VirtualActorActivationRegistry.Inspection value) {
+        if (value.registryClosed()) return VirtualActorDirectoryInspection.Lifecycle.CLOSED;
+        if (value.published()) return VirtualActorDirectoryInspection.Lifecycle.ACTIVE;
+        if (value.activationPresent()) return VirtualActorDirectoryInspection.Lifecycle.ACTIVATING;
+        if (value.latestIncarnation() == 0)
+            return VirtualActorDirectoryInspection.Lifecycle.NEVER_ACTIVATED;
+        return VirtualActorDirectoryInspection.Lifecycle.PASSIVATED;
+    }
+
     private Snapshot enrich(VirtualActorDirectoryInspection.Snapshot snapshot) {
         synchronized (stateLock) {
             Binding binding = bindings.get(snapshot.identity());
