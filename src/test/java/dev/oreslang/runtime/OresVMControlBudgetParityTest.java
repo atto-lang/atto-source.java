@@ -24,10 +24,8 @@ final class OresVMControlBudgetParityTest {
             throws Exception {
         assertEquals(2, OresVM.configuredControlParallelism(null),
                 "missing override must resolve to two CONTROL workers");
-        try (OresVM first = OresVM.createWithControlParallelismForTests(
-                    OresVM.configuredControlParallelism(null));
-                OresVM sibling = OresVM.createWithControlParallelismForTests(
-                    OresVM.configuredControlParallelism(null))) {
+        try (OresVM first = OresVM.createConfigured(Runnable::run, null, null);
+                OresVM sibling = OresVM.createConfigured(Runnable::run, null, null)) {
             assertTrue(first.started());
             assertTrue(sibling.started());
             assertEquals(2, first.controlCarrierCount(),
@@ -51,10 +49,8 @@ final class OresVMControlBudgetParityTest {
             throws Exception {
         assertEquals(1, OresVM.configuredControlParallelism("1"));
         assertEquals(3, OresVM.configuredControlParallelism("3"));
-        try (OresVM first = OresVM.createWithControlParallelismForTests(
-                    OresVM.configuredControlParallelism("1"));
-                OresVM sibling = OresVM.createWithControlParallelismForTests(
-                    OresVM.configuredControlParallelism("3"))) {
+        try (OresVM first = OresVM.createConfigured(Runnable::run, null, "1");
+                OresVM sibling = OresVM.createConfigured(Runnable::run, null, "3")) {
             assertEquals(1, first.controlCarrierCount());
             assertEquals(3, sibling.controlCarrierCount());
             first.close();
@@ -76,10 +72,12 @@ final class OresVMControlBudgetParityTest {
                     () -> "invalid CONTROL override unexpectedly accepted: " + bad);
         }
         assertEquals(128, OresVM.configuredControlParallelism("128"));
-        for (int bad : new int[] { 0, -1, 129, Integer.MAX_VALUE }) {
+        // The production VM factory must reject the same malformed inputs
+        // before it allocates any CONTROL or physical STOP executors.
+        for (String bad : new String[] { "0", "-1", "129", "abc" }) {
             assertThrows(IllegalArgumentException.class,
-                    () -> OresVM.createWithControlParallelismForTests(bad),
-                    () -> "invalid explicit CONTROL pool size: " + bad);
+                    () -> OresVM.createConfigured(Runnable::run, null, bad),
+                    () -> "production CONTROL factory accepted: " + bad);
         }
     }
 }
