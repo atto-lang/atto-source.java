@@ -1,0 +1,7 @@
+// Positive source guest canary, expected stdout 42; capture uses a Copy scalar.
+pub async fnc main(): void {
+  const int value = 41;
+  let Future<int> worker = task { return value + 1; };
+  stdio.stdout.write(await worker);
+  return;
+}
