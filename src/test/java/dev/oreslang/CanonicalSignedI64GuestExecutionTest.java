@@ -168,10 +168,21 @@ final class CanonicalSignedI64GuestExecutionTest {
                     assertNotNull(LinkedProgramRunner.validate(entry, Map.of()),
                             "error case must pass compile-time checking: " + v.id());
                     ByteArrayOutputStream out = new ByteArrayOutputStream();
-                    assertThrows(PolyglotException.class,
+                    PolyglotException failure = assertThrows(PolyglotException.class,
                             () -> LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                                     ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                                     new ByteArrayOutputStream()), v.id());
+                    // A generic guest failure (e.g. missing function) is not
+                    // evidence of the required arithmetic exception.
+                    String reason = switch (v.expected()) {
+                        case "DIVISOR_ZERO" -> "integer remainder by zero";
+                        case "OVERFLOW" -> "overflow";
+                        case "NEGATIVE_EXPONENT" -> "nonnegative";
+                        default -> throw new AssertionError("unknown arithmetic error case");
+                    };
+                    assertNotNull(failure.getMessage(), "guest exception missing diagnostic");
+                    assertTrue(failure.getMessage().contains(reason),
+                            "wrong guest error for " + v.id() + ": " + failure.getMessage());
                     assertEquals("", out.toString(StandardCharsets.UTF_8),
                             "failed arithmetic cannot produce successful output: " + v.id());
                 }));
