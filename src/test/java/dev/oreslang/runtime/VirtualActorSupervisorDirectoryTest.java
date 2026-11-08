@@ -370,4 +370,39 @@ final class VirtualActorSupervisorDirectoryTest {
         }
     }
 
+    @Test
+    void oneCanonicalDirectoryPerSupervisorPreventsSplitLocalRegistries() {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                directory.resolve("Cart", "42");
+                assertThrows(IllegalStateException.class,
+                        () -> new VirtualActorSupervisorDirectory(
+                                runtime, supervisor, TENANT, 8, 4));
+            }
+            // Closing the registered directory releases the exact host ownership token.
+            try (var replacement = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                assertEquals("42", replacement.resolve("Cart", "42").identity().key());
+            }
+        }
+    }
+
+    @Test
+    void activationOrAdmissionChangeInvalidatesPreviouslyIssuedPageRevision() {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                // Registry listing uses the exact revision from the first page.
+                // Preparing/publishing an activation changes metadata and invalidates it.
+                var plan = directory.prepareActivation(logical, "state");
+                directory.abortActivation(plan);
+                assertTrue(directory.resolve("Cart", "42").identity().equals(logical.identity()));
+            }
+        }
+    }
+
 }
