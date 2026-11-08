@@ -7916,6 +7916,17 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
+                // Only compiler-proven Copy<int> may cross the raw sequence
+                // boundary. A retained class/string/borrow reference must not
+                // be silently rebranded as an independent owned copy.
+                case "get_copy" -> {
+                    if (deref(list.element()) != Primitive.INT) {
+                        throw new IllegalArgumentException(
+                                "Array.get_copy requires Copy<int>; borrowed or non-Copy collection elements need explicit loan lifetime proof");
+                    }
+                    yield new Function(List.of(Primitive.INT),
+                            new Named("Option", List.of(Primitive.INT)));
+                }
                 case "add" -> new Function(List.of(list.element()), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
