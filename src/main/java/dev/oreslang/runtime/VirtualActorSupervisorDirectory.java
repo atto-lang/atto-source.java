@@ -31,7 +31,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
 
     public enum Lifecycle {
         NEVER_ACTIVATED, ACTIVATING, ACTIVE, TERMINATION_PENDING_RECONCILIATION,
-        PASSIVATED, CLOSED
+        PASSIVATED, FAILED, CANCELLED, CLOSED
     }
 
     public record Snapshot(int schemaVersion,
@@ -43,6 +43,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                            Optional<ActorRuntime.ActorId> actorId,
                            long actorReferenceGeneration,
                            Optional<ActorRuntime.ActorKind> actorKind,
+                           Optional<String> lastTerminalFailureClass,
+                           Optional<Instant> lastTerminalAt,
                            int outstandingAdmissions,
                            Instant observedAt,
                            boolean partial) {
@@ -53,6 +55,10 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             Objects.requireNonNull(lifecycle, "lifecycle");
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(actorKind, "actorKind");
+            Objects.requireNonNull(lastTerminalFailureClass, "lastTerminalFailureClass");
+            Objects.requireNonNull(lastTerminalAt, "lastTerminalAt");
+            if (lastTerminalFailureClass.filter(value -> value.isBlank() || value.length() > 256).isPresent())
+                throw new IllegalArgumentException("invalid terminal failure class");
             Objects.requireNonNull(observedAt, "observedAt");
             if (schemaVersion != 1 || activationGeneration < 0
                     || actorReferenceGeneration < 0 || outstandingAdmissions < 0)
@@ -124,6 +130,13 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     private record Binding(ActorRuntime.ActorRef<?> actor,
                            VirtualActorActivationRegistry.Activation activation) { }
 
+    /** Payload-free terminal metadata retained after the worker physically exits. */
+    private record TerminalRecord(ActorRuntime.ActorId actorId,
+                                  long actorGeneration,
+                                  ActorRuntime.ActorKind actorKind,
+                                  String failureClass,
+                                  Instant terminalAt) { }
+
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorSupervisor supervisor;
     private final String tenant;
@@ -131,6 +144,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     private final VirtualActorDirectoryInspection localInspection;
     private final Object stateLock = new Object();
     private final Map<VirtualActorActivationRegistry.Identity, Binding> bindings = new HashMap<>();
+    private final Map<VirtualActorActivationRegistry.Identity, TerminalRecord> terminals = new HashMap<>();
     private final AtomicInteger pendingInspections = new AtomicInteger();
     private volatile boolean closed;
     private int pendingPlans;
@@ -286,7 +300,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             // done() settles only after finalization and physical TurnExecutor exit.
             // The callback only changes trusted metadata; it never runs guest code.
             actor.done().whenCompleteRuntime((ignored, failure) ->
-                    retireAfterPhysicalCompletion(plan.logical.identity(), binding));
+                    retireAfterPhysicalCompletion(plan.logical.identity(), binding, failure));
             return plan.activation.incarnation();
         }
     }
@@ -335,12 +349,18 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     }
 
     private void retireAfterPhysicalCompletion(
-            VirtualActorActivationRegistry.Identity identity, Binding expected) {
+            VirtualActorActivationRegistry.Identity identity, Binding expected, Throwable failure) {
         synchronized (stateLock) {
             if (closed || bindings.get(identity) != expected) return;
             try {
                 registry.deactivate(expected.activation());
                 bindings.remove(identity, expected);
+                String failureClass = failure == null ? null
+                        : failure instanceof java.util.concurrent.CancellationException
+                                ? null : failure.getClass().getName();
+                terminals.put(identity, new TerminalRecord(expected.actor().id(),
+                        expected.actor().generation(), expected.actor().kind(),
+                        failureClass, Instant.now()));
             } catch (RuntimeException | Error failure) {
                 // Retain the binding as a quarantined record for explicit
                 // reconciliation; never report passivation if accounting failed.
@@ -459,8 +479,11 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     private Snapshot enrich(VirtualActorDirectoryInspection.Snapshot snapshot) {
         synchronized (stateLock) {
             Binding binding = bindings.get(snapshot.identity());
+            TerminalRecord terminal = terminals.get(snapshot.identity());
             Optional<ActorRuntime.ActorId> actorId = Optional.empty();
             Optional<ActorRuntime.ActorKind> actorKind = Optional.empty();
+            Optional<String> terminalFailure = Optional.empty();
+            Optional<Instant> terminalAt = Optional.empty();
             long actorGeneration = 0L;
             Lifecycle lifecycle = switch (snapshot.lifecycle()) {
                 case NEVER_ACTIVATED -> Lifecycle.NEVER_ACTIVATED;
@@ -469,16 +492,33 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 case PASSIVATED -> Lifecycle.PASSIVATED;
                 case CLOSED -> Lifecycle.CLOSED;
             };
+            if (terminal != null) {
+                actorId = Optional.of(terminal.actorId());
+                actorKind = Optional.of(terminal.actorKind());
+                actorGeneration = terminal.actorGeneration();
+                terminalFailure = Optional.ofNullable(terminal.failureClass());
+                terminalAt = Optional.of(terminal.terminalAt());
+                if (terminal.failureClass() != null) lifecycle = Lifecycle.FAILED;
+                else if (binding == null && terminal.actorKind() != null
+                        && terminal.terminalAt() != null) {
+                    // A normal stop and a cancellation both passivate the
+                    // logical identity; failure class remains absent.
+                    lifecycle = Lifecycle.PASSIVATED;
+                }
+            }
             if (binding != null) {
                 actorId = Optional.of(binding.actor().id());
                 actorKind = Optional.of(binding.actor().kind());
                 actorGeneration = binding.actor().generation();
                 if (!binding.actor().isAlive())
                     lifecycle = Lifecycle.TERMINATION_PENDING_RECONCILIATION;
+                else
+                    lifecycle = Lifecycle.ACTIVE;
             }
             return new Snapshot(1, snapshot.identity(), snapshot.address(), supervisor.id(),
                     lifecycle, snapshot.activationGeneration(), actorId, actorGeneration,
-                    actorKind, snapshot.outstandingAdmissions(), snapshot.observedAt(), true);
+                    actorKind, terminalFailure, terminalAt, snapshot.outstandingAdmissions(),
+                    snapshot.observedAt(), true);
         }
     }
 
