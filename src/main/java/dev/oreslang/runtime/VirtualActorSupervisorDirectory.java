@@ -240,11 +240,22 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             VirtualActorActivationRegistry.Activation activation = registry.activate(logical);
             if (!activation.initializer())
                 throw new IllegalStateException("logical virtual actor already has an activation");
-            ActivationDescriptor descriptor = new ActivationDescriptor(
-                    logical.identity(), activation.incarnation(), persistenceKey);
-            ActivationPlan plan = new ActivationPlan(logical, activation, descriptor);
-            pendingPlans++;
-            return plan;
+            try {
+                ActivationDescriptor descriptor = new ActivationDescriptor(
+                        logical.identity(), activation.incarnation(), persistenceKey);
+                ActivationPlan plan = new ActivationPlan(logical, activation, descriptor);
+                pendingPlans++;
+                return plan;
+            } catch (RuntimeException | Error allocationFailure) {
+                // Descriptor/plan allocation is part of the reservation
+                // transaction. If it fails, burn and release the unpublished
+                // activation so no unreturnable candidate can block reactivation.
+                try { registry.abort(activation); }
+                catch (RuntimeException rollbackFailure) {
+                    allocationFailure.addSuppressed(rollbackFailure);
+                }
+                throw allocationFailure;
+            }
         }
     }
 
