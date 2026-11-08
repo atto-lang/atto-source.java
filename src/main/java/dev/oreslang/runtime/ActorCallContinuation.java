@@ -300,6 +300,7 @@ final class ActorCallContinuation {
         ResumeTicket ticket = pendingTicket;
         if (ticket.owner != this
                 || ticket.actorGeneration != execution.allocationDomain().generation()
+                || ticket.sequence != nextTicket - 1
                 || ticket.sourceDispatch == OresScheduler.currentDispatchId()) {
             throw new SecurityException("stale or forged actor call continuation ticket");
         }
