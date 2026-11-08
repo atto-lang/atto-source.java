@@ -249,4 +249,36 @@ final class ActorScalarBytecodeVerifierTest {
         assertDoesNotThrow(() -> program(fn("loop", 0, 0, 1,
                 at(ActorScalarCallMachine.Op.JUMP, 0))));
     }
+    @Test void extraArgumentFieldOnArithmeticIsNotCanonical() {
+        assertThrows(IllegalArgumentException.class, () -> program(fn("hidden", 0, 0, 2,
+                c(1), c(2),
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.ADD, 12, 0L),
+                o(ActorScalarCallMachine.Op.RET))));
+    }
+    @Test void unusedConstArgumentFieldIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> program(fn("badConst", 0, 0, 1,
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.CONST, 17, 2L),
+                o(ActorScalarCallMachine.Op.RET))));
+    }
+    @Test void unusedCallValueFieldCannotSmuggleMetadata() {
+        assertThrows(IllegalArgumentException.class, () -> program(
+                fn("caller", 0, 0, 1, c(3),
+                        new ActorScalarCallMachine.Instruction(
+                                ActorScalarCallMachine.Op.CALL, 1, 42L),
+                        o(ActorScalarCallMachine.Op.RET)), leaf()));
+    }
+    @Test void unreachableInstructionsStillRequireCanonicalEncoding() {
+        assertThrows(IllegalArgumentException.class, () -> program(fn("hidden", 0, 0, 1,
+                c(1), o(ActorScalarCallMachine.Op.RET),
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.TRAP, 0, 1L))));
+    }
+    @Test void canonicalUnusedFieldsDoNotRejectWorkingPrograms() {
+        assertDoesNotThrow(() -> program(fn("canonical", 0, 0, 2,
+                c(1), c(2), o(ActorScalarCallMachine.Op.ADD),
+                o(ActorScalarCallMachine.Op.RET))));
+    }
+
 }
