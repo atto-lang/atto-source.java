@@ -4,6 +4,8 @@ on:
     paths:
       - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
       - "src/test/java/dev/oreslang/GuardedMatchOwnershipFlowTest.java"
+      - "src/test/java/dev/oreslang/MatchGuardGuestFixtureV1Test.java"
+      - "tests/fixtures/ownership-match-guard-v1/**"
       - ".github/workflows/borrow-match-guard-ownership.yml"
   workflow_dispatch:
 permissions:
@@ -27,7 +29,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           mkdir -p target/borrow-guard-evidence
           printf 'head=%s\ntree=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" > target/borrow-guard-evidence/identity.txt
-          for path in src/main/java/dev/oreslang/types/OwnershipChecker.java src/test/java/dev/oreslang/GuardedMatchOwnershipFlowTest.java; do
+          for path in src/main/java/dev/oreslang/types/OwnershipChecker.java src/test/java/dev/oreslang/GuardedMatchOwnershipFlowTest.java src/test/java/dev/oreslang/MatchGuardGuestFixtureV1Test.java tests/fixtures/ownership-match-guard-v1/*.atto; do
             test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
             git rev-parse "HEAD:$path" >> target/borrow-guard-evidence/identity.txt
           done
@@ -42,11 +44,13 @@ jobs:
         run: |
           set -euo pipefail
           java -version 2>&1 | tee target/borrow-guard-evidence/java-version.txt
-          mvn -B -ntp -Dtest=GuardedMatchOwnershipFlowTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-guard-evidence/maven.log
-          report=target/surefire-reports/TEST-dev.oreslang.GuardedMatchOwnershipFlowTest.xml
-          test -s "$report"
-          sha256sum "$report" > target/borrow-guard-evidence/report.sha256
-          cp "$report" target/borrow-guard-evidence/
+          mvn -B -ntp -Dtest=GuardedMatchOwnershipFlowTest,MatchGuardGuestFixtureV1Test -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-guard-evidence/maven.log
+          for suite in GuardedMatchOwnershipFlowTest MatchGuardGuestFixtureV1Test; do
+            report="target/surefire-reports/TEST-dev.oreslang.$suite.xml"
+            test -s "$report"
+            sha256sum "$report" >> target/borrow-guard-evidence/report.sha256
+            cp "$report" target/borrow-guard-evidence/
+          done
       - name: Retain exact-head source and test receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
