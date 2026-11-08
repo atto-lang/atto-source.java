@@ -164,6 +164,25 @@ public final class CapabilityChecker {
         }
     }
 
+    /**
+     * A constructor runs before an ordinary object's methods. Checking only
+     * fields/methods lets a lower-authority actor launder host capabilities
+     * through `new OrdinaryClass()` even if no field stores the authority.
+     * The same transitive check is required at declaration and at an
+     * untrusted actor's use of a class defined under a privileged policy.
+     */
+    private void checkConstructor(
+            Ast.ConstructorDecl constructor,
+            IsolatePolicy policy,
+            boolean actor) {
+        if (constructor == null) return;
+        for (Ast.Param parameter : constructor.parameters()) checkType(parameter.type(), policy);
+        for (Ast.Annotation annotation : constructor.annotations()) {
+            for (Ast.TypeRef argument : annotation.arguments()) checkType(argument, policy);
+        }
+        checkActorStatements(constructor.body(), policy, actor);
+    }
+
     private void checkProgram(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ImportDecl imported : program.imports()) {
             if (ImportRules.isJavaPath(imported.path())) {
@@ -196,6 +215,9 @@ public final class CapabilityChecker {
                                     klass.actorKind() != Ast.ActorKind.NONE);
                         }
                     }
+                    checkConstructor(
+                            klass.constructor(), actorPolicy,
+                            klass.actorKind() != Ast.ActorKind.NONE);
                     for (Ast.MethodDecl method : klass.methods()) {
                         checkType(method.explicitReceiverType(), actorPolicy);
                         checkCallableTypes(method.parameters(), method.returnType(), actorPolicy);
@@ -292,6 +314,11 @@ public final class CapabilityChecker {
                     checkType(field.type(), policy);
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 }
+                // A constructor runs at allocation time, including for a class
+                // defined in another (more privileged) scope. Check its body
+                // transitively under the *consumer's* isolate policy.
+                checkConstructor(klass.constructor(), policy,
+                        klass.actorKind() != Ast.ActorKind.NONE);
                 // An object stored in a private actor is itself an authority
                 // carrier. Its instance methods must therefore be admissible
                 // under the actor's policy; otherwise an ordinary class could
