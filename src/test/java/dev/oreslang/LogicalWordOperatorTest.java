@@ -48,6 +48,17 @@ final class LogicalWordOperatorTest {
     }
 
     @Test
+    void removedCaretOperatorsCannotMasqueradeAsLogicalXor() {
+        for (String expression : List.of("true ^ false", "true ^^ false", "1 ^ 2", "1 ^^ 2")) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("fnc bad(): bool { return " + expression + " eq true; }"),
+                    expression);
+            assertTrue(error.getMessage().contains("removed operator"), error.getMessage());
+        }
+    }
+
+    @Test
     void operatorsAreValidInLocalsReturnsConditionsAndCallArguments() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc accept(bool value): bool {
