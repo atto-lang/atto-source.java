@@ -184,7 +184,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             String namespace, String declaration, String key) {
         namespace = requireText(namespace, "namespace", 128);
         declaration = requireText(declaration, "declaration", 128);
-        String qualifiedDeclaration = namespace + "/" + declaration;
+        String qualifiedDeclaration = namespace.getBytes(StandardCharsets.UTF_8).length
+                + ":" + namespace + declaration;
         if (qualifiedDeclaration.length() > 128
                 || qualifiedDeclaration.getBytes(StandardCharsets.UTF_8).length > 128)
             throw new IllegalArgumentException("qualified virtual actor type exceeds identity budget");
