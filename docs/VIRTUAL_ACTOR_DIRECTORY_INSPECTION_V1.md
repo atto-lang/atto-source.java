@@ -84,3 +84,9 @@ Inspection can therefore distinguish `ACTIVE`, `TERMINATION_PENDING_RECONCILIATI
 ## Host supervisor entry point
 
 The canonical host acquisition path is now `ActorSupervisor.virtualActorDirectory(tenant, maxIdentities, mailboxCapacity)`. It is guarded by the existing `requireSupervisorContext` and runtime-affinity checks. Actor turns, ActorGroup Mailmen and guest code cannot acquire the directory by invoking that method. Direct construction of the implementation is also guarded by the same host-only runtime registry checks.
+
+## Host authentication boundary
+
+`issueInspectionGrant(authenticatedSession, ttl)` binds a short-lived grant to the exact host session object and the directory's configured tenant/supervisor scope. It does **not** authenticate that session, prove the tenant string, or perform application authorization itself. The host embedding service must authenticate the caller, derive the tenant from trusted credentials, authorize the supervisor scope, and only then ask the directory to mint the opaque in-process grant. Never mint grants from request fields, guest arguments, cookies, address contents or actor messages alone.
+
+Activation-plan construction is failure-atomic: if immutable descriptor/plan allocation fails after reserving a new generation, the candidate is aborted and that generation remains burned. No inaccessible unpublished activation slot is left behind.
