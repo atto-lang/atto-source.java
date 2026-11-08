@@ -42,11 +42,7 @@ public final class OresScheduler implements AutoCloseable {
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
 
     private static long allocatePositiveId(AtomicLong counter, String kind) {
-        long value = counter.incrementAndGet();
-        if (value <= 0) {
-            throw new IllegalStateException("OresScheduler " + kind + " id space exhausted");
-        }
-        return value;
+        return ExecutionContext.nextPositive(counter, "OresScheduler " + kind);
     }
     /**
      * All per-thread scheduler state in one object behind one ThreadLocal.
