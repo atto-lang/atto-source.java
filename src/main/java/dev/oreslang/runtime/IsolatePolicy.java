@@ -311,21 +311,29 @@ public record IsolatePolicy(
         ClassLoader loader = Thread.currentThread().getContextClassLoader();
 
         for (String grant : hostClasses) {
-            String className = SafeHostMemberManifest.isMemberSelector(grant)
-                    ? SafeHostMemberManifest.className(grant) : grant;
+            final Method approved = SafeHostMemberManifest.isMemberSelector(grant)
+                    ? SafeHostMemberManifest.resolve(grant) : null;
+            String className = approved == null
+                    ? grant : approved.getDeclaringClass().getName();
             final Class<?> type;
-            try {
-                type = Class.forName(className, false, loader);
-            } catch (ClassNotFoundException failure) {
-                throw new IllegalArgumentException("allowlisted Java host class is unavailable: " + className, failure);
+            if (approved != null) {
+                // Statically rooted manifest methods never run a dynamic
+                // Class.forName lookup or scan arbitrary JAR/classpath entries.
+                type = approved.getDeclaringClass();
+            } else {
+                try {
+                    type = Class.forName(className, false, loader);
+                } catch (ClassNotFoundException failure) {
+                    throw new IllegalArgumentException(
+                            "allowlisted Java host class is unavailable: " + className, failure);
+                }
             }
             if (!Modifier.isPublic(type.getModifiers())) {
                 throw new IllegalArgumentException("allowlisted Java host class must be public: " + className);
             }
-            if (SafeHostMemberManifest.isMemberSelector(grant)) {
+            if (approved != null) {
                 // This branch never exposes constructors, mutable fields or
                 // non-manifested methods on the same otherwise look-upable class.
-                Method approved = SafeHostMemberManifest.resolve(grant);
                 if (approved.getDeclaringClass() != type ||
                         !Modifier.isPublic(approved.getModifiers()) ||
                         !Modifier.isStatic(approved.getModifiers())) {
