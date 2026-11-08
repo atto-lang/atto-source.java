@@ -849,7 +849,13 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(result instanceof TailCall tail)) return result;
                 current = tail.invocation();
                 tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                // The batched 64-hop watchdog path is fairness-only for
+                // trusted tail-call trampolines. UNTRUSTED recursive calls
+                // must always charge hard fuel on *each* hop: otherwise a
+                // 64-call cycle could spend a single quota unit while the
+                // interpreter runs 64 recursive source invocations.
+                if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
+                        || tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
                     current.owner().context.schedulerSafepoint();
                 }
             }
