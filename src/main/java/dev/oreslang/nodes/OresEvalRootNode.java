@@ -6069,6 +6069,39 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, fn.async());
             }
 
+            // M3.3a narrowly lower *entire* pure scalar fnc call graphs
+            // before guest execution. Both nested non-tail returns and
+            // proper tail transfers stay inside actor-owned activation
+            // frame bytes; there is no recursive evaluator call per guest
+            // scalar function. Unsupported syntax/effects/values preserve
+            // the original evaluator path, with no partial admission.
+            if (ActorRuntime.inActorExecution()) {
+                boolean allLong = true;
+                ArrayList<Long> scalarArgs = new ArrayList<>(args.size());
+                for (Object value : args) {
+                    if (!(value instanceof Long scalar)) {
+                        allLong = false;
+                        break;
+                    }
+                    scalarArgs.add(scalar);
+                }
+                if (allLong) {
+                    var scalarProgram = ActorScalarSourceLowering.tryCompile(
+                            fn, this::findFunction);
+                    if (scalarProgram != null) {
+                        try {
+                            long value = dev.oreslang.runtime.ActorScalarCallMachine.execute(
+                                    scalarProgram, 0, scalarArgs, context::schedulerSafepoint);
+                            return shapeReturnedValue(
+                                    fn.returnType(), value, "function " + fn.name());
+                        } catch (RuntimeException failure) {
+                            throw dev.oreslang.runtime.SourceBoundaryTrace.record(
+                                    failure, codeUnitId, fn.name(), "function");
+                        }
+                    }
+                }
+            }
+
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
             bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
             try {
