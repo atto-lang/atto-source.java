@@ -88,6 +88,20 @@ final class LogicalWordOperatorTest {
     }
 
     @Test
+    void everyWordOperatorAssociatesLeftToRight() {
+        for (String word : List.of("and", "or", "xor")) {
+            Ast.Expr expression = new Parser(new Lexer(
+                    "a " + word + " b " + word + " c").scan()).parseExpression();
+            Ast.BinaryExpr outer = assertInstanceOf(Ast.BinaryExpr.class, expression, word);
+            assertEquals(word.equals("and") ? "&&" : word.equals("or") ? "||" : "^^",
+                    outer.operator());
+            Ast.BinaryExpr inner = assertInstanceOf(Ast.BinaryExpr.class, outer.left(), word);
+            assertEquals(outer.operator(), inner.operator());
+            assertEquals("c", assertInstanceOf(Ast.NameExpr.class, outer.right()).name());
+        }
+    }
+
+    @Test
     void truthTablesAndPrecedenceExecuteAsGuestSource() throws Exception {
         String source = fixture("truth-table.atto");
         TypeChecker.check(Parser.parse(source));
