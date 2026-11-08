@@ -6980,8 +6980,13 @@ public final class ActorRuntime implements AutoCloseable {
             requireActive();
             try {
                 long now = cpuClock.getAsLong();
-                if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
-                    cpuUsedNanos = saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
+                if (segmentCpuStarted >= 0 && now >= 0) {
+                    // A positive-but-regressed per-carrier CPU clock must
+                    // never erase already consumed time on a caught failure.
+                    // Preserve terminal debt across later resume segments.
+                    cpuUsedNanos = now < segmentCpuStarted
+                            ? Long.MAX_VALUE
+                            : saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
                 }
             } finally {
                 // Even an unexpected JVM CPU-counter failure must not strand
@@ -6993,9 +6998,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         private long accruedCpu() {
             long current = cpuClock.getAsLong();
-            if (segmentCpuStarted < 0 || current < segmentCpuStarted) {
+            if (segmentCpuStarted < 0 || current < 0) {
                 return cpuUsedNanos; // CPU clock unavailable: fuel/wall still enforced.
             }
+            // A nonnegative sample smaller than the segment's starting CPU
+            // clock is an invariant violation, not an uncharged CPU segment.
+            if (current < segmentCpuStarted) return Long.MAX_VALUE;
             return saturatingSum(cpuUsedNanos, current - segmentCpuStarted);
         }
 
