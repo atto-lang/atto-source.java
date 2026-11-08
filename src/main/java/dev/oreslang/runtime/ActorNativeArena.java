@@ -1080,7 +1080,7 @@ public final class ActorNativeArena implements AutoCloseable {
         // *per-actor unsigned 32-bit address space* on every CPU architecture.
         // Check the aligned exclusive end before updating allocator state;
         // a failed admission must not advance the monotonic cursor or wrap.
-        if (end > (1L << 32))
+        if (base >= (1L << 32) || end > (1L << 32))
             throw new IllegalStateException("actor 32-bit offset address space exhausted");
         nextActorOffset = end;
         return base;
