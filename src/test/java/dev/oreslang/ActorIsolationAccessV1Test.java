@@ -42,5 +42,9 @@ final class ActorIsolationAccessV1Test {
         assertThrows(IllegalArgumentException.class, () -> max.issueAllocation(span, 1));
         assertThrows(IllegalArgumentException.class,
                 () -> new ActorIsolationAccessV1(1, 1, 1, span + 1));
+        var sibling = new ActorIsolationAccessV1(1, 2, 1, 64);
+        var siblingGrant = sibling.issueAllocation(0, 8);
+        max.retire();
+        assertEquals(0, sibling.checkedOffset(siblingGrant, 1, 8));
     }
 }
