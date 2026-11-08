@@ -10,20 +10,26 @@ tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 fixture="$tmp/fixture"
 mkdir -p "$fixture/scripts" "$fixture/src/main/java/dev/oreslang/runtime" \
-  "$fixture/src/test/java/dev/oreslang"
+  "$fixture/src/test/java/dev/oreslang" "$fixture/contracts/v1"
 helper="$fixture/src/main/java/dev/oreslang/runtime/StrictIntegerArithmetic.java"
 probe="$fixture/src/test/java/dev/oreslang/StrictIntegerArithmeticDifferentialStressTest.java"
 gate="$fixture/scripts/test_strict_i64_differential.sh"
+contract="$fixture/contracts/v1/strict-named-integer-arithmetic-v1.json"
+contract_test="$fixture/src/test/java/dev/oreslang/StrictIntegerContractV1OracleTest.java"
 original_helper="$root/src/main/java/dev/oreslang/runtime/StrictIntegerArithmetic.java"
 original_probe="$root/src/test/java/dev/oreslang/StrictIntegerArithmeticDifferentialStressTest.java"
 original_gate="$root/scripts/test_strict_i64_differential.sh"
-for original in "$original_helper" "$original_probe" "$original_gate"; do
+original_contract="$root/contracts/v1/strict-named-integer-arithmetic-v1.json"
+original_contract_test="$root/src/test/java/dev/oreslang/StrictIntegerContractV1OracleTest.java"
+for original in "$original_helper" "$original_probe" "$original_gate" "$original_contract" "$original_contract_test"; do
   test -f "$original" && test ! -L "$original" || exit 2
 done
 reset_fixture() {
   cp "$original_helper" "$helper"
   cp "$original_probe" "$probe"
   cp "$original_gate" "$gate"
+  cp "$original_contract" "$contract"
+  cp "$original_contract_test" "$contract_test"
 }
 reject_with() {
   local label="$1" expected_exit="$2" expected_text="$3"; shift 3
@@ -85,4 +91,28 @@ sed 's/at dev.oreslang.StrictIntegerArithmeticDifferentialStressTest./at FAKE.TE
 cp "$tmp/modified_gate" "$gate"
 reject_with spoofed_stack_frame 7 'mutation failed for unrelated/incorrect reason: rem' bash "$gate"
 
-echo 'STRICT_I64_GATE_NEGATIVES|PASS|cases=9'
+reset_fixture
+printf '\n// test mutated JSON contract source\n' >> "$contract"
+reject_with contract_blob 3 'STRICT_I64_INPUT_MISMATCH' bash "$gate"
+
+reset_fixture
+printf '\n// altered canonical test oracle\n' >> "$contract_test"
+reject_with contract_test_blob 3 'STRICT_I64_INPUT_MISMATCH' bash "$gate"
+
+reset_fixture
+mv "$contract" "$tmp/canonical_contract"
+ln -s "$tmp/canonical_contract" "$contract"
+reject_with symlink_contract 3 'missing or symlinked source file' bash "$gate"
+rm "$contract"
+
+reset_fixture
+rm "$contract"
+reject_with missing_contract 3 'missing or symlinked source file' bash "$gate"
+
+reset_fixture
+sed 's/STRICT_I64_CONTRACT|PASS|cases=26|errors=4/STRICT_I64_CONTRACT|PASS|cases=0|errors=0/' \
+  "$gate" > "$tmp/modified_gate"
+cp "$tmp/modified_gate" "$gate"
+reject_with forged_contract_receipt 8 'canonical contract did not produce the exact expected receipt' bash "$gate"
+
+echo 'STRICT_I64_GATE_NEGATIVES|PASS|cases=14' 
