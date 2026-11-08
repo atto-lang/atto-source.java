@@ -178,6 +178,37 @@ final class NativeHttpFramingAdmissionTest {
     }
 
     @Test
+    void rejectsInvalidHostAuthorityAndPortSyntax() {
+        for (String host : new String[] {
+                "example.test:abc", ":8080", "localhost:", "localhost:65536",
+                "localhost:999999999999", "::1", "::::", "[gggg]",
+                "[::1]:bad", "[::1]:65536", "[::1]tail", "[::1",
+                "example.test%20attacker"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertThrows(IllegalArgumentException.class,
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "malformed Host authority must be rejected: " + host);
+        }
+    }
+
+    @Test
+    void admitsCanonicalHostAuthorityWithNumericPortOrIpv6() {
+        for (String host : new String[] {
+                "localhost", "example.test", "localhost:8080",
+                "localhost:65535", "[::1]", "[::1]:8080",
+                "[2001:db8::1]", "127.0.0.1"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertDoesNotThrow(
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "valid Host authority should remain admissible: " + host);
+        }
+    }
+
+    @Test
     void quotaMarkerCannotBeSpoofedByExceptionMessageOrErrorType() {
         Throwable[] forged = {
                 new IllegalArgumentException("body too large"),

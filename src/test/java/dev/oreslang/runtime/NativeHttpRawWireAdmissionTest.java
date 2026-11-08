@@ -97,6 +97,18 @@ final class NativeHttpRawWireAdmissionTest {
                     "Host: localhost\r\nhOsT: attacker.test\r\n")).startsWith("HTTP/1.1 400"),
                     "mixed-case duplicate Host must not bypass case-insensitive lookup");
             assertTrue(request(address, get(
+                    "Host: example.test:abc\r\n")).startsWith("HTTP/1.1 400"),
+                    "non-numeric Host ports must fail admission");
+            assertTrue(request(address, get(
+                    "Host: :8080\r\n")).startsWith("HTTP/1.1 400"),
+                    "empty Host names must fail admission");
+            assertTrue(request(address, get(
+                    "Host: localhost:65536\r\n")).startsWith("HTTP/1.1 400"),
+                    "out-of-range Host ports must fail admission");
+            assertTrue(request(address, get(
+                    "Host: [gggg]\r\n")).startsWith("HTTP/1.1 400"),
+                    "malformed bracketed IPv6 literals must fail admission");
+            assertTrue(request(address, get(
                     "Host:   \r\n")).startsWith("HTTP/1.1 400"),
                     "blank Host must fail closed");
             assertTrue(request(address, get(

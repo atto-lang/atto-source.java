@@ -103,16 +103,37 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     private static boolean validHostValue(String host) {
-        if (host == null || host.isEmpty()) return false;
+        if (host == null || host.isEmpty() || host.length() > 255) return false;
         for (int i = 0; i < host.length(); i++) {
             char c = host.charAt(i);
-            // Reject ASCII whitespace, controls, non-ASCII bytes and URI
-            // delimiters that could produce a different downstream authority.
-            // Bracketed IPv6 literals and host:port are still permitted.
             if (c <= 0x20 || c >= 0x7f || c == '/' || c == '\\'
                     || c == '?' || c == '#' || c == '@' || c == ',') return false;
         }
-        return true;
+        // Host is an authority, not an arbitrary ASCII token. A bare
+        // colon must introduce a decimal port; IPv6 literals need brackets.
+        int portColon;
+        if (host.charAt(0) == '[') {
+            int end = host.indexOf(']');
+            if (end < 0 || (end + 1 < host.length() && host.charAt(end + 1) != ':')) return false;
+            portColon = end + 1 < host.length() ? end + 1 : -1;
+        } else {
+            portColon = host.indexOf(':');
+        }
+        if (portColon >= 0) {
+            String port = host.substring(portColon + 1);
+            if (port.isEmpty() || port.length() > 5) return false;
+            for (int i = 0; i < port.length(); i++) {
+                if (port.charAt(i) < '0' || port.charAt(i) > '9') return false;
+            }
+            if (Integer.parseInt(port) > 65535) return false;
+        }
+        try {
+            java.net.URI uri = new java.net.URI("http://" + host + "/");
+            return uri.getHost() != null && uri.getRawUserInfo() == null
+                    && host.equals(uri.getRawAuthority());
+        } catch (java.net.URISyntaxException invalid) {
+            return false;
+        }
     }
 
     /** Dedicated transport-owned quota marker: never classify by message text. */
