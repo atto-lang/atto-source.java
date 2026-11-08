@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.runtime.SafeHostMemberManifest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -46,10 +47,54 @@ final class JavaPrecompiledHostImportAotPolicyTest {
             var stdout = new ByteArrayOutputStream();
             LinkedProgramRunner.run(source, trusted,
                     new ExecutionProfile(mode, ExecutionProfile.Platform.SERVER),
-                    Set.of("java.lang.Long"), stdout, new ByteArrayOutputStream());
+                    Set.of(SafeHostMemberManifest.LONG_SUM_I64),
+                    stdout, new ByteArrayOutputStream());
             assertEquals("42", stdout.toString(StandardCharsets.UTF_8).trim(),
                     "precompiled JDK class must preserve scalar host value");
         }
+    }
+
+    @Test
+    void manifestGrantDoesNotAuthorizeOtherMembersOnTheSameHostClass() throws Exception {
+        Path source = temp.resolve("unauthorized-static-host.atto");
+        Files.writeString(source, """
+                import class Long as JLong from "java:java.lang.Long";
+                pub fnc main(): void {
+                    stdio.println(JLong.toString(42));
+                    return;
+                }
+                """, StandardCharsets.UTF_8);
+        var trusted = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        assertThrows(Exception.class, () -> LinkedProgramRunner.run(source, trusted,
+                new ExecutionProfile(ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER),
+                Set.of(SafeHostMemberManifest.LONG_SUM_I64),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()),
+                "approving Long.sum must not grant access to Long.toString");
+    }
+
+    @Test
+    void fabricatedOrBroadenedHostMemberGrantsFailBeforeContextConstruction() {
+        var policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        var profile = new ExecutionProfile(
+                ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER);
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.restrictedContextBuilder(profile,
+                        Set.of("java.lang.Long#toString(long)")),
+                "an unknown member must not become an ambient host import");
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.restrictedContextBuilder(profile,
+                        Set.of("java.lang.Long", SafeHostMemberManifest.LONG_SUM_I64)),
+                "legacy class-wide grant must not silently override scoped grant");
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.restrictedContextBuilder(profile,
+                        Set.of("java.lang.Long#sum(int,int)")),
+                "overload identity is part of the reviewed host manifest");
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.restrictedContextBuilder(profile,
+                        Set.of("java.lang.Runtime#exec(java.lang.String)")),
+                "unsafe capability cannot be granted through a forged selector");
     }
 
     @Test
