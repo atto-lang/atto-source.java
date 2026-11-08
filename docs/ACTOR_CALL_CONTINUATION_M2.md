@@ -75,3 +75,34 @@ object roots, lower defer/finally state, or prove compiler/native stack parity.
 Do not enable unsupported source syntax by routing it through the legacy
 recursive evaluator. Keep the guest feature fail-closed until the compiler
 lowering and exact-head receipts exist.
+
+
+## M2.1: synchronous scalar dispatcher uses the SourceTask chain
+
+The restricted synchronous scalar `ActorScalarCallMachine.execute` now detects
+an authenticated current `ActorSourceTaskFrame` and executes its CALL/RET
+instructions through that task's existing `ActorCallContinuation`:
+
+- No second `ExecutionContext` is minted on the SourceTask path.
+- No `ArrayDeque<Activation>` is used on the SourceTask path; function ID,
+  PC, return PC, locals and operands are read/written through the unified
+  actor-owned chain.
+- The root SourceTask frame remains the arena stack base. CALL pushes one
+  activation; RET pops it and restores the parent's return PC; TAIL_CALL
+  replaces the top activation while preserving the caller's return PC.
+- After a complete synchronous scalar call, the chain is empty and the
+  SourceTask root remains available for a later scheduler await/cooperate.
+- Ordinary actor turns without an actor SourceTask still use the existing
+  synchronous-only activation path. This avoids minting a fake task or
+  granting SourceTask authority to an arbitrary actor turn.
+
+A scheduler-backed test invokes a two-function nested CALL/RET program through
+`startActorTask`, awaits after the call returns, then invokes a second program
+after resumption. It checks that the same continuation owner and
+`ExecutionContext` are reused and that only the SourceTask root remains
+charged between calls.
+
+This is **CALL/RET integration**, not yet suspension *inside* a callee. The
+compiler still rejects `suspends` functions in this scalar lowering. No AWAIT
+opcode, suspended callee PC, cleanup record or arbitrary reference root is
+implemented by M2.1.
