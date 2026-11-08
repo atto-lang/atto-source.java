@@ -1526,7 +1526,7 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
 
-                    // Cheap 64-bit counter / mask on every trusted backedge.
+                    // Cheap saturating task counter + independent 128-step phase per trusted backedge.
                     // For UNTRUSTED, fuel is still charged on *every* backedge,
                     // and implicit cooperation stays disabled pending quota
                     // continuity and revocation conformance.
