@@ -77,6 +77,20 @@ final class ArrayIntGetCopyLanguageTest {
     }
 
     @Test
+    void temporaryCollectionCannotForgeNamedCopyRoot() {
+        var candidate = Parser.parse("""
+                pub fnc main(): void {
+                  val copied = new Array<int>().get_copy(0);
+                  return;
+                }
+                """);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(candidate));
+        assertTrue(rejected.getMessage().contains("named builtin"),
+                rejected::toString);
+    }
+
+    @Test
     void unsupportedMoveOnlyElementCopyNeverLowers() {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
