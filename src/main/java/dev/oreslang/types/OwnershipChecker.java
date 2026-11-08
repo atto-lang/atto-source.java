@@ -1727,6 +1727,21 @@ public final class OwnershipChecker {
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+            if (member.member().equals("get_copy") && memberReceiverType == null) {
+                // Do not let a temporary array literal or a nested collection
+                // projection fall through as an unknown dynamic member call:
+                // those places lack a compiler-authenticated named loan root
+                // in this first Copy<int> slice. Ordinary non-collection
+                // user-defined get_copy methods keep normal method dispatch.
+                if (member.receiver() instanceof Ast.ListExpr) {
+                    memberReceiverType = syntacticType(member.receiver(), scope);
+                } else if (member.receiver() instanceof Ast.MemberExpr
+                        || member.receiver() instanceof Ast.IndexExpr) {
+                    Ast.TypeRef projected = borrowPlace(member.receiver(), scope).type();
+                    memberReceiverType = projected.isBorrow()
+                            ? projected.borrowedTarget() : projected;
+                }
+            }
             // First compiler-owned Copy<int> access path. The value is owned,
             // not a ReadLoan, and the receiver must have a stable named root.
             // Reserve a shared loan across index-argument evaluation so a
