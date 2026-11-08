@@ -347,7 +347,7 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
-    void overdueWhileLoopNeverYieldsWithGuardButCooperatesAfterRelease()
+    void overdueWhileLoopPreservesGuardAndCooperatesAtNext128BackedgeBoundary()
             throws Exception {
         String output = run("""
                 define class Counter as
@@ -366,11 +366,13 @@ final class SourceLoopSoftPreemptionTest {
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
                   lock_guard.release();
 
-                  // The dispatch has already exhausted its budget. A newly
-                  // safe backedge must cooperate immediately, rather than
-                  // waiting for another full 64-backedge polling batch.
+                  // The dispatch has already exceeded the soft 512 budget.
+                  // Slow scheduling polls stay batched: the previously live
+                  // guard forbids suspension, but the next *scheduled*
+                  // 128-backedge boundary must permit cooperation. It must
+                  // not poll on every newly safe iteration.
                   let resumed = 0;
-                  while resumed < 1 do
+                  while resumed < 128 do
                     resumed = resumed + 1;
                   done
                   stdio.stdout.write("|");
@@ -380,7 +382,7 @@ final class SourceLoopSoftPreemptionTest {
                 """);
         assertTrue(output.startsWith("1024|0|"), output);
         assertTrue(Long.parseLong(output.substring("1024|0|".length())) > 0,
-                "release of an overdue lexical guard must restore fairness");
+                "released guard must restore fairness within the next 128 committed backedges");
     }
 
     @Test
