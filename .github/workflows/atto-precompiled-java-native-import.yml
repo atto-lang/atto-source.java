@@ -40,7 +40,18 @@ jobs:
           test -x target/ores-aot
           output="$(target/ores-aot --mode=aot --no-core-log --allow=JAVA_INTEROP --allow-host-class=java.lang.Long examples/interop/precompiled-java-long.atto)"
           test "$output" = '42'
-          printf 'JAVA_PRECOMPILED_HOST_NATIVE_IMAGE_AOT|head=%s|stdout=%s\n' "$EXPECTED_HEAD" "$output"
+          # Both grants are mandatory: JAVA_INTEROP and exact class lookup.
+          if target/ores-aot --mode=aot --no-core-log --allow=JAVA_INTEROP \
+               examples/interop/precompiled-java-long.atto >/dev/null 2>&1; then
+            echo 'missing class grant was unexpectedly accepted' >&2
+            exit 1
+          fi
+          if target/ores-aot --mode=aot --no-core-log --allow-host-class=java.lang.Long \
+               examples/interop/precompiled-java-long.atto >/dev/null 2>&1; then
+            echo 'missing JAVA_INTEROP capability was unexpectedly accepted' >&2
+            exit 1
+          fi
+          printf 'JAVA_PRECOMPILED_HOST_NATIVE_IMAGE_AOT|head=%s|stdout=%s|denials=2\n' "$EXPECTED_HEAD" "$output"
           sha256sum target/ores-aot
           git rev-parse 'HEAD^{tree}'
           git status --porcelain
