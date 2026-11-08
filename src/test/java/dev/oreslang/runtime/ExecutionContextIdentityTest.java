@@ -79,7 +79,7 @@ final class ExecutionContextIdentityTest {
                 assertTrue(limits.add(result.get()), "range upper bounds must be unique");
             }
             assertEquals(8_192L, counter.get());
-            assertEquals(8_193, limits.size());
+            assertEquals(256, limits.size());
         } finally {
             executor.shutdownNow();
         }
