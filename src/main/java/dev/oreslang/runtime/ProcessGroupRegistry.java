@@ -96,58 +96,119 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         this.maxNameChars = maxNameChars;
     }
 
+    /*
+     * Registry mutation is intentionally serialized, but group finalization
+     * is not part of that critical section. runtimeClose() can settle async
+     * reads, invoke cleanup hooks, and reenter the registry from a callback.
+     * Collect exact group incarnations under the lock, and close them after
+     * releasing it (even on the exceptional path).
+     */
+    @FunctionalInterface
+    private interface LockedOperation<T> {
+        T run(List<Entry> retirements);
+    }
+
+    private <T> T withRegistryLock(LockedOperation<T> operation) {
+        List<Entry> retirements = new ArrayList<>();
+        T result = null;
+        Throwable failure = null;
+        synchronized (lock) {
+            try {
+                result = operation.run(retirements);
+            } catch (RuntimeException | Error problem) {
+                failure = problem;
+            }
+        }
+        try {
+            closeRetired(retirements);
+        } catch (RuntimeException | Error cleanupFailure) {
+            if (failure == null) failure = cleanupFailure;
+            else if (failure != cleanupFailure) failure.addSuppressed(cleanupFailure);
+        }
+        if (failure instanceof RuntimeException problem) throw problem;
+        if (failure instanceof Error problem) throw problem;
+        return result;
+    }
+
+    private static void closeRetired(List<Entry> retirements) {
+        Throwable first = null;
+        for (Entry entry : retirements) {
+            if (entry.group.closed()) continue;
+            try {
+                entry.group.runtimeClose();
+            } catch (RuntimeException | Error failure) {
+                if (first == null) first = failure;
+                else if (first != failure) first.addSuppressed(failure);
+            }
+        }
+        if (first instanceof RuntimeException problem) throw problem;
+        if (first instanceof Error problem) throw problem;
+    }
+
+    /** Must be called with registry lock held; no callbacks run here. */
+    private void retireLocked(Key key, Entry entry, List<Entry> retirements) {
+        if (groups.remove(key, entry) && !entry.group.closed()) {
+            retirements.add(entry);
+        }
+    }
+
     public <M> Membership<M> joinCurrent(String scope, String name) {
         Key key = key(scope, name);
         ActorRuntime.ActorId actorId = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg.joinCurrent requires actor execution"));
-        synchronized (lock) {
-            Entry entry = entryForJoinLocked(key);
+        return withRegistryLock(retirements -> {
+            Entry entry = entryForJoinLocked(key, retirements);
             try {
                 entry.group.joinCurrent(entry.join);
-                return new Membership<>(key, actorId, entry.group);
+                return new Membership<M>(key, actorId, entry.group);
             } catch (RuntimeException | Error failure) {
-                reclaimIfEmptyLocked(key, entry);
+                reclaimIfEmptyLocked(key, entry, retirements);
                 throw failure;
             }
-        }
+        });
     }
 
     /**
      * Host/supervisor admission helper. Actor code may only pass its own ref,
      * because ActorGroup enforces self-only joining for actor callers.
      */
-    public <M> void join(
-            String scope,
-            String name,
-            ActorRuntime.ActorRef<M> ref) {
+    public <M> void join(String scope, String name, ActorRuntime.ActorRef<M> ref) {
         Key key = key(scope, name);
-        synchronized (lock) {
-            Entry entry = entryForJoinLocked(key);
+        withRegistryLock(retirements -> {
+            Entry entry = entryForJoinLocked(key, retirements);
             try {
                 entry.group.join(ref, entry.join);
             } catch (RuntimeException | Error failure) {
-                reclaimIfEmptyLocked(key, entry);
+                reclaimIfEmptyLocked(key, entry, retirements);
                 throw failure;
             }
-        }
+            return null;
+        });
     }
 
     public void leaveCurrent(String scope, String name) {
         Key key = key(scope, name);
-        ActorRuntime.ActorId actorId = ActorRuntime.currentActorId().orElseThrow(() ->
+        ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg.leaveCurrent requires actor execution"));
-        synchronized (lock) {
-            Entry entry = existingLocked(key);
-            if (entry == null) throw new IllegalStateException("unknown pg group");
-            leaveMembershipLocked(key, actorId, entry.group, false);
+        Entry entry = withRegistryLock(retirements -> {
+            Entry found = existingLocked(key, retirements);
+            if (found == null) throw new IllegalStateException("unknown pg group");
+            return found;
+        });
+        // ActorGroup.leaveCurrent may settle Future callbacks; do not hold
+        // our registry monitor while entering its membership teardown.
+        try {
+            entry.group.leaveCurrent();
+        } finally {
+            reclaimIfEmpty(key, entry);
         }
     }
 
     @SuppressWarnings("unchecked")
     public <M> List<ActorRuntime.ActorRef<M>> members(String scope, String name) {
         Key key = key(scope, name);
-        synchronized (lock) {
-            Entry entry = existingLocked(key);
+        return withRegistryLock(retirements -> {
+            Entry entry = existingLocked(key, retirements);
             if (entry == null) return List.of();
             List<ActorRuntime.ActorRef<M>> refs = new ArrayList<>();
             for (ActorRuntime.ActorId id : entry.group.memberIds()) {
@@ -157,7 +218,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
                 }
             }
             return List.copyOf(refs);
-        }
+        });
     }
 
     public <M> List<ActorRuntime.ActorRef<M>> localMembers(String scope, String name) {
@@ -166,43 +227,37 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     public int memberCount(String scope, String name) {
         Key key = key(scope, name);
-        synchronized (lock) {
-            Entry entry = existingLocked(key);
+        return withRegistryLock(retirements -> {
+            Entry entry = existingLocked(key, retirements);
             return entry == null ? 0 : entry.group.memberCount();
-        }
+        });
     }
 
-    public boolean contains(
-            String scope,
-            String name,
-            ActorRuntime.ActorRef<?> ref) {
+    public boolean contains(String scope, String name, ActorRuntime.ActorRef<?> ref) {
         Key key = key(scope, name);
-        synchronized (lock) {
-            Entry entry = existingLocked(key);
+        return withRegistryLock(retirements -> {
+            Entry entry = existingLocked(key, retirements);
             return entry != null && entry.group.contains(ref);
-        }
+        });
     }
 
-    /**
-     * Explicit group removal. ActorGroup itself enforces creator/host manager
-     * authority, so ordinary members cannot delete a shared pg group.
-     */
+    /** Host/supervisor deletion does not cancel ordinary group members. */
     public void delete(String scope, String name) {
         requireHostManager("delete pg groups");
         Key key = key(scope, name);
-        synchronized (lock) {
+        withRegistryLock(retirements -> {
+            requireOpen();
             Entry entry = groups.get(key);
-            if (entry == null) return;
-            entry.group.runtimeClose();
-            groups.remove(key, entry);
-        }
+            if (entry != null) retireLocked(key, entry, retirements);
+            return null;
+        });
     }
 
     public List<String> groupNames(String scope) {
         String normalizedScope = normalize("scope", scope);
-        synchronized (lock) {
+        return withRegistryLock(retirements -> {
             requireOpen();
-            pruneEmptyLocked();
+            pruneEmptyLocked(retirements);
             List<String> names = new ArrayList<>();
             for (Map.Entry<Key, Entry> item : groups.entrySet()) {
                 if (item.getKey().scope().equals(normalizedScope)
@@ -211,15 +266,15 @@ public final class ProcessGroupRegistry implements AutoCloseable {
                 }
             }
             return List.copyOf(names);
-        }
+        });
     }
 
     public int groupCount() {
-        synchronized (lock) {
+        return withRegistryLock(retirements -> {
             requireOpen();
-            pruneEmptyLocked();
+            pruneEmptyLocked(retirements);
             return groups.size();
-        }
+        });
     }
 
     @Override
@@ -231,22 +286,13 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             snapshot = List.copyOf(groups.values());
             groups.clear();
         }
-        RuntimeException first = null;
-        for (Entry entry : snapshot) {
-            if (entry.group.closed()) continue;
-            try {
-                entry.group.runtimeClose();
-            } catch (RuntimeException failure) {
-                if (first == null) first = failure;
-                else first.addSuppressed(failure);
-            }
-        }
-        if (first != null) throw first;
+        closeRetired(snapshot);
     }
 
-    private Entry entryForJoinLocked(Key key) {
+    /** Registry lock required. Cleanup goes into the caller's retirement list. */
+    private Entry entryForJoinLocked(Key key, List<Entry> retirements) {
         requireOpen();
-        pruneEmptyLocked();
+        pruneEmptyLocked(retirements);
         Entry existing = groups.get(key);
         if (existing != null) return existing;
         if (groups.size() >= maxGroups) {
@@ -259,22 +305,19 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             groups.put(key, created);
             return created;
         } catch (RuntimeException | Error failure) {
-            try {
-                group.runtimeClose();
-            } catch (Throwable closeFailure) {
-                failure.addSuppressed(closeFailure);
-            }
+            // A partly constructed group is not published; still close only
+            // after the registry lock is dropped.
+            retirements.add(new Entry(group, null));
             throw failure;
         }
     }
 
-    private Entry existingLocked(Key key) {
+    private Entry existingLocked(Key key, List<Entry> retirements) {
         requireOpen();
         Entry entry = groups.get(key);
         if (entry == null) return null;
         if (entry.group.closed() || entry.group.runtimeMemberCount() == 0) {
-            groups.remove(key, entry);
-            if (!entry.group.closed()) entry.group.runtimeClose();
+            retireLocked(key, entry, retirements);
             return null;
         }
         return entry;
@@ -284,62 +327,53 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             Key key,
             ActorRuntime.ActorId actorId,
             ActorRuntime.ActorGroup group) {
-        synchronized (lock) {
-            leaveMembershipLocked(key, actorId, group, true);
-        }
-    }
-
-    private void leaveMembershipLocked(
-            Key key,
-            ActorRuntime.ActorId actorId,
-            ActorRuntime.ActorGroup group,
-            boolean idempotentHandle) {
-        requireOpen();
         ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg membership leave requires actor execution"));
         if (!current.equals(actorId)) {
             throw new SecurityException(
                     "pg membership may only be left by the actor that joined it");
         }
-        Entry entry = groups.get(key);
-        if (entry == null || entry.group != group) {
-            if (idempotentHandle) return;
-            throw new IllegalStateException("stale pg membership");
-        }
-        if (!group.runtimeContains(actorId)) {
-            if (idempotentHandle) return;
-            throw new IllegalStateException("actor is not a member of pg group");
-        }
-        group.leaveCurrent();
-        if (group.runtimeMemberCount() == 0) {
-            groups.remove(key, entry);
-            group.runtimeClose();
-        }
-    }
-
-    private void reclaimIfEmptyLocked(Key key, Entry entry) {
-        if (entry.group.closed()) {
-            groups.remove(key, entry);
-            return;
-        }
-        if (entry.group.runtimeMemberCount() == 0) {
-            groups.remove(key, entry);
-            entry.group.runtimeClose();
+        Entry entry = withRegistryLock(retirements -> {
+            requireOpen();
+            Entry found = groups.get(key);
+            if (found == null || found.group != group || !group.runtimeContains(actorId))
+                return null; // stale duplicate handle: explicitly idempotent
+            return found;
+        });
+        if (entry == null) return;
+        try {
+            group.leaveCurrent();
+        } finally {
+            reclaimIfEmpty(key, entry);
         }
     }
 
-    private void pruneEmptyLocked() {
+    private void reclaimIfEmpty(Key key, Entry entry) {
+        withRegistryLock(retirements -> {
+            // Exact entry identity makes old leave/rejoin handles incapable
+            // of retiring a fresh group with the same human-readable name.
+            reclaimIfEmptyLocked(key, entry, retirements);
+            return null;
+        });
+    }
+
+    private void reclaimIfEmptyLocked(
+            Key key, Entry entry, List<Entry> retirements) {
+        if (entry.group.closed() || entry.group.runtimeMemberCount() == 0) {
+            retireLocked(key, entry, retirements);
+        }
+    }
+
+    private void pruneEmptyLocked(List<Entry> retirements) {
         var iterator = groups.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<Key, Entry> item = iterator.next();
             ActorRuntime.ActorGroup group = item.getValue().group;
             if (group.closed()) {
                 iterator.remove();
-                continue;
-            }
-            if (group.runtimeMemberCount() == 0) {
+            } else if (group.runtimeMemberCount() == 0) {
                 iterator.remove();
-                group.runtimeClose();
+                retirements.add(item.getValue());
             }
         }
     }
