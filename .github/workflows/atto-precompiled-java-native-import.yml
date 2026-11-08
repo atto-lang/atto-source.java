@@ -25,6 +25,15 @@ jobs:
         with:
           distribution: graalvm
           java-version: '25'
+      - name: Bind evidence to exact pristine source HEAD before any build
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse 'HEAD^{tree}'
       - name: Test real AttoLang to precompiled Java library import under JVM AOT policy
         run: mvn -B -ntp -Dtest=JavaPrecompiledHostImportAotPolicyTest -DfailIfNoTests=true test
       - name: Build true native binary without JVM/JIT fallback
@@ -38,20 +47,27 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           file target/ores-aot
           test -x target/ores-aot
-          output="$(target/ores-aot --mode=aot --no-core-log --allow=JAVA_INTEROP --allow-host-class=java.lang.Long examples/interop/precompiled-java-long.atto)"
+          output="$(target/ores-aot --mode=aot --no-core-log --allow=JAVA_INTEROP --allow-host-method='java.lang.Long#sum(long,long)' examples/interop/precompiled-java-long.atto)"
           test "$output" = '42'
-          # Both grants are mandatory: JAVA_INTEROP and exact class lookup.
+          # Both grants are mandatory: JAVA_INTEROP and the exact member
+          # signature. A class-wide legacy grant is deliberately not used.
           if target/ores-aot --mode=aot --no-core-log --allow=JAVA_INTEROP \
                examples/interop/precompiled-java-long.atto >/dev/null 2>&1; then
-            echo 'missing class grant was unexpectedly accepted' >&2
+            echo 'missing method grant was unexpectedly accepted' >&2
             exit 1
           fi
-          if target/ores-aot --mode=aot --no-core-log --allow-host-class=java.lang.Long \
+          if target/ores-aot --mode=aot --no-core-log --allow-host-method='java.lang.Long#sum(long,long)' \
                examples/interop/precompiled-java-long.atto >/dev/null 2>&1; then
             echo 'missing JAVA_INTEROP capability was unexpectedly accepted' >&2
             exit 1
           fi
-          printf 'JAVA_PRECOMPILED_HOST_NATIVE_IMAGE_AOT|head=%s|stdout=%s|denials=2\n' "$EXPECTED_HEAD" "$output"
+          if target/ores-aot --mode=aot --no-core-log --allow=JAVA_INTEROP \
+               --allow-host-method='java.lang.Long#toString(long)' \
+               examples/interop/precompiled-java-long.atto >/dev/null 2>&1; then
+            echo 'forged method overload grant was unexpectedly accepted' >&2
+            exit 1
+          fi
+          printf 'JAVA_PRECOMPILED_HOST_NATIVE_IMAGE_AOT|head=%s|stdout=%s|denials=3\n' "$EXPECTED_HEAD" "$output"
           sha256sum target/ores-aot
           git rev-parse 'HEAD^{tree}'
           git status --porcelain
