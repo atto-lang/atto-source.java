@@ -7,6 +7,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -150,6 +151,39 @@ final class VirtualActorSupervisorDirectoryTest {
                 actor.stop();
                 actor.done().get(5, TimeUnit.SECONDS);
             }
+        }
+    }
+
+    @Test
+    void timeoutBeforeControlStartsReleasesGrantAndPendingCapacity() throws Exception {
+        AtomicInteger dispatches = new AtomicInteger();
+        ActorRuntime.ControlDispatcher queuedForever = turn -> {
+            dispatches.incrementAndGet();
+            return OresFuture.fromCallback(done -> { /* simulate a CONTROL queue that never starts */ });
+        };
+        try (var runtime = runtime(queuedForever);
+             var directory = new VirtualActorSupervisorDirectory(
+                     runtime, runtime.rootSupervisor(), TENANT, 8, 4)) {
+            Object session = new Object();
+            var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(3));
+            var logical = directory.resolve("Cart", "queued-timeout");
+
+            var first = directory.requestInspect(grant, session, logical,
+                    TimeUnit.MILLISECONDS.toNanos(20)).toCompletableFuture();
+            var firstFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> first.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, firstFailure.getCause());
+            assertEquals(0, directory.pendingInspectionCount());
+
+            // The same grant can be reused even though the first CONTROL Future
+            // remains unresolved and its queued runnable never executes.
+            var second = directory.requestInspect(grant, session, logical,
+                    TimeUnit.MILLISECONDS.toNanos(20)).toCompletableFuture();
+            assertEquals(2, dispatches.get());
+            var secondFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> second.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, secondFailure.getCause());
+            assertEquals(0, directory.pendingInspectionCount());
         }
     }
 
