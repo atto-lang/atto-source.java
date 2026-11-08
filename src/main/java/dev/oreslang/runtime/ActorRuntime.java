@@ -2041,6 +2041,7 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException("actor incarnation already has virtual identity metadata");
                     virtualActorLogicalGenerations.put(identity, logicalActivationGeneration);
                 } catch (RuntimeException | Error failure) {
+                    virtualActorTerminalBindings.remove(worker.id(), binding);
                     virtualActorActiveBindings.remove(identity, worker.id());
                     throw failure;
                 }
@@ -4358,7 +4359,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? Optional.empty() : Optional.of(cell.parent.ref.id()),
                         failureKind,
                         failure.getClass().getName(),
-                        failure.getMessage() == null ? "" : failure.getMessage(),
+                        virtualBinding == null && failure.getMessage() != null
+                                ? failure.getMessage() : "",
                         virtualBinding == null
                                 ? Optional.empty() : Optional.of(virtualBinding.logical())));
                 if (virtualBinding != null) {
