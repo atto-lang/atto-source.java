@@ -87,6 +87,11 @@ public final class ActorScalarCallMachine {
                         throw new IllegalArgumentException("unresolved scalar call target");
                 }
             }
+            // Second, independent verifier: all paths in the immutable image
+            // must have bounded and type-correct operand stacks, initialized
+            // locals, valid join states and complete call/return transitions.
+            // Reject before a guest actor turn or any frame quota is charged.
+            ActorScalarBytecodeVerifier.verify(functions);
         }
     }
 
