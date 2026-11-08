@@ -68,7 +68,12 @@ final class NativeHttpRawWireAdmissionTest {
                 NativeHttp.validateHeadersForAdmission(
                         exchange.getRequestHeaders(), exchange.getProtocol(), 1024);
                 admitted.incrementAndGet();
-                exchange.getRequestBody().readAllBytes();
+                // Mirror NativeHttp.bodyText's bounded read on the raw JDK wire.
+                // Merely validating declared Content-Length misses chunked
+                // bodies that grow past the quota after header admission.
+                byte[] body = exchange.getRequestBody().readNBytes(1025);
+                if (body.length > 1024)
+                    throw new NativeHttp.RequestBodyTooLargeException();
                 successfulBodies.incrementAndGet();
                 status = 200;
             } catch (IllegalArgumentException badRequest) {
@@ -141,6 +146,16 @@ final class NativeHttpRawWireAdmissionTest {
                     + "Transfer-Encoding: chunked\r\n"
                     + "Connection: close\r\n\r\n0\r\n\r\n")
                     .startsWith("HTTP/1.1 200"), "single valid chunked body must still work");
+            // Content-Length is absent: the quota must be enforced on decoded
+            // streamed bytes, not only on advertised body length.
+            String chunkedPrefix = "POST / HTTP/1.1\r\nHost: localhost\r\n"
+                    + "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            assertTrue(request(address, chunkedPrefix + "400\r\n"
+                    + "x".repeat(1024) + "\r\n0\r\n\r\n").startsWith("HTTP/1.1 200"),
+                    "exactly 1024 decoded chunked bytes must be accepted");
+            assertTrue(request(address, chunkedPrefix + "401\r\n"
+                    + "x".repeat(1025) + "\r\n0\r\n\r\n").startsWith("HTTP/1.1 413"),
+                    "1025 decoded chunked bytes must be rejected as typed quota 413");
             assertTrue(request(address,
                     "POST / HTTP/1.1\r\n"
                     + "Host: localhost\r\n"
@@ -150,10 +165,10 @@ final class NativeHttpRawWireAdmissionTest {
                     "malformed chunk-size must be a client error");
             assertTrue(request(address, get("Host: localhost\r\n")).startsWith("HTTP/1.1 200"),
                     "the listener must survive all prior malformed requests");
-            assertEquals(4, admitted.get(),
-                    "only two good GETs, valid chunked, and malformed chunk body may pass header admission");
-            assertEquals(3, successfulBodies.get(),
-                    "malformed chunk must never complete body processing");
+            assertEquals(6, admitted.get(),
+                    "two good GETs, two valid chunked, oversized chunked and malformed chunk may pass headers");
+            assertEquals(4, successfulBodies.get(),
+                    "oversized and malformed chunked requests must not complete body processing");
         } finally {
             server.stop(0);
         }
