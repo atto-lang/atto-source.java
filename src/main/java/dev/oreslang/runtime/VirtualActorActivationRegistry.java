@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,6 +30,23 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                              boolean activationPresent, boolean published,
                              int outstanding, boolean registryClosed) { }
 
+    /** Bounded immutable page over logical IDs; cursors are valid only at this revision. */
+    public record Page(List<Inspection> entries, long revision,
+                       Optional<Identity> nextAfter) {
+        public Page {
+            entries = List.copyOf(entries);
+            Objects.requireNonNull(nextAfter, "nextAfter");
+            if (revision < 0) throw new IllegalArgumentException("invalid directory revision");
+        }
+    }
+
+    public static final class StaleDirectoryPageException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+        public StaleDirectoryPageException() {
+            super("virtual actor directory changed; restart pagination from the first page");
+        }
+    }
+
     private static final int MAX_KEY_BYTES = 256;
     private final Object monitor = new Object();
     private final Map<Identity, Slot> slots = new HashMap<>();
@@ -35,6 +55,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     private final int mailboxCapacity;
     private final LongSupplier generationSupplier;
     private long nextIncarnation;
+    private long directoryRevision;
     private boolean closed;
 
     private static final class Slot {
@@ -121,6 +142,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 // identity slot, so allocation failure leaves no orphan entry.
                 LogicalRef reference = new LogicalRef(slot);
                 slots.put(identity, slot);
+                directoryRevision = Math.addExact(directoryRevision, 1L);
                 return reference;
             }
             return new LogicalRef(slot);
@@ -165,7 +187,36 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
             if (slot.active || slot.published || slot.outstanding != 0)
                 throw new IllegalStateException("cannot discard an activated virtual actor identity");
-            slots.remove(slot.identity, slot);
+            if (slots.remove(slot.identity, slot))
+                directoryRevision = Math.addExact(directoryRevision, 1L);
+        }
+    }
+
+    public Page listPage(int limit, long expectedRevision, Identity after) {
+        if (limit < 1 || limit > 256)
+            throw new IllegalArgumentException("virtual actor page size must be 1..256");
+        if (expectedRevision < -1 || (after != null && expectedRevision < 0))
+            throw new IllegalArgumentException("invalid virtual actor page cursor");
+        Comparator<Identity> order = Comparator.comparing(Identity::declaration)
+                .thenComparing(Identity::key);
+        synchronized (monitor) {
+            if (after != null && !domain.equals(after.domain()))
+                throw new IllegalArgumentException("foreign virtual actor page cursor");
+            if (expectedRevision >= 0 && expectedRevision != directoryRevision)
+                throw new StaleDirectoryPageException();
+            List<Slot> ordered = slots.values().stream()
+                    .filter(slot -> after == null || order.compare(slot.identity, after) > 0)
+                    .sorted(Comparator.comparing(slot -> slot.identity, order))
+                    .limit(limit + 1L)
+                    .toList();
+            boolean more = ordered.size() > limit;
+            int count = Math.min(limit, ordered.size());
+            List<Inspection> entries = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) entries.add(snapshot(ordered.get(i)));
+            Optional<Identity> next = more && count > 0
+                    ? Optional.of(ordered.get(count - 1).identity)
+                    : Optional.empty();
+            return new Page(entries, directoryRevision, next);
         }
     }
 
