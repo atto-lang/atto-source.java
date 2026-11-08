@@ -1,0 +1,8 @@
+// Exact precompiled JDK host-class import, no java{} source island.
+// AOT *host* proof: the Native Image binary still parses guest AttoLang.
+import class Long as JLong from "java:java.lang.Long";
+
+pub fnc main(): void {
+    stdio.println(JLong.sum(40, 2));
+    return;
+}
