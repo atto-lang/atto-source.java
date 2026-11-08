@@ -248,4 +248,91 @@ final class ActorSourceTaskFrameTest {
         assertEquals(call.allocationDomain(), task.allocationDomain());
         assertEquals(0, frames.usedBytes(), "identity minting cannot allocate frames");
     }
+
+    @Test
+    void nestedCallFrameChainRestoresAsOneUnitAcrossAwait() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<ActorCallContinuation> chainRef = new AtomicReference<>();
+            AtomicReference<ExecutionContext> identityBefore = new AtomicReference<>();
+            AtomicReference<ExecutionContext> identityAfter = new AtomicReference<>();
+            AtomicReference<Long> dispatchBefore = new AtomicReference<>();
+            AtomicReference<Long> dispatchAfter = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            AtomicInteger turns = new AtomicInteger();
+
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame taskFrame =
+                            OresScheduler.currentActorSourceTaskFrame();
+                    assertNotNull(taskFrame, "scheduler must bind the exact SourceTask frame");
+                    ActorCallContinuation chain = taskFrame.callContinuation();
+                    if (turns.getAndIncrement() == 0) {
+                        chainRef.set(chain);
+                        identityBefore.set(OresScheduler.currentExecutionContext());
+                        dispatchBefore.set(OresScheduler.currentDispatchId());
+                        chain.pushFrame(100, 7, 1, 2);
+                        chain.writeLocal(0, 41L);
+                        chain.setProgramCounter(11);
+                        chain.pushOperand(2L);
+                        chain.pushFrame(200, 5, 1, 2);
+                        chain.writeLocal(0, 9L);
+                        chain.setProgramCounter(3);
+                        chain.pushOperand(3L);
+                        assertEquals(2, chain.depth());
+                        assertEquals(110, chain.chargedBytes());
+                        return OresScheduler.await(gate);
+                    }
+
+                    identityAfter.set(OresScheduler.currentExecutionContext());
+                    dispatchAfter.set(OresScheduler.currentDispatchId());
+                    assertSame(chainRef.get(), chain);
+                    assertEquals(2, chain.depth());
+                    assertEquals(3, chain.programCounter());
+                    assertEquals(5, chain.returnProgramCounter());
+                    assertEquals(9L, chain.readLocal(0));
+                    assertEquals(3L, chain.popOperand());
+                    chain.popFrame();
+                    assertEquals(1, chain.depth());
+                    assertEquals(11, chain.programCounter());
+                    assertEquals(7, chain.returnProgramCounter());
+                    assertEquals(41L, chain.readLocal(0));
+                    assertEquals(2L, chain.popOperand());
+                    chain.popFrame();
+                    assertEquals(0, chain.depth());
+                    assertThrows(IllegalStateException.class, chain::resumeFromScheduler,
+                            "a consumed scheduler resume ticket cannot be reused");
+                    return OresScheduler.done(73);
+                }));
+            });
+
+            actor.send("start");
+            awaitCondition(() -> chainRef.get() != null
+                    && arena.get() != null && arena.get().liveFrames() == 3);
+            assertEquals(64 + 110, arena.get().usedBytes(),
+                    "task root and both call frames remain charged while suspended");
+            assertThrows(SecurityException.class, () -> chainRef.get().depth(),
+                    "host thread cannot inspect a suspended actor-owned call chain");
+            assertFalse(arena.get().isPoisoned(),
+                    "foreign read denial must not poison the actor owner");
+
+            gate.completeFromRuntime(1);
+            awaitCondition(() -> result.get() != null && result.get().isDone());
+            assertEquals(73, result.get().get(3, TimeUnit.SECONDS));
+            assertSame(identityBefore.get(), identityAfter.get(),
+                    "logical ExecutionContext identity survives await");
+            assertNotEquals(dispatchBefore.get(), dispatchAfter.get(),
+                    "resumed segment receives a fresh scheduler dispatch");
+            assertEquals(0, arena.get().usedBytes());
+            assertEquals(0, arena.get().liveFrames());
+            assertTrue(actor.isAlive());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
 }
