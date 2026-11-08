@@ -212,10 +212,22 @@ public final class GuestCallDepthGuard {
             throw new IllegalStateException(
                     "foreign actor guest-call scope escaped its carrier turn");
         }
-        if (leaked.arena != null) {
-            // Remove all outstanding leased byte frames by the scope's
-            // ORIGINAL execution ID, never by a new actor's identity.
-            leaked.arena.cancel(leaked.execution);
+        try {
+            if (leaked.actorStack != null) {
+                // Restore the owning actor's logical charge to zero even
+                // when guest finally/leave did not run. An already-poisoned
+                // ActorGuestStack still permits exact-depth release.
+                for (int depth = leaked.depth; depth > 0; depth--) {
+                    leaked.actorStack.releaseFrame(depth);
+                }
+            }
+        } finally {
+            if (leaked.arena != null) {
+                // Always reclaim and zeroize bytes even if logical depth
+                // was corrupt. Use the ORIGINAL execution identity, never
+                // a later actor's shared carrier/arena.
+                leaked.arena.cancel(leaked.execution);
+            }
         }
         return true;
     }
