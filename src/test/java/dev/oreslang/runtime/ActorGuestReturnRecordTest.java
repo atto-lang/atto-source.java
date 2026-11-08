@@ -177,6 +177,7 @@ final class ActorGuestReturnRecordTest {
             AtomicReference<ActorGuestReturnRecord> escaped = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> one = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> two = new AtomicReference<>();
+            OresFuture<Integer> firstRecordReady = new OresFuture<>();
             AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
             var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
                 if ("stop".equals(mail)) {
@@ -187,9 +188,14 @@ final class ActorGuestReturnRecordTest {
                 one.set(runtime.startActorTask(resume -> {
                     escaped.set(ActorGuestReturnRecord.enter(
                             new ActorGuestReturnRecord.Cursor(2, 3, 4, 1)));
+                    firstRecordReady.completeFromRuntime(1);
                     return OresScheduler.done(1);
                 }));
                 two.set(runtime.startActorTask(resume -> {
+                    // Do not rely on arbitrary task scheduling order:
+                    // the second task must await an explicit first-record
+                    // witness before attempting a foreign capability.
+                    if (resume.initial()) return OresScheduler.await(firstRecordReady);
                     assertNotNull(escaped.get(), "first task must create a return record");
                     assertThrows(SecurityException.class, escaped.get()::readCursor);
                     assertThrows(SecurityException.class, escaped.get()::close);
