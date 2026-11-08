@@ -67,6 +67,10 @@ final class ActorSourceTaskFrame {
         }
     }
 
+    private void requireOwnerTurn() {
+        requireContinuationTurn();
+    }
+
     /**
      * A source task always re-enters under its actor's physical dispatch.
      * Duplicate carrier execution is forbidden even if the scheduler admitted
