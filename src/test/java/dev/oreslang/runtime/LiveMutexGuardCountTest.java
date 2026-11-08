@@ -105,12 +105,16 @@ public class LiveMutexGuardCountTest {
                 for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
                     TaskOwnedLeases.register(() -> { });
                 }
-                IllegalStateException failure =
-                        assertThrows(IllegalStateException.class, shared::lock);
-                assertTrue(failure.getMessage().contains("quota exceeded"),
-                        failure::getMessage);
-                assertEquals(base, OresMutex.liveGuardCount(),
-                        "rejected guard construction must not strand a live-guard count");
+                // Repeated rejected acquisitions must not accumulate a
+                // process-wide counter leak or poison the physical mutex.
+                for (int rejected = 0; rejected < 16; rejected++) {
+                    IllegalStateException failure =
+                            assertThrows(IllegalStateException.class, shared::lock);
+                    assertTrue(failure.getMessage().contains("quota exceeded"),
+                            failure::getMessage);
+                    assertEquals(base, OresMutex.liveGuardCount(),
+                            "rejected attempt " + rejected + " stranded a guard count");
+                }
                 return OresScheduler.done(1);
             });
             assertInstanceOf(TaskHandle.Success.class,
