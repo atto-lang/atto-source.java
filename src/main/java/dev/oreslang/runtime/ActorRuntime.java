@@ -8837,8 +8837,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // failure. The actor was already marked stopped by the
                 // supervisor/cancel path; finally/endTurn completes teardown.
                 if (!(failure instanceof ActorCancellationSignal)) {
-                    if (failure instanceof StackOverflowError) {
-                        // Only an admitted physical actor turn reaches this
+                    if (failure instanceof StackOverflowError && turnActive) {
+                        // Only a fully admitted physical actor turn may use this
                         // catch. The recursive JVM guest path can still
                         // exhaust the carrier stack before an explicit budget
                         // guard fires. Once Java has unwound back here, fence
@@ -8859,7 +8859,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (failure instanceof VirtualMachineError fatal
-                        && !(fatal instanceof StackOverflowError)) throw fatal;
+                        && !(fatal instanceof StackOverflowError && turnActive)) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
