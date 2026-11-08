@@ -209,7 +209,7 @@ final class VirtualActorSupervisorDirectoryTest {
                 assertThrows(SecurityException.class, () -> directory.requestInspect(
                         grant, new Object(), logical.identity(), 1_000_000));
                 var foreign = new VirtualActorActivationRegistry.Identity(
-                        "other-tenant", "default/Cart", "42");
+                        "other-tenant", "7:defaultCart", "42");
                 assertThrows(SecurityException.class, () -> directory.requestInspect(
                         grant, session, foreign, 1_000_000));
                 directory.revoke(grant);
