@@ -549,24 +549,33 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
 
+            // Conditions are evaluated in order. A false condition still
+            // executes its call arguments and may MOVE an affine owner.
+            // Each later condition and the final else must start from that
+            // post-condition ownership state, never from the pre-if base.
+            Map<VarState, StateSnapshot> nextCondition = base;
             for (Ast.IfBranch branch : conditional.branches()) {
-                restoreState(base);
+                restoreState(nextCondition);
                 checkExpr(branch.condition(), scope, false);
+                Map<VarState, StateSnapshot> afterCondition = stateSnapshot(scope);
                 Scope branchScope = new Scope(scope);
                 defineConditionAliases(branch.condition(), branchScope, scope);
                 checkBlock(branch.body(), branchScope, returnType);
                 branchScope.close();
-                // A branch that always returns never reaches the code after
-                // this statement, so its moves must not poison later uses.
+                // A returning arm does not reach the join, but the condition's
+                // effects still reach the next arm on its false path.
                 if (!definitelyReturns(branch.body())) exits.add(stateSnapshot(scope));
+                nextCondition = afterCondition;
             }
 
-            restoreState(base);
+            restoreState(nextCondition);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
                 if (!definitelyReturns(conditional.elseBody())) exits.add(stateSnapshot(scope));
             } else {
-                exits.add(base); // condition may be false with no else
+                // A missing else is itself a reachable false successor and
+                // inherits every evaluated predicate's ownership effects.
+                exits.add(nextCondition);
             }
 
             mergeBranchState(base, exits);
