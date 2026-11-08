@@ -356,9 +356,10 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             try {
                 registry.deactivate(expected.activation());
                 bindings.remove(identity, expected);
-                boolean cancelled = failure instanceof java.util.concurrent.CancellationException;
-                String failureClass = failure == null || cancelled
-                        ? null : failure.getClass().getName();
+                Throwable terminal = failure == null ? null : OresFuture.unwrap(failure);
+                boolean cancelled = terminal instanceof java.util.concurrent.CancellationException;
+                String failureClass = terminal == null || cancelled
+                        ? null : terminal.getClass().getName();
                 terminals.put(identity, new TerminalRecord(expected.actor().id(),
                         expected.actor().generation(), expected.actor().kind(),
                         failureClass, cancelled, Instant.now()));
