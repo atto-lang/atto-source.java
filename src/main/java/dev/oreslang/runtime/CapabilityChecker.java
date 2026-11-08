@@ -238,6 +238,15 @@ public final class CapabilityChecker {
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
+                } else {
+                    // Protected state / virtual actors retain opaque method
+                    // tokens until checked MIR lowering exists. They cannot
+                    // receive capability approval from a visitor that has
+                    // never inspected those effects. Also fail closed for
+                    // any future declaration kind.
+                    throw new SecurityException(
+                            "capability checker requires verified declaration lowering: "
+                                    + declaration.getClass().getSimpleName());
                 }
             }
         }
@@ -449,6 +458,9 @@ public final class CapabilityChecker {
         } else if (pattern instanceof Ast.TuplePattern p) {
             for (Ast.Pattern item : p.elements()) checkPattern(item, policy);
         } else if (pattern instanceof Ast.ConstructorPattern p) {
+            // Constructor names can resolve to nominal classes; do not skip
+            // the name just because the pattern has no nested arguments.
+            checkType(Ast.TypeRef.simple(p.constructor()), policy);
             for (Ast.Pattern item : p.arguments()) checkPattern(item, policy);
         } else if (!(pattern instanceof Ast.WildcardPattern)
                 && !(pattern instanceof Ast.LiteralPattern)
