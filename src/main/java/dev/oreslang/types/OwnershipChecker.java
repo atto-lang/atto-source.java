@@ -1434,6 +1434,15 @@ public final class OwnershipChecker {
             LinkedHashMap<String, Ast.TaskCaptureTransfer> admitted =
                     new LinkedHashMap<>();
             for (Capture capture : captured.values.values()) {
+                // A Copy admission must be backed by the resolved type, not
+                // merely by a previous VarState flag. An ambiguous/inferred
+                // capture cannot mint a duplicate ownership capability.
+                // This is independent of the earlier transitive Send proof.
+                if (capture.source.kind == ValueKind.COPY
+                        && !isCopyType(capture.source.type)) {
+                    throw error("independent Task capture '" + capture.name
+                            + "' lacks a resolved Copy proof");
+                }
                 Ast.TaskCaptureTransfer transfer =
                         !capture.write
                                 && !capture.consume
