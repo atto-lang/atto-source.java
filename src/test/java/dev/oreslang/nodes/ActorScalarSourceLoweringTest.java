@@ -153,5 +153,73 @@ final class ActorScalarSourceLoweringTest {
         var instructions = program.functions().getFirst().code();
         assertEquals(ActorScalarCallMachine.Op.TRAP,
                 instructions.getLast().op());
+    }    @Test void intReturnCannotAcceptBooleanLiteral() {
+        assertNull(lower("fnc wrong(): int { return true; }", "wrong#0"));
     }
+    @Test void intReturnCannotAcceptComparisonBoolean() {
+        assertNull(lower("fnc wrong(): int { return 1 < 2; }", "wrong#0"));
+    }
+    @Test void arithmeticCannotImplicitlyConvertBooleanToInteger() {
+        assertNull(lower("fnc wrong(): int { return 1 + true; }", "wrong#0"));
+    }
+    @Test void unaryMinusCannotImplicitlyConvertBooleanToInteger() {
+        assertNull(lower("fnc wrong(): int { return -true; }", "wrong#0"));
+    }
+    @Test void conditionalRequiresExactBoolean() {
+        assertNull(lower("""
+                fnc wrong(int n): int {
+                  if n; do return 1; else return 2; fi
+                }
+                """, "wrong#1"));
+    }
+    @Test void scalarIntLocalCannotInitializeFromBoolean() {
+        assertNull(lower("fnc wrong(): int { let int x = true; return 0; }",
+                "wrong#0"));
+    }
+    @Test void valScalarCannotBeReboundByIterativeLowering() {
+        assertNull(lower("fnc wrong(): int { val int x = 1; x = 2; return x; }",
+                "wrong#0"));
+    }
+    @Test void constScalarCannotBeReboundByIterativeLowering() {
+        assertNull(lower("fnc wrong(): int { const int x = 1; x = 2; return x; }",
+                "wrong#0"));
+    }
+    @Test void ordinaryScalarParameterCannotBeRebound() {
+        assertNull(lower("fnc wrong(int x): int { x = 2; return x; }",
+                "wrong#1"));
+    }
+    @Test void mutableScalarCannotBeReboundToBoolean() {
+        assertNull(lower("fnc wrong(): int { let int x = 1; x = true; return x; }",
+                "wrong#0"));
+    }
+    @Test void directScalarCallRejectsBooleanArgument() {
+        assertNull(lower("""
+                fnc callee(int n): int { return n; }
+                fnc caller(): int { return callee(true); }
+                """, "caller#0"));
+    }
+    @Test void equalityCannotCompareDifferentPrimitiveKinds() {
+        assertNull(lower("fnc wrong(): int { if 1 == true; do return 1; else return 2; fi }",
+                "wrong#0"));
+    }
+    @Test void booleanComparisonMayBeUsedAsConditionButNotIntReturn() {
+        assertNotNull(lower("""
+                fnc supported(): int {
+                  if 2 <= 3; do return 7; else return 0; fi
+                }
+                """, "supported#0"));
+        assertNull(lower("fnc wrong(): int { return 2 <= 3; }", "wrong#0"));
+    }
+    @Test void immutableScalarReadRemainsSupportedWithoutRebind() {
+        assertNotNull(lower("fnc supported(): int { val int x = 9; return x; }",
+                "supported#0"));
+    }
+    @Test void pureBooleanEqualityConditionRemainsTyped() {
+        assertNotNull(lower("""
+                fnc supported(): int {
+                  if true == true; do return 1; else return 0; fi
+                }
+                """, "supported#0"));
+    }
+
 }
