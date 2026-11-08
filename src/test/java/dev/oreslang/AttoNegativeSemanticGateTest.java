@@ -97,44 +97,107 @@ final class AttoNegativeSemanticGateTest {
         }
     }
 
-    private static boolean containsAny(String actual, String[] expected) {
-        for (String term : expected) {
-            if (term.equals("x") ? actual.matches("(?s).*\\bx\\b.*") : actual.contains(term)) return true;
-        }
+    private static boolean any(String actual, String... terms) {
+        for (String term : terms) if (actual.contains(term)) return true;
         return false;
     }
 
+    private static boolean wholeWord(String value, String word) {
+        return java.util.regex.Pattern.compile("(?<![a-z0-9_])"
+                + java.util.regex.Pattern.quote(word) + "(?![a-z0-9_])")
+                .matcher(value).find();
+    }
+
+    private static boolean intendedDiagnostic(Case c, String message) {
+        if (message == null || message.isBlank() || message.length() > 65536) return false;
+        String d = message.toLowerCase(Locale.ROOT);
+        // No generic lexing/parser failures, missing-symbol diagnostics, or crashes.
+        if (any(d, "syntax error", "parse error", "unexpected token",
+                "unexpected character", "unsupported character",
+                "unexpected const", "unrecognized token", "unresolved identifier",
+                "unknown identifier", "internal error", "stack overflow")) return false;
+        return switch (c.id()) {
+            case "removed-modulo" ->
+                    (d.contains("%") || d.contains("modulo"))
+                    && d.contains("operator")
+                    && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
+            case "removed-caret" ->
+                    (d.contains("^") || d.contains("caret"))
+                    && d.contains("operator")
+                    && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
+            case "removed-double-caret" ->
+                    (d.contains("^^") || any(d, "double caret", "double-caret"))
+                    && d.contains("operator")
+                    && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
+            case "type-first-reassignment", "typed-const-reassignment" ->
+                    wholeWord(d, "x")
+                    && any(d, "immutable", "readonly", "read-only", "constant binding",
+                            "const binding", "const variable")
+                    && any(d, "assign", "rebind", "mutation", "write");
+            case "legacy-async-modifier" ->
+                    wholeWord(d, "async")
+                    && any(d, "unsupported", "forbidden", "disallowed",
+                            "not allowed", "deprecated", "use suspends", "invalid modifier");
+            case "critical-suspends-modifier", "suspends-critical-modifier" ->
+                    wholeWord(d, "critical") && wholeWord(d, "suspends")
+                    && any(d, "invalid", "forbidden", "disallowed", "cannot",
+                            "not allowed", "incompatible", "mutually exclusive");
+            default -> false;
+        };
+    }
+
     @Test
-    void removedOperatorsCannotPassWithGenericUnsupportedCharacterError() {
-        for (int i = 0; i < 3; i++) {
-            Case c = CASES[i];
-            String message = "error: unsupported character " + c.requiredTerms()[0];
-            assertFalse(containsAny(message, c.policyTerms()), c.id());
+    void spoofedOrWrongStageDiagnosticsMustFail() {
+        String[] generic = {
+                "error: unexpected token critical suspends",
+                "error: unsupported character ^^",
+                "error: unknown identifier x",
+                "error: immutable const unexpected const x",
+                "error: unresolved identifier async",
+                "error: internal error: invalid critical suspends",
+                "error: stack overflow: removed modulo operator"
+        };
+        for (Case c : CASES) {
+            for (String message : generic) {
+                assertFalse(intendedDiagnostic(c, message), c.id() + ": " + message);
+            }
         }
     }
 
     @Test
-    void readonlyReassignmentsNeedAnOwnershipOrBindingDiagnostic() {
-        for (int i = 3; i < 5; i++) {
-            Case c = CASES[i];
-            assertFalse(containsAny("error: unexpected const x", c.policyTerms()), c.id());
-            assertTrue(containsAny("error: immutable binding x cannot reassign",
-                    c.policyTerms()), c.id());
+    void eachCaseRequiresItsOwnSpecificSemanticDiagnostic() {
+        String[] valid = {
+                "error: removed modulo operator %",
+                "error: caret ^ operator is forbidden",
+                "error: double caret ^^ operator is not allowed",
+                "error: cannot assign to immutable binding x",
+                "error: cannot reassign const binding x",
+                "error: async modifier is forbidden; use suspends",
+                "error: invalid combination critical suspends fnc",
+                "error: suspends critical fnc is incompatible"
+        };
+        for (int i = 0; i < CASES.length; i++) {
+            assertTrue(intendedDiagnostic(CASES[i], valid[i]), CASES[i].id());
+            for (int j = 0; j < CASES.length; j++) {
+                if (i != j) {
+                    // The two reordered effect declarations intentionally share
+                    // a semantic rejection family; all other cases must differ.
+                    if (i >= 6 && j >= 6) continue;
+                    assertFalse(intendedDiagnostic(CASES[i], valid[j]),
+                            CASES[i].id() + " accepted " + CASES[j].id());
+                }
+            }
         }
     }
 
     @Test
-    void modifierRejectionCannotBeReplacedByGenericUnexpectedToken() {
-        for (int i = 5; i < 8; i++) {
-            Case c = CASES[i];
-            assertFalse(containsAny("error: unexpected token " + c.id(), c.policyTerms()), c.id());
-        }
-    }
-
-    @Test
-    void singleLetterBindingIdentityRequiresAnActualWordBoundary() {
-        assertFalse(containsAny("error: syntax error", new String[]{"x"}));
-        assertTrue(containsAny("error: immutable binding x", new String[]{"x"}));
+    void operatorAndModifierNearMissesDoNotEarnCredit() {
+        assertFalse(intendedDiagnostic(CASES[2], "error: unsupported caret ^ operator"));
+        assertFalse(intendedDiagnostic(CASES[6], "error: critical function is invalid"));
+        assertFalse(intendedDiagnostic(CASES[7], "error: suspends modifier is invalid"));
+        assertFalse(intendedDiagnostic(CASES[5], "error: async method symbol unresolved"));
+        assertFalse(intendedDiagnostic(CASES[3], "error: unknown x after const"));
+        assertFalse(intendedDiagnostic(CASES[3], "error: immutable x in unrelated write scope"));
     }
 
     @TestFactory
@@ -148,10 +211,8 @@ final class AttoNegativeSemanticGateTest {
             assertNotNull(message, "diagnostic missing: " + c.id());
             String lower = message.toLowerCase(Locale.ROOT);
             assertFalse(lower.isBlank(), "blank diagnostic: " + c.id());
-            assertTrue(containsAny(lower, c.requiredTerms()),
-                    "wrong subject for " + c.id() + ": " + message);
-            assertTrue(containsAny(lower, c.policyTerms()),
-                    "generic parse failure is not a semantic rejection: " + c.id() + ": " + message);
+            assertTrue(intendedDiagnostic(c, lower),
+                    "wrong semantic diagnostic for " + c.id() + ": " + message);
             assertFalse(lower.contains("internal error") || lower.contains("stack overflow"),
                     "compiler crashed on " + c.id() + ": " + message);
             // LinkedProgramRunner.validate only admits/types source. It cannot
