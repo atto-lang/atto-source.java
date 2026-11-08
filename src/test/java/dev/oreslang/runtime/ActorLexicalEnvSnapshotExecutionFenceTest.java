@@ -129,6 +129,13 @@ final class ActorLexicalEnvSnapshotExecutionFenceTest {
             assertEquals(42, result.get().get(3, TimeUnit.SECONDS));
             assertEquals(2, dispatches.get());
             assertEquals(0, arena.get().usedBytes());
+            // Even after all bytes are retired, the leaked Env must not
+            // silently fall back to its old JVM Slot.value compatibility copy.
+            assertThrows(SecurityException.class,
+                    () -> call(LOOKUP, captured.get(), "counter"));
+            assertThrows(SecurityException.class,
+                    () -> call(SNAPSHOT, env.get()));
+            assertFalse(arena.get().isPoisoned());
             actor.send("stop");
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(actor.failure().isEmpty(), () -> "actor failure: " + actor.failure());
