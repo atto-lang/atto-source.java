@@ -10991,6 +10991,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean hasLiveMutexGuards() {
+            if (!OresMutex.mayHaveLiveGuards()) return false;
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) {
                 if (containsLiveMutexGuard(slot.value, seen)) return true;
@@ -11046,6 +11047,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void releaseMutexGuards(boolean failed) {
+            if (!OresMutex.mayHaveLiveGuards()) return;
             Set<Object> seen = java.util.Collections.newSetFromMap(
                     new java.util.IdentityHashMap<>());
             ArrayList<Throwable> releaseErrors = new ArrayList<>();
