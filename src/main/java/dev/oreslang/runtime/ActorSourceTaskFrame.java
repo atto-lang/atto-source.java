@@ -30,6 +30,8 @@ final class ActorSourceTaskFrame {
     private final ActorFrameArena arena;
     private final ExecutionContext execution;
     private ActorFrameArena.FrameRef frame;
+    /** One continuation owner for the entire nested call chain of this SourceTask. */
+    private ActorCallContinuation callContinuation;
     private boolean waiting;
     private int savedScalarBytes;
     private boolean hasSavedScalars;
@@ -54,7 +56,10 @@ final class ActorSourceTaskFrame {
 
     ActorFrameArena arena() { return arena; }
 
-    private void requireOwnerTurn() {
+    ExecutionContext executionContext() { return execution; }
+
+    /** Package-private admission check used only by the unified call-chain owner. */
+    synchronized void requireContinuationTurn() {
         if (ActorRuntime.currentActorFrameArena() != arena
                 || OresScheduler.currentExecutionContext() != execution) {
             throw new SecurityException(
@@ -75,7 +80,8 @@ final class ActorSourceTaskFrame {
             return;
         }
         if (!waiting) throw new IllegalStateException("actor task frame resumed twice");
-        arena.resume(execution, frame);
+        if (callContinuation == null) arena.resume(execution, frame);
+        else callContinuation.resumeFromScheduler();
         waiting = false;
     }
 
@@ -84,8 +90,27 @@ final class ActorSourceTaskFrame {
         requireOwnerTurn();
         if (retired || frame == null || waiting)
             throw new IllegalStateException("actor task suspension without a running frame");
-        arena.suspend(execution, frame);
+        if (callContinuation == null) arena.suspend(execution, frame);
+        else callContinuation.suspendFromScheduler();
         waiting = true;
+    }
+
+    /**
+     * Return the single authenticated owner for nested guest call frames in
+     * this SourceTask. Its frames are pushed above the 64-byte task root in
+     * the same LIFO ActorFrameArena; scheduler suspension is delegated to
+     * this owner so the entire chain is sealed/restored as one unit.
+     *
+     * This is a host/compiler bridge. It does not enable source CALL/await
+     * lowering until the compiler explicitly uses the typed frame ABI.
+     */
+    synchronized ActorCallContinuation callContinuation() {
+        requireOwnerTurn();
+        requireRunningFrame();
+        if (callContinuation == null) {
+            callContinuation = new ActorCallContinuation(this, arena, execution, frame);
+        }
+        return callContinuation;
     }
 
     /**
@@ -320,6 +345,7 @@ final class ActorSourceTaskFrame {
      */
     synchronized void retireAfterQuiescence() {
         if (retired) return;
+        if (callContinuation != null) callContinuation.retireAfterQuiescence();
         arena.cancel(execution);
         frame = null;
         waiting = false;
