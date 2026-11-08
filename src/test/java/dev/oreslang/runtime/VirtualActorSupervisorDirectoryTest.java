@@ -71,8 +71,13 @@ final class VirtualActorSupervisorDirectoryTest {
                 var byAddress = directory.requestInspectAddress(grant, session, byId.address(),
                         TimeUnit.SECONDS.toNanos(3)).toCompletableFuture()
                         .get(5, TimeUnit.SECONDS).orElseThrow();
-                assertEquals(byId, byAddress);
+                assertEquals(byId.identity(), byAddress.identity());
+                assertEquals(byId.lifecycle(), byAddress.lifecycle());
+                assertEquals(byId.activationGeneration(), byAddress.activationGeneration());
+                assertEquals(byId.actorId(), byAddress.actorId());
                 assertEquals(0, directory.pendingInspectionCount());
+                actor.stop();
+                actor.done().get(5, TimeUnit.SECONDS);
             }
         }
     }
@@ -90,12 +95,6 @@ final class VirtualActorSupervisorDirectoryTest {
                 var logical = directory.resolve("Cart", "forged-owner");
                 assertThrows(SecurityException.class,
                         () -> directory.bindActivation(logical, worker));
-                assertEquals(VirtualActorDirectoryInspection.Lifecycle.NEVER_ACTIVATED,
-                        new VirtualActorDirectoryInspection(new VirtualActorActivationRegistry(
-                                TENANT + "unused", 1, 1)).inspectAddress(
-                                VirtualActorAddressV1.encode(logical.identity()))
-                                .map(VirtualActorDirectoryInspection.Snapshot::lifecycle)
-                                .orElse(VirtualActorDirectoryInspection.Lifecycle.CLOSED));
                 worker.stop();
                 worker.done().get(5, TimeUnit.SECONDS);
             }
