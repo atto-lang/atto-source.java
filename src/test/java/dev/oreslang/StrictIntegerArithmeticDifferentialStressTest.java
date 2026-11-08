@@ -176,6 +176,55 @@ final class StrictIntegerArithmeticDifferentialStressTest {
         }
     }
 
+    /** Walk every representable power-of-two boundary, including negative edges. */
+    @Test
+    void signedDivisionAcrossEveryBinaryBoundaryMatchesIndependentOracle() {
+        for (int bit = 0; bit <= 62; bit++) {
+            long power = 1L << bit;
+            long[] cases = {
+                    Long.MIN_VALUE, Long.MIN_VALUE + 1,
+                    Long.MAX_VALUE - 1, Long.MAX_VALUE,
+                    power - 1, power, power + 1,
+                    -power - 1, -power, -power + 1,
+                    -3, -1, 0, 1, 3
+            };
+            for (long dividend : cases) {
+                for (long divisor : cases) {
+                    comparePair(dividend, divisor);
+                }
+            }
+        }
+    }
+
+    /** Algebraic laws independently check signed division, not only expected vectors. */
+    @Test
+    void signedDivisionAndModulusKeepAlgebraicCongruenceUnderFullWidthStress() {
+        Random random = new Random(0x4C4157537EEDL);
+        for (int i = 0; i < 15_000; i++) {
+            long dividend = i % 3 == 0 ? EXTREMES[i % EXTREMES.length] : random.nextLong();
+            long divisor = i % 3 == 1 ? EXTREMES[i % EXTREMES.length] : random.nextLong();
+            if (divisor == 0) divisor = Long.MIN_VALUE;
+            long remainder = StrictIntegerArithmetic.rem(dividend, divisor);
+            long modulus = StrictIntegerArithmetic.mod(dividend, divisor);
+            BigInteger a = BigInteger.valueOf(dividend);
+            BigInteger b = BigInteger.valueOf(divisor);
+            BigInteger r = BigInteger.valueOf(remainder);
+            BigInteger m = BigInteger.valueOf(modulus);
+            require(b.multiply(a.divide(b)).add(r).equals(a), "rem quotient reconstruction");
+            require(r.signum() == 0 || r.signum() == a.signum(), "rem dividend sign");
+            require(m.signum() >= 0 && m.compareTo(b.abs()) < 0, "euclidean mod bound");
+            require(m.subtract(r).mod(b.abs()).signum() == 0, "rem/mod congruence");
+            require(StrictIntegerArithmetic.rem(dividend, -1) == 0,
+                    "division by negative unit must have zero remainder");
+            // Explicitly ensure min / -1 remains handled without BigInteger long overflow.
+            if (dividend == Long.MIN_VALUE) {
+                require(StrictIntegerArithmetic.mod(dividend, -1) == 0, "min modulus -1");
+            }
+            require(a.subtract(m).mod(b.abs()).signum() == 0,
+                    "dividend/mod congruence");
+        }
+    }
+
     public static void main(String[] args) {
         StrictIntegerArithmeticDifferentialStressTest tests =
                 new StrictIntegerArithmeticDifferentialStressTest();
@@ -185,6 +234,8 @@ final class StrictIntegerArithmeticDifferentialStressTest {
         tests.extremeExponentAndFailureBoundariesAreExplicit();
         tests.fullWidthPowerAndZeroOneIdentitiesMatchIndependentOracle();
         tests.bitwiseXorMetamorphicPropertiesCoverFullWidthValues();
+        tests.signedDivisionAcrossEveryBinaryBoundaryMatchesIndependentOracle();
+        tests.signedDivisionAndModulusKeepAlgebraicCongruenceUnderFullWidthStress();
         System.out.println("STRICT_I64_DEEP_PROBE|PASS|checks=" + checks);
     }
 }
