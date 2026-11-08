@@ -204,6 +204,14 @@ class StaticActorPilotTests(unittest.TestCase):
                      self.source.read_text().replace(
                          "return 43;", "guard false { return 9223372036854775808; }\n  return 43;"))
 
+    def test_guard_keyword_is_reserved_in_actor_name(self):
+        self.rejects("reserved AttoLang guard keyword",
+                     self.source.read_text().replace("Counter", "guard"))
+
+    def test_guard_keyword_is_reserved_as_actor_handle(self):
+        self.rejects("reserved AttoLang guard keyword",
+                     self.source.read_text().replace("const first", "const guard"))
+
     def test_guard_limit_is_eight(self):
         cases = "guard true { return 1; }\n  " * 9
         self.rejects("guard v1 limit exceeded (8)",
