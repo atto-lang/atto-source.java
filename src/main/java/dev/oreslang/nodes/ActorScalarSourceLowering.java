@@ -97,8 +97,10 @@ final class ActorScalarSourceLowering {
 
     private ActorScalarCallMachine.Function lower(Ast.FunctionDecl fn) {
         Builder builder = new Builder(fn);
-        if (!(fn.body().getLast() instanceof Ast.ReturnStmt)
-                && !(fn.body().getLast() instanceof Ast.IfStmt)) throw NO;
+        // M3.3a: require an explicit final return. The broader language
+        // supports other exhaustive control-flow forms, but admitting those
+        // without a checked control-flow graph could fall off compiled code.
+        if (!(fn.body().getLast() instanceof Ast.ReturnStmt)) throw NO;
         builder.body(fn.body(), 0, true);
         if (builder.instructions.isEmpty() || builder.instructions.size() > MAX_CODE)
             throw NO;
