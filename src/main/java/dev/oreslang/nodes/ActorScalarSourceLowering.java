@@ -258,9 +258,6 @@ final class ActorScalarSourceLowering {
                 if (value instanceof Long x) {
                     emit(ActorScalarCallMachine.Instruction.constant(x));
                     return ScalarType.INT;
-                } else if (value instanceof Integer x) {
-                    emit(ActorScalarCallMachine.Instruction.constant(x.longValue()));
-                    return ScalarType.INT;
                 } else if (value instanceof Boolean x) {
                     emit(new ActorScalarCallMachine.Instruction(
                             ActorScalarCallMachine.Op.CONST_BOOL, 0, x ? 1 : 0));
