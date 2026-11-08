@@ -103,4 +103,36 @@ final class IfConditionOwnershipFlowTest {
                 }
                 """));
     }
+
+    @Test
+    void repeatingForPredicateMayNotConsumeAnOuterOwner() {
+        String source = DEFINITIONS + """
+                fnc broken(Resource resource): void {
+                  for (const int counter = 0; consuming_predicate(resource); ) {
+                    stdio.println("next iteration");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source),
+                "loop regression must parse before ownership checking");
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("repeating loop")
+                        && failure.getMessage().contains("'resource'"),
+                "loop predicate must not consume an outer owner twice: " + failure.getMessage());
+    }
+
+    @Test
+    void forInitializerCanTransferOuterOwnerExactlyOnce() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(DEFINITIONS + """
+                fnc safe(Resource resource): void {
+                  for (val Resource local = resource; false; ) {
+                    stdio.println("unreachable");
+                  }
+                  return;
+                }
+                """));
+    }
 }
