@@ -91,7 +91,7 @@ final class LogicalWordOperatorTest {
     void andOrShortCircuitButXorAlwaysEvaluatesRight() throws Exception {
         String source = fixture("short-circuit.atto");
         TypeChecker.check(Parser.parse(source));
-        assertEquals(List.of("false", "true", "rhs", "true"),
+        assertEquals(List.of("false", "true", "lhs", "rhs", "true"),
                 run(source, "short-circuit.atto"));
     }
 
