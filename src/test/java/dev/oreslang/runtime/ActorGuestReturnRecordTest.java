@@ -251,6 +251,7 @@ final class ActorGuestReturnRecordTest {
                     assertThrows(IllegalStateException.class, record::readCursor);
                     assertTrue(arena.isPoisoned(), "corrupt ABI header must fail-stop owner");
                 }
+                turn.self().stop();
             });
             var good = runtime.<String>spawnShared(factory -> (mail, turn) -> {
                 siblingCalls.incrementAndGet();
@@ -283,6 +284,7 @@ final class ActorGuestReturnRecordTest {
                     assertThrows(IllegalStateException.class, record::readCursor);
                     assertTrue(arena.get().isPoisoned());
                 }
+                turn.self().stop();
             });
             actor.send("altered-execution");
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
