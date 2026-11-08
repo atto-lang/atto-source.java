@@ -341,6 +341,10 @@ final class ActorSourceTaskFrame {
             throw new IllegalStateException(
                     "source task scalar state requires an active owned frame");
         }
+        if (callContinuation != null && callContinuation.hasGuestFrames()) {
+            throw new IllegalStateException(
+                    "SourceTask root scalar slots are unavailable while nested call frames are active");
+        }
     }
 
     /**
