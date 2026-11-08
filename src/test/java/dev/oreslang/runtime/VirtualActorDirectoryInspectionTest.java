@@ -96,7 +96,7 @@ final class VirtualActorDirectoryInspectionTest {
                         "tenant-a", "Cart", "x".repeat(257))));
         assertThrows(IllegalArgumentException.class, () ->
                 VirtualActorAddressV1.encode(new VirtualActorActivationRegistry.Identity(
-                        "tenant-a", "Cart", "bad\\nkey")));
+                        "tenant-a", "Cart", "bad\nkey")));
         assertThrows(NullPointerException.class, () ->
                 VirtualActorAddressV1.encode(new VirtualActorActivationRegistry.Identity(
                         null, "Cart", "42")));
