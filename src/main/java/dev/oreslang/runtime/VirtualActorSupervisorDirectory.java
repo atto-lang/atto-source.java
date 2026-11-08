@@ -399,7 +399,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 || !runtime.ownsVirtualActor(logical.identity(), supervisor))
             throw new SecurityException("virtual actor reference outside supervisor scope");
         return request(grant, authenticatedSession, timeoutNanos,
-                () -> Optional.of(enrich(localInspection.inspect(logical))));
+                () -> enrich(localInspection.inspect(logical));
     }
 
     private Snapshot enrich(VirtualActorDirectoryInspection.Snapshot snapshot) {
