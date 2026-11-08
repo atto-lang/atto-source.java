@@ -87,6 +87,22 @@ final class VirtualActorDirectoryInspectionTest {
     }
 
     @Test
+    void encoderRejectsMalformedOversizedAndNonCanonicalIdentityComponents() {
+        assertThrows(IllegalArgumentException.class, () ->
+                VirtualActorAddressV1.encode(new VirtualActorActivationRegistry.Identity(
+                        "tenant-a", "Cart", "not-nfc-e\u0301")));
+        assertThrows(IllegalArgumentException.class, () ->
+                VirtualActorAddressV1.encode(new VirtualActorActivationRegistry.Identity(
+                        "tenant-a", "Cart", "x".repeat(257))));
+        assertThrows(IllegalArgumentException.class, () ->
+                VirtualActorAddressV1.encode(new VirtualActorActivationRegistry.Identity(
+                        "tenant-a", "Cart", "bad\\nkey")));
+        assertThrows(NullPointerException.class, () ->
+                VirtualActorAddressV1.encode(new VirtualActorActivationRegistry.Identity(
+                        null, "Cart", "42")));
+    }
+
+    @Test
     void addressFromAnotherDomainCannotInspectThisRegistry() {
         try (var registry = new VirtualActorActivationRegistry("tenant-a", 2, 2)) {
             var otherDomain = new VirtualActorActivationRegistry.Identity("tenant-b", "Cart", "42");
