@@ -8837,11 +8837,29 @@ public final class ActorRuntime implements AutoCloseable {
                 // failure. The actor was already marked stopped by the
                 // supervisor/cancel path; finally/endTurn completes teardown.
                 if (!(failure instanceof ActorCancellationSignal)) {
-                    // Fail-stop supervision for ordinary actor failures. Fatal
-                    // VM errors are cleaned up and then rethrown.
-                    fail(failure);
+                    if (failure instanceof StackOverflowError) {
+                        // Only an admitted physical actor turn reaches this
+                        // catch. The recursive JVM guest path can still
+                        // exhaust the carrier stack before an explicit budget
+                        // guard fires. Once Java has unwound back here, fence
+                        // the ENTIRE actor incarnation before cleanup or any
+                        // next mailbox delivery. Do not rethrow this particular
+                        // VM error into the shared dispatcher/carrier.
+                        //
+                        // This is best-effort JVM recovery, not a claim of
+                        // process isolation for arbitrary JNI/native failures.
+                        guestStack.poison();
+                        frameArena.poisonFromGuestGuard();
+                        fail(new ActorStackOverflowException());
+                    } else {
+                        // All other VM failures retain the existing fatal
+                        // propagation policy; no process-corrupting Error is
+                        // silently classified as recoverable actor overflow.
+                        fail(failure);
+                    }
                 }
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof VirtualMachineError fatal
+                        && !(fatal instanceof StackOverflowError)) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
