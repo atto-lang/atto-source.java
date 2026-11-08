@@ -59,7 +59,7 @@ public final class VirtualActorDirectoryInspection {
         Lifecycle lifecycle;
         if (value.registryClosed()) lifecycle = Lifecycle.CLOSED;
         else if (value.published()) lifecycle = Lifecycle.ACTIVE;
-        else if (value.activationReserved()) lifecycle = Lifecycle.ACTIVATING;
+        else if (value.activationPresent()) lifecycle = Lifecycle.ACTIVATING;
         else if (value.latestIncarnation() == 0) lifecycle = Lifecycle.NEVER_ACTIVATED;
         else lifecycle = Lifecycle.PASSIVATED;
         return new Snapshot(1, value.identity(), VirtualActorAddressV1.encode(value.identity()),
