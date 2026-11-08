@@ -33,6 +33,16 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute exact-head borrow and Task ownership JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Tests execute against the exact checked-out PR head verified above.
+          # Including the real guest test is mandatory: host-only trait tests
+          # cannot independently establish .atto source behavior.
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=AutoTraitRulesTest,TaskCaptureAdmissionIdentityTest,TaskBorrowBoundaryV2Test,LogicalBorrowCompilerGuestTest \
+            test
       - name: Static shell syntax and Bash expansion admission
         shell: bash
         run: |
