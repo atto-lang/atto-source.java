@@ -94,7 +94,14 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            /*
+             * Pointer-free logical identity of this physical actor dispatch.
+             * Its ACTOR allocation domain names the cell's heap/arena owner
+             * and is fenced by the incarnation generation, so a restarted
+             * actor never shares an allocation domain with its predecessor.
+             */
+            ExecutionContext logical) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -181,6 +188,25 @@ public final class ActorRuntime implements AutoCloseable {
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Optional.empty() : Optional.of(current.actorId());
+    }
+
+    /**
+     * Logical execution context of the current actor dispatch, or null when
+     * the caller is not inside an actor mailbox turn.
+     */
+    public static ExecutionContext currentActorExecutionContext() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.logical();
+    }
+
+    /**
+     * The innermost logical execution: the actor dispatch when inside an actor
+     * turn (even when that turn runs on an OresScheduler carrier), otherwise
+     * the OresScheduler task context, otherwise null.
+     */
+    public static ExecutionContext currentExecutionContext() {
+        ExecutionContext actor = currentActorExecutionContext();
+        return actor != null ? actor : OresScheduler.currentExecutionContext();
     }
 
     public static Object currentExecutionDomain() {
@@ -281,6 +307,18 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("WAL proof requires an admitted live physical actor turn");
         }
         return proof;
+    }
+
+    private ExecutionContext mintActorExecutionContext(long storageActorOrdinal, long generation) {
+        long execution = nextActorExecution.incrementAndGet();
+        if (execution <= 0) {
+            throw new IllegalStateException("actor execution id space exhausted");
+        }
+        // Owner 0 is the actor's root allocation owner inside its domain.
+        // parentExecution/continuation stay 0 until compiler-lowered
+        // continuation storage is allocated in the actor's arena.
+        return ExecutionContext.actor(executionRuntimeDomain, execution,
+                storageActorOrdinal, 0L, generation, 0L, 0L);
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
@@ -566,6 +604,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
     private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
+    /** ExecutionId runtime domain shared by every actor dispatch of this runtime. */
+    private final long executionRuntimeDomain = ExecutionContext.allocateRuntimeDomain();
+    private final AtomicLong nextActorExecution = new AtomicLong();
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
@@ -9486,7 +9527,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    mintActorExecutionContext(storageActorOrdinal, ref.generation())));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {

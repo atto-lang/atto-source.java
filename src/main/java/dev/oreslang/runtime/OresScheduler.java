@@ -39,7 +39,6 @@ import java.util.function.BiConsumer;
  * {@link Done} completes it.</p>
  */
 public final class OresScheduler implements AutoCloseable {
-    private static final AtomicLong NEXT_ID = new AtomicLong();
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
 
     private static long allocatePositiveId(AtomicLong counter, String kind) {
@@ -304,7 +303,7 @@ public final class OresScheduler implements AutoCloseable {
             throw new IllegalArgumentException("scheduler queue capacity must be positive");
         }
 
-        this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
+        this.schedulerDomain = ExecutionContext.allocateRuntimeDomain();
         this.name = "ores-user-scheduler-" + schedulerDomain;
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
@@ -341,7 +340,7 @@ public final class OresScheduler implements AutoCloseable {
             ExecutorService ownedExecutor,
             TurnExecutor turnExecutor) {
         this.name = Objects.requireNonNull(name, "name");
-        this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
+        this.schedulerDomain = ExecutionContext.allocateRuntimeDomain();
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
         }

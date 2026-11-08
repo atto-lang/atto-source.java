@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Stable logical execution identity for one Oreslang task.
@@ -61,6 +62,21 @@ public final class ExecutionContext {
         public boolean isBound() {
             return kind != AllocationKind.NONE;
         }
+    }
+
+    /**
+     * One VM-wide space for {@link ExecutionId#runtimeDomain()} values. Both
+     * OresScheduler task domains and ActorRuntime actor domains draw from it,
+     * so an execution id never collides across the two execution kinds.
+     */
+    private static final AtomicLong NEXT_RUNTIME_DOMAIN = new AtomicLong();
+
+    static long allocateRuntimeDomain() {
+        long value = NEXT_RUNTIME_DOMAIN.incrementAndGet();
+        if (value <= 0) {
+            throw new IllegalStateException("execution runtime-domain id space exhausted");
+        }
+        return value;
     }
 
     private final ExecutionId id;
