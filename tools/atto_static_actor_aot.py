@@ -339,6 +339,13 @@ def main(argv=None):
         # pilot has no generic, typeclass, dynamic-module or FFI source syntax.
         # A native Image can still include host-library internals: this is
         # NOT a full linked-binary reachability or zero-GC certificate.
+        spawned_actor_types = {
+            actor_type for kind, _, actor_type in actions if kind == "spawn"
+        }
+        declared_actor_nodes = [
+            {"source_actor": name, "generated_type": "AttoGeneratedMain.Actor_" + str(index)}
+            for index, name in enumerate(kinds)
+        ]
         actor_roots = [
             {
                 "source_actor": name,
@@ -346,9 +353,9 @@ def main(argv=None):
                 "handler": "AttoGeneratedMain.Actor_" + str(index) + ".send",
                 "retirement": "AttoGeneratedMain.Actor_" + str(index) + ".close",
             }
-            for index, name in enumerate(kinds)
+            for index, name in enumerate(kinds) if name in spawned_actor_types
         ]
-        for index in range(len(actor_roots)):
+        for index in range(len(declared_actor_nodes)):
             if ("private static final class Actor_" + str(index)) not in java:
                 raise CompileError("generated actor type missing from closed-world profile")
         if "private static long guest_main()" not in java:
@@ -365,7 +372,9 @@ def main(argv=None):
             "status": "COMPILER_GENERATED_RESTRICTED_GRAPH_NOT_CERTIFIED",
             "single_source_sha256": exact,
             "entry_roots": ["AttoGeneratedMain.guest_main"],
+            "declared_actor_nodes": declared_actor_nodes,
             "actor_roots": actor_roots,
+            "actor_instance_spawns": sum(kind == "spawn" for kind, _, _ in actions),
             "action_count": len(actions),
             "action_kinds": sorted({kind for kind, _, _ in actions}),
             "generic_specializations": [],
