@@ -63,7 +63,7 @@ jobs:
           # Remove stale Surefire XML and compiled JNI libraries on reused runners.
           # A previous checkout must never be able to supply a passing receipt.
           mvn -B -ntp -Dores.runtime.carriers=native \
-            '-Dtest=BootThreadBudgetTest,ActorTurnWatchdogTest,ThreadBudgetFlagsTest,ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest,ActorJvmFirstCarrierAdmissionTest' \
+            '-Dtest=BootThreadBudgetTest,ActorTurnWatchdogTest,ThreadBudgetFlagsTest,ActorPoolLazyStartTest,NativeCarrierExecutorTest,ActorRuntimeNativeCarrierTest,ActorAffinityDispatcherTest,ActorAffinitySoftSpillTest,ActorJvmFirstCarrierAdmissionTest,SchedulerCrossRuntimeLifecycleTest' \
             clean test
           test -s target/native/liboresthread.so
           test -n "$(find target/surefire-reports -maxdepth 1 -name 'TEST-*.xml' -print -quit)"
@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           # Surefire XML is the executable receipt, not a filename-only smoke.
-          # All nine selected suites are required on each compiler matrix leg.
+          # All ten selected suites are required on each compiler matrix leg.
           for suite in \
             dev.oreslang.BootThreadBudgetTest \
             dev.oreslang.runtime.ActorTurnWatchdogTest \
@@ -82,7 +82,8 @@ jobs:
             dev.oreslang.runtime.ActorJvmFirstCarrierAdmissionTest \
             dev.oreslang.runtime.ActorRuntimeNativeCarrierTest \
             dev.oreslang.runtime.ActorAffinityDispatcherTest \
-            dev.oreslang.runtime.ActorAffinitySoftSpillTest; do
+            dev.oreslang.runtime.ActorAffinitySoftSpillTest \
+            dev.oreslang.runtime.SchedulerCrossRuntimeLifecycleTest; do
             report="target/surefire-reports/TEST-${suite}.xml"
             test -s "$report" || { echo "::error::Missing executed suite: $suite"; exit 1; }
             suite_header="$(grep -m 1 '<testsuite ' "$report")"
