@@ -199,7 +199,7 @@ final class VirtualActorSupervisorDirectoryTest {
                 assertThrows(SecurityException.class, () -> directory.requestInspect(
                         grant, new Object(), logical.identity(), 1_000_000));
                 var foreign = new VirtualActorActivationRegistry.Identity(
-                        TENANT + "@other-supervisor", "Cart", "42");
+                        "other-tenant", "default/Cart", "42");
                 assertThrows(SecurityException.class, () -> directory.requestInspect(
                         grant, session, foreign, 1_000_000));
                 directory.revoke(grant);
@@ -209,4 +209,96 @@ final class VirtualActorSupervisorDirectoryTest {
             }
         }
     }
+    @Test
+    void supervisorOwnershipIsUniqueAcrossDirectoriesAndFailedClaimDoesNotLeakQuota() {
+        try (var runtime = new ActorRuntime()) {
+            var firstSupervisor = runtime.createSupervisor();
+            var secondSupervisor = runtime.createSupervisor();
+            try (var first = new VirtualActorSupervisorDirectory(
+                         runtime, firstSupervisor, TENANT, 8, 4);
+                 var second = new VirtualActorSupervisorDirectory(
+                         runtime, secondSupervisor, TENANT, 1, 4)) {
+                first.resolve("Cart", "same-logical-id");
+                assertThrows(SecurityException.class,
+                        () -> second.resolve("Cart", "same-logical-id"));
+                // Failed ownership admission removes its unactivated local slot.
+                assertEquals("another-logical-id",
+                        second.resolve("Cart", "another-logical-id").identity().key());
+            }
+        }
+    }
+
+    @Test
+    void activationPlanProvidesStableOpaquePersistenceKeyAndBindsNamespace() {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var alpha = directory.resolve("billing", "Account", "42");
+                var same = directory.resolve("billing", "Account", "42");
+                var otherNamespace = directory.resolve("inventory", "Account", "42");
+                assertEquals(alpha.identity(), same.identity());
+                assertNotEquals(alpha.identity(), otherNamespace.identity());
+
+                var plan = directory.prepareActivation(alpha, "balance");
+                var descriptor = plan.descriptor();
+                assertEquals(TENANT, descriptor.persistenceKey().tenant());
+                assertEquals("balance", descriptor.persistenceKey().state());
+                assertTrue(descriptor.persistenceKey().actor().startsWith("va1_"));
+                assertEquals(47, descriptor.persistenceKey().actor().length());
+                directory.abortActivation(plan);
+            }
+        }
+    }
+
+    @Test
+    void persistentActorKeyIsIndependentOfSupervisorAndRuntimeInstance() {
+        String firstActorKey;
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("namespace", "Cart", "42");
+                var plan = directory.prepareActivation(logical, "state");
+                firstActorKey = plan.descriptor().persistenceKey().actor();
+                directory.abortActivation(plan);
+            }
+        }
+        try (var runtime = new ActorRuntime()) {
+            var differentSupervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, differentSupervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("namespace", "Cart", "42");
+                var plan = directory.prepareActivation(logical, "state");
+                assertEquals(firstActorKey, plan.descriptor().persistenceKey().actor());
+                directory.abortActivation(plan);
+            }
+        }
+    }
+
+    @Test
+    void activationGenerationDoesNotResetWhenDirectoryIsRecreatedInSameRuntime() {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            long firstGeneration;
+            var identity = new VirtualActorActivationRegistry.Identity(
+                    TENANT, "default/Cart", "42");
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                var plan = directory.prepareActivation(logical, "state");
+                firstGeneration = plan.descriptor().logicalGeneration();
+                directory.abortActivation(plan);
+                assertTrue(directory.resolve("Cart", "42").identity().equals(identity));
+            }
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                var plan = directory.prepareActivation(logical, "state");
+                assertTrue(plan.descriptor().logicalGeneration() > firstGeneration);
+                directory.abortActivation(plan);
+            }
+        }
+    }
+
 }
