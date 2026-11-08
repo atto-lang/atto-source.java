@@ -36,7 +36,21 @@ final class ActorScalarSourceLoweringTest {
         assertNotNull(lower("fnc value(): int { return 42; }", "value#0"));
     }
     @Test void scalarParameterArithmeticLowers() {
-        assertNotNull(lower("fnc plus(int n): int { return n + 2; }", "plus#1"));
+        var supported = lower("fnc plus(int n): int { return n + 2; }", "plus#1");
+        assertNotNull(supported);
+        assertEquals(2, supported.functions().getFirst().maxStack(),
+                "scalar compiler must charge exact peak operand slots");
+
+        // This source is valid ordinary scalar arithmetic, but a deeply
+        // nested expression exceeds our bounded *subset* operand stack.
+        // Compile-time admission must fall back before actor execution,
+        // never discover the limit mid-guest-run and poison the actor.
+        String expression = "1";
+        for (int i = 0; i < 25; i++) {
+            expression = "1 + (" + expression + ")";
+        }
+        assertNull(lower("fnc deep(): int { return " + expression + "; }",
+                "deep#0"));
     }
     @Test void scalarMutableLocalLowers() {
         assertNotNull(lower("""
