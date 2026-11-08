@@ -371,8 +371,9 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
-    void oneCanonicalDirectoryPerSupervisorPreventsSplitLocalRegistries() {
-        try (var runtime = new ActorRuntime()) {
+    void oneRuntimeOwnedDirectoryRegistrySurvivesFacadeRecreation() throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             var runtime = runtime(pooled(pool))) {
             var supervisor = runtime.createSupervisor();
             try (var directory = new VirtualActorSupervisorDirectory(
                     runtime, supervisor, TENANT, 8, 4)) {
@@ -381,10 +382,19 @@ final class VirtualActorSupervisorDirectoryTest {
                         () -> new VirtualActorSupervisorDirectory(
                                 runtime, supervisor, TENANT, 8, 4));
             }
-            // Closing the registered directory releases the exact host ownership token.
+            // Facade ownership is released, but the registry and logical identity
+            // remain in ActorRuntime rather than being recreated as an empty map.
             try (var replacement = new VirtualActorSupervisorDirectory(
                     runtime, supervisor, TENANT, 8, 4)) {
-                assertEquals("42", replacement.resolve("Cart", "42").identity().key());
+                Object session = new Object();
+                var grant = replacement.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(4));
+                var page = replacement.requestList(grant, session, 8, -1, null,
+                        TimeUnit.SECONDS.toNanos(3)).toCompletableFuture()
+                        .get(5, TimeUnit.SECONDS);
+                assertEquals(1, page.entries().size());
+                assertEquals("42", page.entries().getFirst().identity().key());
+                assertEquals("defaultCart", page.entries().getFirst().identity().declaration()
+                        .substring(page.entries().getFirst().identity().declaration().indexOf(':') + 1));
             }
         }
     }
