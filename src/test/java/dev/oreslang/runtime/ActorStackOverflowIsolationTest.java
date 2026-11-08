@@ -208,6 +208,38 @@ final class ActorStackOverflowIsolationTest {
     }
 
     @Test
+    void shallowNativeStackProcessStillPreservesActorSiblingAndSharedCarrier()
+            throws Exception {
+        // A child JVM exercises the actual stack-depth boundary without
+        // risking this JUnit worker's own process. Maven Surefire publishes
+        // the full tested project classpath in surefire.test.class.path.
+        String classpath = System.getProperty("surefire.test.class.path",
+                System.getProperty("java.class.path"));
+        assertNotNull(classpath, "unable to locate child JVM test classpath");
+        String exe = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? "java.exe" : "java";
+        String java = java.nio.file.Path.of(System.getProperty("java.home"),
+                "bin", exe).toString();
+        var process = new ProcessBuilder(
+                java, "-Xss256k", "-cp", classpath,
+                ActorStackOverflowLowStackProbe.class.getName())
+                .redirectErrorStream(true)
+                .start();
+        try {
+            assertTrue(process.waitFor(25, TimeUnit.SECONDS),
+                    "low-stack actor isolation probe did not terminate");
+            String output = new String(process.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(0, process.exitValue(),
+                    "subprocess failed under shallow native stack:\n" + output);
+            assertTrue(output.contains(
+                    "ACTOR_NATIVE_STACK_OVERFLOW=A_FAILS_B_SURVIVES"), output);
+        } finally {
+            if (process.isAlive()) process.destroyForcibly();
+        }
+    }
+
+    @Test
     void regularGuestHandlerFailureDoesNotBecomeStackOverflow() throws Exception {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 1, 8))) {
