@@ -135,6 +135,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                                   long actorGeneration,
                                   ActorRuntime.ActorKind actorKind,
                                   String failureClass,
+                                  boolean cancelled,
                                   Instant terminalAt) { }
 
     private final ActorRuntime runtime;
@@ -355,12 +356,12 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             try {
                 registry.deactivate(expected.activation());
                 bindings.remove(identity, expected);
-                String failureClass = failure == null ? null
-                        : failure instanceof java.util.concurrent.CancellationException
-                                ? null : failure.getClass().getName();
+                boolean cancelled = failure instanceof java.util.concurrent.CancellationException;
+                String failureClass = failure == null || cancelled
+                        ? null : failure.getClass().getName();
                 terminals.put(identity, new TerminalRecord(expected.actor().id(),
                         expected.actor().generation(), expected.actor().kind(),
-                        failureClass, Instant.now()));
+                        failureClass, cancelled, Instant.now()));
             } catch (RuntimeException | Error failure) {
                 // Retain the binding as a quarantined record for explicit
                 // reconciliation; never report passivation if accounting failed.
@@ -499,12 +500,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 terminalFailure = Optional.ofNullable(terminal.failureClass());
                 terminalAt = Optional.of(terminal.terminalAt());
                 if (terminal.failureClass() != null) lifecycle = Lifecycle.FAILED;
-                else if (binding == null && terminal.actorKind() != null
-                        && terminal.terminalAt() != null) {
-                    // A normal stop and a cancellation both passivate the
-                    // logical identity; failure class remains absent.
-                    lifecycle = Lifecycle.PASSIVATED;
-                }
+                else if (terminal.cancelled()) lifecycle = Lifecycle.CANCELLED;
+                else lifecycle = Lifecycle.PASSIVATED;
             }
             if (binding != null) {
                 actorId = Optional.of(binding.actor().id());
