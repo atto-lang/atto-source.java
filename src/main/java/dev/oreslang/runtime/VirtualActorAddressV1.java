@@ -20,8 +20,16 @@ public final class VirtualActorAddressV1 {
 
     public static String encode(VirtualActorActivationRegistry.Identity identity) {
         Objects.requireNonNull(identity, "identity");
-        return PREFIX + "." + part(identity.domain()) + "." + part(identity.declaration())
+        validate(identity.domain(), "domain", 512);
+        validate(identity.declaration(), "declaration", 512);
+        validate(identity.key(), "key", 256);
+        if (!Normalizer.isNormalized(identity.key(), Normalizer.Form.NFC))
+            throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
+        String result = PREFIX + "." + part(identity.domain()) + "." + part(identity.declaration())
                 + "." + part(identity.key());
+        if (result.length() > MAX_ADDRESS_CHARS)
+            throw new IllegalArgumentException("virtual actor address exceeds size limit");
+        return result;
     }
 
     public static VirtualActorActivationRegistry.Identity decode(String address) {
@@ -45,6 +53,7 @@ public final class VirtualActorAddressV1 {
     }
 
     private static void validate(String value, String kind, int maxUtf8Bytes) {
+        Objects.requireNonNull(value, "address " + kind);
         if (value.isBlank() || value.getBytes(StandardCharsets.UTF_8).length > maxUtf8Bytes)
             throw new IllegalArgumentException("invalid virtual actor address " + kind);
         for (int i = 0; i < value.length(); i++) {
