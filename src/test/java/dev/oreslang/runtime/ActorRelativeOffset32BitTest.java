@@ -54,5 +54,34 @@ final class ActorRelativeOffset32BitTest {
             assertThrows(InvocationTargetException.class, () -> reserve.invoke(first, 8, 3));
             assertEquals((1L << 32) - 3, cursor.getLong(first));
         }
+
+    }
+
+    @Test
+    void invalidReservationsAndHostLongOverflowLeaveCursorUntouched() throws Exception {
+        Method reserve = ActorNativeArena.class.getDeclaredMethod(
+                "reserveActorOffset", int.class, int.class);
+        reserve.setAccessible(true);
+        Field cursor = ActorNativeArena.class.getDeclaredField("nextActorOffset");
+        cursor.setAccessible(true);
+
+        try (var arena = new ActorNativeArena(1024, () -> { }, bytes -> () -> { })) {
+            cursor.setLong(arena, 16L);
+            for (int[] request : new int[][] {{-1, 8}, {8, 0}, {8, 3}, {8, -8}}) {
+                InvocationTargetException failure = assertThrows(
+                        InvocationTargetException.class,
+                        () -> reserve.invoke(arena, request[0], request[1]));
+                assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+                assertEquals(16L, cursor.getLong(arena), "invalid admission changed offset");
+            }
+
+            // Even a corrupted/unrepresentable host-long cursor may not wrap.
+            cursor.setLong(arena, Long.MAX_VALUE - 3);
+            InvocationTargetException overflow = assertThrows(
+                    InvocationTargetException.class, () -> reserve.invoke(arena, 8, 8));
+            assertInstanceOf(ArithmeticException.class, overflow.getCause());
+            assertEquals(Long.MAX_VALUE - 3, cursor.getLong(arena),
+                    "arithmetic failure advanced the monotonic cursor");
+        }
     }
 }
