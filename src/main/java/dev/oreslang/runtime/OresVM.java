@@ -23,8 +23,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * root continuations without lazily creating runtime infrastructure.</p>
  */
 public final class OresVM implements AutoCloseable {
-    private static final int DEFAULT_CONTROL_PARALLELISM =
-            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+    // Two VM-owned CONTROL workers are enough for the cold startup barrier,
+    // independent of the number of host CPUs. Extra idle CONTROL workers do
+    // not improve actor carrier availability, which is managed separately.
+    // Explicit -Dores.runtime.control.parallelism overrides remain supported.
+    // This counts Oreslang CONTROL workers, not all JVM or OS threads.
+    private static final int DEFAULT_CONTROL_PARALLELISM = 2;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
     // Resource revokers may block. They must never occupy the CONTROL pool.
     // One bounded, VM-owned executor serves all actors and supervisors.
