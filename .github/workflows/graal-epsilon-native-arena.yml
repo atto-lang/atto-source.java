@@ -10,6 +10,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorNativeArenaSoak.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRelativeOffset32BitTest.java'
       - 'src/test/java/dev/oreslang/JavaPrecompiledHostImportAotPolicyTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SafeHostMemberManifestTest.java'
       - 'scripts/verify-graal-epsilon-native-arena.sh'
       - '.github/workflows/graal-epsilon-native-arena.yml'
   workflow_dispatch:
@@ -33,7 +34,7 @@ jobs:
           distribution: graalvm
           java-version: '25'
       - name: Verify actor offset bounds and precompiled Java host import under AOT policy
-        run: mvn -B -Dtest=ActorRelativeOffset32BitTest,JavaPrecompiledHostImportAotPolicyTest test
+        run: mvn -B -ntp -Dtest=ActorRelativeOffset32BitTest,SafeHostMemberManifestTest,JavaPrecompiledHostImportAotPolicyTest -DfailIfNoTests=true test
       - name: Build actual Epsilon native executable and run native arena lifetime soak
         env:
           ATTO_EXPECTED_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
