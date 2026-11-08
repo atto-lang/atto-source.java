@@ -129,6 +129,10 @@ final class LogicalWordOperatorTest {
         }
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(fixture("reject-word-as-name.atto")));
+        for (String name : List.of("and", "or", "xor")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc " + name + "(): bool { return true; }"), name);
+        }
     }
 
     private static List<String> run(String program, String fileName) throws Exception {
