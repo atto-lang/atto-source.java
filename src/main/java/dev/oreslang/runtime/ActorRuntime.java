@@ -2388,7 +2388,12 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 long nowCpu = currentThreadCpuNanos();
                 long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
-                        ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
+                        ? elapsedNanosOrExpired(nowCpu, cell.turnStartedCpuNanos) : 0L;
+                if (alreadyCpu < 0) {
+                    throw new UntrustedActorQuotaExceededException(
+                            UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                            "untrusted actor CPU clock overflow before logical task admission");
+                }
                 inheritedQuota = new UntrustedLogicalQuota(
                         ActorRuntime.this,
                         cell.ref.id(),
@@ -6809,7 +6814,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             cell.untrustedFuelRemaining--;
             long wallBudget = cell.policy.maxWallTime().toNanos();
-            long wallElapsed = System.nanoTime() - cell.turnStartedWallNanos;
+            long wallElapsed = elapsedNanosOrExpired(System.nanoTime(), cell.turnStartedWallNanos);
             // Deadline is exclusive: zero remaining time is already expired.
             // A wrapped monotonic delta must also fail closed, not refuel.
             if (wallElapsed < 0 || wallElapsed >= wallBudget) {
@@ -6819,7 +6824,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             long cpuNow = currentThreadCpuNanos();
             if (cpuNow >= 0 && cell.turnStartedCpuNanos >= 0) {
-                long cpuElapsed = cpuNow - cell.turnStartedCpuNanos;
+                long cpuElapsed = elapsedNanosOrExpired(cpuNow, cell.turnStartedCpuNanos);
                 if (cpuElapsed < 0 || cpuElapsed >= wallBudget) {
                     throw new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.CPU_TIME,
@@ -6852,6 +6857,20 @@ public final class ActorRuntime implements AutoCloseable {
      * CPU use is accumulated per carrier segment; comparing CPU readings from
      * two different carrier threads directly is invalid.</p>
      */
+    /**
+     * Return -1 for any negative or mathematically overflowing clock delta.
+     * Merely testing a wrapped subtraction for a negative result is unsafe:
+     * MAX_VALUE-5 to MIN_VALUE+5 wraps to a small *positive* number.
+     */
+    private static long elapsedNanosOrExpired(long now, long started) {
+        try {
+            long elapsed = Math.subtractExact(now, started);
+            return elapsed >= 0 ? elapsed : -1L;
+        } catch (ArithmeticException overflow) {
+            return -1L;
+        }
+    }
+
     static final class UntrustedLogicalQuota {
         private final ActorRuntime ownerRuntime;
         private final ActorId ownerActor;
@@ -6904,7 +6923,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Remaining cohort wall time, including elapsed suspended time. */
         synchronized long remainingWallNanos() {
-            long elapsed = wallClock.getAsLong() - startedNanos;
+            long elapsed = elapsedNanosOrExpired(wallClock.getAsLong(), startedNanos);
             // Overflow, an already-expired quota or a late child all expire
             // immediately. Never create another full budget for a child.
             if (elapsed < 0 || elapsed >= wallBudgetNanos) return 0L;
@@ -6941,7 +6960,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized void check() {
             requireActive();
-            long elapsed = wallClock.getAsLong() - startedNanos;
+            long elapsed = elapsedNanosOrExpired(wallClock.getAsLong(), startedNanos);
             // Fail closed on a monotonic clock overflow instead of treating
             // overflow as a new unspent deadline.
             if (elapsed < 0 || elapsed >= wallBudgetNanos) {
