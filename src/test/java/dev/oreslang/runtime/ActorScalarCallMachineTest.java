@@ -135,7 +135,7 @@ final class ActorScalarCallMachineTest {
             throws Exception {
         Outcome result = run(tailCounter(), 0, List.of(100_000L, 0L), () -> { });
         assertNull(result.failure());
-        assertEquals(100_000, result.value());
+        assertEquals(100_000L, result.value().longValue());
         assertTrue(result.peakBytes() < 2048, "tail recursion must remain constant space");
     }
     @Test void nonTailRecursionReturnsThroughSavedActorFramePCs() throws Exception {
@@ -207,7 +207,7 @@ final class ActorScalarCallMachineTest {
                         x(ActorScalarCallMachine.Op.TAIL_CALL, 0)));
         Outcome result = run(program, 0, List.of(30_000L), () -> { });
         assertNull(result.failure());
-        assertEquals(3, result.value());
+        assertEquals(3L, result.value().longValue());
         assertTrue(result.peakBytes() < 2048);
     }
     @Test void scalarLocalStoreThenLoadReadsActorFrameBytes() throws Exception {
@@ -225,8 +225,8 @@ final class ActorScalarCallMachineTest {
     }
     @Test void safepointRunsOnlyOncePer128Instructions() throws Exception {
         AtomicInteger calls = new AtomicInteger();
-        assertEquals(256, run(tailCounter(), 0, List.of(256L, 0L),
-                calls::incrementAndGet).value());
+        assertEquals(256L, run(tailCounter(), 0, List.of(256L, 0L),
+                calls::incrementAndGet).value().longValue());
         assertTrue(calls.get() > 0);
         assertTrue(calls.get() < 256, "no slow-path poll on every instruction");
     }
