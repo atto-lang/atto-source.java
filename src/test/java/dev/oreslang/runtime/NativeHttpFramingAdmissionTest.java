@@ -82,11 +82,23 @@ final class NativeHttpFramingAdmissionTest {
         negative.add("Content-Length", "-1");
         assertThrows(IllegalArgumentException.class,
                 () -> NativeHttp.validateHeadersForAdmission(negative, "HTTP/1.1", 1024));
+        Headers boundary = valid();
+        boundary.add("Content-Length", "1024");
+        assertDoesNotThrow(
+                () -> NativeHttp.validateHeadersForAdmission(boundary, "HTTP/1.1", 1024),
+                "a body exactly at the limit must remain admissible");
+
         Headers oversized = valid();
         oversized.add("Content-Length", "1025");
         assertThrows(NativeHttp.RequestBodyTooLargeException.class,
                 () -> NativeHttp.validateHeadersForAdmission(oversized, "HTTP/1.1", 1024),
                 "header quota denial must use the typed transport-owned marker");
+
+        Headers overflowed = valid();
+        overflowed.add("Content-Length", "9223372036854775808");
+        assertThrows(NumberFormatException.class,
+                () -> NativeHttp.validateHeadersForAdmission(overflowed, "HTTP/1.1", 1024),
+                "overflowed decimal digits are malformed framing, not a quota marker");
     }
 
     @Test
