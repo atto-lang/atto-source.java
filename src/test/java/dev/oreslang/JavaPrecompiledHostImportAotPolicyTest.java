@@ -66,8 +66,20 @@ final class JavaPrecompiledHostImportAotPolicyTest {
                 """, StandardCharsets.UTF_8);
         var trusted = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
-        assertThrows(Exception.class, () -> LinkedProgramRunner.run(source, trusted,
-                new ExecutionProfile(ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER),
+        var profile = new ExecutionProfile(
+                ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER);
+
+        // Positive control on the *same* guest source: prove that toString
+        // actually parses, links and executes under explicitly trusted legacy
+        // class-wide interop. Otherwise a parser failure could masquerade as
+        // evidence that the method-scoped grant enforced isolation.
+        var legacyOutput = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(source, trusted, profile,
+                Set.of("java.lang.Long"), legacyOutput, new ByteArrayOutputStream());
+        assertEquals("42", legacyOutput.toString(StandardCharsets.UTF_8).trim(),
+                "control must execute before its scoped-denial result is meaningful");
+
+        assertThrows(Exception.class, () -> LinkedProgramRunner.run(source, trusted, profile,
                 Set.of(SafeHostMemberManifest.LONG_SUM_I64),
                 new ByteArrayOutputStream(), new ByteArrayOutputStream()),
                 "approving Long.sum must not grant access to Long.toString");
@@ -95,6 +107,17 @@ final class JavaPrecompiledHostImportAotPolicyTest {
                 () -> policy.restrictedContextBuilder(profile,
                         Set.of("java.lang.Runtime#exec(java.lang.String)")),
                 "unsafe capability cannot be granted through a forged selector");
+    }
+
+    @Test
+    void missingJavaInteropCapabilityRejectsApprovedHostMethod() {
+        var restricted = IsolatePolicy.developer();
+        var profile = new ExecutionProfile(
+                ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER);
+        assertThrows(SecurityException.class,
+                () -> restricted.restrictedContextBuilder(
+                        profile, Set.of(SafeHostMemberManifest.LONG_SUM_I64)),
+                "a valid method selector must never imply JAVA_INTEROP capability");
     }
 
     @Test
