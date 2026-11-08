@@ -161,6 +161,16 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 || !Normalizer.isNormalized(value, Normalizer.Form.NFC)
                 || value.codePoints().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("invalid " + name);
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1)))
+                    throw new IllegalArgumentException("unpaired UTF-16 surrogate in " + name);
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired UTF-16 surrogate in " + name);
+            }
+        }
         return value;
     }
 
@@ -383,7 +393,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             VirtualActorActivationRegistry.LogicalRef logical,
             long timeoutNanos) {
         Objects.requireNonNull(logical, "logical");
-        if (!logical.identity().domain().equals(tenant + "@" + supervisor.id().value()))
+        if (!tenant.equals(logical.identity().domain())
+                || !runtime.ownsVirtualActor(logical.identity(), supervisor))
             throw new SecurityException("virtual actor reference outside supervisor scope");
         return request(grant, authenticatedSession, timeoutNanos,
                 () -> Optional.of(enrich(localInspection.inspect(logical))));
