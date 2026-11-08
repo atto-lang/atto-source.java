@@ -175,4 +175,39 @@ final class AutoTraitRulesTest {
         var denied = nested.denying(SEND);
         assertFalse(AutoTraitRules.infer(denied).send());
     }
+
+    @Test
+    void malformedScalarMetadataCannotLaunderNestedNonSendStorage() {
+        var nonSend = AutoTraitRules.TypeModel.wrapped(
+                RC, AutoTraitRules.TypeModel.scalar(), false);
+        var forgedScalar = new AutoTraitRules.TypeModel(
+                SCALAR, java.util.List.of(nonSend), Set.of(), true, Set.of());
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                AutoTraitRules.infer(forgedScalar));
+        var forgedScalarBounds = new AutoTraitRules.TypeModel(
+                SCALAR, java.util.List.of(), Set.of(SEND, SYNC, SHARE), true, Set.of());
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                AutoTraitRules.infer(forgedScalarBounds));
+        assertEquals(
+                new AutoTraitRules.Capabilities(true, true, true),
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.scalar()));
+    }
+
+    @Test
+    void malformedDynWithHiddenPayloadCannotMintSendSyncOrShare() {
+        var nonSend = AutoTraitRules.TypeModel.wrapped(
+                RC, AutoTraitRules.TypeModel.scalar(), false);
+        var forgedDyn = new AutoTraitRules.TypeModel(
+                DYN, java.util.List.of(nonSend), Set.of(SEND, SYNC, SHARE),
+                true, Set.of());
+        assertEquals(
+                new AutoTraitRules.Capabilities(false, false, false),
+                AutoTraitRules.infer(forgedDyn));
+        assertEquals(
+                new AutoTraitRules.Capabilities(true, true, true),
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.dyn(
+                        Set.of(SEND, SYNC, SHARE), true)));
+    }
 }
