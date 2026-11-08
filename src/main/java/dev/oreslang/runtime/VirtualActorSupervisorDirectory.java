@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.Normalizer;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -146,26 +147,47 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 runtime.supervisorRegistryForObservation();
         if (registered.get(supervisor.id()) != supervisor)
             throw new SecurityException("supervisor does not belong to this ActorRuntime");
-        String domain = this.tenant + "@" + supervisor.id().value();
-        if (domain.length() > 128)
-            throw new IllegalArgumentException("tenant/supervisor domain exceeds identity budget");
-        this.registry = new VirtualActorActivationRegistry(domain, maxIdentities, mailboxCapacity);
+        // Supervisor identity is intentionally NOT part of the logical actor ID:
+        // activation placement/ownership can change without changing persistent identity.
+        this.registry = new VirtualActorActivationRegistry(
+                this.tenant, maxIdentities, mailboxCapacity, runtime::allocateVirtualActorGeneration);
         this.localInspection = new VirtualActorDirectoryInspection(registry);
     }
 
     private static String requireText(String value, String name, int max) {
         Objects.requireNonNull(value, name);
-        if (value.isBlank() || value.length() > max)
+        if (value.length() > max || value.isBlank()
+                || value.getBytes(StandardCharsets.UTF_8).length > max
+                || !Normalizer.isNormalized(value, Normalizer.Form.NFC)
+                || value.codePoints().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("invalid " + name);
         return value;
     }
 
-    /** Stable logical lookup. This deliberately does not activate the actor. */
+    /** Stable logical lookup in the default namespace. This never activates the actor. */
     public VirtualActorActivationRegistry.LogicalRef resolve(String declaration, String key) {
+        return resolve("default", declaration, key);
+    }
+
+    /** Stable logical lookup with an explicit namespace; lookup itself never activates. */
+    public VirtualActorActivationRegistry.LogicalRef resolve(
+            String namespace, String declaration, String key) {
+        namespace = requireText(namespace, "namespace", 128);
+        declaration = requireText(declaration, "declaration", 128);
+        String qualifiedDeclaration = namespace + "/" + declaration;
+        if (qualifiedDeclaration.length() > 128)
+            throw new IllegalArgumentException("qualified virtual actor type exceeds identity budget");
         runtime.supervisorRegistryForObservation(); // host-only caller/affinity guard
         synchronized (stateLock) {
             if (closed) throw new IllegalStateException("virtual actor supervisor directory closed");
-            return registry.resolve(declaration, key);
+            var logical = registry.resolve(qualifiedDeclaration, key);
+            try {
+                runtime.claimVirtualActorOwner(logical.identity(), supervisor);
+                return logical;
+            } catch (RuntimeException | Error failure) {
+                registry.discardUnactivated(logical);
+                throw failure;
+            }
         }
     }
 
@@ -180,7 +202,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         Objects.requireNonNull(logical, "logical");
         stateSlot = requireText(stateSlot, "stateSlot", 128);
         runtime.supervisorRegistryForObservation();
-        if (!logical.identity().domain().equals(tenant + "@" + supervisor.id().value()))
+        if (!tenant.equals(logical.identity().domain())
+                || !runtime.ownsVirtualActor(logical.identity(), supervisor))
             throw new SecurityException("virtual actor reference outside supervisor scope");
         PersistenceKey persistenceKey = new PersistenceKey(
                 tenant, stablePersistenceActorKey(logical.identity()), stateSlot);
@@ -341,7 +364,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             VirtualActorActivationRegistry.Identity identity,
             long timeoutNanos) {
         Objects.requireNonNull(identity, "identity");
-        if (!identity.domain().equals(tenant + "@" + supervisor.id().value()))
+        if (!tenant.equals(identity.domain())
+                || !runtime.ownsVirtualActor(identity, supervisor))
             throw new SecurityException("virtual actor identity outside supervisor scope");
         return request(grant, authenticatedSession, timeoutNanos,
                 () -> localInspection.inspect(identity).map(this::enrich));
