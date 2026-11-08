@@ -57,4 +57,32 @@ sed 's/rem mismatch: -128, 3/rem mismatch: 777, 777/' "$gate" > "$tmp/modified_g
 cp "$tmp/modified_gate" "$gate"
 reject_with wrong_mutant_reason 7 'mutation failed for unrelated/incorrect reason: rem' bash "$gate"
 
-echo 'STRICT_I64_GATE_NEGATIVES|PASS|cases=4'
+reset_fixture
+rm "$helper"
+reject_with missing_helper 3 'missing or symlinked source file' bash "$gate"
+
+reset_fixture
+mv "$helper" "$tmp/valid_helper"
+ln -s "$tmp/valid_helper" "$helper"
+reject_with symlink_helper 3 'missing or symlinked source file' bash "$gate"
+rm "$helper"
+
+reset_fixture
+sed 's/STRICT_I64_DEEP_PROBE|PASS|checks=601343/STRICT_I64_DEEP_PROBE|PASS|checks=123/' \
+  "$gate" > "$tmp/modified_gate"
+cp "$tmp/modified_gate" "$gate"
+reject_with wrong_baseline_receipt 4 'baseline did not produce the sole expected' bash "$gate"
+
+reset_fixture
+sed "s/anchor='return dividend % divisor;'/anchor='return dividend % NOT_PRESENT;'/" \
+  "$gate" > "$tmp/modified_gate"
+cp "$tmp/modified_gate" "$gate"
+reject_with missing_mutation_anchor 5 'mutation anchor missing/duplicated/unchanged: rem' bash "$gate"
+
+reset_fixture
+sed 's/at dev.oreslang.StrictIntegerArithmeticDifferentialStressTest./at FAKE.TEST./' \
+  "$gate" > "$tmp/modified_gate"
+cp "$tmp/modified_gate" "$gate"
+reject_with spoofed_stack_frame 7 'mutation failed for unrelated/incorrect reason: rem' bash "$gate"
+
+echo 'STRICT_I64_GATE_NEGATIVES|PASS|cases=9'
