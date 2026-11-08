@@ -399,7 +399,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 || !runtime.ownsVirtualActor(logical.identity(), supervisor))
             throw new SecurityException("virtual actor reference outside supervisor scope");
         return request(grant, authenticatedSession, timeoutNanos,
-                () -> enrich(localInspection.inspect(logical));
+                () -> enrich(localInspection.inspect(logical)));
     }
 
     private Snapshot enrich(VirtualActorDirectoryInspection.Snapshot snapshot) {
@@ -445,7 +445,9 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         Thread caller = Thread.currentThread();
         CompletableFuture<T> result = new CompletableFuture<>();
         result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
-        AtomicBoolean started = new AtomicBoolean();
+        // 0=queued, 1=running, 2=finished or cancelled-before-start.
+        // One atomic transition owns the race between timeout and CONTROL start.
+        AtomicInteger phase = new AtomicInteger(0);
         AtomicBoolean released = new AtomicBoolean();
         Runnable release = () -> {
             if (released.compareAndSet(false, true)) {
@@ -453,19 +455,16 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 pendingInspections.decrementAndGet();
             }
         };
-        // A timeout can win while the request is still queued in CONTROL.
-        // In that case no dispatcher callback may ever run to execute its
-        // finally block. Release the admission immediately, but only while
-        // the turn has not started; a running turn retains its slot until its
-        // own finally block completes. The started/released atomics close the
-        // timeout-vs-dispatch race without permitting a second live capture.
+        // If timeout/revocation wins while queued, phase 0->2 prevents a
+        // later CONTROL turn from beginning. If the worker wins 0->1, only
+        // its physical finally block releases the grant and global slot.
         result.whenComplete((ignored, failure) -> {
-            if (!started.get()) release.run();
+            if (phase.compareAndSet(0, 2)) release.run();
         });
         final OresFuture<Void> dispatch;
         try {
             dispatch = runtime.dispatchSupervisorObservationControl(() -> {
-                if (!started.compareAndSet(false, true)) return;
+                if (!phase.compareAndSet(0, 1)) return;
                 try {
                     if (Thread.currentThread() == caller)
                         throw new IllegalStateException("INLINE_CONTROL_DISPATCH_FORBIDDEN");
@@ -474,6 +473,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 } catch (Throwable failure) {
                     result.completeExceptionally(failure);
                 } finally {
+                    phase.set(2);
                     release.run();
                 }
             });
@@ -485,7 +485,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         dispatch.whenCompleteRuntime((ignored, failure) -> {
             if (failure != null) {
                 result.completeExceptionally(new IllegalStateException("CONTROL_DISPATCH_FAILED"));
-                if (!started.get()) release.run();
+                if (phase.compareAndSet(0, 2)) release.run();
             }
         });
         return result.minimalCompletionStage();
