@@ -571,6 +571,7 @@ public final class ActorRuntime implements AutoCloseable {
     /** Stable logical virtual-actor ownership; passivation does not release this edge. */
     private final ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
             new ConcurrentHashMap<>();
+    private final AtomicLong nextVirtualActorGeneration = new AtomicLong();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
     private static final int MAX_SUPERVISOR_DEPTH = 64;
@@ -3429,6 +3430,18 @@ public final class ActorRuntime implements AutoCloseable {
             SupervisorId raced = virtualActorOwners.putIfAbsent(identity, supervisor.id());
             if (raced != null && !raced.equals(supervisor.id()))
                 throw new SecurityException("virtual actor identity already belongs to another supervisor");
+        }
+    }
+
+    long allocateVirtualActorGeneration() {
+        requireSupervisorContext("allocate virtual actor generation");
+        requireCallerRuntimeAffinity("allocate virtual actor generation");
+        while (true) {
+            long current = nextVirtualActorGeneration.get();
+            if (current == Long.MAX_VALUE)
+                throw new IllegalStateException("runtime virtual actor generation budget exhausted");
+            long next = current + 1L;
+            if (nextVirtualActorGeneration.compareAndSet(current, next)) return next;
         }
     }
 
