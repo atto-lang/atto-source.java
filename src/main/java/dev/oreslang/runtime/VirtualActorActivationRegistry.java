@@ -23,7 +23,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     /** Immutable point-in-time view; it contains no activation capability. */
     public record Inspection(Identity identity, long latestIncarnation,
-                             boolean activationReserved, boolean published,
+                             boolean activationPresent, boolean published,
                              int outstanding, boolean registryClosed) { }
 
     private static final int MAX_KEY_BYTES = 256;
