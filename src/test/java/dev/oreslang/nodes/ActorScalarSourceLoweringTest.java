@@ -222,4 +222,28 @@ final class ActorScalarSourceLoweringTest {
                 """, "supported#0"));
     }
 
+    @Test void syntheticJvmIntegerLiteralDoesNotImplicitlyBecomeAttoInt() {
+        Ast.FunctionDecl original = null;
+        for (Ast.ModuleDecl module : Parser.parse(
+                "fnc literal(): int { return 42; }").modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && function.name().equals("literal")) original = function;
+            }
+        }
+        assertNotNull(original);
+        Ast.FunctionDecl function = new Ast.FunctionDecl(
+                original.name(), original.kind(), original.visibility(),
+                original.async(), original.suspends(), original.generator(),
+                original.structural(), original.nonLexical(), original.trapped(),
+                original.actorKind(), original.genericParameters(),
+                original.parameters(), original.returnType(),
+                original.annotations(),
+                java.util.List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(Integer.valueOf(42)))),
+                original.genericSpecs(), original.effects());
+        assertNull(ActorScalarSourceLowering.tryCompile(
+                function, (name, arity) -> null),
+                "source int is canonical signed i64 Long; do not silently widen JVM Integer");
+    }
+
 }
