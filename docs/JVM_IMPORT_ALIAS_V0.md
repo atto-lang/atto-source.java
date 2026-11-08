@@ -35,3 +35,20 @@ to LLVM/Wasm/.NET. Dotnet-qualified imports are rejected on Java.
 `HostImportTest` checks legacy AST equivalence, successful allowlisted
 execution, denied allowlists, invalid Java binary names, and backend mismatch.
 Do not promote on empty GitHub Actions job steps.
+
+## Required GraalVM integration gates
+
+- Run `mvn test -Dtest=HostImportTest` on the exact PR head under the pinned
+  JDK/GraalVM toolchain; a parser-only test is insufficient proof of execution.
+- Run the restricted-context JUnit execution on both allowed and denied class
+  lists. Preserve the default lack of `JAVA_INTEROP` in private actors.
+- Build a true `-Pnative-aot` Native Image (not just a native-host JVM
+  process). Execute an allowlisted host adapter under the same policy, with
+  no dynamic reflection fallback; document the actual output and binary SHA.
+- Integrate the inert-linking `LazyHostSymbol` changes in
+  [Java PR #1764](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1764)
+  **semantically**, after independent review. This branch intentionally does
+  not duplicate or replace that pending host-symbol lifecycle change.
+- Track the shared negative/positive source oracles in
+  `oreslang-platform-conformance/contracts/host-interop-v0`; do not mark
+  those cases VERIFIED from parser, source-free metadata or zero-step CI.
