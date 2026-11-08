@@ -144,6 +144,10 @@ test('source-free deny-all workflow uses exact head and strict policy bytes', ()
   assert.ok(policyGate.includes('EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}'));
   assert.ok(policyGate.includes('test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"'));
   assert.ok(policyGate.includes('raw = path.read_bytes()'));
+  assert.ok(policyGate.includes("raw.split(b'\\n')"),
+    'policy parser must split actual newline bytes, never literal backslash+n');
+  assert.ok(!policyGate.includes("raw.split(b'\\\\n')"),
+    'escape-level regression would make entire policy appear as a single comment');
   assert.ok(policyGate.includes("line.startswith(b'#')"));
   assert.ok(!policyGate.includes("line.lstrip().startswith('#')"),
     'never treat indented pseudo-comments as signed policy comments');
