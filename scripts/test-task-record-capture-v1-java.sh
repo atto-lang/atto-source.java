@@ -7,9 +7,11 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 [[ "$(git -C "$root" rev-parse HEAD)" == "$EXPECTED_HEAD" ]] || {
   echo 'wrong source checkout' >&2; exit 78;
 }
-for command in java timeout git sha256sum; do
-  command -v "$command" >/dev/null || { echo "missing $command" >&2; exit 69; }
+for required_tool in java timeout git sha256sum; do
+  command -v "$required_tool" >/dev/null || { echo "missing $required_tool" >&2; exit 69; }
 done
+java_bin="$(command -v java)"
+[[ "$java_bin" == /* ]] || { echo 'Java binary must be an absolute path' >&2; exit 69; }
 [[ -f "$root/target/classes/dev/oreslang/launcher/OresMain.class" ]] || {
   echo 'Build Java classes before running the gate' >&2; exit 69;
 }
@@ -17,11 +19,23 @@ done
   echo 'Resolve target/conformance-classpath.txt before running the gate' >&2; exit 69;
 }
 classpath="$root/target/classes:$(cat "$root/target/conformance-classpath.txt")"
-jvm=(java "-XX:+UnlockExperimentalVMOptions" "-XX:+EnableJVMCI"
+launcher_class="$root/target/classes/dev/oreslang/launcher/OresMain.class"
+launcher_sha256="$(sha256sum "$launcher_class" | cut -d ' ' -f 1)"
+jvm=("$java_bin" "-XX:+UnlockExperimentalVMOptions" "-XX:+EnableJVMCI"
   "--sun-misc-unsafe-memory-access=allow" "--enable-native-access=ALL-UNNAMED"
   -cp "$classpath" dev.oreslang.launcher.OresMain)
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/atto-record-capture.XXXXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
+"$java_bin" -version > "$tmp/java-version.txt" 2>&1 || exit 69
+grep -Eq '^(openjdk|java) version "25([."]|$)' "$tmp/java-version.txt" || {
+  echo 'A JDK 25 runtime is required for this exact-head gate' >&2
+  cat "$tmp/java-version.txt" >&2; exit 69
+}
+grep -iq 'GraalVM' "$tmp/java-version.txt" || {
+  echo 'A verified GraalVM JDK 25 is required' >&2; exit 69
+}
+printf 'JAVA_TASK_RECORD_TOOLCHAIN|head=%s|launcher_class_sha256=%s|java_bin=%s\n' \
+  "$EXPECTED_HEAD" "$launcher_sha256" "$java_bin"
 
 fixture() {
   local name="$1"
@@ -53,7 +67,7 @@ timeout 90s "${jvm[@]}" "$src" > "$tmp/guest.out" 2> "$tmp/guest.err" || status=
   echo "Graal guest did not produce 42: status=$status" >&2
   cat "$tmp/guest.err" >&2; exit 1;
 }
-printf 'JAVA_TASK_RECORD_GUEST_PASS|head=%s|case=scalar-copy-task-guest|stdout=42|exit=0\n' "$EXPECTED_HEAD"
+printf 'JAVA_TASK_RECORD_GUEST_PASS|head=%s|case=scalar-copy-task-guest|stdout=42|exit=0|launcher_class_sha256=%s\n' "$EXPECTED_HEAD" "$launcher_sha256"
 
 # Negative must fail on the actual semantic Task Send gate, not on parser grammar,
 # unsupported lowering, missing files, or an unexecuted timeout.
@@ -68,4 +82,4 @@ grep -Eiq "independent task capture 'view'.*non-Send execution capability" "$tmp
   cat "$tmp/reject.err" >&2; exit 1;
 }
 [[ ! -s "$tmp/reject.out" ]] || { echo "rejected compiler unexpectedly emitted output" >&2; exit 1; }
-printf 'JAVA_TASK_RECORD_COMPILER_REJECT|head=%s|case=readonly-record-task-reject|semantic=non-send|no_guest_execution=yes\n' "$EXPECTED_HEAD"
+printf 'JAVA_TASK_RECORD_COMPILER_REJECT|head=%s|case=readonly-record-task-reject|semantic=non-send|no_guest_execution=yes|source_sha256=%s|launcher_class_sha256=%s\n' "$EXPECTED_HEAD" "$(sha256sum "$src" | cut -d ' ' -f 1)" "$launcher_sha256"
