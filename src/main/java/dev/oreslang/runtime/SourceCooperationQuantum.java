@@ -75,7 +75,8 @@ public final class SourceCooperationQuantum {
         if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
             return true;
         }
-        return monotonicNanos.getAsLong() - dispatchStartedAtNanos
+        return elapsedNanosOrOverdue(
+                monotonicNanos.getAsLong(), dispatchStartedAtNanos)
                 >= SOFT_DISPATCH_QUANTUM_NANOS;
     }
 
@@ -89,7 +90,23 @@ public final class SourceCooperationQuantum {
      * Its sole call-site should be deliberate diagnostics or a slow path.
      */
     public long timeSinceLastCooperateNanos() {
-        return Math.max(0L, monotonicNanos.getAsLong() - lastCooperateAtNanos);
+        return elapsedNanosOrOverdue(
+                monotonicNanos.getAsLong(), lastCooperateAtNanos);
+    }
+
+    /**
+     * Fail closed on clock regression and signed subtraction overflow.
+     * A wrapped positive delta can otherwise make a long-overdue dispatch
+     * look younger than the soft quantum. Never do raw signed subtraction
+     * of two potentially extreme nanoTime readings.
+     */
+    private static long elapsedNanosOrOverdue(long now, long started) {
+        try {
+            long delta = Math.subtractExact(now, started);
+            return delta >= 0L ? delta : Long.MAX_VALUE;
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     public long completedBackedgesThisDispatch() {
