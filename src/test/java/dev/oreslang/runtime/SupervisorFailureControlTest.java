@@ -171,7 +171,7 @@ final class SupervisorFailureControlTest {
     void terminalReceiptCarriesExactVirtualIdentityGenerationWithoutGuestDiagnostic() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var identity = new VirtualActorActivationRegistry.Identity(
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
                     "tenant-a", "7:defaultCart", "42");
             var actor = group.spawnWorker(
                     ActorRuntime.ActorKind.SHARED,
@@ -180,7 +180,7 @@ final class SupervisorFailureControlTest {
                         throw new IllegalStateException("private guest payload must not cross CONTROL");
                     });
             actor.getReady().get(5, TimeUnit.SECONDS);
-            group.bindVirtualActorIdentity(actor, identity, 41L);
+            group.bindVirtualActorIdentity(actor, identity.domain(), identity.declaration(), identity.key(), 41L);
             actor.send("fail");
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> actor.getDone().get(5, TimeUnit.SECONDS));
@@ -207,7 +207,7 @@ final class SupervisorFailureControlTest {
     void onlyOnePhysicalWorkerMayOwnALogicalVirtualActorActivation() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var identity = new VirtualActorActivationRegistry.Identity(
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
                     "tenant-a", "7:defaultCart", "42");
             var behavior = (ActorRuntime.BehaviorFactory<String>)
                     factory -> (message, context) -> { };
@@ -217,9 +217,9 @@ final class SupervisorFailureControlTest {
                     IsolatePolicy.developer(), behavior);
             first.getReady().get(5, TimeUnit.SECONDS);
             second.getReady().get(5, TimeUnit.SECONDS);
-            group.bindVirtualActorIdentity(first, identity, 7L);
+            group.bindVirtualActorIdentity(first, identity.domain(), identity.declaration(), identity.key(), 7L);
             assertThrows(IllegalStateException.class,
-                    () -> group.bindVirtualActorIdentity(second, identity, 8L));
+                    () -> group.bindVirtualActorIdentity(second, identity.domain(), identity.declaration(), identity.key(), 8L));
             first.stop();
             second.stop();
             first.getDone().get(5, TimeUnit.SECONDS);
@@ -232,7 +232,7 @@ final class SupervisorFailureControlTest {
     void replacementReceiptUsesNewGenerationAndOldReceiptCannotBeRewritten() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            var identity = new VirtualActorActivationRegistry.Identity(
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
                     "tenant-a", "7:defaultCart", "same-key");
             var failed = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
                     IsolatePolicy.developer(),
@@ -240,7 +240,7 @@ final class SupervisorFailureControlTest {
                         throw new IllegalArgumentException("failure");
                     });
             failed.getReady().get(5, TimeUnit.SECONDS);
-            group.bindVirtualActorIdentity(failed, identity, 12L);
+            group.bindVirtualActorIdentity(failed, identity.domain(), identity.declaration(), identity.key(), 12L);
             failed.send("fail");
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> failed.getDone().get(5, TimeUnit.SECONDS));
@@ -250,7 +250,7 @@ final class SupervisorFailureControlTest {
                     IsolatePolicy.developer(),
                     factory -> (message, context) -> { });
             replacement.getReady().get(5, TimeUnit.SECONDS);
-            group.bindVirtualActorIdentity(replacement, identity, 13L);
+            group.bindVirtualActorIdentity(replacement, identity.domain(), identity.declaration(), identity.key(), 13L);
 
             var stillPending = group.pendingSupervisorFailures();
             assertEquals(1, stillPending.size());
@@ -265,7 +265,7 @@ final class SupervisorFailureControlTest {
                     factory -> (message, context) -> { });
             stale.getReady().get(5, TimeUnit.SECONDS);
             assertThrows(IllegalStateException.class,
-                    () -> group.bindVirtualActorIdentity(stale, identity, 13L));
+                    () -> group.bindVirtualActorIdentity(stale, identity.domain(), identity.declaration(), identity.key(), 13L));
             stale.stop();
             stale.getDone().get(5, TimeUnit.SECONDS);
             group.close();
