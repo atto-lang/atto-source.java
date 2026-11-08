@@ -48,6 +48,19 @@ final class CheckedCollectionGetCopyLanguageTest {
     }
 
     @Test
+    void sharedAttoFixtureExecutesWithSomeNoneAndCopiedMutation() throws Exception {
+        String code;
+        try (var stream = getClass().getResourceAsStream(
+                "/safe-collections/copy-option-v1.atto")) {
+            assertNotNull(stream, "shared LLVM/Java fixture must be present");
+            code = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(code));
+        assertEquals("7:42:true:true:true:true:9", execute(code, "copy-option-v1.atto"));
+        assertEquals("7:42:true:true:true:true:9", execute(code, "copy-option-v1.ores"));
+    }
+
+    @Test
     void anOwnedCopyNeverTracksSubsequentArrayMutation() throws Exception {
         String code = """
                 pub routine main(): void {
