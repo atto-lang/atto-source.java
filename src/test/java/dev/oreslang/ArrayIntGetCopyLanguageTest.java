@@ -60,6 +60,54 @@ final class ArrayIntGetCopyLanguageTest {
     }
 
     @Test
+    void someZeroIsDistinctFromNoneAtSignedI64Boundaries() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(0);
+                  val zero = values.get_copy(0);
+                  val negative = values.get_copy(-2147483649);
+                  val high = values.get_copy(9223372036854775807);
+                  stdio.stdout.write(zero.is_some());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(zero.unwrap_or(42));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(negative.is_none());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(high.is_none());
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program,
+                        "array-int-get-copy-i64.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("true|0|true|true", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void movedArrayCannotReturnNoneThroughCheckedCopy() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc consume(Array<int> input): void { return; }
+                        pub fnc main(): void {
+                          let mut Array<int> values = new Array<int>();
+                          values.add(7);
+                          consume(values);
+                          val missing = values.get_copy(-1);
+                          return;
+                        }
+                        """)));
+        assertTrue(rejected.getMessage().contains("moved"),
+                rejected::toString);
+    }
+
+    @Test
     void copyWhileRootMutablyBorrowedIsRejectedEvenForMiss() {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
