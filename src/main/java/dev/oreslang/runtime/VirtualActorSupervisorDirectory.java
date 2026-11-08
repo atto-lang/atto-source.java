@@ -149,8 +149,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             throw new SecurityException("supervisor does not belong to this ActorRuntime");
         // Supervisor identity is intentionally NOT part of the logical actor ID:
         // activation placement/ownership can change without changing persistent identity.
-        this.registry = new VirtualActorActivationRegistry(
-                this.tenant, maxIdentities, mailboxCapacity, runtime::allocateVirtualActorGeneration);
+        this.registry = runtime.virtualActorRegistry(
+                supervisor, this.tenant, maxIdentities, mailboxCapacity);
         this.localInspection = new VirtualActorDirectoryInspection(registry);
         runtime.claimVirtualActorDirectory(this, supervisor);
     }
@@ -558,7 +558,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 throw new IllegalStateException("cannot close with reserved activation plans");
             if (!bindings.isEmpty())
                 throw new IllegalStateException("cannot close while supervised activations remain bound");
-            registry.close();
+            // The registry belongs to ActorRuntime, not this facade. Its logical
+            // IDs, revision and burned generations survive facade replacement.
             runtime.releaseVirtualActorDirectory(this, supervisor);
             closed = true;
         }
