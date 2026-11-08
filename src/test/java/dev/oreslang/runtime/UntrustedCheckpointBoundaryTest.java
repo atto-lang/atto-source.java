@@ -103,8 +103,7 @@ final class UntrustedCheckpointBoundaryTest {
         assertEquals(2, reads.get());
         for (int n = 1; n <= 4096; ++n) {
             boolean due = q.completedBackedgeNeedsCheck();
-            assertEquals(n >= SourceCooperationQuantum.MAX_BACKEDGES_PER_DISPATCH
-                            || n % SourceCooperationQuantum.LOOP_CHECK_INTERVAL == 0,
+            assertEquals(n % SourceCooperationQuantum.LOOP_CHECK_INTERVAL == 0,
                     due, "missed checkpoint at completed backedge " + n);
             if (due) {
                 assertEquals(n >= SourceCooperationQuantum.MAX_BACKEDGES_PER_DISPATCH,
@@ -112,8 +111,8 @@ final class UntrustedCheckpointBoundaryTest {
                         "overdue no-yield region cannot reset reduction debt");
             }
         }
-        // Two initial clock reads plus probes at 64,128,...,448.
-        assertEquals(9, reads.get());
+        // Two initial clock reads plus pre-cap probes at 128,256,384.
+        assertEquals(5, reads.get());
         assertEquals(4096L, q.completedBackedgesThisDispatch());
         q.beginDispatch();
         assertFalse(q.completedBackedgeNeedsCheck());
@@ -167,7 +166,7 @@ final class UntrustedCheckpointBoundaryTest {
             return nanos.get();
         });
         q.beginDispatch();
-        for (int i = 0; i < 63; ++i) {
+        for (int i = 0; i < 127; ++i) {
             assertFalse(q.completedBackedgeNeedsCheck());
         }
         nanos.set(SourceCooperationQuantum.SOFT_DISPATCH_QUANTUM_NANOS);
