@@ -4407,7 +4407,11 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseXor() {
         Ast.Expr expr = parseBitwiseAnd();
-        while (matchSingleOperator(CARET)) expr = new Ast.BinaryExpr("^", expr, parseBitwiseAnd());
+        if (check(CARET)) {
+            throw error(peek(),
+                    "removed operator '^'/'^^'; use 'xor' for boolean exclusive-or "
+                            + "or the named Integer.bitXor operation for integer values");
+        }
         return expr;
     }
 
