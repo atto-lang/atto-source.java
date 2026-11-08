@@ -19,6 +19,7 @@ on:
       - 'tools/verify-exact-source-tree.sh'
       - 'tools/test-verify-exact-source-tree.sh'
       - 'tests/private-ci-v3-codeowners.test.mjs'
+      - '.github/workflows/private-ci-mirror-preflight.yml'
   push:
     paths:
       - 'scripts/check-private-ci-destination.sh'
@@ -38,6 +39,7 @@ on:
       - 'tools/verify-exact-source-tree.sh'
       - 'tools/test-verify-exact-source-tree.sh'
       - 'tests/private-ci-v3-codeowners.test.mjs'
+      - '.github/workflows/private-ci-mirror-preflight.yml'
 permissions:
   contents: read
 jobs:
@@ -45,9 +47,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # PR default checkout uses a synthetic merge ref; it is NOT the
+      # exact PR head whose source-export/merge claims we must validate.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Require immutable exact source head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
