@@ -58,7 +58,10 @@ final class LogicalBorrowCompilerGuestTest {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(program));
         String diagnostic = failure.getMessage().toLowerCase(java.util.Locale.ROOT);
-        assertTrue(diagnostic.contains("ownership") && diagnostic.contains("moved"),
+        // Reject a real post-transfer read of this exact owner, not any
+        // unrelated error mentioning ownership or a previously moved field.
+        assertTrue(diagnostic.contains(
+                "oreslang ownership error: use of moved value 'owner'"),
                 failure::getMessage);
     }
 }
