@@ -549,7 +549,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     }
 
     @Override public void close() {
-        runtime.supervisorRegistryForObservation();
+        // releaseVirtualActorDirectory performs host/supervisor-context and
+        // runtime-affinity checks but remains usable after ActorRuntime shutdown.
         synchronized (stateLock) {
             if (closed) return;
             if (pendingInspections.get() != 0)
