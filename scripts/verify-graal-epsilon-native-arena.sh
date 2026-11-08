@@ -17,7 +17,8 @@ git diff --quiet HEAD -- || {
 test -z "$(git ls-files --others --exclude-standard)" || {
   echo 'GRAAL_EPSILON_NOT_EXECUTED: unexpected source files in checkout' >&2; exit 2;
 }
-echo "GRAAL_EXACT_SOURCE_COMMIT=$expected"if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/native-image" ]]; then
+echo "GRAAL_EXACT_SOURCE_COMMIT=$expected"
+if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/native-image" ]]; then
   echo 'GRAAL_EPSILON_NOT_EXECUTED: actual GraalVM Native Image toolchain required' >&2
   exit 2
 fi
