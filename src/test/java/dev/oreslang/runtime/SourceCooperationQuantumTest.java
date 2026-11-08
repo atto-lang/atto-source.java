@@ -22,14 +22,13 @@ final class SourceCooperationQuantumTest {
         assertEquals(2, clock.reads.get());
         for (int i = 1; i <= 512; i++) {
             boolean due = q.completedBackedgeNeedsCheck();
-            assertEquals(i % 64 == 0, due);
+            assertEquals(i % 128 == 0, due);
             if (due) {
                 assertEquals(i == 512, q.shouldCooperateAtCheck());
             }
         }
-        // Construction + dispatch + only 7 time probes. The final reduction
-        // cap is decided without even reading the clock.
-        assertEquals(9, clock.reads.get());
+        // Construction + dispatch + 3 pre-cap time probes at 128, 256, 384.
+        assertEquals(5, clock.reads.get());
         assertEquals(512, q.completedBackedgesThisDispatch());
     }
 
@@ -38,7 +37,7 @@ final class SourceCooperationQuantumTest {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        for (int i = 0; i < 63; i++) {
+        for (int i = 0; i < 127; i++) {
             assertFalse(q.completedBackedgeNeedsCheck());
         }
         clock.nanos.set(2_000_001L);
@@ -57,7 +56,7 @@ final class SourceCooperationQuantumTest {
         clock.nanos.set(2_000_000_000L); // time parked on a Future
         q.beginDispatch();
         assertEquals(2_000_000_000L, q.timeSinceLastCooperateNanos());
-        for (int i = 0; i < 64; i++) q.completedBackedgeNeedsCheck();
+        for (int i = 0; i < 128; i++) q.completedBackedgeNeedsCheck();
         assertFalse(q.shouldCooperateAtCheck(), "parked time is not dispatch running time");
         q.recordedCooperate();
         assertEquals(0L, q.timeSinceLastCooperateNanos());
@@ -87,7 +86,7 @@ final class SourceCooperationQuantumTest {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        for (int i = 0; i < 63; i++) {
+        for (int i = 0; i < 127; i++) {
             assertFalse(q.completedBackedgeNeedsCheck());
         }
         assertTrue(q.completedBackedgeNeedsCheck());
@@ -102,67 +101,58 @@ final class SourceCooperationQuantumTest {
     }
 
     @Test
-    void overdueNoYieldRegionPollsEverySubsequentLegalBackedge() {
+    void overdueNoYieldRegionPreserves128StepSampling() {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        for (int i = 1; i <= 511; i++) {
+        for (int n = 1; n <= 768; ++n) {
             boolean due = q.completedBackedgeNeedsCheck();
-            assertEquals(i % 64 == 0, due);
+            assertEquals(n % 128 == 0, due,
+                    "overdue quantum invoked expensive polling on backedge " + n);
+            if (due) {
+                assertEquals(n >= 512, q.shouldCooperateAtCheck());
+            }
         }
-        assertTrue(q.completedBackedgeNeedsCheck(), "hard reduction-cap boundary");
-        assertTrue(q.shouldCooperateAtCheck(), "cap cannot depend on elapsed time");
-        // Simulate a live MutexGuard preventing that initial handoff. Once the
-        // guard releases, the very next backedge is a legal boundary; it must
-        // not be forced to wait for another full 64-backedge batch.
-        for (int i = 513; i <= 530; i++) {
-            assertTrue(q.completedBackedgeNeedsCheck(),
-                    "overdue dispatch skipped a resumable boundary at " + i);
-            assertTrue(q.shouldCooperateAtCheck());
-        }
-        assertEquals(530L, q.completedBackedgesThisDispatch());
-        assertEquals(2, clock.reads.get(),
-                "over-budget decisions must remain clock-free");
+        assertEquals(768L, q.completedBackedgesThisDispatch());
+        // 2 initialization samples, and only 3 pre-cap clock reads.
+        assertEquals(5, clock.reads.get());
     }
 
     @Test
-    void signed64BitReductionCounterCannotWrapPastBudget()
+    void signed64BitReductionCounterCannotDisablePeriodicPolls()
             throws ReflectiveOperationException {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        var counter = SourceCooperationQuantum.class.getDeclaredField(
-                "backedgesThisDispatch");
+        var counter = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
         counter.setAccessible(true);
         counter.setLong(q, Long.MAX_VALUE - 1);
-        assertTrue(q.completedBackedgeNeedsCheck());
-        assertEquals(Long.MAX_VALUE, q.completedBackedgesThisDispatch());
-        assertTrue(q.shouldCooperateAtCheck());
-        for (int i = 0; i < 128; ++i) {
-            assertTrue(q.completedBackedgeNeedsCheck(),
-                    "counter wrap must not erase the fairness cap");
-            assertTrue(q.shouldCooperateAtCheck());
+        for (int n = 1; n <= 512; ++n) {
+            boolean due = q.completedBackedgeNeedsCheck();
+            assertEquals(n % 128 == 0, due,
+                    "poll phase must continue after the saturated total");
+            if (due) assertTrue(q.shouldCooperateAtCheck());
             assertEquals(Long.MAX_VALUE, q.completedBackedgesThisDispatch());
         }
-        assertEquals(2, clock.reads.get());
+        assertEquals(2, clock.reads.get(), "overdue polls must be clock-free");
     }
 
     @Test
-    void backedgeAccountingDoesNotRollOverAtTheUnsigned32BitBoundary() throws ReflectiveOperationException {
+    void backedgeAccountingDoesNotRollOverAtTheUnsigned32BitBoundary()
+            throws ReflectiveOperationException {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
         var counter = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
         counter.setAccessible(true);
         assertEquals(long.class, counter.getType());
-        counter.setLong(q, (1L << 32) - 64);
-        for (int i = 1; i <= 64; i++) {
-            assertTrue(q.completedBackedgeNeedsCheck(),
-                    "already-overdue budget must never restore 64-step batching");
+        counter.setLong(q, (1L << 32) - 128);
+        for (int n = 1; n <= 128; ++n) {
+            assertEquals(n == 128, q.completedBackedgeNeedsCheck(),
+                    "signed 32-bit boundary must never change phase");
         }
         assertEquals(1L << 32, q.completedBackedgesThisDispatch());
         assertTrue(q.shouldCooperateAtCheck());
-        // Reduction-cap fast path still avoids an extra monotonic clock read.
         assertEquals(2, clock.reads.get());
     }
 
@@ -176,7 +166,7 @@ final class SourceCooperationQuantumTest {
         // Raw signed subtraction would wrap to +11, incorrectly indicating
         // an 11-nanosecond dispatch rather than a clock anomaly.
         clock.nanos.set(Long.MIN_VALUE + 5L);
-        for (int i = 1; i < 64; i++) {
+        for (int i = 1; i < 128; i++) {
             assertFalse(q.completedBackedgeNeedsCheck());
         }
         assertTrue(q.completedBackedgeNeedsCheck());
@@ -193,7 +183,7 @@ final class SourceCooperationQuantumTest {
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
         clock.nanos.set(9_999L);
-        for (int i = 1; i < 64; i++) {
+        for (int i = 1; i < 128; i++) {
             assertFalse(q.completedBackedgeNeedsCheck());
         }
         assertTrue(q.completedBackedgeNeedsCheck());
