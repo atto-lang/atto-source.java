@@ -14,9 +14,10 @@ import java.util.Objects;
  * reachable PC, including loops and joins.
  *
  * No guest object, closure, pointer, capability or host callback is stored
- * in a verified operand. Every function in the image returns exactly INT,
- * or intentionally terminates with TRAP. A bounded worklist reaches a
- * monotone fixed point for definite assignment.
+ * in a verified operand. Every normal exit returns exactly INT (or traps);
+ * nonterminating loops are allowed and remain subject to runtime fuel and
+ * scheduler checkpoints. A bounded worklist reaches a monotone fixed point
+ * for definite assignment.
  */
 final class ActorScalarBytecodeVerifier {
     private ActorScalarBytecodeVerifier() { }
@@ -45,6 +46,24 @@ final class ActorScalarBytecodeVerifier {
     private static void verifyFunction(
             List<ActorScalarCallMachine.Function> functions, int functionId) {
         var function = functions.get(functionId);
+        // Validate the *entire* immutable image, including unreachable
+        // instructions, so unused operand/target fields never become
+        // alternate encodings or executable after a future optimizer pass.
+        for (int pc = 0; pc < function.code().size(); pc++) {
+            var step = function.code().get(pc);
+            boolean argumentUsed = switch (step.op()) {
+                case LOAD, STORE, JUMP, JUMP_IF_FALSE, CALL, TAIL_CALL -> true;
+                default -> false;
+            };
+            boolean valueUsed = switch (step.op()) {
+                case CONST, CONST_BOOL -> true;
+                default -> false;
+            };
+            if ((!argumentUsed && step.argument() != 0)
+                    || (!valueUsed && step.value() != 0L)) {
+                throw reject(function, pc, "noncanonical scalar instruction encoding");
+            }
+        }
         int n = function.code().size();
         State[] states = new State[n];
         ArrayDeque<Integer> pending = new ArrayDeque<>();
