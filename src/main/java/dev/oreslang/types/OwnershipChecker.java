@@ -4284,6 +4284,15 @@ public final class OwnershipChecker {
             return new AutoTraitRules.Capabilities(send, sync, share);
         }
 
+        if (type.isRecordType()) {
+            // A readonly structural RECORD is a view. Field-wise Send only
+            // proves its elements are transferable; it does not prove the
+            // backing allocation is owned, frozen, or independent of actor
+            // state. A proven owned struct can still move below, but records
+            // need explicit snapshot/region provenance before Task transfer.
+            return none;
+        }
+
         if (type.isClosedAggregateType()) {
             boolean send = true;
             for (Ast.TypeRef member : type.aggregateMembers().values()) {
@@ -4942,14 +4951,6 @@ public final class OwnershipChecker {
         if (type == null) return false;
         if (type.isBorrow()) return containsMutexGuardType(type.borrowedTarget());
         if (isMutexGuardType(type)) return true;
-        // Structural records/structs carry members outside TypeRef.arguments().
-        // A guard hidden in a nested field is still a lexical guard; it cannot
-        // escape through return, containers, a Task, or a suspending boundary.
-        if (type.isClosedAggregateType()) {
-            for (Ast.TypeRef member : type.aggregateMembers().values()) {
-                if (containsMutexGuardType(member)) return true;
-            }
-        }
         for (Ast.TypeRef argument : type.arguments()) {
             if (containsMutexGuardType(argument)) return true;
         }
@@ -4960,13 +4961,6 @@ public final class OwnershipChecker {
         if (type == null || type.isBorrow()) return false;
         if (isMutexGuardType(type)) return true;
         if (type.name().equals("Future")) return false;
-        // Unlike Future<Guard>, an aggregate containing an acquired guard
-        // holds it NOW. Treat every structural member as live for suspension.
-        if (type.isClosedAggregateType()) {
-            for (Ast.TypeRef member : type.aggregateMembers().values()) {
-                if (containsAcquiredMutexGuardType(member)) return true;
-            }
-        }
         for (Ast.TypeRef argument : type.arguments()) {
             if (containsAcquiredMutexGuardType(argument)) return true;
         }
