@@ -4224,13 +4224,17 @@ public final class OresEvalRootNode extends RootNode {
                                                     continuation.accept(t2, null, failure2);
                                                     return;
                                                 }
+                                                final boolean result;
                                                 try {
-                                                    continuation.accept(
-                                                            t2, truth(left) ^ truth(right), null);
+                                                    result = truth(left) ^ truth(right);
                                                 } catch (RuntimeException | Error evaluationFailure) {
-                                                    continuation.accept(
-                                                            t2, null, evaluationFailure);
+                                                    continuation.accept(t2, null, evaluationFailure);
+                                                    return;
                                                 }
+                                                // Complete exactly once and outside the evaluation catch:
+                                                // a downstream continuation failure must never trigger a
+                                                // second completion attempt for the same suspended task.
+                                                continuation.accept(t2, result, null);
                                             });
                                 });
                         return;
