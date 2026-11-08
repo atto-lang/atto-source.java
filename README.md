@@ -98,3 +98,14 @@ been executed against Maven, Native Image, or LLVM's real binary at this
 exact head. Run `mvn test -Dtest=CompilerEffectAnalysisV0Test`, the
 real cross-backend conformance fixtures, and pinned-binary
 no-guest-execution/no-artifact checks before promoting this mode.
+
+## Repository ownership and migration (2026-11-08)
+
+**Current home:** `ores-truffle-oreslang/oreslang-source.java` (legacy Oreslang organization). **Language name:** AttoLang; historical `oreslang-*` CLI/package identities and existing `.ores` files remain compatibility interfaces until independently migrated and tested.
+
+- **What belongs in this repository:** Java/Truffle/GraalVM reference compiler, interpreter, source admission, actor/runtime host primitives and their executable tests.
+- **What belongs elsewhere:** LLVM/.NET/Wasm implementation details, managed cloud control plane, or portable core/std semantics unnecessarily duplicated in Java. Shared portable AttoLang language semantics and core/std should be authored in canonical `.atto` modules and reconciled with `oreslang-common-source`; indispensable host compiler, scheduler and ABI primitives remain backend-specific here.
+- **Organization boundary:** language/compiler/tooling/conformance work belongs to [`atto-lang`](https://github.com/atto-lang); commercial deployment, identity, billing, hosted runtime and multi-tenant cloud operations belong to separately governed [`atto-co`](https://github.com/atto-co). The existence of similarly named `atto-*` repositories is **not** proof of a Git repository transfer or tested feature parity.
+- **Proposed first migration:** transfer this *existing repository identity* to `atto-lang/oreslang-source.java` retaining its name and history, **only after** individual source/target owner and independent security approvals. No direct transfer to `atto-co` is authorized in the current migration wave. A future product carve-out requires separate approval.
+
+**Maintainer cutover instructions:** coordinate under [migration issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and the private [migration runbook draft #25](https://github.com/ores-truffle-oreslang/.github/pull/25); check stable repository numeric ID, exact head SHA/tree, branch protection/rulesets, reviewers, GitHub Apps, secrets, deploys, dependencies, releases, packages, Pages and remote URLs. Transfer using an approved GitHub ownership operation rather than mirroring private source; validate the unchanged ID/tree and rerun exact-head CI at destination. **`steps=[]` or `steps=null` means `NOT_EXECUTED`; host-only tests do not establish native AttoLang guest parity.** Do not combine transfer with forced `.ores`→`.atto` syntax changes, repo renames, CI policy relaxation or AOT/zero-GC claims.
