@@ -204,4 +204,58 @@ final class HostImportTest {
                 () -> CapabilityChecker.check(program, policy));
         assertTrue(failure.getMessage().contains("JAVA_INTEROP"));
     }
+
+    @Test
+    void jvmAliasProducesTheSameHostClassAstAsLegacyJavaImport() {
+        var legacy = Parser.parse("""
+                import class ArrayList as JList from "java:java.util.ArrayList";
+                pub fnc main(): int { val list = new JList(); return list.size(); }
+                """);
+        var qualified = Parser.parse("""
+                import jvm "java.util.ArrayList" as JList;
+                pub fnc main(): int { val list = new JList(); return list.size(); }
+                """);
+        assertEquals(legacy.imports(), qualified.imports(),
+                "JVM shorthand must retain existing host capability rules");
+        assertDoesNotThrow(() -> TypeChecker.check(qualified));
+    }
+
+    @Test
+    void jvmAliasExecutesThroughExistingAllowlistAndCapabilityGate() {
+        String source = """
+                import jvm "java.util.ArrayList" as JList;
+                pub fnc main(): int {
+                    val list = new JList();
+                    list.add(42);
+                    return list.size();
+                }
+                """;
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.util.ArrayList")).build()) {
+            assertEquals(1L, context.eval(OresLanguage.ID, source).asLong());
+        }
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.Math")).build()) {
+            assertThrows(PolyglotException.class, () -> context.eval(OresLanguage.ID, source));
+        }
+    }
+
+    @Test
+    void jvmImportRejectsInvalidBinaryNamesAndForeignHost() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                import jvm "java/lang/Math" as Bad;
+                pub fnc main(): int { return 1; }
+                """));
+        assertThrows(RuntimeException.class, () -> Parser.parse("""
+                import dotnet "System.Math" as Math;
+                pub fnc main(): int { return 1; }
+                """));
+        assertThrows(RuntimeException.class, () -> Parser.parse("""
+                import jvm "java.lang.Math";
+                pub fnc main(): int { return 1; }
+                """));
+    }
+
 }
