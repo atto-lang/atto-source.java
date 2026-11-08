@@ -95,11 +95,13 @@ final class ActorScalarBytecodeVerifierTest {
         assertTrue(rejected.getMessage().contains("control-flow join"));
     }
     @Test void joinWithIntVersusBooleanOperandIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> program(fn("kinds", 0, 0, 2,
-                b(true), at(ActorScalarCallMachine.Op.JUMP_IF_FALSE, 4),
-                c(1), at(ActorScalarCallMachine.Op.JUMP, 5),
-                b(true), o(ActorScalarCallMachine.Op.POP),
-                c(8), o(ActorScalarCallMachine.Op.RET))));
+        var rejected = assertThrows(ActorScalarBytecodeVerifier.Rejected.class,
+                () -> program(fn("kinds", 0, 0, 2,
+                        b(true), at(ActorScalarCallMachine.Op.JUMP_IF_FALSE, 4),
+                        c(1), at(ActorScalarCallMachine.Op.JUMP, 5),
+                        b(true), o(ActorScalarCallMachine.Op.POP),
+                        c(8), o(ActorScalarCallMachine.Op.RET))));
+        assertTrue(rejected.getMessage().contains("control-flow join"));
     }
     @Test void localAssignedOnOnlyOneBranchIsNotDefinitelyInitialized() {
         assertThrows(IllegalArgumentException.class, () -> program(fn("partial", 0, 1, 1,
