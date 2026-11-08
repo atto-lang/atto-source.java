@@ -155,7 +155,7 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
-    void timeoutRetainsControlAdmissionUntilPhysicalTurnActuallyRuns() throws Exception {
+    void queuedTimeoutCancelsBeforeStartAndPreventsLateControlCapture() throws Exception {
         java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
         ActorRuntime.ControlDispatcher queuedControl = turn ->
                 OresFuture.fromCallback(done -> queued.addLast(() -> {
@@ -179,20 +179,17 @@ final class VirtualActorSupervisorDirectoryTest {
             var firstFailure = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> first.get(2, TimeUnit.SECONDS));
             assertInstanceOf(java.util.concurrent.TimeoutException.class, firstFailure.getCause());
-            assertEquals(1, directory.pendingInspectionCount());
-            assertThrows(IllegalStateException.class, () -> directory.requestInspect(
-                    grant, session, logical, TimeUnit.SECONDS.toNanos(1)));
-
-            // A timeout settles only the observer. Capacity remains reserved until
-            // the admitted CONTROL turn runs and physically releases the request.
-            worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
             assertEquals(0, directory.pendingInspectionCount());
 
+            // Reuse the grant immediately. The old queued turn has lost the
+            // atomic QUEUED->RUNNING race and therefore must never capture.
             var second = directory.requestInspect(grant, session, logical,
                     TimeUnit.SECONDS.toNanos(1)).toCompletableFuture();
+            assertEquals(1, directory.pendingInspectionCount());
             worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
-            assertEquals(logical.identity(),
-                    second.get(5, TimeUnit.SECONDS).identity());
+            assertEquals(1, directory.pendingInspectionCount());
+            worker.submit(queued.removeFirst()).get(5, TimeUnit.SECONDS);
+            assertEquals(logical.identity(), second.get(5, TimeUnit.SECONDS).identity());
             assertEquals(0, directory.pendingInspectionCount());
         }
     }
