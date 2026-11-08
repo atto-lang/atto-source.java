@@ -20,8 +20,8 @@ public final class VirtualActorAddressV1 {
 
     public static String encode(VirtualActorActivationRegistry.Identity identity) {
         Objects.requireNonNull(identity, "identity");
-        validate(identity.domain(), "domain", 512);
-        validate(identity.declaration(), "declaration", 512);
+        validate(identity.domain(), "domain", 128);
+        validate(identity.declaration(), "declaration", 128);
         validate(identity.key(), "key", 256);
         if (!Normalizer.isNormalized(identity.key(), Normalizer.Form.NFC))
             throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
@@ -42,8 +42,8 @@ public final class VirtualActorAddressV1 {
         String domain = decodePart(parts[1]);
         String declaration = decodePart(parts[2]);
         String key = decodePart(parts[3]);
-        validate(domain, "domain", 512);
-        validate(declaration, "declaration", 512);
+        validate(domain, "domain", 128);
+        validate(declaration, "declaration", 128);
         validate(key, "key", 256);
         if (!Normalizer.isNormalized(key, Normalizer.Form.NFC))
             throw new IllegalArgumentException("virtual actor key is not NFC-normalized");
