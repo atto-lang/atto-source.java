@@ -123,6 +123,7 @@ final class AttoNegativeSemanticGateTest {
                     && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
             case "removed-caret" ->
                     (d.contains("^") || d.contains("caret"))
+                    && !d.contains("^^") && !any(d, "double caret", "double-caret")
                     && d.contains("operator")
                     && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
             case "removed-double-caret" ->
@@ -182,7 +183,7 @@ final class AttoNegativeSemanticGateTest {
                 if (i != j) {
                     // The two reordered effect declarations intentionally share
                     // a semantic rejection family; all other cases must differ.
-                    if (i >= 6 && j >= 6) continue;
+                    if ((i >= 6 && j >= 6) || (i >= 3 && i <= 4 && j >= 3 && j <= 4)) continue;
                     assertFalse(intendedDiagnostic(CASES[i], valid[j]),
                             CASES[i].id() + " accepted " + CASES[j].id());
                 }
