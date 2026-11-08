@@ -574,6 +574,12 @@ public final class ActorRuntime implements AutoCloseable {
     /** One canonical host directory instance per supervisor prevents split local registries. */
     private final ConcurrentHashMap<SupervisorId, Object> virtualActorDirectoryOwners =
             new ConcurrentHashMap<>();
+    private record VirtualActorRegistryOwner(
+            String domain, int maxIdentities, int mailboxCapacity,
+            VirtualActorActivationRegistry registry) { }
+    /** Logical identity state outlives a host directory facade, but not its ActorRuntime. */
+    private final ConcurrentHashMap<SupervisorId, VirtualActorRegistryOwner> virtualActorRegistries =
+            new ConcurrentHashMap<>();
     private final AtomicLong nextVirtualActorGeneration = new AtomicLong();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
@@ -3433,6 +3439,34 @@ public final class ActorRuntime implements AutoCloseable {
             SupervisorId raced = virtualActorOwners.putIfAbsent(identity, supervisor.id());
             if (raced != null && !raced.equals(supervisor.id()))
                 throw new SecurityException("virtual actor identity already belongs to another supervisor");
+        }
+    }
+
+    VirtualActorActivationRegistry virtualActorRegistry(
+            ActorSupervisor supervisor, String domain, int maxIdentities, int mailboxCapacity) {
+        requireSupervisorContext("obtain virtual actor registry");
+        requireCallerRuntimeAffinity("obtain virtual actor registry");
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(domain, "domain");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        if (maxIdentities <= 0 || mailboxCapacity <= 0)
+            throw new IllegalArgumentException("virtual actor registry limits must be positive");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            VirtualActorRegistryOwner existing = virtualActorRegistries.get(supervisor.id());
+            if (existing != null) {
+                if (!existing.domain().equals(domain)
+                        || existing.maxIdentities() != maxIdentities
+                        || existing.mailboxCapacity() != mailboxCapacity)
+                    throw new IllegalStateException("virtual actor registry configuration cannot change during runtime lifetime");
+                return existing.registry();
+            }
+            VirtualActorActivationRegistry registry = new VirtualActorActivationRegistry(
+                    domain, maxIdentities, mailboxCapacity, this::allocateVirtualActorGeneration);
+            virtualActorRegistries.put(supervisor.id(), new VirtualActorRegistryOwner(
+                    domain, maxIdentities, mailboxCapacity, registry));
+            return registry;
         }
     }
 
