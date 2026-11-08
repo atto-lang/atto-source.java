@@ -165,4 +165,43 @@ final class SourceCooperationQuantumTest {
         // Reduction-cap fast path still avoids an extra monotonic clock read.
         assertEquals(2, clock.reads.get());
     }
+
+    @Test
+    void signedClockWrapCannotHideElapsedSoftQuantum() {
+        Clock clock = new Clock();
+        clock.nanos.set(Long.MAX_VALUE - 5L);
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+
+        // Raw signed subtraction would wrap to +11, incorrectly indicating
+        // an 11-nanosecond dispatch rather than a clock anomaly.
+        clock.nanos.set(Long.MIN_VALUE + 5L);
+        for (int i = 1; i < 64; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertTrue(q.shouldCooperateAtCheck(),
+                "overflowed clock delta must request a safe cooperative handoff");
+        assertEquals(Long.MAX_VALUE, q.timeSinceLastCooperateNanos(),
+                "diagnostics must not portray a wrapped clock as a fresh quantum");
+    }
+
+    @Test
+    void backwardsClockSampleCannotEraseAnOverdueQuantum() {
+        Clock clock = new Clock();
+        clock.nanos.set(10_000L);
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        clock.nanos.set(9_999L);
+        for (int i = 1; i < 64; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertTrue(q.shouldCooperateAtCheck(),
+                "regressing clock cannot extend the fairness quantum");
+        assertEquals(Long.MAX_VALUE, q.timeSinceLastCooperateNanos());
+        assertEquals(4, clock.reads.get(),
+                "only the batched slow path and diagnostics read the clock");
+    }
+
 }
