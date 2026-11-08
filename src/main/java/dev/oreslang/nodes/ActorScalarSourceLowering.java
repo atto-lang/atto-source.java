@@ -60,7 +60,14 @@ final class ActorScalarSourceLowering {
             for (int i = 0; i < compiler.functions.size(); i++) {
                 compiler.compiled.add(compiler.lower(compiler.functions.get(i)));
             }
-            return new ActorScalarCallMachine.Program(compiler.compiled);
+            try {
+                return new ActorScalarCallMachine.Program(compiler.compiled);
+            } catch (IllegalArgumentException invalid) {
+                // The independent CFG verifier found a source-lowering
+                // limitation. Do not partially admit the actor machine;
+                // preserve the existing evaluator semantics for this graph.
+                return null;
+            }
         } catch (Unsupported unsupported) {
             // Fail closed without executing ANY part of the unsupported
             // program through the new path; retain old interpreter semantics.
