@@ -193,16 +193,19 @@ public final class OresVM implements AutoCloseable {
     }
 
     static OresVM create(OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
-        return new OresVM(
-                configuredControlParallelism(
-                        System.getProperty("ores.runtime.control.parallelism")),
-                turnExecutor,
-                rootAdmission);
+        return createConfigured(turnExecutor, rootAdmission,
+                System.getProperty("ores.runtime.control.parallelism"));
     }
 
-    /** Test-only deterministic CONTROL count; does not mutate global properties. */
-    static OresVM createWithControlParallelismForTests(int controlParallelism) {
-        return new OresVM(controlParallelism, Runnable::run, null);
+    /**
+     * Shared production factory path, with explicit configuration for
+     * deterministic tests; no test needs to change process-wide properties.
+     */
+    static OresVM createConfigured(OresScheduler.TurnExecutor turnExecutor,
+            Executor rootAdmission, String configuredControl) {
+        return new OresVM(
+                configuredControlParallelism(configuredControl),
+                turnExecutor, rootAdmission);
     }
 
     /** Test-only deterministic executor limits; no global property mutation. */
