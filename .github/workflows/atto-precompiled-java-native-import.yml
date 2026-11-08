@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/main/java/**'
       - 'src/test/java/dev/oreslang/JavaPrecompiledHostImportAotPolicyTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SafeHostMemberManifestTest.java'
       - 'examples/interop/precompiled-java-long.atto'
       - 'pom.xml'
       - '.github/workflows/atto-precompiled-java-native-import.yml'
@@ -70,5 +71,7 @@ jobs:
           printf 'JAVA_PRECOMPILED_HOST_NATIVE_IMAGE_AOT|head=%s|stdout=%s|denials=3\n' "$EXPECTED_HEAD" "$output"
           sha256sum target/ores-aot
           git rev-parse 'HEAD^{tree}'
-          git status --porcelain
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo 'SOURCE_WORKTREE_UNCHANGED=1'
           echo 'Host native image and guest interpreter only; not compiler-lowered guest machine code or zero-GC proof'
