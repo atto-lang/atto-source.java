@@ -80,3 +80,7 @@ A bounded inspection request has one atomic phase: queued, running, terminal. If
 When a bound worker's runtime-owned `done()` Future settles, the directory waits for that physical completion barrier, deactivates the logical activation, and retains one immutable terminal record: last physical ActorId, ActorRef generation, kind, terminal time, and (for abnormal failure) only the unwrapped exception **class name**. Cancellation is separately represented from normal passivation and failure. It never retains the Throwable, exception message, stack trace, guest payload or mutable failure graph.
 
 Inspection can therefore distinguish `ACTIVE`, `TERMINATION_PENDING_RECONCILIATION`, `PASSIVATED`, `CANCELLED` and `FAILED`. A failure result is diagnostic metadata only; it is not a supervisor policy decision, a reserved child terminal receipt, or proof that automatic restart occurred. The current Java `ActorSupervisor` substrate remains advisory and must be integrated with the durable terminal CONTROL/restart-ticket work before claiming OTP/Orleans-style recovery.
+
+## Host supervisor entry point
+
+The canonical host acquisition path is now `ActorSupervisor.virtualActorDirectory(tenant, maxIdentities, mailboxCapacity)`. It is guarded by the existing `requireSupervisorContext` and runtime-affinity checks. Actor turns, ActorGroup Mailmen and guest code cannot acquire the directory by invoking that method. Direct construction of the implementation is also guarded by the same host-only runtime registry checks.
