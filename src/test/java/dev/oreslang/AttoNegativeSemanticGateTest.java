@@ -100,35 +100,40 @@ final class AttoNegativeSemanticGateTest {
                 "unexpected character", "unsupported character",
                 "unexpected const", "unrecognized token", "unresolved identifier",
                 "unknown identifier", "internal error", "stack overflow")) return false;
-        return switch (c.id()) {
+        for (String diagnosticLine : d.split("\\R", -1)) {
+            String line = diagnosticLine;
+            boolean accepted = switch (c.id()) {
             case "removed-modulo" ->
-                    (d.contains("%") || d.contains("modulo"))
-                    && d.contains("operator")
-                    && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
+                    (line.contains("%") || line.contains("modulo"))
+                    && line.contains("operator")
+                    && any(line, "removed", "unsupported", "forbidden", "not allowed", "invalid");
             case "removed-caret" ->
-                    (d.contains("^") || d.contains("caret"))
-                    && !d.contains("^^") && !any(d, "double caret", "double-caret")
-                    && d.contains("operator")
-                    && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
+                    (line.contains("^") || line.contains("caret"))
+                    && !line.contains("^^") && !any(line, "double caret", "double-caret")
+                    && line.contains("operator")
+                    && any(line, "removed", "unsupported", "forbidden", "not allowed", "invalid");
             case "removed-double-caret" ->
-                    (d.contains("^^") || any(d, "double caret", "double-caret"))
-                    && d.contains("operator")
-                    && any(d, "removed", "unsupported", "forbidden", "not allowed", "invalid");
+                    (line.contains("^^") || any(line, "double caret", "double-caret"))
+                    && line.contains("operator")
+                    && any(line, "removed", "unsupported", "forbidden", "not allowed", "invalid");
             case "type-first-reassignment", "typed-const-reassignment" ->
-                    wholeWord(d, "x")
-                    && any(d, "immutable", "readonly", "read-only", "constant binding",
+                    wholeWord(line, "x")
+                    && any(line, "immutable", "readonly", "read-only", "constant binding",
                             "const binding", "const variable")
-                    && any(d, "assign", "rebind", "mutation");
+                    && any(line, "assign", "rebind", "mutation");
             case "legacy-async-modifier" ->
-                    wholeWord(d, "async")
-                    && any(d, "unsupported", "forbidden", "disallowed",
+                    wholeWord(line, "async")
+                    && any(line, "unsupported", "forbidden", "disallowed",
                             "not allowed", "deprecated", "use suspends", "invalid modifier");
             case "critical-suspends-modifier", "suspends-critical-modifier" ->
-                    wholeWord(d, "critical") && wholeWord(d, "suspends")
-                    && any(d, "invalid", "forbidden", "disallowed", "cannot",
+                    wholeWord(line, "critical") && wholeWord(line, "suspends")
+                    && any(line, "invalid", "forbidden", "disallowed", "cannot",
                             "not allowed", "incompatible", "mutually exclusive");
-            default -> false;
-        };
+                default -> false;
+            };
+            if (accepted) return true;
+        }
+        return false;
     }
 
     @Test
@@ -140,7 +145,9 @@ final class AttoNegativeSemanticGateTest {
                 "error: immutable const unexpected const x",
                 "error: unresolved identifier async",
                 "error: internal error: invalid critical suspends",
-                "error: stack overflow: removed modulo operator"
+                "error: stack overflow: removed modulo operator",
+                "error: critical function is invalid\\nsource: suspends",
+                "error: immutable binding\\nsource: x cannot assign"
         };
         for (Case c : CASES) {
             for (String message : generic) {
