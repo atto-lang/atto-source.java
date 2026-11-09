@@ -117,4 +117,33 @@ final class GuardedMatchOwnershipFlowTest {
                 }
                 """));
     }
+    @Test
+    void falseGuardMovePoisonsPostMatchFallthrough() {
+        rejectsMoved("""
+                fnc bad(Resource resource, int number): int {
+                  match number over
+                    on int x when consuming_predicate(resource) -> {
+                      stdio.stdout.write(1);
+                    }
+                    on _ -> {
+                      stdio.stdout.write(2);
+                    }
+                  end
+                  return resource.id;
+                }
+                """);
+    }
+
+    @Test
+    void borrowedValueMatchGuardKeepsFallbackOwnerUsable() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(TYPES + """
+                fnc good(Resource resource, int number): int {
+                  return match number over {
+                    on int x when borrowed_predicate(rt borrow resource) { return 1; }
+                    on _ { return resource.id; }
+                  };
+                }
+                """));
+    }
+
 }

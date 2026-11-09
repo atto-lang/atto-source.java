@@ -60,4 +60,18 @@ final class MatchGuardGuestFixtureV1Test {
         assertEquals("7", stdout.toString(StandardCharsets.UTF_8),
                 "actual guest must evaluate the false guard then its fallback");
     }
+    @Test
+    void borrowedValueMatchGuardActuallyExecutesFallbackGuest() throws Exception {
+        String name = "accept-borrowed-value-guard.atto";
+        String source = fixture(name);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores")
+                .allowAllAccess(true).out(stdout).build()) {
+            context.eval(Source.newBuilder("ores", source, name).build());
+        }
+        assertEquals("7", stdout.toString(StandardCharsets.UTF_8),
+                "value match false guard must reach the fallback with owner intact");
+    }
+
 }
