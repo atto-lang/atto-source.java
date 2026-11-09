@@ -1410,9 +1410,18 @@ public final class OwnershipChecker {
             // AutoTraitRules lattice. Task-specific runtime seams are limited
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
+            //
+            // A single Task is one execution boundary. Share the proof budget
+            // across ALL captured types, not one fresh budget per capture:
+            // thousands of distinct shallow fields or nested wrappers must
+            // not amplify compiler work or mint partially verified captures.
+            if (captured.values.size() > TASK_CAPTURE_MAX_NODES) {
+                throw error("independent task capture proof complexity limit exceeded");
+            }
+            TaskCaptureProofBudget captureBudget = new TaskCaptureProofBudget();
             for (Capture capture : captured.values.values()) {
                 if (!capture.source.type.isBorrow()
-                        && forbiddenTaskCapability(capture.source.type)) {
+                        && forbiddenTaskCapability(capture.source.type, captureBudget)) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
                             + "pass owned values or an explicit Channel<T> instead");
@@ -4227,10 +4236,16 @@ public final class OwnershipChecker {
      * MOVE rather than duplicating cancellation/consumer authority.
      */
     private boolean forbiddenTaskCapability(Ast.TypeRef type) {
+        return forbiddenTaskCapability(type, new TaskCaptureProofBudget());
+    }
+
+    private boolean forbiddenTaskCapability(
+            Ast.TypeRef type, TaskCaptureProofBudget budget) {
         return !taskCaptureCapabilities(
                 type,
                 java.util.Collections.newSetFromMap(
-                        new IdentityHashMap<>())).send();
+                        new IdentityHashMap<>()),
+                budget, 0).send();
     }
 
     /**
