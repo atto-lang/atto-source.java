@@ -29,6 +29,11 @@ public final class SourceCooperationQuantum {
     private int pollPhase;
     // Consume at most one cold poll at each valid 128-backedge boundary.
     private boolean pollDue;
+    // A deferred 512-backedge or watchdog/time handoff belongs to this task,
+    // not its current physical carrier dispatch.
+    private boolean pendingHandoff;
+    // A genuine cooperation acknowledges the old physical dispatch's debt.
+    private boolean acknowledgedCooperate;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -43,6 +48,12 @@ public final class SourceCooperationQuantum {
 
     /** Refresh only the fairness quantum; keep the logical cooperation clock. */
     public void beginDispatch() {
+        // A plain await or carrier change must not erase an overdue handoff.
+        // Do not relatch a cap already acknowledged by a genuine cooperate.
+        if (!acknowledgedCooperate && backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            pendingHandoff = true;
+        }
+        acknowledgedCooperate = false;
         dispatchStartedAtNanos = monotonicNanos.getAsLong();
         backedgesThisDispatch = 0;
         // Do not reset pollPhase: repeated 127-edge awaits must not evade checks.
@@ -90,18 +101,34 @@ public final class SourceCooperationQuantum {
         pollDue = false;
         // A pending watchdog notice is advisory and must not cause another
         // clock read. Only the compiler-lowered caller may publish Cooperate.
-        if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+        if (pendingHandoff || watchdogRequested
+                || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            pendingHandoff = true;
             return true;
         }
-        return elapsedNanosOrOverdue(
-                monotonicNanos.getAsLong(), dispatchStartedAtNanos)
-                >= SOFT_DISPATCH_QUANTUM_NANOS;
+        if (elapsedNanosOrOverdue(monotonicNanos.getAsLong(), dispatchStartedAtNanos)
+                >= SOFT_DISPATCH_QUANTUM_NANOS) {
+            pendingHandoff = true;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Read-only, clock-free hint for an independently verified no-yield exit.
+     * Returning true does not authorize suspension through live guards,
+     * borrows, cleanup or an unresumable host stack.
+     */
+    public boolean pendingHandoffOnNoYieldExit() {
+        return pendingHandoff || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH;
     }
 
     /** Called only for an actual rt cooperate / automatic scheduler handoff. */
     public void recordedCooperate() {
         lastCooperateAtNanos = monotonicNanos.getAsLong();
         pollDue = false;
+        pendingHandoff = false;
+        acknowledgedCooperate = true;
     }
 
     /**
