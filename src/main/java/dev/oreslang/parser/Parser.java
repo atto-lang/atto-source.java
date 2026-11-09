@@ -3905,18 +3905,25 @@ public final class Parser {
         }
 
         List<Ast.MatchArm> arms = new ArrayList<>();
+        boolean seenDefault = false;
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            boolean defaultArm = false;
             if (canonicalOver) {
-                if (!matchContextualIdentifier("on")) {
-                    if (check(ELSE) || check(DEFAULT)) {
-                        throw error(peek(), "match has no default/else keyword; use 'on _ -> { ... }'");
+                if (match(DEFAULT)) {
+                    if (seenDefault) throw error(previous(), "duplicate default match arm");
+                    seenDefault = true;
+                    defaultArm = true;
+                } else {
+                    if (seenDefault) throw error(peek(), "default match arm must be last");
+                    if (!matchContextualIdentifier("on")) {
+                        if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
+                        throw error(peek(), "every explicit match arm must start with 'on'");
                     }
-                    throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
                 }
             }
 
             Ast.Pattern pattern;
-            if (!canonicalOver && match(ELSE)) {
+            if (defaultArm || (!canonicalOver && match(ELSE))) {
                 pattern = new Ast.WildcardPattern();
             } else {
                 pattern = parsePattern();
@@ -3924,6 +3931,7 @@ public final class Parser {
 
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
+                if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
                 int previousGuardStart = matchGuardStartToken;
                 matchGuardStartToken = current;
                 try {
@@ -4001,18 +4009,25 @@ public final class Parser {
         // Canonical syntax is match value over ... end.
         boolean braced = match(LBRACE);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
+        boolean seenDefault = false;
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
-            if (!matchContextualIdentifier("on")) {
-                if (check(ELSE) || check(DEFAULT)) {
-                    throw error(peek(), "match has no default/else keyword; use 'on _'");
+            boolean defaultArm = match(DEFAULT);
+            if (defaultArm) {
+                if (seenDefault) throw error(previous(), "duplicate default match arm");
+                seenDefault = true;
+            } else {
+                if (seenDefault) throw error(peek(), "default match arm must be last");
+                if (!matchContextualIdentifier("on")) {
+                    if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
+                    throw error(peek(), "every explicit match arm must start with 'on'");
                 }
-                throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
             }
 
-            Ast.Pattern pattern = parsePattern();
+            Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
+                if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
                 int previousGuardStart = matchGuardStartToken;
                 matchGuardStartToken = current;
                 try {
@@ -4586,7 +4601,7 @@ public final class Parser {
                 consume(GT, "expected '>' after typed empty aggregate type");
                 consume(LPAREN, "expected '(' after ~<T>");
                 consume(RPAREN, "typed empty aggregate accepts no value arguments; use ~map, ~record or ~tuple");
-                return new Ast.TypedEmptyAggregateExpr(aggregateType);
+                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(aggregateType));
             }
             if (isContextualIdentifier("tuple") && checkNext(LPAREN)
                     && adjacent(sigil, peek())) {
@@ -4599,12 +4614,12 @@ public final class Parser {
                     } while (match(COMMA) && !check(RPAREN));
                 }
                 consume(RPAREN, "expected ')' after ~tuple");
-                return new Ast.TupleExpr(items);
+                return parsePostfixSuffix(new Ast.TupleExpr(items));
             }
             if (isContextualIdentifier("record") && checkNext(LPAREN)
                     && adjacent(sigil, peek())) {
                 advance();
-                return parseTildeRecordLiteral(true);
+                return parsePostfixSuffix(parseTildeRecordLiteral(true));
             }
             if (isContextualIdentifier("map") && (checkNext(LPAREN) || checkNext(LT))
                     && adjacent(sigil, peek())) {
@@ -4622,7 +4637,7 @@ public final class Parser {
                     Token.Type keyKind = tokens.get(first).type();
                     Token.Type separator = tokens.get(first + 1).type();
                     if ((keyKind == IDENT || keyKind == STRING) && separator == COLON) {
-                        return parseTildeRecordLiteral(false);
+                        return parsePostfixSuffix(parseTildeRecordLiteral(false));
                     }
                     if (separator == FAT_ARROW) {
                         throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
@@ -4819,7 +4834,11 @@ public final class Parser {
     }
 
     private Ast.Expr parsePostfix() {
-        Ast.Expr expr = parsePrimary();
+        return parsePostfixSuffix(parsePrimary());
+    }
+
+    /** Apply ordinary member/index/call suffixes to any primary-like aggregate. */
+    private Ast.Expr parsePostfixSuffix(Ast.Expr expr) {
         while (true) {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
@@ -5167,6 +5186,7 @@ public final class Parser {
             throw error(peek(), "empty '~()' is ambiguous; use '~record()'");
         }
         List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> explicitNames = new java.util.LinkedHashSet<>();
         while (!check(RPAREN)) {
             if (match(ELLIPSIS)) {
                 // The existing type/ownership checker rejects spreads until
@@ -5174,6 +5194,9 @@ public final class Parser {
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
                 String name = consumeStaticObjectKeyName("expected static tilde record field name");
+                if (!explicitNames.add(name)) {
+                    throw error(previous(), "duplicate named field in tilde record: '" + name + "'");
+                }
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "mixed record ':' and map '=>' entries are forbidden");
                 }
