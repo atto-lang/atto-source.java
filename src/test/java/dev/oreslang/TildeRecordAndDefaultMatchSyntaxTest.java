@@ -41,8 +41,13 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
             assertTrue(value.structuralRecord());
             assertFalse(value.inferredStruct());
         }
-        assertInstanceOf(Ast.ContextualEmptyMapExpr.class, initializer("~map()"),
-                "map empty is a contextual type witness, not an untyped host dictionary");
+        Ast.FunctionDecl typed = function(
+                "fnc f(): void { const Map<string,int> value = ~map(); return; }");
+        assertInstanceOf(Ast.ContextualEmptyMapExpr.class,
+                ((Ast.BindingStmt) typed.body().getFirst()).initializer(),
+                "map empty requires a directly declared Map<K,V> binding");
+        assertThrows(IllegalArgumentException.class, () -> initializer("~map()"),
+                "untyped map() must fail at the parser boundary");
         Ast.ObjectExpr empty = assertInstanceOf(Ast.ObjectExpr.class, initializer("~record()"));
         assertTrue(empty.fields().isEmpty());
         assertEquals(Ast.ObjectKind.RECORD, empty.kind());

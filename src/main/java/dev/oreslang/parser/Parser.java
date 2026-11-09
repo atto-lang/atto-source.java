@@ -4645,8 +4645,9 @@ public final class Parser {
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
                 if (match(LPAREN)) {
-                    consume(RPAREN, "~map() accepts no runtime arguments without explicit "
-                            + "K/V types; use ~map<K,V>(key => value) for entries");
+                    consume(RPAREN, "nonempty tilde map literals require typed Map<K,V> "
+                            + "entry admission and transactional ownership proofs; "
+                            + "only explicit empty map construction is enabled");
                     return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
                 }
                 consume(LT, "expected explicit <K,V> or () after ~map");

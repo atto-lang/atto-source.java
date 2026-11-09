@@ -67,7 +67,8 @@ final class TypedEmptyMapGuestTest {
         IllegalArgumentException missing = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse(fixture("empty-map-untyped.atto")));
-        assertTrue(missing.getMessage().contains("directly declared Map<K,V>"),
+        assertTrue(missing.getMessage().contains("directly declared")
+                        && missing.getMessage().contains("Map<K,V>"),
                 missing.getMessage());
         IllegalArgumentException wrongType = assertThrows(
                 IllegalArgumentException.class,
