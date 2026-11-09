@@ -152,6 +152,34 @@ public final class TildeRecordParserSmoke {
         check(previous.arms().getLast().pattern() instanceof Ast.WildcardPattern,
                 "legacy on _ stays compatible");
 
+        // V3 explicit kind and typed-empty syntax: parser admission is not
+        // authority to construct the unproven guest Map<K,V> or nominal types.
+        var emptyTuple = initializer("~tuple()");
+        check(emptyTuple instanceof Ast.TupleExpr,
+                "~tuple() must resolve to existing positional TupleExpr");
+        var pairTuple = initializer("~tuple(1, \"two\")");
+        check(pairTuple instanceof Ast.TupleExpr,
+                "~tuple(1, two) must remain a TupleExpr");
+        var typedEmptyMap = initializer("~<Map<string,int>>()");
+        check(typedEmptyMap instanceof Ast.TypedEmptyAggregateExpr,
+                "~<Map<K,V>>() must preserve a type witness");
+        check(((Ast.TypedEmptyAggregateExpr) typedEmptyMap).aggregateType() != null,
+                "typed-empty map must not erase its compile-time type witness");
+        rejects("~<>()");
+        rejects("~<Map<string,int>>(42)");
+        rejects("~(foo: 1, foo: 2)");
+
+        // Explicit structural record-field matching remains reserved until
+        // type checking has proved field projection, ownership and visibility.
+        rejectsProgram("""
+                fnc f(int x): int {
+                    return match<int> x over
+                        on structural ~(foo: value) -> 42;
+                        default -> 0;
+                    end;
+                }
+                """);
+
         System.out.println("ATTO_TILDE_RECORD_PARSER_SMOKE_PASS checks=" + checks);
     }
 }
