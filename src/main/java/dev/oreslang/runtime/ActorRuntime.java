@@ -3692,8 +3692,15 @@ public final class ActorRuntime implements AutoCloseable {
         /** Host and existing members may inspect a point-in-time view only. */
         public MembershipSnapshot membershipSnapshot() {
             requireObserver("snapshot ActorGroup membership");
+            // Observer preflight can race a manager-driven leave. Revalidate
+            // authority at the same lock used to capture the snapshot.
+            ActorId caller = currentActorId().orElse(null);
             synchronized (groupMembershipLock) {
                 requireOpen();
+                if (caller != null && !members.contains(caller)) {
+                    throw new SecurityException(
+                            "ActorGroup membership revoked before snapshot");
+                }
                 return snapshotLocked();
             }
         }
