@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -62,16 +63,16 @@ final class ActorEventBusAdmissionRevocationTest {
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
 
             ActorEventBus.PublishReceipt first =
-                    bus.publishSystem("sequence", List.of(1));
+                    bus.publishSystem("sequence", new ArrayList<>(List.of(1)));
             ActorEventBus.PublishReceipt second =
-                    bus.publishSystem("sequence", List.of(2));
+                    bus.publishSystem("sequence", new ArrayList<>(List.of(2)));
             assertTrue(first.completion().isDone());
             assertFalse(second.completion().isDone(),
                     "capacity-one channel holds the second reliable write");
             long priorBytes = runtime.sharedMemoryBytes();
 
             assertThrows(ActorEventBus.EventBackpressureException.class,
-                    () -> bus.publishSystem("sequence", List.of(99)),
+                    () -> bus.publishSystem("sequence", new ArrayList<>(List.of(99))),
                     "third outstanding event must be refused without admission");
             assertEquals(priorBytes, runtime.sharedMemoryBytes(),
                     "rejected RELIABLE event must not retain its payload reservation");
@@ -80,7 +81,7 @@ final class ActorEventBusAdmissionRevocationTest {
             assertTrue(firstRead.await(5, TimeUnit.SECONDS));
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
             ActorEventBus.PublishReceipt third =
-                    bus.publishSystem("sequence", List.of(3));
+                    bus.publishSystem("sequence", new ArrayList<>(List.of(3)));
 
             subscriber.send(2);
             assertTrue(remainingRead.await(5, TimeUnit.SECONDS));
@@ -123,6 +124,12 @@ final class ActorEventBusAdmissionRevocationTest {
                             } else if (message == 1) {
                                 group.leaveCurrent();
                                 assertTrue(previous.get().closed());
+                                assertThrows(SecurityException.class,
+                                        () -> bus.subscribe("direct"),
+                                        "revoked actors cannot resubscribe");
+                                assertThrows(SecurityException.class,
+                                        () -> bus.publish("direct", List.of(99)),
+                                        "revoked actors cannot publish");
                                 join.join();
                                 current.set(bus.subscribe("direct"));
                                 assertNotSame(previous.get(), current.get(),
@@ -146,7 +153,7 @@ final class ActorEventBusAdmissionRevocationTest {
             actor.send(0);
             assertTrue(subscribed.await(5, TimeUnit.SECONDS));
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
-            bus.publishSystem("direct", List.of(1));
+            bus.publishSystem("direct", new ArrayList<>(List.of(1)));
             assertTrue(runtime.sharedMemoryBytes() > 0);
 
             actor.send(1);
@@ -155,7 +162,7 @@ final class ActorEventBusAdmissionRevocationTest {
             assertEquals(0L, runtime.sharedMemoryBytes(),
                     "old unread subscription must release retained event payload");
 
-            bus.publishSystem("direct", List.of(2));
+            bus.publishSystem("direct", new ArrayList<>(List.of(2)));
             actor.send(2);
             assertTrue(consumed.await(5, TimeUnit.SECONDS));
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
@@ -194,9 +201,9 @@ final class ActorEventBusAdmissionRevocationTest {
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
 
             ActorEventBus.PublishReceipt buffered =
-                    bus.publishSystem("shutdown", List.of(1, 2, 3));
+                    bus.publishSystem("shutdown", new ArrayList<>(List.of(1, 2, 3)));
             ActorEventBus.PublishReceipt waiting =
-                    bus.publishSystem("shutdown", List.of(4, 5, 6));
+                    bus.publishSystem("shutdown", new ArrayList<>(List.of(4, 5, 6)));
             assertTrue(buffered.completion().isDone());
             assertFalse(waiting.completion().isDone());
             assertTrue(runtime.sharedMemoryBytes() > 0);
