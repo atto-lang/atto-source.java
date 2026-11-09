@@ -2257,8 +2257,29 @@ public final class Parser {
             return grouped;
         }
 
+        // Tilde aggregate types are only a source spelling of established
+        // built-in types. Keep the complete bracketed shape/metadata grammar
+        // below; do not create a new type family or an unchecked nominal.
         String name;
-        if (match(VOID)) name = "void";
+        if (match(TILDE)) {
+            Token kind = consume(IDENT, "expected a built-in aggregate type after '~'");
+            name = switch (kind.lexeme()) {
+                case "array" -> "Array";
+                case "vector" -> "Vector";
+                case "tuple" -> "Tuple";
+                case "fixed_array" -> "FixedArray";
+                case "fixed_list" -> "FixedList";
+                case "list" -> "List";
+                case "slice" -> "Slice";
+                case "map" -> "Map";
+                case "set" -> "Set";
+                case "entry" -> "Entry";
+                case "pair" -> "Pair";
+                case "record" -> "Record";
+                default -> throw error(kind, "unknown built-in tilde type '~" + kind.lexeme()
+                        + "'; aggregate aliases must name a supported built-in kind");
+            };
+        } else if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
         else if (match(NULL)) name = "null";
         else name = parseQualifiedName();
@@ -2311,6 +2332,20 @@ public final class Parser {
         while (match(LBRACKET)) {
             args.add(parseSequenceShapeDimension());
             consume(RBRACKET, "expected ']' after sequence type shape");
+        }
+
+        // Tuple<T1, T2, ...> and ~tuple<T1, T2, ...> are additive
+        // spellings of Tuple[T1, T2, ...]. This does not rewrite the
+        // existing finite [T1, T2, ...] form, counted sequence shapes,
+        // layout metadata, or bracket-qualified Tuple types.
+        if (name.equals("Tuple") && !infer
+                && args.stream().noneMatch(Ast.TypeRef::isSequenceShape)) {
+            List<Ast.TypeRef> slots = args.stream()
+                    .filter(arg -> !arg.isNamedParameter()).toList();
+            if (!slots.isEmpty()) {
+                args.removeIf(arg -> !arg.isNamedParameter());
+                args.add(Ast.TypeRef.sequenceShape(slots));
+            }
         }
         return new Ast.TypeRef(name, args, infer);
     }
