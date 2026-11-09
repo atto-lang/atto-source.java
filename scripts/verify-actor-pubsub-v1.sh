@@ -79,6 +79,7 @@ expected = {
         "leaveCannotCompleteReadCallbacksUnderMembershipOrTopicLocks",
         "groupCloseSettlesPendingReadOutsideDefinitionAndDeliveryLocks",
         "scopedPublisherLeaveRevokesOldChannelBeforeSameActorRejoins",
+        "staleReductionSubscriberCannotSettleCallbacksUnderReductionLock",
     },
     "dev.oreslang.runtime.ActorGroupMembershipMonitorTest": {
         "snapshotOverflowsResyncsAndFencesOldGrantAfterLeaveRejoin",
