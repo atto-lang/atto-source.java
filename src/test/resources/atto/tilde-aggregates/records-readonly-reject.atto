@@ -1,0 +1,5 @@
+fnc bad(): void {
+    const row = ~(age: 37);
+    row.age = 38;
+    return;
+}
