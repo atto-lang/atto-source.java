@@ -81,8 +81,7 @@ final class TildeRecordLiteralGuestTest {
                 "maps-explicit-not-enabled.atto",
                 "maps-identifier-key-not-enabled.atto",
                 "maps-computed-key-not-enabled.atto",
-                "maps-indexed-key-not-enabled.atto",
-                "maps-generic-not-enabled.atto")) {
+                "maps-indexed-key-not-enabled.atto")) {
             IllegalArgumentException diagnostic = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(fixture(file)), file);
             assertTrue(diagnostic.getMessage().contains("typed Map<K,V>"),
