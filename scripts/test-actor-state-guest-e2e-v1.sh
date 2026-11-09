@@ -18,14 +18,13 @@ class_file="$root/target/classes/dev/oreslang/launcher/OresMain.class"
 cp_file="$root/target/conformance-classpath.txt"
 [[ -f "$class_file" && -s "$cp_file" ]] || exit 69
 run_guest() {
-  java -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI --sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -cp "$root/target/classes:$(cat "$cp_file")" dev.oreslang.launcher.OresMain "$@"
+  timeout 90s java -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI --sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -cp "$root/target/classes:$(cat "$cp_file")" dev.oreslang.launcher.OresMain "$@"
 }
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 positive="$root/tests/fixtures/actor-state-e2e-v1/positive.atto"
 negative="$root/tests/fixtures/actor-state-e2e-v1/sealed-direct-state-reject.atto"
 printf 'ACTOR_E2E_OK|42\n' > "$tmp/expected"
-timeout 90s bash -c 'exit 0' >/dev/null
 run_guest --check "$positive" > "$tmp/check.out" 2> "$tmp/check.err" || { cat "$tmp/check.err" >&2; exit 1; }
 for ((i=1;i<=16;i++)); do
   rc=0
