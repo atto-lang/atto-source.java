@@ -3573,6 +3573,18 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * One linearizable registration receipt. A monitor can never miss
+         * deltas between its initial snapshot and its registration.
+         */
+        public record MembershipRegistration(
+                MembershipMonitor monitor, MembershipSnapshot snapshot) {
+            public MembershipRegistration {
+                Objects.requireNonNull(monitor, "monitor");
+                Objects.requireNonNull(snapshot, "snapshot");
+            }
+        }
+
         public enum MembershipChangeKind { JOIN, LEAVE }
 
         public record MembershipChange(
@@ -3711,8 +3723,22 @@ public final class ActorRuntime implements AutoCloseable {
             return new MembershipSnapshot(membershipRevision.toString(), ids);
         }
 
-        /** Only the current actor may mint a monitor of its own membership. */
+        /**
+         * Compatibility entry point: registration is still atomic, but callers
+         * needing a baseline revision must use registerMembershipMonitor().
+         */
         public MembershipMonitor monitorMembership(int capacity) {
+            return registerMembershipMonitor(capacity).monitor();
+        }
+
+        /**
+         * Register an actor-owned monitor AND obtain its baseline snapshot
+         * under one groupMembershipLock linearization point.
+         *
+         * Only the owner can read the monitor; the returned snapshot is a
+         * detached value and cannot confer authority on another actor.
+         */
+        public MembershipRegistration registerMembershipMonitor(int capacity) {
             ActorId owner = requireCurrentMember("monitor ActorGroup membership");
             if (capacity < 1 || capacity > MAX_MEMBERSHIP_MONITOR_QUEUE) {
                 throw new IllegalArgumentException(
@@ -3730,11 +3756,14 @@ public final class ActorRuntime implements AutoCloseable {
                         || nextMembershipMonitorId == Long.MAX_VALUE) {
                     throw new IllegalStateException("ActorGroup membership monitor quota exhausted");
                 }
+                // Build the immutable snapshot first, so an allocation error
+                // cannot leave a registered monitor without its baseline.
+                MembershipSnapshot initial = snapshotLocked();
                 MembershipMonitor monitor =
                         new MembershipMonitor(owner, ++nextMembershipMonitorId, capacity);
                 membershipMonitors.put(monitor.registrationId, monitor);
                 membershipMonitorCredits.put(owner, held + 1);
-                return monitor;
+                return new MembershipRegistration(monitor, initial);
             }
         }
 
@@ -4348,6 +4377,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void leaveId(ActorId actorId) {
             ActorGroupColumnarEpoch revoked = null;
+            final Runnable subscriptionCleanup;
             synchronized (groupMembershipLock) {
                 if (!members.remove(actorId)) return;
                 revokeMonitorsForActorLocked(actorId);
@@ -4361,12 +4391,30 @@ public final class ActorRuntime implements AutoCloseable {
                 if (epoch != null && epoch.expects(actorId) && epoch.abort()) {
                     revoked = epoch;
                 }
-                // Rejoin must not overtake subscription draining for the old
-                // membership and inadvertently inherit a previous channel.
-                eventBus.removeActor(actorId);
+                // Detach/mark subscriptions while leave and the next rejoin
+                // are serialized. Do not settle channel Futures under the
+                // group lock: completion observers can reenter this runtime.
+                subscriptionCleanup = eventBus.detachActorSubscriptions(actorId);
             }
-            if (revoked != null) revoked.fail(new IllegalStateException(
-                    "ActorGroup member left or terminated during columnar epoch"));
+            Throwable cleanupFailure = null;
+            try {
+                subscriptionCleanup.run();
+            } catch (Throwable failure) {
+                cleanupFailure = failure;
+            }
+            if (revoked != null) {
+                try {
+                    revoked.fail(new IllegalStateException(
+                            "ActorGroup member left or terminated during columnar epoch"));
+                } catch (Throwable failure) {
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
+                }
+            }
+            if (cleanupFailure instanceof RuntimeException failure) throw failure;
+            if (cleanupFailure instanceof Error failure) throw failure;
+            if (cleanupFailure != null)
+                throw new IllegalStateException("ActorGroup leave cleanup failed", cleanupFailure);
         }
 
         private void actorTerminated(ActorId actorId) {
