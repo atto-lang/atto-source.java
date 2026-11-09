@@ -1,0 +1,4 @@
+fnc read(): int {
+    const row = ~(meta: ~record(age: 37), "first name": "Ada");
+    return row.meta.age;
+}
