@@ -22,6 +22,11 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private static final java.util.Set<String> BUILTIN_OF_TYPES =
             java.util.Set.of("Map", "Array", "Tuple", "Record");
+    private static final java.util.Set<String> PENDING_OF_TYPES =
+            java.util.Set.of("Entry", "Pair", "List", "Vector", "Set");
+    private static final java.util.Set<String> COLLECTION_OF_TYPES =
+            java.util.Set.of("Map", "Array", "Tuple", "Record",
+                    "Entry", "Pair", "List", "Vector", "Set");
     // Conservative module-wide lexical collision gate. A factory rewrite may
     // not capture a user class, import alias, parameter or local binding.
     // Global conservatism is deliberate until typed-HIR symbol ownership is
@@ -67,7 +72,7 @@ public final class Parser {
         // retroactively become an unowned compiler Tuple.of constructor.
         for (int i = 0; i < this.tokens.size(); i++) {
             Token token = this.tokens.get(i);
-            if (token.type() != IDENT || !BUILTIN_OF_TYPES.contains(token.lexeme())) continue;
+            if (token.type() != IDENT || !COLLECTION_OF_TYPES.contains(token.lexeme())) continue;
             Token.Type prior = i == 0 ? EOF : this.tokens.get(i - 1).type();
             Token.Type next = i + 1 == this.tokens.size()
                     ? EOF : this.tokens.get(i + 1).type();
@@ -4922,6 +4927,14 @@ public final class Parser {
         return name;
     }
 
+    private boolean unsupportedBuiltInOf(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("of")
+                || !(member.receiver() instanceof Ast.NameExpr owner)) return false;
+        return PENDING_OF_TYPES.contains(owner.name())
+                && !shadowedOfTypes.contains(owner.name());
+    }
+
     private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
         if (kind.equals("Map")) {
             Ast.TypeRef witness = null;
@@ -4961,6 +4974,12 @@ public final class Parser {
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
+            if (unsupportedBuiltInOf(expr)) {
+                throw error(peek(), "collection factory requires compiler-owned "
+                        + "type, ownership and guest lowering; unsupported: "
+                        + ((Ast.NameExpr) ((Ast.MemberExpr) expr).receiver()).name()
+                        + ".of");
+            }
             String factory = builtinOfFactory(expr);
             if (factory != null && check(LT) && adjacent(previous(), peek())
                     && looksLikeTypeArgumentCall()) {
