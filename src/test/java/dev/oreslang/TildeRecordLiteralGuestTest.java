@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
@@ -94,6 +95,53 @@ final class TildeRecordLiteralGuestTest {
     @Test
     void unaryTildeStillParsesIndependentlyOfAggregateSyntax() {
         assertDoesNotThrow(() -> Parser.parse(fixture("unary-tilde-pass.atto")));
+    }
+
+    @Test
+    void explicitTildeTupleConstructorsAdmitZeroAndMultipleElements() {
+        assertDoesNotThrow(() -> Parser.parse(fixture("tuples-empty-pass.atto")));
+        assertDoesNotThrow(() -> Parser.parse(fixture("tuples-two-pass.atto")));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                fixture("tuples-two-pass.atto")));
+    }
+
+    @Test
+    void typedEmptyConstructorsKeepFullTypeWitnessInTheAst() {
+        for (String file : List.of(
+                "typed-empty-map-parser-only.atto",
+                "typed-empty-record-parser-only.atto",
+                "typed-empty-tuple-parser-only.atto",
+                "typed-empty-generic-parser-only.atto")) {
+            Ast.Program source = assertDoesNotThrow(() -> Parser.parse(fixture(file)), file);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl) source.modules().getFirst()
+                    .declarations().getFirst();
+            Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
+            assertInstanceOf(Ast.TypedEmptyAggregateExpr.class, binding.initializer(), file);
+            Ast.TypedEmptyAggregateExpr typed = (Ast.TypedEmptyAggregateExpr) binding.initializer();
+            assertNotNull(typed.aggregateType());
+        }
+    }
+
+    @Test
+    void typedEmptySyntaxCannotBypassUnimplementedTypeAndOwnershipProofs() {
+        for (String file : List.of(
+                "typed-empty-map-parser-only.atto",
+                "typed-empty-record-parser-only.atto",
+                "typed-empty-tuple-parser-only.atto",
+                "typed-empty-generic-parser-only.atto")) {
+            IllegalArgumentException diagnostic = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
+            assertTrue(diagnostic.getMessage().contains("typed guest lowering")
+                            || diagnostic.getMessage().contains("zero-initialization"),
+                    file + ": " + diagnostic.getMessage());
+        }
+        for (String file : List.of(
+                "typed-empty-argument-reject.atto",
+                "typed-empty-missing-type-reject.atto")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(fixture(file)), file);
+        }
     }
 
     @Test
