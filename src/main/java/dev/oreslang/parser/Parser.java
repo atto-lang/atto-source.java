@@ -2260,8 +2260,9 @@ public final class Parser {
         // Tilde aggregate types are only a source spelling of established
         // built-in types. Keep the complete bracketed shape/metadata grammar
         // below; do not create a new type family or an unchecked nominal.
+        boolean explicitTildeType = match(TILDE);
         String name;
-        if (match(TILDE)) {
+        if (explicitTildeType) {
             Token kind = consume(IDENT, "expected a built-in aggregate type after '~'");
             name = switch (kind.lexeme()) {
                 case "array" -> "Array";
@@ -2334,11 +2335,12 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
 
-        // Tuple<T1, T2, ...> and ~tuple<T1, T2, ...> are additive
-        // spellings of Tuple[T1, T2, ...]. This does not rewrite the
-        // existing finite [T1, T2, ...] form, counted sequence shapes,
-        // layout metadata, or bracket-qualified Tuple types.
-        if (name.equals("Tuple") && !infer
+        // Explicit ~tuple<T1,T2,...> resolves directly to the existing
+        // Tuple[T1,T2,...] shape. Preserve *unprefixed* Tuple<A,B> ASTs:
+        // a user-declared nominal Tuple<A,B> must still resolve as a class.
+        // The builtin unprefixed Tuple<T...> compatibility path is handled
+        // only by TypeChecker after lexical class resolution.
+        if (explicitTildeType && name.equals("Tuple") && !infer
                 && args.stream().noneMatch(Ast.TypeRef::isSequenceShape)) {
             List<Ast.TypeRef> slots = args.stream()
                     .filter(arg -> !arg.isNamedParameter()).toList();
