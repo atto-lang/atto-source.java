@@ -1,0 +1,137 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Type-position aliases only. Construction through ~kind(...) and Kind.of(...)
+ * remains separately gated; these tests must not certify unimplemented factories.
+ */
+final class TildeAggregateTypeAliasCompilerTest {
+    @Test
+    void typedTupleAliasesShareTheExistingFiniteShapeAndMetadata() {
+        assertEquals(typeOf("Tuple[int, string]"), typeOf("Tuple<int, string>"));
+        assertEquals(typeOf("Tuple[int, string]"), typeOf("~tuple<int, string>"));
+        assertEquals(typeOf("Tuple<align=64, size=2>[int, string]"),
+                typeOf("~tuple<align=64, size=2>[int, string]"));
+        assertEquals(typeOf("Tuple<int, string, align=64, size=2>"),
+                typeOf("Tuple<align=64, size=2>[int, string]"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val a: ~tuple<int, string> = (7, "seven");
+                  val b: Tuple<int, string> = (8, "eight");
+                  val c: Tuple[int, string] = (9, "nine");
+                  val d: ~tuple<align=64, size=2>[int, string] = (10, "ten");
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void arrayVectorAndFixedArrayAliasesPreserveOldShapes() {
+        assertEquals(typeOf("Array<int>"), typeOf("~array<int>"));
+        assertEquals(typeOf("Vector[int]"), typeOf("~vector[int]"));
+        assertEquals(typeOf("FixedArray[4 of int]"), typeOf("~fixed_array[4 of int]"));
+        assertEquals(typeOf("Vector[...(int, string, bool)]"),
+                typeOf("~vector[...(int, string, bool)]"));
+        assertEquals(typeOf("Vector<allocator=Arena, align=64>[int]"),
+                typeOf("~vector<allocator=Arena, align=64>[int]"));
+        assertEquals(typeOf("Vector[int][int]"), typeOf("~vector[int][int]"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val array: ~array<int> = arr[1, 2, 3];
+                  val vector: ~vector[int] = [1, 2, 3];
+                  val grouped: ~vector[...(int, string, bool)] =
+                      [5, "foo", true, 6, "bar", false];
+                  val fixed: ~fixed_array[4 of int] = [1, 2, 3, 4];
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void tildeAliasDoesNotCreateNewNominalProducts() {
+        // Surface syntax alone: implementation of factories and runtime
+        // representations is independently gated by each builtin's contract.
+        assertEquals(typeOf("Map<string, bool>"), typeOf("~map<string, bool>"));
+        assertEquals(typeOf("Entry<string, bool>"), typeOf("~entry<string, bool>"));
+        assertEquals(typeOf("Pair<int, string>"), typeOf("~pair<int, string>"));
+        assertEquals(typeOf("Set<int>"), typeOf("~set<int>"));
+        assertEquals(typeOf("Record<int>"), typeOf("~record<int>"));
+        assertEquals(typeOf("List[int]"), typeOf("~list[int]"));
+        assertEquals(typeOf("Slice[int]"), typeOf("~slice[int]"));
+    }
+
+    @Test
+    void invalidCollectionPoliciesAndShapesStayRejected() {
+        IllegalArgumentException finite = assertThrows(IllegalArgumentException.class,
+                () -> checkLocal("~vector[int, string, bool]", "[5, \"foo\", true]"));
+        assertTrue(finite.getMessage().contains("finite sequence pattern"));
+
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class,
+                () -> checkLocal("~vector[...(int, string, bool)]", "[5, \"foo\"]"));
+        assertTrue(incomplete.getMessage().contains("repeating sequence group"));
+
+        IllegalArgumentException runtimeSize = assertThrows(IllegalArgumentException.class,
+                () -> checkLocal("~vector<size=4>[int]", "[1, 2, 3, 4]"));
+        assertTrue(runtimeSize.getMessage().contains("runtime instance state"));
+
+        IllegalArgumentException mismatchedTuple = assertThrows(IllegalArgumentException.class,
+                () -> checkLocal("~tuple<size=3>[int, string]", "(7, \"seven\")"));
+        assertTrue(mismatchedTuple.getMessage().contains("fixed sequence arity"));
+
+        IllegalArgumentException mixedShape = assertThrows(IllegalArgumentException.class,
+                () -> checkLocal("Tuple<int, string>[int, string]", "(7, \"seven\")"));
+        assertTrue(mixedShape.getMessage().contains("cannot mix positional"));
+    }
+
+    @Test
+    void tildeTypeIsAllowlistedAndValueUnaryTildeIsUnchanged() {
+        IllegalArgumentException unknown = assertThrows(IllegalArgumentException.class,
+                () -> typeOf("~tupel<int, string>"));
+        assertTrue(unknown.getMessage().contains("unknown built-in tilde type"));
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  val value: int = ~1;
+                  return;
+                }
+                """));
+    }
+
+    private static void checkLocal(String type, String initializer) {
+        TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val value: %s = %s;
+                  return;
+                }
+                """.formatted(type, initializer)));
+    }
+
+    private static Ast.TypeRef typeOf(String type) {
+        Ast.Program program = Parser.parse("""
+                pub fnc main(): void {
+                  val value: %s = null;
+                  return;
+                }
+                """.formatted(type));
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FunctionDecl fn)) continue;
+                for (Ast.Stmt stmt : fn.body()) {
+                    if (stmt instanceof Ast.BindingStmt binding
+                            && binding.name().equals("value")) {
+                        return binding.declaredType();
+                    }
+                }
+            }
+        }
+        throw new AssertionError("failed to find declared aggregate type");
+    }
+}
