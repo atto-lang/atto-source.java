@@ -38,14 +38,19 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             memberEpochs.keySet().removeIf(actorId -> !group.runtimeContains(actorId));
         }
 
+        private void requireEpochRoom(ActorRuntime.ActorId actorId, boolean wasMember) {
+            if ((!wasMember || !memberEpochs.containsKey(actorId))
+                    && lastEpoch == Long.MAX_VALUE) {
+                throw new IllegalStateException("pg membership generation exhausted");
+            }
+        }
+
         private long epochForJoin(ActorRuntime.ActorId actorId, boolean wasMember) {
             if (wasMember) {
                 Long current = memberEpochs.get(actorId);
                 if (current != null) return current;
             }
-            if (lastEpoch == Long.MAX_VALUE) {
-                throw new IllegalStateException("pg membership generation exhausted");
-            }
+            // requireEpochRoom ran before physical membership admission.
             long epoch = ++lastEpoch;
             memberEpochs.put(actorId, epoch);
             return epoch;
@@ -184,6 +189,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             Entry entry = entryForJoinLocked(key, retirements);
             try {
                 boolean wasMember = entry.group.runtimeContains(actorId);
+                entry.requireEpochRoom(actorId, wasMember);
                 entry.group.joinCurrent(entry.join);
                 long epoch = entry.epochForJoin(actorId, wasMember);
                 return new Membership<M>(key, actorId, entry.group, epoch);
@@ -205,6 +211,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             try {
                 ActorRuntime.ActorId actorId = ref.id();
                 boolean wasMember = entry.group.runtimeContains(actorId);
+                entry.requireEpochRoom(actorId, wasMember);
                 entry.group.join(ref, entry.join);
                 entry.epochForJoin(actorId, wasMember);
             } catch (RuntimeException | Error failure) {
