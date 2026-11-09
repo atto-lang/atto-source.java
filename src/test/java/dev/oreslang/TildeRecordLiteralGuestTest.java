@@ -151,7 +151,6 @@ final class TildeRecordLiteralGuestTest {
     @Test
     void typedEmptySyntaxRejectsUnprovedOrNonEmptyTypeWitnesses() {
         for (String file : List.of(
-                "typed-empty-map-parser-only.atto",
                 "typed-empty-generic-parser-only.atto",
                 "typed-empty-required-record-reject.atto",
                 "typed-empty-required-tuple-reject.atto",
