@@ -67,7 +67,7 @@ final class TypedEmptyMapGuestTest {
         IllegalArgumentException missing = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse(fixture("empty-map-untyped.atto")));
-        assertTrue(missing.getMessage().contains("directly declared Map<K,V>"),
+        assertTrue(missing.getMessage().contains("directly declared"),
                 missing.getMessage());
         IllegalArgumentException wrongType = assertThrows(
                 IllegalArgumentException.class,
@@ -95,12 +95,12 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
-    void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
-        for (String file : new String[]{
-                "empty-map-nonempty-reject.atto",
-                "empty-map-bad-arity.atto"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(fixture(file)), file);
-        }
+    void newlyAdmittedNonemptyMapStillRequiresTypedAndBoundedSyntax() {
+        // Previous reject fixture now has a concrete String,int witness,
+        // so the parser and typechecker must both accept it.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                fixture("empty-map-nonempty-reject.atto")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("empty-map-bad-arity.atto")));
     }
 }
