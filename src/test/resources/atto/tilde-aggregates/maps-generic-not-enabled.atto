@@ -1,0 +1,4 @@
+fnc pending(): void {
+    const flags = ~map<string, int>();
+    return;
+}
