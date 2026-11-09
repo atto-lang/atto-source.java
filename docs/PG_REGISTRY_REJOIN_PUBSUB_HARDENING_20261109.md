@@ -44,17 +44,17 @@ subscription teardown.
 
 ## Added JUnit suites and exact-head method gates
 
-13 JUnit methods are selected and individually required by
+14 JUnit methods are selected and individually required by
 `scripts/verify-actor-pubsub-v1.sh`:
 
 - `ProcessGroupRegistryTest`: 5 tests for duplicate join/leave, actor lifetime,
   name cardinality, same/other runtime authorization, membership views.
 - `ProcessGroupRegistryRetirementTest`: 3 tests for callback reentrancy during
   delete and final leave, and exact-entry name reuse.
-- `ProcessGroupRegistryReentrantNameReuseTest`: 3 tests for
+- `ProcessGroupRegistryReentrantNameReuseTest`: 4 tests for
   callback-triggered re-creation of the *same name* during old group shutdown,
   stale old membership handle after re-creation, and 24 parallel delete/join
-  rounds that must never resurrect or close the wrong group.
+  rounds that must never resurrect or close the wrong group, plus direct/nested\n  denial of registry and membership capability transport.
 - `ActorEventBusMembershipChurnTest`: 2 tests for 32 leave/rejoin cycles with
   exactly-once subscription credit reclamation, and closing a pending second
   RELIABLE channel write when subscriber membership is revoked.
