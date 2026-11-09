@@ -4739,6 +4739,17 @@ public final class TypeChecker {
             }
             return new ListType(element);
         }
+        if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
+            // The explicit type witness is preserved by the parser, but
+            // this frontend cannot yet prove generic/alias empty-construction
+            // capability and emit guest Map/Record/Tuple constructors.
+            // Fail closed before runtime rather than erasing T or inventing
+            // a nominal/default constructor.
+            throw new IllegalArgumentException(
+                    "~<T>() requires compile-time aggregate-kind and zero-initialization "
+                            + "proof plus typed guest lowering; not yet enabled for "
+                            + typed.aggregateType());
+        }
         if (expr instanceof Ast.TupleExpr tuple) {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
