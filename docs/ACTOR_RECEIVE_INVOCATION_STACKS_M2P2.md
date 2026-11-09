@@ -22,7 +22,7 @@ This is the **host source-executor/scalar machine** path, not complete compiler-
 Tests are **AUTHORED_NOT_EXECUTED** until exact-head JDK 25/GraalVM stepful JUnit and source guest receipts exist. Run:
 
 ```sh
-./mvnw -Dtest=ActorReceiveInvocationTest,SourceActorReceiveInvocationTest test
+mvn -Dtest=ActorReceiveInvocationTest,SourceActorReceiveInvocationTest test
 ```
 
-(Use the repository's actual Maven wrapper/entrypoint if this invocation is not available; the command is indicative.) A GitHub Actions job with `steps=null` is runner admission failure, not an executed test. Coordinate follow-up with [spec #26](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/26), [conformance #635](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/635), and [common gate #255](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/255).
+(Requires the repository's configured JDK/Maven toolchain; this command has not yet been executed at the PR head.) A GitHub Actions job with `steps=null` is runner admission failure, not an executed test. Coordinate follow-up with [spec #26](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/26), [conformance #635](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/635), and [common gate #255](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/255).
