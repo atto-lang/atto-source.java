@@ -102,4 +102,49 @@ final class ProcessGroupRegistryMembershipEpochTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void unauthorizedHostLeaveCannotConsumeValidActorsHandle() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ProcessGroupRegistry pg = new ProcessGroupRegistry(runtime, 2)) {
+            CountDownLatch joined = new CountDownLatch(1);
+            CountDownLatch left = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<ProcessGroupRegistry.Membership<Integer>> handle =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> actor =
+                    runtime.spawnSharedTrusted(factory -> (message, context) -> {
+                        try {
+                            if (message == 1) {
+                                handle.set(pg.joinCurrent("local", "authorization"));
+                            } else {
+                                handle.get().leave();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            if (message == 1) joined.countDown();
+                            else left.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(joined.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertThrows(SecurityException.class, () -> handle.get().leave(),
+                    "host code cannot impersonate the registered actor");
+            assertFalse(handle.get().left(),
+                    "unauthorized leave attempt must not burn the actor handle");
+            assertEquals(1, pg.memberCount("local", "authorization"));
+
+            actor.send(2);
+            assertTrue(left.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertTrue(handle.get().left());
+            assertEquals(0, pg.groupCount());
+            assertTrue(actor.isAlive());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }
