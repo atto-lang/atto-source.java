@@ -34,6 +34,7 @@ final class ActorEventBusShutdownStressTest {
                 final int rounds = 12;
                 final int attemptsPerRound = 32;
                 for (int round = 0; round < rounds; round++) {
+                    final int seededRound = round;
                     ActorRuntime.ActorGroup group = runtime.createActorGroup();
                     ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
                     ActorEventBus bus = group.events();
@@ -56,12 +57,11 @@ final class ActorEventBusShutdownStressTest {
                     subscriber.send(1);
                     assertTrue(ready.await(5, TimeUnit.SECONDS));
                     assertNull(setupFailure.get(),
-                            () -> "round " + round + ": " + setupFailure.get());
+                            () -> "round " + seededRound + ": " + setupFailure.get());
 
                     CyclicBarrier start = new CyclicBarrier(2);
                     AtomicInteger successes = new AtomicInteger();
                     AtomicInteger refusals = new AtomicInteger();
-                    final int seededRound = round;
                     Future<?> publisher = host.submit(() -> {
                         start.await(5, TimeUnit.SECONDS);
                         Random schedule = new Random(0xA770L + seededRound);
