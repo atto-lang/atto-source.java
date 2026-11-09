@@ -149,6 +149,57 @@ final class ProcessGroupRegistryReentrantNameReuseTest {
         }
     }
 
+    @Test
+    void concurrentDeleteAndJoinNeverResurrectDetachedEntry() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var pg = new ProcessGroupRegistry(runtime, 1)) {
+            var owner = runtime.<String>spawnSharedTrusted(
+                    factory -> (message, context) -> { });
+            var joining = runtime.<String>spawnSharedTrusted(
+                    factory -> (message, context) -> { });
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+            try {
+                for (int iteration = 0; iteration < 24; iteration++) {
+                    pg.join("local", "racing", owner);
+                    var oldGroup = onlyGroup(pg);
+                    var start = new CountDownLatch(1);
+                    var delete = pool.submit(() -> {
+                        start.await(10, TimeUnit.SECONDS);
+                        pg.delete("local", "racing");
+                        return null;
+                    });
+                    var join = pool.submit(() -> {
+                        start.await(10, TimeUnit.SECONDS);
+                        pg.join("local", "racing", joining);
+                        return null;
+                    });
+                    start.countDown();
+                    delete.get(20, TimeUnit.SECONDS);
+                    join.get(20, TimeUnit.SECONDS);
+                    // The join may precede the delete (and then be revoked),
+                    // or it may follow and join the replacement. Re-establish
+                    // a live name to verify the detached group cannot win.
+                    pg.join("local", "racing", joining);
+                    var newGroup = onlyGroup(pg);
+                    assertTrue(oldGroup.closed());
+                    assertNotSame(oldGroup, newGroup);
+                    assertFalse(newGroup.closed());
+                    assertTrue(pg.contains("local", "racing", joining));
+                    assertFalse(pg.contains("local", "racing", owner));
+                    pg.delete("local", "racing");
+                    assertEquals(0, pg.groupCount());
+                }
+            } finally {
+                pool.shutdownNow();
+                assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+                owner.stop();
+                joining.stop();
+                assertTrue(owner.awaitTermination(10, TimeUnit.SECONDS));
+                assertTrue(joining.awaitTermination(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
     private static ActorRuntime.ActorGroup onlyGroup(ProcessGroupRegistry pg)
             throws Exception {
         Object monitor = field(pg.getClass(), "lock").get(pg);
