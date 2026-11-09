@@ -172,6 +172,81 @@ final class ActorEventBusDetachedTeardownTest {
         }
     }
 
+    @Test
+    void staleReductionSubscriberCannotSettleCallbacksUnderReductionLock()
+            throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var grant = group.joinCapability();
+            var bus = group.events();
+            bus.defineDoubleReduction(
+                    "reduction-teardown", ActorEventBus.DoubleReductionKind.MIN, 100.0);
+            @SuppressWarnings("unchecked")
+            var reductions = (java.util.Map<String, ?>)
+                    field(ActorEventBus.class, "doubleReductions").get(bus);
+            Object reductionLock = reductions.get("reduction-teardown");
+            assertNotNull(reductionLock);
+
+            CountDownLatch subscribed = new CountDownLatch(1);
+            CountDownLatch callback = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<ActorEventBus.Subscription<Double>> old =
+                    new AtomicReference<>();
+            AtomicBoolean underReduction = new AtomicBoolean();
+            AtomicBoolean underDelivery = new AtomicBoolean();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    grant.join();
+                    var sub = bus.<Double>subscribe("reduction-teardown");
+                    old.set(sub);
+                    Object deliveryLock = subscriptionDeliveryLock(sub);
+                    sub.readAsync().whenCompleteRuntime((ignored, terminal) -> {
+                        underReduction.set(Thread.holdsLock(reductionLock));
+                        underDelivery.set(Thread.holdsLock(deliveryLock));
+                        callback.countDown();
+                    });
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    subscribed.countDown();
+                }
+            });
+            actor.send("watch");
+            assertTrue(subscribed.await(10, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+
+            // Narrow, deliberate fault injection: emulate the gap between
+            // membership revocation and stale topic pruning. Public leave()
+            // already detaches the subscription and cannot reach this path.
+            // Synchronize with the real group lock; never mutate a live group
+            // set from uncoordinated application code.
+            Object membershipLock = field(ActorRuntime.class, "groupMembershipLock").get(runtime);
+            @SuppressWarnings("unchecked")
+            var members = (java.util.Set<ActorRuntime.ActorId>)
+                    field(group.getClass(), "members").get(group);
+            synchronized (membershipLock) {
+                assertTrue(members.remove(actor.id()));
+            }
+            var result = bus.reduceDouble("reduction-teardown", 50.0);
+            assertTrue(result.changed());
+            assertEquals(50.0, result.value());
+            assertEquals(1L, result.publication().sequence());
+            assertTrue(callback.await(10, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertFalse(underReduction.get(),
+                    "reduction serialization must not enclose subscriber callback");
+            assertFalse(underDelivery.get(),
+                    "topic delivery lock must not enclose subscriber callback");
+            assertTrue(old.get().closed());
+            assertEquals(50.0, bus.readDoubleReduction("reduction-teardown"));
+
+            group.close();
+            actor.stop();
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
     private static Object subscriptionDeliveryLock(
             ActorEventBus.Subscription<?> subscription) throws Exception {
         var topic = field(subscription.getClass(), "topic").get(subscription);
