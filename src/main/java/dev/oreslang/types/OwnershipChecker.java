@@ -1558,6 +1558,24 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw error("unresolved ~map() cannot pass ownership admission");
         }
+        if (expr instanceof Ast.TypedMapLiteralExpr literal) {
+            ValueInfo map = checkExpr(
+                    new Ast.TypedEmptyAggregateExpr(literal.aggregateType()), scope, true);
+            for (Ast.MapLiteralEntry entry : literal.entries()) {
+                ValueInfo key = checkExpr(entry.key(), scope, true);
+                ValueInfo value = checkExpr(entry.value(), scope, true);
+                if (isBorrowValue(key) || isBorrowValue(value)
+                        || containsMutexGuardType(key.type)
+                        || containsMutexGuardType(value.type)) {
+                    throw error("borrowed references and MutexGuard cannot enter owned Map literals");
+                }
+                if (key.kind != ValueKind.COPY || value.kind != ValueKind.COPY) {
+                    throw error("nonempty Map literals require copyable scalar key/value domains "
+                            + "until move-rollback and resource cleanup are proven");
+                }
+            }
+            return map;
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // Mirror the concrete-only TypeChecker admission. This also
             // prevents callers supplying an unchecked AST from eliding

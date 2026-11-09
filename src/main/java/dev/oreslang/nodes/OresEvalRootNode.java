@@ -7848,6 +7848,30 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");
             }
+            if (expr instanceof Ast.TypedMapLiteralExpr literal) {
+                if (literal.entries().size() > OresKeyedMap.MAX_ENTRIES) {
+                    throw new IllegalArgumentException("typed Map literal exceeds key-count quota");
+                }
+                Object allocated = eval(new Ast.TypedEmptyAggregateExpr(
+                        literal.aggregateType()), env);
+                if (!(allocated instanceof OresKeyedMap<?, ?> container)) {
+                    throw new IllegalStateException("typed Map literal did not allocate canonical storage");
+                }
+                List<java.util.Map.Entry<Object, Object>> values =
+                        new ArrayList<>(literal.entries().size());
+                // Evaluate once into detached pairs; only the final validated
+                // batch is committed to canonical typed guest storage.
+                for (Ast.MapLiteralEntry entry : literal.entries()) {
+                    Object key = eval(entry.key(), env);
+                    Object value = eval(entry.value(), env);
+                    values.add(new java.util.AbstractMap.SimpleImmutableEntry<>(key, value));
+                }
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> typedMap =
+                        (OresKeyedMap<Object, Object>) container;
+                typedMap.putDistinctEntries(values);
+                return container;
+            }
             if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
                 // Defensive runtime check: only canonical, fully concrete
                 // aggregate shapes previously admitted by type+ownership

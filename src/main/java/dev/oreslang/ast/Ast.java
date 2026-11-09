@@ -1130,7 +1130,7 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr, ContextualEmptyMapExpr { }
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, TypedMapLiteralExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1167,6 +1167,28 @@ public final class Ast {
      *  witness. Never typecheck or execute this node as a dynamic map.
      */
     public record ContextualEmptyMapExpr() implements Expr { }
+
+    /** Preserve source ordering and duplicate logical keys for batch rejection. */
+    public record MapLiteralEntry(Expr key, Expr value) {
+        public MapLiteralEntry {
+            java.util.Objects.requireNonNull(key, "Map literal key");
+            java.util.Objects.requireNonNull(value, "Map literal value");
+        }
+    }
+
+    /** Nonempty canonical typed guest Map; never a host dictionary. */
+    public record TypedMapLiteralExpr(TypeRef aggregateType, List<MapLiteralEntry> entries)
+            implements Expr {
+        public TypedMapLiteralExpr {
+            java.util.Objects.requireNonNull(aggregateType, "Map literal type");
+            entries = List.copyOf(entries);
+            if (!aggregateType.name().equals("Map") || aggregateType.inferArguments()
+                    || aggregateType.arguments().size() != 2 || entries.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "nonempty Map literal requires explicit Map<K,V> and at least one entry");
+            }
+        }
+    }
 
     public record TypedEmptyAggregateExpr(TypeRef aggregateType) implements Expr {
         public TypedEmptyAggregateExpr {

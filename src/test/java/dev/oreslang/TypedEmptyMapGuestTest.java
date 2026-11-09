@@ -95,12 +95,9 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
-    void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
-        for (String file : new String[]{
-                "empty-map-nonempty-reject.atto",
-                "empty-map-bad-arity.atto"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(fixture(file)), file);
-        }
+    void untypedAndMalformedMapConstructionCannotBypassAdmission() {
+        assertDoesNotThrow(() -> Parser.parse(fixture("empty-map-nonempty-reject.atto")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("empty-map-bad-arity.atto")));
     }
 }

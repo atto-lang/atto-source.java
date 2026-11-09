@@ -1,0 +1,5 @@
+pub fnc main(): void {
+    const numbers = ~map<string, int>("alpha" => 1, "beta" => 2, "gamma" => 3);
+    stdio.println(numbers.size);
+    return;
+}

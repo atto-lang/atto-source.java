@@ -433,6 +433,62 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
+     * Compiler-owned source-order nonempty literal insertion. A Map input
+     * cannot preserve duplicate keys, so accept entry pairs instead. Check
+     * domains, Unicode, quotas and logical duplicates before committing.
+     * Failed batches leave the original guest storage intact.
+     */
+    public synchronized void putDistinctEntries(
+            List<? extends Map.Entry<? extends K, ? extends V>> source) {
+        rejectReentrantMutation();
+        Objects.requireNonNull(source, "Map literal entries");
+        bulkMutationActive = true;
+        try {
+            int reported = source.size();
+            if (reported < 0 || reported > MAX_ENTRIES - entries.size()) {
+                throw new IllegalArgumentException("typed Map literal exceeds maximum key count");
+            }
+            List<Map.Entry<K, V>> prepared = new ArrayList<>(reported);
+            Set<K> keys = new HashSet<>(entries.keySet());
+            long bytes = 0L;
+            for (Map.Entry<? extends K, ? extends V> incoming : source) {
+                if (prepared.size() >= MAX_ENTRIES - entries.size()) {
+                    throw new IllegalArgumentException("typed Map literal exceeds maximum key count");
+                }
+                Map.Entry<? extends K, ? extends V> entry =
+                        Objects.requireNonNull(incoming, "Map literal entry");
+                K key = entry.getKey();
+                V value = entry.getValue();
+                checkKey(key);
+                checkValueDomain(value);
+                if (!keys.add(key)) {
+                    throw new IllegalArgumentException("duplicate logical key in typed Map literal");
+                }
+                long footprint = wireKeyBytes(key);
+                if (footprint > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes - bytes) {
+                    throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
+                }
+                bytes += footprint;
+                prepared.add(new java.util.AbstractMap.SimpleImmutableEntry<>(key, value));
+            }
+            if (prepared.size() != reported) {
+                throw new IllegalArgumentException("Map literal entries changed during batch snapshot");
+            }
+            LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
+            for (Map.Entry<K, V> entry : prepared) {
+                staged.put(entry.getKey(), entry.getValue());
+            }
+            for (Map.Entry<K, V> entry : prepared) {
+                runEntryValidator(entry.getKey(), entry.getValue());
+            }
+            entries = staged;
+            storedKeyWireBytes += bytes;
+        } finally {
+            bulkMutationActive = false;
+        }
+    }
+
+    /**
      * Atomically remove and transfer a value while preserving key absence as
      * an explicit outer state.  No public has/get/remove sequence is needed.
      */

@@ -4744,6 +4744,21 @@ public final class TypeChecker {
                     "~map() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");
         }
+        if (expr instanceof Ast.TypedMapLiteralExpr literal) {
+            // Canonical descriptor admission handles shadowing, keys and
+            // concrete scalar values before checking source-order entries.
+            Type map = typeOf(new Ast.TypedEmptyAggregateExpr(literal.aggregateType()),
+                    env, generics, self);
+            Type key = resolve(literal.aggregateType().arguments().get(0), generics, self);
+            Type value = resolve(literal.aggregateType().arguments().get(1), generics, self);
+            for (Ast.MapLiteralEntry entry : literal.entries()) {
+                requireAssignable(typeOf(entry.key(), env, generics, self), key,
+                        "typed Map literal key");
+                requireAssignable(typeOf(entry.value(), env, generics, self), value,
+                        "typed Map literal value");
+            }
+            return map;
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // First proven slice: syntactically concrete, zero-field readonly
             // records and zero-arity tuples. Both use the canonical existing

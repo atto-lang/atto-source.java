@@ -1,0 +1,5 @@
+pub fnc main(): void {
+    const bad = ~map<string, int>("same" => 1, "same" => 2);
+    stdio.println(bad.size);
+    return;
+}
