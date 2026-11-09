@@ -7961,6 +7961,8 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor lifecycle capabilities are execution-domain local and cannot cross actor mailboxes");
         }
         if (value instanceof ActorRuntime.ActorGroup
+                || value instanceof ProcessGroupRegistry
+                || value instanceof ProcessGroupRegistry.Membership<?>
                 || value instanceof ActorEventBus
                 || value instanceof ActorEventBus.Subscription<?>
                 || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
@@ -8061,6 +8063,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
+                || value instanceof ProcessGroupRegistry
+                || value instanceof ProcessGroupRegistry.Membership<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
