@@ -763,6 +763,43 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void independentTaskSharesOneSendProofBudgetAcrossAllCaptures()
+            throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var checkerConstructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        checkerConstructor.setAccessible(true);
+        var checker = checkerConstructor.newInstance(program, java.util.Map.of());
+
+        // Exercise the exact internal per-task proof budget used by the
+        // real TaskExpr path. It must NOT be reset for each captured type.
+        Class<?> budgetClass = java.util.Arrays.stream(
+                        OwnershipChecker.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("TaskCaptureProofBudget"))
+                .findFirst().orElseThrow();
+        var budgetConstructor = budgetClass.getDeclaredConstructor();
+        budgetConstructor.setAccessible(true);
+        var budget = budgetConstructor.newInstance();
+        var forbidden = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability",
+                dev.oreslang.ast.Ast.TypeRef.class, budgetClass);
+        forbidden.setAccessible(true);
+
+        var scalar = dev.oreslang.ast.Ast.TypeRef.simple("int");
+        for (int i = 0; i < 4096; i++) {
+            assertFalse((Boolean) forbidden.invoke(checker, scalar, budget),
+                    "simple scalar remains Send through the shared visit budget: " + i);
+        }
+        assertTrue((Boolean) forbidden.invoke(checker, scalar, budget),
+                "the next independent capture must fail closed after exhaustion");
+
+        // A fresh Task gets its own proof budget; another Task's exhausted
+        // traversal must never mutate global Send/Sync/Share decisions.
+        var fresh = budgetConstructor.newInstance();
+        assertFalse((Boolean) forbidden.invoke(checker, scalar, fresh));
+    }
+
+    @Test
     void independentlyScheduledTaskCaptureProofHasGlobalTypeRefDepthAndNodeBudget()
             throws Exception {
         var program = Parser.parse("pub fnc main(): void { return; }");
