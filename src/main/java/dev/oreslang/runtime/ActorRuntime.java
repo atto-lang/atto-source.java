@@ -8830,7 +8830,8 @@ public final class ActorRuntime implements AutoCloseable {
                                     } else {
                                         ActorReceiveInvocation completed = activeReceiveInvocation;
                                         activeReceiveInvocation = null;
-                                        completed.finish();
+                                        if (frameArena.isPoisoned()) completed.cancelAfterFailure();
+                                        else completed.finish();
                                     }
                                 }
                                 if (!sourceReceiveSuspended) activeMail = null;
