@@ -15,7 +15,7 @@ Do not merge this child independently or present authored tests as execution pro
 | `Map.of<K,V>()` | `TypedEmptyAggregateExpr(Map<K,V>)` | Existing owned typed-empty Map gate |
 | `Map.of(k => v)` | Contextual MapLiteralExpr | Allowed only as direct `Map<K,V>` binding initializer |
 | `Map.of()` | ContextualEmptyMapExpr | Allowed only as direct `Map<K,V>` binding initializer |
-| `Array.of(values...)` | `ListExpr` | Pre-existing array literal path and inferred element types |
+| `Array.of(values...)` and `~array(values...)` | `ListExpr` | Pre-existing array literal path and inferred element types |
 | `Tuple.of(values...)` | `TupleExpr` | Pre-existing finite positional tuple path |
 | `Record.of(name: value, ...)` | readonly `ObjectExpr` | Pre-existing `~record` shape and readonly checks |
 
@@ -36,7 +36,7 @@ must be reconciled with this branch instead of copied as a parallel runtime.
 
 ## Compatibility
 
-This branch does not modify any existing `[...]` array, `(...)`
+This branch adds `~array(...)` as a strictly additive synonym for `Array.of(...)` and `[...]` array construction. It does not modify any existing `[...]` array, `(...)`
 tuple, `tuple {...}`, `~tuple(...)`, `~record(...)`, `~map(...)`,
 `Array[T]`, `Vector[T]`, `Tuple[T1,T2]`, fixed or repeating collection
 shape, named generic parameter, or type-alias syntax.
@@ -47,6 +47,8 @@ shape, named generic parameter, or type-alias syntax.
 2. `mvn -B -ntp -P!native-thread-unix -Dtest=TildeRecordLiteralGuestTest,TypedEmptyMapGuestTest,NonemptyTildeMapGuestTest,CollectionOfFactoryGuestTest test` with Java 21 and genuine Truffle guest execution. Verify nonzero workflow steps, test counts, and exact source SHA independently.
 3. Compiler type/ownership negatives, malformed key domain, duplicate-key transactional construction and actor transport regression suites.
 4. JDK25/GraalVM Native Image and independent LLVM, Wasm, Forge, .NET guest conformance. All are outstanding.
+
+**Symbol-resolution merge blocker:** the parser-level factory rewrite is not yet proven to discriminate reserved built-in factory owners from user-declared/imported or shadowed `Tuple`, `Array`, `Map`, and `Record` namespaces. Before merge, retain nominal user-defined `Tuple.of` semantics, add lexical/import shadowing tests, and lower only after proof of compiler-owned identity. This is additional to execution gates.
 
 No certification, full-AOT guarantee, or five-backend equivalence follows
 from this source-only branch.
