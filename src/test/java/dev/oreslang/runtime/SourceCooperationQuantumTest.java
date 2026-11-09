@@ -96,8 +96,9 @@ final class SourceCooperationQuantumTest {
         assertEquals(2, clock.reads.get(),
                 "watchdog requests must not perform an extra clock read");
         assertFalse(q.shouldCooperateAtCheck(false),
-                "a watchdog notice is not a persistent per-task time charge");
-        assertEquals(3, clock.reads.get());
+                "a consumed ticket must not re-run the cold path");
+        assertEquals(2, clock.reads.get(),
+                "a duplicate poll cannot read the clock again");
     }
 
     @Test
@@ -194,4 +195,78 @@ final class SourceCooperationQuantumTest {
                 "only the batched slow path and diagnostics read the clock");
     }
 
+
+    @Test
+    void eightShortPhysicalDispatchesCannotEvade128BackedgeChecks() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        int polls = 0;
+        for (int dispatch = 0; dispatch < 8; dispatch++) {
+            q.beginDispatch();
+            for (int i = 0; i < 127; i++) {
+                int total = dispatch * 127 + i + 1;
+                boolean due = q.completedBackedgeNeedsCheck();
+                assertEquals(total % 128 == 0, due,
+                        "physical dispatch restart skipped logical checkpoint at " + total);
+                if (due) {
+                    polls++;
+                    assertFalse(q.shouldCooperateAtCheck(),
+                            "physical dispatch clock is fresh, with no elapsed soft quantum");
+                } else {
+                    int before = clock.reads.get();
+                    assertFalse(q.shouldCooperateAtCheck(true),
+                            "watchdog must not bypass the authorized cold poll phase");
+                    assertEquals(before, clock.reads.get(),
+                            "off-cycle calls must never read monotonic clock");
+                }
+            }
+            assertEquals(127L, q.completedBackedgesThisDispatch());
+        }
+        assertEquals(7, polls, "8 * 127 committed backedges require 7 cold polls");
+        assertEquals(1 + 8 + 7, clock.reads.get(),
+                "one constructor, eight new dispatches and seven cold polls");
+    }
+
+    @Test
+    void coldPollTicketIsSingleUseAndCannotSurvivePhysicalRedispatch() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i < 128; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertFalse(q.shouldCooperateAtCheck());
+        assertEquals(3, clock.reads.get());
+        assertFalse(q.shouldCooperateAtCheck(true));
+        assertEquals(3, clock.reads.get(),
+                "replayed poll ticket must not sample time");
+        q.beginDispatch();
+        assertFalse(q.shouldCooperateAtCheck(true),
+                "new dispatch must not inherit stale poll authorization");
+        assertEquals(4, clock.reads.get());
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(true));
+        assertEquals(4, clock.reads.get(),
+                "watchdog still does not read clock at an authorized boundary");
+    }
+
+    @Test
+    void watchdogRequestIsOnlyActedOnAtCompletedBackedgeTicket() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 127; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+            assertFalse(q.shouldCooperateAtCheck(true));
+        }
+        assertEquals(2, clock.reads.get());
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(true));
+        assertEquals(2, clock.reads.get());
+    }
 }
