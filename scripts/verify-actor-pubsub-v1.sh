@@ -28,6 +28,7 @@ command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 # empty suites; we additionally inspect the exact suite reports below.
 suites=(
   dev.oreslang.SourceActorPubSubExecutionTest
+  dev.oreslang.PubSubGuestIsolationGateTest
   dev.oreslang.CanonicalSuspendsPubSubGuestTest
   dev.oreslang.ChannelCallableTransportTest
   dev.oreslang.runtime.ActorPubSubV1ContractTest
@@ -36,7 +37,7 @@ suites=(
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
@@ -67,6 +68,11 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 expected = {
+    "dev.oreslang.PubSubGuestIsolationGateTest": {
+        "twoConcurrentGraalContextsWithSameGroupAndTopicNamesStayIsolated",
+        "deniedActorAuthorizationDoesNotPoisonFreshPositiveGuestContext",
+        "multiGroupLeaveAndRejoinScenariosRemainContextLocal",
+    },
     "dev.oreslang.CanonicalSuspendsPubSubGuestTest": {
         "canonicalSuspendsSourceMatchesPinnedFormalFixture",
         "canonicalSuspendsFncExecutesThroughGraalPolyglot",
