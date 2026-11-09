@@ -1555,6 +1555,41 @@ public final class OwnershipChecker {
                     ValueKind.MOVE_ONLY,
                     null);
         }
+        if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+            Ast.TypeRef witness = mapLiteral.mapType();
+            if (witness == null || !witness.name().equals("Map")
+                    || witness.inferArguments() || witness.arguments().size() != 2) {
+                throw error("nonempty Map requires a fully declared Map<K,V> witness");
+            }
+            Ast.TypeRef keyType = witness.arguments().get(0);
+            Ast.TypeRef valueType = witness.arguments().get(1);
+            if (keyType.inferArguments() || !keyType.arguments().isEmpty()
+                    || valueType.inferArguments() || !valueType.arguments().isEmpty()
+                    || !java.util.Set.of("string", "String", "Symbol")
+                            .contains(keyType.name())
+                    || !java.util.Set.of(
+                            "int", "bool", "Bool", "string", "String", "Symbol")
+                            .contains(valueType.name())) {
+                throw error("nonempty Map key/value domains lack compiler-owned proof");
+            }
+            // Every nonempty entry is restricted to copyable scalar payloads.
+            // No borrowed or mutex-protected value may escape the current
+            // lifetime; move-only graph transfers require a later design.
+            for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                ValueInfo key = checkExpr(entry.key(), scope, true);
+                ValueInfo value = checkExpr(entry.value(), scope, true);
+                if (isBorrowValue(key) || isBorrowValue(value)
+                        || containsMutexGuardType(key.type)
+                        || containsMutexGuardType(value.type)
+                        || key.kind != ValueKind.COPY
+                        || value.kind != ValueKind.COPY) {
+                    throw error("nonempty Map entries require copyable, owned scalar "
+                            + "key/value expressions; borrowed or move-only entries "
+                            + "need container lifetime and rollback proofs");
+                }
+            }
+            return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw error("unresolved ~map() cannot pass ownership admission");
         }
