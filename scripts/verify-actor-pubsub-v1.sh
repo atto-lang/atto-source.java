@@ -91,6 +91,7 @@ expected = {
         "pendingReadCallbackCanRecreateSameNameWhileOldGroupIsClosing",
         "staleHandleAfterDeleteAndRecreateCannotRetireReplacement",
         "concurrentDeleteAndJoinNeverResurrectDetachedEntry",
+        "registryAndMembershipTokensCannotCrossActorMessageOrFrozenDataBoundary",
     },
     "dev.oreslang.runtime.ActorEventBusMembershipChurnTest": {
         "thirtyTwoLeaveRejoinCyclesReclaimSubscriptionCreditExactlyOnce",
