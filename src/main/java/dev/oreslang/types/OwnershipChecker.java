@@ -1555,6 +1555,9 @@ public final class OwnershipChecker {
                     ValueKind.MOVE_ONLY,
                     null);
         }
+        if (expr instanceof Ast.ContextualEmptyMapExpr) {
+            throw error("unresolved ~map() cannot pass ownership admission");
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // Mirror the concrete-only TypeChecker admission. This also
             // prevents callers supplying an unchecked AST from eliding

@@ -3398,6 +3398,25 @@ public final class Parser {
                 Ast.BindingKind.CONST, type, name, initializer, false, null);
     }
 
+    /**
+     * Resolve ~map() only in an immediate, explicitly typed binding.
+     * This is a syntax-level witness, NOT an inferred runtime dictionary.
+     * Aliases, generics and implicit expected types remain fail closed until
+     * an independently verified typed-HIR contextual lowering pass exists.
+     */
+    private Ast.Expr resolveDirectContextualEmptyMap(
+            Ast.TypeRef declaredType, Ast.Expr initializer) {
+        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)) return initializer;
+        if (declaredType == null || !declaredType.name().equals("Map")
+                || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
+            throw error(previous(),
+                    "~map() requires a directly declared, fully typed Map<K,V> binding");
+        }
+        // Never lose the exact key/value witness. TypeChecker and
+        // OwnershipChecker still independently validate both domains.
+        return new Ast.TypedEmptyAggregateExpr(declaredType);
+    }
+
     private Ast.BindingStmt parseBindingStatement() {
         return parseBindingStatement(List.of());
     }
@@ -3469,6 +3488,7 @@ public final class Parser {
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
         }
+        initializer = resolveDirectContextualEmptyMap(type, initializer);
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
     }
@@ -4624,11 +4644,12 @@ public final class Parser {
             if (isContextualIdentifier("map") && (checkNext(LPAREN) || checkNext(LT))
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
-                if (!match(LT)) {
-                    throw error(peek(), "tilde map literals require typed Map<K,V> admission; "
-                            + "~map() needs an expected key/value descriptor that this "
-                            + "frontend cannot lower yet; use ~map<K,V>()");
+                if (match(LPAREN)) {
+                    consume(RPAREN, "~map() accepts no runtime arguments without explicit "
+                            + "K/V types; use ~map<K,V>(key => value) for entries");
+                    return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
                 }
+                consume(LT, "expected explicit <K,V> or () after ~map");
                 Ast.TypeRef keyType = parseTypeRef();
                 consume(COMMA, "~map<K,V>() requires both key and value types");
                 Ast.TypeRef valueType = parseTypeRef();
@@ -4851,7 +4872,7 @@ public final class Parser {
         return parsePostfixSuffix(parsePrimary());
     }
 
-    /** Apply postfix calls/member/index accesses uniformly to tilde aggregates. */
+    /** Preserve postfix member/index behavior for typed aggregate literals. */
     private Ast.Expr parsePostfixSuffix(Ast.Expr expr) {
         while (true) {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {

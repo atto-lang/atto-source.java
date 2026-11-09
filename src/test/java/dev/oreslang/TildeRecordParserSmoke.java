@@ -112,7 +112,6 @@ public final class TildeRecordParserSmoke {
 
         for (String wrong : List.of(
                 "~()",
-                "~map()",
                 "~map(\"ready\" => true)",
                 "~map<String,bool>(\"ready\" => true)",
                 "~(\"ready\" => true)",
@@ -180,6 +179,12 @@ public final class TildeRecordParserSmoke {
                 }
                 """);
 
+        // The newer parent admits a contextual empty map *expression*
+        // only when type checking can prove a Map<K,V> expectation.
+        check(initializer("~map()") instanceof Ast.ContextualEmptyMapExpr,
+                "~map() retains explicit contextual-map AST kind");
+        check(initializer("~map().size") instanceof Ast.MemberExpr,
+                "contextual map postfix remains a checked member expression");
         // Map typed-empty admissions from #2725 must coexist with #2721
         // match default + record syntax. This only proves AST/lexical behavior.
         var typedMap = initializer("~map<string,int>()");

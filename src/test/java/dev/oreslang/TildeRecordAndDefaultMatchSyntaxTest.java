@@ -41,6 +41,8 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
             assertTrue(value.structuralRecord());
             assertFalse(value.inferredStruct());
         }
+        assertInstanceOf(Ast.ContextualEmptyMapExpr.class, initializer("~map()"),
+                "map empty is a contextual type witness, not an untyped host dictionary");
         Ast.ObjectExpr empty = assertInstanceOf(Ast.ObjectExpr.class, initializer("~record()"));
         assertTrue(empty.fields().isEmpty());
         assertEquals(Ast.ObjectKind.RECORD, empty.kind());
@@ -89,7 +91,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     @Test
     void mapLiteralsAndAmbiguousSyntaxFailClosed() {
         for (String source : List.of(
-                "~()", "~map()", "~map(\"ready\" => true)",
+                "~()", "~map(\"ready\" => true)",
                 "~map<String,bool>(\"ready\" => true)",
                 "~(\"ready\" => true)",
                 "~(ready => true)",
