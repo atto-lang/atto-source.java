@@ -97,7 +97,9 @@ final class TildeRecordLiteralGuestTest {
 
         for (String expression : new String[] {
                 "~(\"ready\" => true)", "~(#ready => true)",
-                "~map(\"ready\" => true)", "~(key => true)"
+                "~map(\"ready\" => true)", "~(key => true)",
+                "~((1 + 2) => true)", "~(key.parts[0] => true)",
+                "~map<string, int>()"
         }) {
             IllegalArgumentException diagnostic = assertThrows(
                     IllegalArgumentException.class,
