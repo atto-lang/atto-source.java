@@ -4579,7 +4579,7 @@ public final class Parser {
                 advance();
                 return parseTildeRecordLiteral(true);
             }
-            if (isContextualIdentifier("map") && checkNext(LPAREN)
+            if (isContextualIdentifier("map") && (checkNext(LPAREN) || checkNext(LT))
                     && adjacent(sigil, peek())) {
                 throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
             }
@@ -4600,6 +4600,11 @@ public final class Parser {
                     if (separator == FAT_ARROW) {
                         throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
                     }
+                }
+                if (tildeHasTopLevelMapSeparator()) {
+                    // Catch evaluated/computed key expressions, e.g. ~(f() => v),
+                    // rather than letting them fall through unary parsing.
+                    throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
                 }
             }
             return new Ast.UnaryExpr("~", parseUnary());
@@ -5093,6 +5098,34 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    /**
+     * This guard never accepts map literals. It prevents a computed key on the
+     * left of '=>' from being misdiagnosed as a unary/grouped expression.
+     * Track nested delimiters so an inner expression's tokens cannot turn a
+     * plain ~(expression) into a map literal.
+     */
+    private boolean tildeHasTopLevelMapSeparator() {
+        if (!check(LPAREN)) return false;
+        int parens = 0;
+        int brackets = 0;
+        int braces = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) parens++;
+            else if (type == RPAREN) {
+                parens--;
+                if (parens == 0) return false;
+            } else if (type == LBRACKET) brackets++;
+            else if (type == RBRACKET) brackets--;
+            else if (type == LBRACE) braces++;
+            else if (type == RBRACE) braces--;
+            else if (type == FAT_ARROW && parens == 1 && brackets == 0 && braces == 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
