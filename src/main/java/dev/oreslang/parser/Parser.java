@@ -4665,6 +4665,9 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
+        // Tilde aggregates live at primary precedence so postfix member/index access
+        // remains valid; ordinary unary ~(value) keeps its existing behavior.
+        if (looksLikeTildeAggregateLiteral()) return parsePostfix();
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
