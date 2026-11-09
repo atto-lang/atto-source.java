@@ -85,13 +85,24 @@ public final class Parser {
             boolean bindingName = (next == EQUAL || next == COLON)
                     && (prior == VAL || prior == CONST || prior == LET
                         || prior == MUT || prior == IDENT);
-            boolean formalName = (next == COMMA || next == RPAREN)
-                    && prior == IDENT;
+            boolean formalName = (next == COMMA || next == RPAREN
+                    || next == PIPE) && (prior == IDENT || prior == PIPE);
+            // A generic formal named Tuple/Map/etc. hides the compiler's
+            // nominal owner. Conservatively deny intrinsic rewriting even
+            // if the lexical form could also be a type argument elsewhere;
+            // the fallback remains an ordinary call for later resolution.
+            boolean genericFormalCandidate =
+                    (prior == LT && (next == GT || next == COMMA
+                            || next == EQUAL))
+                    || (prior == COMMA && next == GT);
+            boolean forBindingName = next == OF
+                    && (prior == CONST || prior == LET || prior == VAL);
             boolean contextualTypeAlias = prior == IDENT
                     && this.tokens.get(i - 1).lexeme().equals("alias")
                     && i > 1 && this.tokens.get(i - 2).type() == TYPE;
             if (nominal || importAlias || callableName || bindingName
-                    || formalName || contextualTypeAlias) {
+                    || formalName || genericFormalCandidate || forBindingName
+                    || contextualTypeAlias) {
                 shadowedOfTypes.add(token.lexeme());
             }
         }
