@@ -43,9 +43,11 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
         }
         Ast.FunctionDecl typed = function(
                 "fnc f(): void { const Map<string,int> value = ~map(); return; }");
-        assertInstanceOf(Ast.ContextualEmptyMapExpr.class,
+        Ast.TypedEmptyAggregateExpr map = assertInstanceOf(Ast.TypedEmptyAggregateExpr.class,
                 ((Ast.BindingStmt) typed.body().getFirst()).initializer(),
-                "map empty requires a directly declared Map<K,V> binding");
+                "typed binding must resolve contextual ~map() to a compiler-owned Map type");
+        assertEquals("Map", map.aggregateType().name());
+        assertEquals(2, map.aggregateType().arguments().size());
         assertThrows(IllegalArgumentException.class, () -> initializer("~map()"),
                 "untyped map() must fail at the parser boundary");
         Ast.ObjectExpr empty = assertInstanceOf(Ast.ObjectExpr.class, initializer("~record()"));

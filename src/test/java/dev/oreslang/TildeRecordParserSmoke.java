@@ -187,9 +187,12 @@ public final class TildeRecordParserSmoke {
                     return;
                 }
                 """);
-        check(((Ast.BindingStmt) contextual.body().getFirst()).initializer()
-                        instanceof Ast.ContextualEmptyMapExpr,
-                "typed contextual ~map() retains its type witness");
+        Ast.Expr contextualValue =
+                ((Ast.BindingStmt) contextual.body().getFirst()).initializer();
+        check(contextualValue instanceof Ast.TypedEmptyAggregateExpr,
+                "typed contextual ~map() must be resolved to a typed-empty AST at binding admission");
+        check(((Ast.TypedEmptyAggregateExpr) contextualValue).aggregateType().name().equals("Map"),
+                "contextual map witness must retain its sealed Map identity");
         rejects("~map()");
         rejects("~map().size");
         // Map typed-empty admissions from #2725 must coexist with #2721
