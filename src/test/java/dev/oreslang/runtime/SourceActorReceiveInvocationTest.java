@@ -102,4 +102,76 @@ final class SourceActorReceiveInvocationTest {
         assertNull(ActorRuntime.currentReceiveInvocation(),
                 "worker receive authority must never leak to the test thread");
     }
+
+    @Test
+    void swallowedStackQuotaTerminatesOnlySourceActorAndSiblingStillRuns()
+            throws Exception {
+        Ast.Program parsed = Parser.parse("pub routine main(): void { return; }");
+        java.util.concurrent.atomic.AtomicInteger siblingProcessed =
+                new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<ActorFrameArena> failedArena = new AtomicReference<>();
+        AtomicReference<ActorFrameArena> survivingArena = new AtomicReference<>();
+        try (SharedCodeImageStore code = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            var image = code.publish("tests/receive-stack-failure.ores", parsed);
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+
+                @Override
+                public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String actorType, ActorRuntime.ActorContext<Object> ctx) {
+                    return new State(ctx.self().id());
+                }
+
+                @Override
+                public void receiveActor(
+                        String actorType, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> ctx) {
+                    ActorReceiveInvocation invocation = ActorRuntime.currentReceiveInvocation();
+                    assertNotNull(invocation);
+                    ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
+                    if ("poison".equals(mail.value())) {
+                        failedArena.set(frames);
+                        assertEquals(ActorReceiveInvocation.ROOT_BYTES, frames.usedBytes());
+                        try {
+                            frames.push(invocation.executionContext(),
+                                    ActorFrameArena.DEFAULT_MAX_BYTES);
+                            fail("over-budget call must be terminal");
+                        } catch (ActorFrameArena.BudgetExceeded ignored) {
+                            // Malicious guest code attempted to swallow the quota breach.
+                            // ActorRuntime's post-handler poison check MUST fail-stop it.
+                        }
+                        return;
+                    }
+                    if ("ok".equals(mail.value())) {
+                        survivingArena.set(frames);
+                        siblingProcessed.incrementAndGet();
+                        ctx.self().stop();
+                        return;
+                    }
+                    fail("a failed source actor must not process later DATA");
+                }
+            };
+            var failing = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                    executor, "Worker");
+            var surviving = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                    executor, "Worker");
+            failing.ready().join();
+            surviving.ready().join();
+            failing.send("poison");
+            surviving.send("ok");
+            assertTrue(failing.awaitTermination(4, TimeUnit.SECONDS));
+            assertTrue(surviving.awaitTermination(4, TimeUnit.SECONDS));
+            assertTrue(failing.failure().isPresent(),
+                    "swallowing an actor stack quota exception cannot continue the actor");
+            assertTrue(surviving.failure().isEmpty(),
+                    "independent actor must not inherit the failed arena");
+            assertNotSame(failedArena.get(), survivingArena.get());
+            assertEquals(1, siblingProcessed.get());
+            assertEquals(0, failedArena.get().usedBytes());
+            assertEquals(0, survivingArena.get().usedBytes());
+        }
+    }
 }
