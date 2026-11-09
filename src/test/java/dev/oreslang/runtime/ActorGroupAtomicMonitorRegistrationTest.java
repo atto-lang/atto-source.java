@@ -45,8 +45,8 @@ final class ActorGroupAtomicMonitorRegistrationTest {
                         var snapshot = registration.snapshot();
                         var finalSnapshot = afterJoin.get();
                         assertNotNull(finalSnapshot);
-                        assertEquals(finalSnapshot.members().contains(peerId.get()), true);
-                        assertEquals("2", finalSnapshot.members().size() + "",
+                        assertTrue(finalSnapshot.members().contains(peerId.get()));
+                        assertEquals(2, finalSnapshot.members().size(),
                                 "two live cooperating members");
                         if (snapshot.members().contains(peerId.get())) {
                             // The racing join took the membership lock first.
