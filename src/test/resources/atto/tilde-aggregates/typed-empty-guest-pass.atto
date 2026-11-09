@@ -1,0 +1,8 @@
+pub fnc main(): void {
+    const record = ~<{}>();
+    const tuple = ~<[]>();
+    const same_record = ~record();
+    const same_tuple = ~tuple();
+    stdio.println("typed-empty-ok");
+    return;
+}
