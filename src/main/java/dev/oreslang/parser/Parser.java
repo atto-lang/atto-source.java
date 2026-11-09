@@ -177,6 +177,19 @@ public final class Parser {
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
         while (match(IMPORT)) imports.add(parseImport());
+        // Use parser-resolved import selections as an additional identity
+        // boundary: grouped imports and local aliases must not be captured
+        // by a syntactic Type.of rewrite, even when token lookbehind misses
+        // their brace-delimited declaration form.
+        for (Ast.ImportDecl imported : imports) {
+            for (String name : imported.names()) {
+                if (COLLECTION_OF_TYPES.contains(name)) shadowedOfTypes.add(name);
+            }
+            if (imported.namespace() != null
+                    && COLLECTION_OF_TYPES.contains(imported.namespace())) {
+                shadowedOfTypes.add(imported.namespace());
+            }
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
