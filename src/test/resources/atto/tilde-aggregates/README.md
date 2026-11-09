@@ -38,3 +38,19 @@ exact-head JVM/Graal runs provide step receipts and outcomes.**
 
 Current JUnit file: `TildeRecordLiteralGuestTest` (10 source-authored test
 methods; no claim of executed tests or backend parity).
+
+## Concrete typed-empty guest lowering (new first implementation slice)
+
+- `typed-empty-guest-pass.atto` exercises `~<{}>()` and `~<[]>()` alongside
+  `~record()` and `~tuple()` through the real Truffle guest root.
+- `typed-empty-guest-pass.stdout` is the expected stdout receipt.
+- `typed-empty-required-{record,tuple}-reject.atto`,
+  `typed-empty-unresolved-reject.atto`, and
+  `typed-empty-nominal-reject.atto` are negative typechecker fixtures.
+- Only *syntactically concrete* zero-field readonly-record and zero-arity
+  tuple witnesses are admitted. Generic aliases, unresolved types, nominal
+  classes and typed Maps must still fail before code generation. A future
+  compiler-proven alias/generic-construction feature requires its own
+  lowering and lifetime checks; no runtime reflection is permitted.
+- All guest tests remain **NOT_EXECUTED** while source CI fails at zero
+  steps; authored assertions and golden files are not execution evidence.
