@@ -1130,7 +1130,7 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr { }
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1163,6 +1163,11 @@ public final class Ast {
      * This AST form is conservatively rejected before lowering until
      * per-kind guest constructor implementation is available.
      */
+    /** Parser-only placeholder for ~map() awaiting a directly declared Map<K,V>
+     *  witness. Never typecheck or execute this node as a dynamic map.
+     */
+    public record ContextualEmptyMapExpr() implements Expr { }
+
     public record TypedEmptyAggregateExpr(TypeRef aggregateType) implements Expr {
         public TypedEmptyAggregateExpr {
             java.util.Objects.requireNonNull(aggregateType, "typed empty aggregate type");
