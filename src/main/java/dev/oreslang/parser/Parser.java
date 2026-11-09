@@ -4982,7 +4982,7 @@ public final class Parser {
         if (kind.equals("Record")) {
             // Record.of(...) uses the identical readonly static-field gate as
             // ~record(...). parseTildeRecordLiteral owns its opening '('.
-            throw new IllegalStateException("Record factory must use parseTildeRecordLiteral");
+            throw error(previous(), "Record.of requires the checked static-field record parser");
         }
         // This is exactly the existing array/tuple literal argument grammar:
         // spreads, named call labels and foreign argument dispatch are not
