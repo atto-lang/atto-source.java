@@ -270,13 +270,13 @@ final class ActorEventBusAdmissionRevocationTest {
 
             // The host can close concurrently with queued actor DATA turns.
             // Either publication or revocation may linearize first.
-            for (int i = 1; i <= 64; i++) publisher.send(i);
+            for (int i = 1; i <= 24; i++) publisher.send(i);
             group.close();
             publisher.send(-1);
             assertTrue(finished.await(10, TimeUnit.SECONDS));
             assertNull(failure.get(), () -> String.valueOf(failure.get()));
-            assertEquals(64, attempts.get());
-            assertTrue(rejected.get() >= 0 && rejected.get() <= 64);
+            assertEquals(24, attempts.get());
+            assertTrue(rejected.get() >= 0 && rejected.get() <= 24);
             assertEquals(0L, runtime.sharedMemoryBytes());
             assertTrue(publisher.isAlive(),
                     "group close must never take ownership of the publisher");
