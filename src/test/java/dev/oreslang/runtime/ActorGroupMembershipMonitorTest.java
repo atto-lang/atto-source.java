@@ -55,8 +55,17 @@ final class ActorGroupMembershipMonitorTest {
                                     overflow.set(monitor.get().poll("1"));
                                     recovered.set(monitor.get().resync());
                                 }
-                                case "latest" ->
-                                        latest.set(monitor.get().poll("3"));
+                                case "latest" -> {
+                                    assertEquals(
+                                            ActorRuntime.ActorGroup.MembershipPollStatus.INVALID_REVISION,
+                                            monitor.get().poll("03").status());
+                                    assertEquals(
+                                            ActorRuntime.ActorGroup.MembershipPollStatus.REVISION_MISMATCH,
+                                            monitor.get().poll("1").status());
+                                    // Both refusals must leave the queued revision-4
+                                    // event available for the correct cursor.
+                                    latest.set(monitor.get().poll("3"));
+                                }
                                 case "stale" -> {
                                     IllegalStateException denied = assertThrows(
                                             IllegalStateException.class,
