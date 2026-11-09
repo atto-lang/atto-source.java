@@ -523,9 +523,14 @@ public final class ChannelRuntime {
                 SelectCase operation = Objects.requireNonNull(
                         Objects.requireNonNull(selectable, "selectable source").selectNext(),
                         "selectNext must produce one operation");
-                if (operation instanceof DefaultCase) {
+                // A Selectable describes consumption of one NEXT event.
+                // Producer writes and select-control defaults are never
+                // admissible, even when returned by a trusted host adapter.
+                // Validate before registering or arbitrating any case.
+                if (!(operation instanceof ReadCase<?>)
+                        && !(operation instanceof FutureCase<?>)) {
                     throw new IllegalArgumentException(
-                            "Selectable<T> cannot reduce to a default arm");
+                            "Selectable<T> must reduce to a read or Future arm");
                 }
                 cases.add(operation);
             }
