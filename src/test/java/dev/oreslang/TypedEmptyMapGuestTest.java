@@ -45,6 +45,45 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
+    void expectedTypeEmptyMapsCompileAndExecuteForDirectTypedBindings() {
+        String program = fixture("empty-map-contextual-guest-pass.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source source = assertDoesNotThrow(() -> Source.newBuilder(
+                OresLanguage.ID, program, "empty-map-contextual-guest-pass.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(out).build()) {
+                context.eval(source);
+            }
+        });
+        assertEquals(fixture("empty-map-contextual-guest-pass.stdout"),
+                out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
+    void missingOrInvalidExpectedMapTypeFailsBeforeRuntime() {
+        assertDoesNotThrow(() -> Parser.parse(fixture("empty-map-untyped.atto")));
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-untyped.atto")));
+        assertTrue(missing.getMessage().contains("directly declared Map<K,V>"),
+                missing.getMessage());
+        IllegalArgumentException wrongType = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(fixture("empty-map-wrong-declared-kind.atto")));
+        assertTrue(wrongType.getMessage().contains("directly declared"), wrongType.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-contextless-return.atto")));
+        IllegalArgumentException unverified = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-unsupported-generic.atto")));
+        assertTrue(unverified.getMessage().contains("unverified key/value domain"),
+                unverified.getMessage());
+    }
+
+    @Test
     void typedMapValueIsNotAnUnboundedGenericHostDictionary() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 "fnc read(): void { const m = ~<Map<string,int>>(); return; }"));
@@ -59,7 +98,6 @@ final class TypedEmptyMapGuestTest {
     @Test
     void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
         for (String file : new String[]{
-                "empty-map-untyped.atto",
                 "empty-map-nonempty-reject.atto",
                 "empty-map-bad-arity.atto"}) {
             assertThrows(IllegalArgumentException.class,
