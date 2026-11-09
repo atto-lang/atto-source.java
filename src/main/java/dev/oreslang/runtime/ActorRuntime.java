@@ -7863,6 +7863,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorGroup
                 || value instanceof ActorEventBus
                 || value instanceof ActorEventBus.Subscription<?>
+                || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
                 || value instanceof ChannelRuntime.SelectSet
                 || value instanceof ChannelRuntime.SelectCase
                 || value instanceof ChannelRuntime.SelectPlan
@@ -7959,6 +7960,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
+                || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
