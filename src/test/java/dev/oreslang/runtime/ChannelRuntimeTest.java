@@ -366,6 +366,33 @@ final class ChannelRuntimeTest {
         assertThrows(RuntimeException.class, selected::join);
     }
     @Test
+    void selectableNextEventRejectsWritesAndDefaultsBeforeAnyCommit() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
+        assertTrue(channel.tryWrite(41));
+
+        // A previously described read must not be committed merely because a
+        // later adapter attempts to smuggle producer-side I/O into a select.
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(List.of(
+                        () -> ChannelRuntime.read(channel),
+                        () -> ChannelRuntime.write(channel, 99))));
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(List.of(
+                        ChannelRuntime::defaultCase)));
+        assertEquals(41, channel.tryRead().orElseThrow());
+        assertTrue(channel.tryRead().isEmpty());
+
+        assertTrue(channel.tryWrite(42));
+        ChannelRuntime.SelectResult chosen = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(() -> ChannelRuntime.read(channel)))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(ChannelRuntime.SelectOperation.READ, chosen.operation());
+        assertEquals(42, chosen.value());
+        assertTrue(channel.tryRead().isEmpty());
+    }
+
+    @Test
     void publicSelectDescriptorsExposeOnlyDirectionalCapabilities() throws Exception {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         ChannelRuntime.ReadChannel<Integer> output = channel.output();
