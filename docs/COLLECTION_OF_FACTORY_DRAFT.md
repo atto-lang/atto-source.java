@@ -48,7 +48,9 @@ shape, named generic parameter, or type-alias syntax.
 3. Compiler type/ownership negatives, malformed key domain, duplicate-key transactional construction and actor transport regression suites.
 4. JDK25/GraalVM Native Image and independent LLVM, Wasm, Forge, .NET guest conformance. All are outstanding.
 
-**Symbol-resolution merge blocker:** the parser-level factory rewrite is not yet proven to discriminate reserved built-in factory owners from user-declared/imported or shadowed `Tuple`, `Array`, `Map`, and `Record` namespaces. Before merge, retain nominal user-defined `Tuple.of` semantics, add lexical/import shadowing tests, and lower only after proof of compiler-owned identity. This is additional to execution gates.
+**Lexical collision hardening authored:** a conservative token-backed declaration preflight now preserves ordinary `CallExpr` for known local bindings, user classes and imported aliases named `Tuple`, `Array`, `Map` or `Record`, including declarations that occur after a use in source order. Three new JUnit methods assert direct canonical AST lowering and that shadowed `.of` is not captured by built-in rewrite. A module-wide conservative fallback may reject some otherwise valid canonical uses when a separate function shadows the name; this is safer than bypassing nominal identity.
+
+**Remaining merge blocker:** lexical preflight is *not* a complete linked-import and type-resolved intrinsic authority proof. Finish TypeChecker-bound intrinsic identity, respect scopes/imported nominal `Tuple.of` and aliases from Java #2733, and add adversarial named-type/namespace and ownership tests before merge. These gates remain separate from actual guest CI execution.
 
 No certification, full-AOT guarantee, or five-backend equivalence follows
 from this source-only branch.
