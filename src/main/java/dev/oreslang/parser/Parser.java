@@ -4654,6 +4654,9 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after ~array");
                 List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after ~array");
+                if (items.isEmpty()) {
+                    throw error(previous(), "~array() needs a checked element type; an empty untyped array cannot infer T");
+                }
                 // Reuse [items] and Array.of(items) ListExpr admission, not
                 // a separate host array or dynamic sequence representation.
                 return new Ast.ListExpr(items);
@@ -4949,6 +4952,9 @@ public final class Parser {
         // silently enabled by a new factory spelling.
         List<Ast.Expr> elements = parseArgumentsUntil(RPAREN);
         consume(RPAREN, "expected ')' after " + kind + ".of arguments");
+        if (kind.equals("Array") && elements.isEmpty()) {
+            throw error(previous(), "Array.of() needs a checked element type; an empty untyped array cannot infer T");
+        }
         return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements);
     }
 
