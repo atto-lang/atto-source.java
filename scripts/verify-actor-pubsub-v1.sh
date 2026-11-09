@@ -90,6 +90,7 @@ expected = {
     "dev.oreslang.runtime.ProcessGroupRegistryReentrantNameReuseTest": {
         "pendingReadCallbackCanRecreateSameNameWhileOldGroupIsClosing",
         "staleHandleAfterDeleteAndRecreateCannotRetireReplacement",
+        "concurrentDeleteAndJoinNeverResurrectDetachedEntry",
     },
     "dev.oreslang.runtime.ActorEventBusMembershipChurnTest": {
         "thirtyTwoLeaveRejoinCyclesReclaimSubscriptionCreditExactlyOnce",
