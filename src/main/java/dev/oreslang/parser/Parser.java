@@ -4608,7 +4608,21 @@ public final class Parser {
             }
             if (isContextualIdentifier("map") && (checkNext(LPAREN) || checkNext(LT))
                     && adjacent(sigil, peek())) {
-                throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                advance(); // contextual map head
+                if (!match(LT)) {
+                    throw error(peek(), "~map() requires an expected Map<K,V> descriptor; "
+                            + "contextual type-directed map lowering is not yet enabled; "
+                            + "use ~map<K,V>()");
+                }
+                Ast.TypeRef keyType = parseTypeRef();
+                consume(COMMA, "~map<K,V>() requires both key and value types");
+                Ast.TypeRef valueType = parseTypeRef();
+                consume(GT, "~map<K,V>() requires exactly two type arguments");
+                consume(LPAREN, "expected '(' after ~map<K,V>");
+                consume(RPAREN, "nonempty ~map<K,V>(...) is pending transactional map "
+                        + "entry insertion and ownership proofs");
+                return new Ast.TypedEmptyAggregateExpr(
+                        new Ast.TypeRef("Map", List.of(keyType, valueType), false));
             }
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
