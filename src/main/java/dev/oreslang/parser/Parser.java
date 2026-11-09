@@ -4574,6 +4574,33 @@ public final class Parser {
             // Keep ~(expression) as unary bitwise complement, including calls
             // and parenthesized expressions. The map spelling cannot be
             // lowered until guest Map<K,V> typing and ownership are integrated.
+            if (check(LT) && adjacent(sigil, peek())) {
+                advance(); // ~<T> retains a compile-time type witness
+                if (check(GT)) {
+                    throw error(peek(), "typed empty aggregate requires exactly one type: ~<T>()");
+                }
+                Ast.TypeRef aggregateType = parseTypeRef();
+                if (check(COMMA)) {
+                    throw error(peek(), "typed empty aggregate requires exactly one type: ~<T>()");
+                }
+                consume(GT, "expected '>' after typed empty aggregate type");
+                consume(LPAREN, "expected '(' after ~<T>");
+                consume(RPAREN, "typed empty aggregate accepts no value arguments; use ~map, ~record or ~tuple");
+                return new Ast.TypedEmptyAggregateExpr(aggregateType);
+            }
+            if (isContextualIdentifier("tuple") && checkNext(LPAREN)
+                    && adjacent(sigil, peek())) {
+                advance();
+                consume(LPAREN, "expected '(' after ~tuple");
+                List<Ast.Expr> items = new ArrayList<>();
+                if (!check(RPAREN)) {
+                    do {
+                        items.add(parseExpression());
+                    } while (match(COMMA) && !check(RPAREN));
+                }
+                consume(RPAREN, "expected ')' after ~tuple");
+                return new Ast.TupleExpr(items);
+            }
             if (isContextualIdentifier("record") && checkNext(LPAREN)
                     && adjacent(sigil, peek())) {
                 advance();
