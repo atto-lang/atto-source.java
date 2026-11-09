@@ -161,6 +161,26 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void unimplementedFactoriesCannotFallThroughToHostCollections() {
+        for (String kind : new String[]{"Entry", "Pair", "List", "Vector", "Set"}) {
+            IllegalArgumentException problem = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(program("const x = " + kind + ".of(1, 2);")),
+                    kind);
+            assertTrue(problem.getMessage().contains("unsupported: " + kind + ".of"),
+                    kind + ": " + problem.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(program("const f = " + kind + ".of;")),
+                    kind + " method-value fallback");
+        }
+        // A user-declared class of the same name is an ordinary name,
+        // never the compiler-owned pending standard-library type.
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+                "define class Pair as end\n" +
+                        program("const p = Pair.of(1, 2);")));
+    }
+
+    @Test
     void spreadsCannotPiggybackOnTupleAndArrayFactories() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(program("const t = Tuple.of(...source);")));
