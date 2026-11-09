@@ -83,7 +83,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     void legacyUnaryTildeRemainsDistinct() {
         Ast.UnaryExpr complement = assertInstanceOf(Ast.UnaryExpr.class, initializer("~(value)"));
         assertEquals("~", complement.operator());
-        assertInstanceOf(Ast.NameExpr.class, complement.value());
+        assertInstanceOf(Ast.NameExpr.class, complement.operand());
     }
 
     @Test
