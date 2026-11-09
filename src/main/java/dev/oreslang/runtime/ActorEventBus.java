@@ -371,14 +371,25 @@ public final class ActorEventBus implements AutoCloseable {
         }
     }
 
-    void removeActor(ActorRuntime.ActorId actorId) {
+    /**
+     * Atomically detach and logically close every subscription for one actor
+     * while the caller still owns its membership-revocation fence. Physical
+     * channel close/drain is returned as a post-lock cleanup because it may
+     * settle Futures and execute runtime callbacks.
+     */
+    Runnable detachActorSubscriptions(ActorRuntime.ActorId actorId) {
+        List<Subscription<?>> detached = new ArrayList<>();
         for (TopicState topic : topics.values()) {
             synchronized (topic.deliveryLock) {
                 Subscription<?> subscription =
                         topic.subscriptions.remove(actorId);
-                if (subscription != null) subscription.closeChannelOnly();
+                if (subscription != null
+                        && subscription.markClosedForTeardown()) {
+                    detached.add(subscription);
+                }
             }
         }
+        return () -> closeDetachedSubscriptions(detached);
     }
 
     @Override
@@ -389,12 +400,15 @@ public final class ActorEventBus implements AutoCloseable {
 
     void closeFromGroup() {
         if (!closed.compareAndSet(false, true)) return;
+        List<Subscription<?>> detached = new ArrayList<>();
         synchronized (definitionLock) {
             for (TopicState topic : topics.values()) {
                 synchronized (topic.deliveryLock) {
                     for (Subscription<?> subscription
                             : List.copyOf(topic.subscriptions.values())) {
-                        subscription.closeChannelOnly();
+                        if (subscription.markClosedForTeardown()) {
+                            detached.add(subscription);
+                        }
                     }
                     topic.subscriptions.clear();
                 }
@@ -402,6 +416,29 @@ public final class ActorEventBus implements AutoCloseable {
             topics.clear();
             doubleReductions.clear();
         }
+        closeDetachedSubscriptions(detached);
+    }
+
+    private void closeDetachedSubscriptions(List<Subscription<?>> detached) {
+        Throwable first = null;
+        for (Subscription<?> subscription : detached) {
+            try {
+                subscription.finishMarkedClose();
+            } catch (Throwable failure) {
+                if (first == null) first = failure;
+                else if (failure != first) first.addSuppressed(failure);
+            }
+        }
+        if (first != null) rethrowCleanupFailure(first);
+    }
+
+    private static void rethrowCleanupFailure(Throwable failure) {
+        if (failure instanceof VirtualMachineError vm) throw vm;
+        if (failure instanceof ThreadDeath death) throw death;
+        if (failure instanceof LinkageError linkage) throw linkage;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure instanceof Error error) throw error;
+        throw new IllegalStateException("ActorGroup event teardown failed", failure);
     }
 
     private PublishReceipt publishFrozen(
@@ -417,6 +454,7 @@ public final class ActorEventBus implements AutoCloseable {
             ActorRuntime.ActorId publisher,
             Runnable commitState) {
         Event<Object> event = null;
+        List<Subscription<?>> detached = new ArrayList<>();
         try {
             synchronized (topic.deliveryLock) {
                 requireOpen();
@@ -460,9 +498,11 @@ public final class ActorEventBus implements AutoCloseable {
                 for (Subscription<?> subscription : snapshot) {
                     if (subscription.closed()
                             || !group.isMember(subscription.subscriber)) {
-                        topic.subscriptions.remove(
-                                subscription.subscriber, subscription);
-                        subscription.closeChannelOnly();
+                        if (topic.subscriptions.remove(
+                                        subscription.subscriber, subscription)
+                                && subscription.markClosedForTeardown()) {
+                            detached.add(subscription);
+                        }
                     } else {
                         active.add(subscription);
                     }
@@ -557,13 +597,29 @@ public final class ActorEventBus implements AutoCloseable {
                         OresFuture.completed(List.of()));
             }
         } finally {
-            if (event == null) {
-                frozenPayload.reservation().close();
-            } else {
-                // Drop the publisher's temporary hold. Queued subscribers
-                // retain their own references until read/coalesce/close.
-                event.releaseDelivery();
+            Throwable cleanupFailure = null;
+            try {
+                if (event == null) {
+                    frozenPayload.reservation().close();
+                } else {
+                    // Drop the publisher's temporary hold. Queued subscribers
+                    // retain their own references until read/coalesce/close.
+                    event.releaseDelivery();
+                }
+            } catch (Throwable failure) {
+                cleanupFailure = failure;
             }
+
+            try {
+                // Physical close may settle pending reads/writes. The
+                // delivery lock has been released before callbacks can run.
+                closeDetachedSubscriptions(detached);
+            } catch (Throwable failure) {
+                if (cleanupFailure == null) cleanupFailure = failure;
+                else if (failure != cleanupFailure) cleanupFailure.addSuppressed(failure);
+            }
+
+            if (cleanupFailure != null) rethrowCleanupFailure(cleanupFailure);
         }
     }
 
@@ -902,32 +958,51 @@ public final class ActorEventBus implements AutoCloseable {
                 throw new SecurityException(
                         "an actor may only close its own ActorGroup event subscription");
             }
+            boolean detached = false;
             synchronized (topic.deliveryLock) {
                 if (topic.subscriptions.remove(subscriber, this)) {
-                    closeChannelOnly();
+                    detached = markClosedForTeardown();
                 }
             }
+            if (detached) finishMarkedClose();
+        }
+
+        private boolean markClosedForTeardown() {
+            return subscriptionClosed.compareAndSet(false, true);
+        }
+
+        private void finishMarkedClose() {
+            Throwable first = null;
+            try {
+                channel.close();
+            } catch (Throwable failure) {
+                first = failure;
+            }
+
+            try {
+                // Use the runtime-only drain primitive rather than re-entering
+                // guest-visible tryRead(). Close callbacks have already been
+                // fenced from topic/group locks by the caller.
+                while (channel.drainOne(buffered -> {
+                    if (topic.policy == DeliveryPolicy.RELIABLE) {
+                        releaseReliableEvent();
+                    }
+                    buffered.releaseDelivery();
+                })) {
+                    // Drain every buffered immutable delivery. Pending writers
+                    // failed by channel.close() release their own reservations.
+                }
+            } catch (Throwable failure) {
+                if (first == null) first = failure;
+                else if (failure != first) first.addSuppressed(failure);
+            }
+
+            if (first != null) rethrowCleanupFailure(first);
         }
 
         private void closeChannelOnly() {
-            if (!subscriptionClosed.compareAndSet(false, true)) return;
-            channel.close();
-
-            // Use the runtime-only drain primitive rather than re-entering the
-            // guest-visible tryRead() path while holding the channel monitor.
-            // That keeps closed-and-empty teardown terminal rather than
-            // exceptional and releases delivery/accounting callbacks outside
-            // the channel lock.
-            while (channel.drainOne(buffered -> {
-                if (topic.policy == DeliveryPolicy.RELIABLE) {
-                    releaseReliableEvent();
-                }
-                buffered.releaseDelivery();
-            })) {
-                // Drain every already-buffered immutable delivery. Pending
-                // writers were failed by channel.close() and release their own
-                // delivery/accounting reservations from completion callbacks.
-            }
+            if (!markClosedForTeardown()) return;
+            finishMarkedClose();
         }
     }
 }
