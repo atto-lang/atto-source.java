@@ -37,7 +37,7 @@ done
 rc=0
 run_guest --check "$negative" > "$tmp/negative.out" 2> "$tmp/negative.err" || rc=$?
 [[ "$rc" != 0 && "$rc" != 124 && "$rc" != 125 ]] || exit 1
-grep -Eiq 'sealed|actor.state|handle_state|critical' "$tmp/negative.err" || { cat "$tmp/negative.err" >&2; exit 1; }
+grep -Eiq 'sealed.*(actor|state|field)|actor.state.*(denied|private|sealed|access)|handle_state.*(required|only|must)|critical-(read|write).*(required|only|must)' "$tmp/negative.err" || { cat "$tmp/negative.err" >&2; exit 1; }
 [[ "$(git -C "$root" rev-parse HEAD)" == "$EXPECTED_HEAD" ]] || exit 78
 for name in positive sealed-direct-state-reject; do
   rel="tests/fixtures/actor-state-e2e-v1/$name.atto"
