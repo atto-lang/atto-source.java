@@ -180,6 +180,21 @@ public final class TildeRecordParserSmoke {
                 }
                 """);
 
+        // Map typed-empty admissions from #2725 must coexist with #2721
+        // match default + record syntax. This only proves AST/lexical behavior.
+        var typedMap = initializer("~map<string,int>()");
+        check(typedMap instanceof Ast.TypedEmptyAggregateExpr,
+                "explicit typed map must retain typed-empty witness");
+        var typedMapMember = initializer("~map<string,int>().size");
+        check(typedMapMember instanceof Ast.MemberExpr,
+                "typed map .size parses as ordinary member access");
+        var mapWitnessMember = initializer("~<Map<string,int>>().size");
+        check(mapWitnessMember instanceof Ast.MemberExpr,
+                "generic typed-empty map .size parses as member access");
+        rejects("~map<string,int>(\"hello\" => 42)");
+        rejects("~map<string,int,int>()");
+        rejects("~(foo: 1, foo: 2)");
+
         System.out.println("ATTO_TILDE_RECORD_PARSER_SMOKE_PASS checks=" + checks);
     }
 }
