@@ -4665,7 +4665,6 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
-        if (looksLikeTildeAggregateLiteral()) return parseTildeAggregateLiteral();
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
@@ -5035,6 +5034,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (check(TILDE) && looksLikeTildeAggregateLiteral()) return parseTildeAggregateLiteral();
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
