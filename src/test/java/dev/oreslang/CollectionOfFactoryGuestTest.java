@@ -137,6 +137,8 @@ final class CollectionOfFactoryGuestTest {
                     program("const t = Tuple.of(1, 2);"),
                 "import class NamedTuple as Tuple from \"./named-tuple.ores\";\n" +
                     program("const t = Tuple.of(1, 2);"),
+                "import types {Tuple} from \"./some-types.ores\";\n" +
+                    program("const t = Tuple.of(1, 2);"),
                 program("const Tuple = 1; const t = Tuple.of(1, 2);"),
                 "pub fnc build<Tuple>(): void { const t = Tuple.of(1, 2); return; }",
                 "define class Map as end\n" +
