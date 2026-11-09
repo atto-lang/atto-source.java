@@ -482,6 +482,7 @@ public final class ActorEventBus implements AutoCloseable {
             Runnable commitState) {
         Event<Object> event = null;
         List<Subscription<?>> detached = new ArrayList<>();
+        Throwable admissionFailure = null;
         try {
             synchronized (topic.deliveryLock) {
                 requireOpen();
@@ -661,6 +662,9 @@ public final class ActorEventBus implements AutoCloseable {
                         coalesced,
                         OresFuture.completed(List.of()));
             }
+        } catch (RuntimeException | Error failure) {
+            admissionFailure = failure;
+            throw failure;
         } finally {
             Throwable cleanupFailure = null;
             try {
@@ -684,7 +688,17 @@ public final class ActorEventBus implements AutoCloseable {
                 else if (failure != cleanupFailure) cleanupFailure.addSuppressed(failure);
             }
 
-            if (cleanupFailure != null) rethrowCleanupFailure(cleanupFailure);
+            if (cleanupFailure != null) {
+                // Releasing a reservation or closing a pruned subscription
+                // must not erase the original admission/partial-write error.
+                if (admissionFailure != null) {
+                    if (cleanupFailure != admissionFailure) {
+                        admissionFailure.addSuppressed(cleanupFailure);
+                    }
+                } else {
+                    rethrowCleanupFailure(cleanupFailure);
+                }
+            }
         }
     }
 
