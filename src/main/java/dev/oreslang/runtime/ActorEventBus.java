@@ -521,6 +521,11 @@ public final class ActorEventBus implements AutoCloseable {
                             for (Subscription<?> admitted : reserved) {
                                 admitted.releaseReliableEvent();
                             }
+                            // No delivery has been admitted or written. Sequence
+                            // allocation above occurs under this same topic lock;
+                            // a rejected RELIABLE publish must not consume a
+                            // sequence number that no subscriber can observe.
+                            topic.sequence.decrementAndGet();
                             throw new EventBackpressureException(
                                     topic.name,
                                     subscription.subscriber,
