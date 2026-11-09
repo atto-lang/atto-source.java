@@ -780,23 +780,31 @@ final class TaskBorrowBoundaryV2Test {
         var budgetConstructor = budgetClass.getDeclaredConstructor();
         budgetConstructor.setAccessible(true);
         var budget = budgetConstructor.newInstance();
+        var exhausted = budgetClass.getDeclaredField("exhausted");
+        exhausted.setAccessible(true);
         var forbidden = OwnershipChecker.class.getDeclaredMethod(
                 "forbiddenTaskCapability",
                 dev.oreslang.ast.Ast.TypeRef.class, budgetClass);
         forbidden.setAccessible(true);
+        assertFalse(exhausted.getBoolean(budget));
 
         var scalar = dev.oreslang.ast.Ast.TypeRef.simple("int");
         for (int i = 0; i < 4096; i++) {
             assertFalse((Boolean) forbidden.invoke(checker, scalar, budget),
                     "simple scalar remains Send through the shared visit budget: " + i);
         }
+        assertFalse(exhausted.getBoolean(budget),
+                "successful proof visits must not report exhaustion");
         assertTrue((Boolean) forbidden.invoke(checker, scalar, budget),
                 "the next independent capture must fail closed after exhaustion");
+        assertTrue(exhausted.getBoolean(budget),
+                "the compiler must distinguish exhausted proof from non-Send");
 
         // A fresh Task gets its own proof budget; another Task's exhausted
         // traversal must never mutate global Send/Sync/Share decisions.
         var fresh = budgetConstructor.newInstance();
         assertFalse((Boolean) forbidden.invoke(checker, scalar, fresh));
+        assertFalse(exhausted.getBoolean(fresh));
     }
 
     @Test
