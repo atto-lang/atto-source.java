@@ -20,6 +20,13 @@ public final class Parser {
 
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
+    private static final java.util.Set<String> BUILTIN_OF_TYPES =
+            java.util.Set.of("Map", "Array", "Tuple", "Record");
+    // Conservative module-wide lexical collision gate. A factory rewrite may
+    // not capture a user class, import alias, parameter or local binding.
+    // Global conservatism is deliberate until typed-HIR symbol ownership is
+    // available: preserving ordinary CallExpr beats inventing guest authority.
+    private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     private int current;
     private boolean suppressRefinementOperators;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
@@ -53,6 +60,34 @@ public final class Parser {
             if (token.type() == UNSAFE ||
                     (token.type() == IDENT && "unsafe".equals(token.lexeme()))) {
                 throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
+            }
+        }
+        // Read only lexer-produced token kinds, never source substrings.
+        // This scans declarations forward so a later nominal Tuple does not
+        // retroactively become an unowned compiler Tuple.of constructor.
+        for (int i = 0; i < this.tokens.size(); i++) {
+            Token token = this.tokens.get(i);
+            if (token.type() != IDENT || !BUILTIN_OF_TYPES.contains(token.lexeme())) continue;
+            Token.Type prior = i == 0 ? EOF : this.tokens.get(i - 1).type();
+            Token.Type next = i + 1 == this.tokens.size()
+                    ? EOF : this.tokens.get(i + 1).type();
+            boolean nominal = prior == CLASS || prior == STRUCT || prior == MODULE
+                    || prior == TYPE || prior == TYPES || prior == ACTOR
+                    || prior == INTERFACE || prior == TRAIT;
+            boolean importAlias = prior == AS && next == FROM;
+            boolean callableName = (prior == FNC || prior == ROUTINE)
+                    && next == LPAREN;
+            boolean bindingName = (next == EQUAL || next == COLON)
+                    && (prior == VAL || prior == CONST || prior == LET
+                        || prior == MUT || prior == IDENT);
+            boolean formalName = (next == COMMA || next == RPAREN)
+                    && prior == IDENT;
+            boolean contextualTypeAlias = prior == IDENT
+                    && this.tokens.get(i - 1).lexeme().equals("alias")
+                    && i > 1 && this.tokens.get(i - 2).type() == TYPE;
+            if (nominal || importAlias || callableName || bindingName
+                    || formalName || contextualTypeAlias) {
+                shadowedOfTypes.add(token.lexeme());
             }
         }
     }
@@ -4874,14 +4909,14 @@ public final class Parser {
      * corresponding literals, not to dynamic members or host collections.
      * Only kinds with an existing checked value representation are admitted.
      */
-    private static String builtinOfFactory(Ast.Expr callee) {
+    private String builtinOfFactory(Ast.Expr callee) {
         if (!(callee instanceof Ast.MemberExpr member)
                 || !member.member().equals("of")
                 || !(member.receiver() instanceof Ast.NameExpr owner)) return null;
-        return switch (owner.name()) {
-            case "Map", "Array", "Tuple", "Record" -> owner.name();
-            default -> null;
-        };
+        String name = owner.name();
+        if (!BUILTIN_OF_TYPES.contains(name) || shadowedOfTypes.contains(name))
+            return null;
+        return name;
     }
 
     private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
@@ -4909,7 +4944,10 @@ public final class Parser {
             // ~record(...). parseTildeRecordLiteral owns its opening '('.
             throw new IllegalStateException("Record factory must use parseTildeRecordLiteral");
         }
-        List<Ast.Expr> elements = parseCallArgumentsUntil(RPAREN);
+        // This is exactly the existing array/tuple literal argument grammar:
+        // spreads, named call labels and foreign argument dispatch are not
+        // silently enabled by a new factory spelling.
+        List<Ast.Expr> elements = parseArgumentsUntil(RPAREN);
         consume(RPAREN, "expected ')' after " + kind + ".of arguments");
         return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements);
     }
