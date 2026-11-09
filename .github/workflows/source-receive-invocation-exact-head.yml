@@ -1,0 +1,88 @@
+name: Source receive invocation stacks exact-head
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorReceiveInvocation.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorScalarCallMachine.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorReceiveInvocationTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SourceActorReceiveInvocationTest.java'
+      - 'docs/ACTOR_RECEIVE_INVOCATION_STACKS_M2P2.md'
+      - '.github/workflows/source-receive-invocation-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-receive-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head, never synthetic merge
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head tree and runtime/test Git blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "EXACT_HEAD=$(git rev-parse HEAD)"
+          echo "EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          for path in \
+            src/main/java/dev/oreslang/runtime/ActorReceiveInvocation.java \
+            src/main/java/dev/oreslang/runtime/ActorRuntime.java \
+            src/main/java/dev/oreslang/runtime/ActorScalarCallMachine.java \
+            src/test/java/dev/oreslang/runtime/ActorReceiveInvocationTest.java \
+            src/test/java/dev/oreslang/runtime/SourceActorReceiveInvocationTest.java; do
+            expected="$(git rev-parse "HEAD:$path")"
+            observed="$(git hash-object "$path")"
+            test "$observed" = "$expected"
+            echo "EXACT_BLOB $path $observed"
+          done
+      - name: Set up GraalVM 25 JDK
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run actual source receive and native frame JUnit tests
+        run: mvn -B -ntp -Dtest=ActorReceiveInvocationTest,SourceActorReceiveInvocationTest -DfailIfNoTests=true test
+      - name: Verify both exact-head JUnit reports, no skip
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, subprocess, xml.etree.ElementTree as ET
+          from pathlib import Path
+          head=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          tree=subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip()
+          if head != os.environ["EXPECTED_HEAD"] or len(tree)!=40:
+              raise SystemExit("source receive exact head/tree mismatch")
+          names=["ActorReceiveInvocationTest","SourceActorReceiveInvocationTest"]
+          total=0
+          for name in names:
+              path=Path("target/surefire-reports/TEST-dev.oreslang.runtime."+name+".xml")
+              if not path.is_file():
+                  raise SystemExit("missing JUnit XML: "+name)
+              root=ET.parse(path).getroot()
+              counts={k:int(root.get(k,"0")) for k in ("tests","failures","errors","skipped")}
+              print("EXACT_HEAD_JUNIT",name,head,tree,counts)
+              if counts["tests"]<1 or any(counts[k] for k in ("failures","errors","skipped")):
+                  raise SystemExit("missing/failing/skipped tests: "+name)
+              total+=counts["tests"]
+          if total<5:
+              raise SystemExit("expected at least five focused test methods")
+          print("SOURCE_RECEIVE_HOST_JUNIT_EXECUTED",total)
+          print("COMPILER_GENERATED_ATTO_SUSPENDED_CALL_NOT_VERIFIED")
+          print("GRAALVM_NATIVE_IMAGE_NOT_VERIFIED")
+          PY
