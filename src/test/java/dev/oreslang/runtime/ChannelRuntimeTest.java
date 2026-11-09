@@ -366,6 +366,42 @@ final class ChannelRuntimeTest {
         assertThrows(RuntimeException.class, selected::join);
     }
     @Test
+    void canonicalChannelSelectableIsDescriptorOnlyAndPreservesLosingValues() {
+        ChannelRuntime.Channel<Integer> left = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.Channel<Integer> right = new ChannelRuntime.Channel<>(2);
+        assertTrue(left.tryWrite(11));
+        assertTrue(right.tryWrite(22));
+
+        ChannelRuntime.ChannelReadSelectable<Integer> leftSource =
+                ChannelRuntime.selectableRead(left.output());
+        ChannelRuntime.ChannelReadSelectable<Integer> rightSource =
+                ChannelRuntime.selectableRead(right);
+
+        // Producing read descriptors never registers a waiter or consumes data.
+        assertTrue(leftSource.selectNext() instanceof ChannelRuntime.ReadCase<?>);
+        assertEquals(1, left.size());
+        assertEquals(1, right.size());
+
+        ChannelRuntime.SelectResult result = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(leftSource, rightSource))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(0, result.index());
+        assertEquals(11, result.value());
+        assertTrue(left.tryRead().isEmpty(), "winner consumed exactly once");
+        assertEquals(22, right.tryRead().orElseThrow(),
+                "losing next-event source must preserve its buffered value");
+    }
+
+    @Test
+    void canonicalSelectableRejectsNullReadCapability() {
+        assertThrows(NullPointerException.class, () ->
+                ChannelRuntime.selectableRead((ChannelRuntime.ReadChannel<Integer>) null));
+        assertThrows(NullPointerException.class, () ->
+                ChannelRuntime.selectableRead((ChannelRuntime.Channel<Integer>) null));
+    }
+
+    @Test
     void selectableNextEventRejectsWritesAndDefaultsBeforeAnyCommit() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
         assertTrue(channel.tryWrite(41));
