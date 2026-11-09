@@ -7855,6 +7855,30 @@ public final class OresEvalRootNode extends RootNode {
                 if (witness.isTupleType() && witness.arguments().isEmpty()) {
                     return List.of();
                 }
+                if (witness.name().equals("Map") && !witness.inferArguments()
+                        && witness.arguments().size() == 2) {
+                    Ast.TypeRef key = witness.arguments().get(0);
+                    Ast.TypeRef value = witness.arguments().get(1);
+                    if (key.inferArguments() || !key.arguments().isEmpty()
+                            || value.inferArguments() || !value.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "unverified Map<K,V> key/value type arguments");
+                    }
+                    OresKeyedMap.ValueDomain valueDomain = switch (value.name()) {
+                        case "int" -> OresKeyedMap.ValueDomain.INT;
+                        case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
+                        case "string", "String" -> OresKeyedMap.ValueDomain.STRING;
+                        case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                        default -> throw new IllegalArgumentException(
+                                "unverified Map<K,V> value domain " + value);
+                    };
+                    return switch (key.name()) {
+                        case "string", "String" -> OresKeyedMap.stringKeys(valueDomain);
+                        case "Symbol" -> OresKeyedMap.symbolKeys(valueDomain);
+                        default -> throw new IllegalArgumentException(
+                                "unverified Map<K,V> key domain " + key);
+                    };
+                }
                 throw new IllegalArgumentException(
                         "unverified typed empty aggregate cannot execute: " + witness);
             }
@@ -8720,6 +8744,15 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException(
                             "unknown List member " + name);
                 };
+            }
+            if (receiver instanceof OresKeyedMap<?, ?> guestMap) {
+                // The minimal scalar-domain map surface is compiler owned.
+                // No host reflection, mutable Java Map view, or unverified
+                // put/get/transport operation is exposed by this path.
+                if (name.equals("size")) return (long) guestMap.size();
+                throw new IllegalArgumentException(
+                        "guest Map member '" + name
+                                + "' is not admitted before typed ownership lowering");
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown struct/map member " + name);
