@@ -4567,7 +4567,43 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
-        if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        if (match(TILDE)) {
+            Token sigil = previous();
+            // Only a statically named ':' entry selects a short record.
+            // Keep ~(expression) as unary bitwise complement, including calls
+            // and parenthesized expressions. The map spelling cannot be
+            // lowered until guest Map<K,V> typing and ownership are integrated.
+            if (isContextualIdentifier("record") && checkNext(LPAREN)
+                    && adjacent(sigil, peek())) {
+                advance();
+                return parseTildeRecordLiteral(true);
+            }
+            if (isContextualIdentifier("map") && checkNext(LPAREN)
+                    && adjacent(sigil, peek())) {
+                throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+            }
+            if (check(LPAREN)) {
+                if (checkNext(RPAREN)) {
+                    throw error(peek(), "empty '~()' is ambiguous; use '~record()' or, when supported, '~map()'");
+                }
+                int first = current + 1;
+                if (first < tokens.size() && tokens.get(first).type() == ELLIPSIS) {
+                    throw error(peek(), "bare '~(...source)' has no record/map separator; use '~record(...source)'");
+                }
+                if (first + 1 < tokens.size()) {
+                    Token.Type keyKind = tokens.get(first).type();
+                    Token.Type separator = tokens.get(first + 1).type();
+                    if ((keyKind == IDENT || keyKind == STRING) && separator == COLON) {
+                        return parseTildeRecordLiteral(false);
+                    }
+                    if (separator == FAT_ARROW) {
+                        throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                    }
+                }
+            }
+            return new Ast.UnaryExpr("~", parseUnary());
+        }
         if (match(AMP)) {
             throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
         }
@@ -5057,6 +5093,38 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    /**
+     * First runnable slice of the tilde aggregate contract. Reuse the
+     * compiler's existing closed readonly record AST; do not create a
+     * Java Map, dynamic object shape or unchecked runtime conversion.
+     * Map literals have a separate typed guest runtime promotion gate.
+     */
+    private Ast.ObjectExpr parseTildeRecordLiteral(boolean explicit) {
+        consume(LPAREN, "expected '(' after tilde record prefix");
+        if (!explicit && check(RPAREN)) {
+            throw error(peek(), "empty '~()' is ambiguous; use '~record()'");
+        }
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        while (!check(RPAREN)) {
+            if (match(ELLIPSIS)) {
+                // The existing type/ownership checker rejects spreads until
+                // their lifetime and partial-move proof is implemented.
+                fields.add(Ast.ObjectField.spreading(parseExpression()));
+            } else {
+                String name = consumeStaticObjectKeyName("expected static tilde record field name");
+                if (check(FAT_ARROW)) {
+                    throw error(peek(), "mixed record ':' and map '=>' entries are forbidden");
+                }
+                consume(COLON, "tilde records use ':' after a static field name; maps use '=>'");
+                fields.add(Ast.ObjectField.named(name, parseExpression()));
+            }
+            if (!match(COMMA)) break;
+            if (check(RPAREN)) break; // an optional trailing comma
+        }
+        consume(RPAREN, "expected ')' after tilde record literal");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 
     private Ast.ObjectExpr parseExplicitStructLiteral() {
