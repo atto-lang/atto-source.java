@@ -9587,6 +9587,17 @@ public final class TypeChecker {
 
         boolean fixed = ref.name().equals("Tuple") || ref.name().equals("FixedArray") || ref.name().equals("FixedList");
 
+        // Only reaches here for a *builtin* Tuple, after resolve() has
+        // already given a lexically declared class Tuple<T...> priority.
+        // Treat the additive Tuple<T1,T2,...> spelling as the existing
+        // positional Tuple[T1,T2,...] shape. Do not generalize this rule
+        // to Vector<T1,T2> or FixedArray<T,N>, whose shape rules differ.
+        if (ref.name().equals("Tuple") && dimensions.isEmpty()
+                && !ref.inferArguments() && !positional.isEmpty()) {
+            dimensions = List.of(Ast.TypeRef.sequenceShape(positional));
+            positional = List.of();
+        }
+
         if (dimensions.isEmpty()) {
             if (fixed) {
                 throw new IllegalArgumentException(ref.name()
