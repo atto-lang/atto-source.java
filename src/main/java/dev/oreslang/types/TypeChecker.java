@@ -4740,15 +4740,28 @@ public final class TypeChecker {
             return new ListType(element);
         }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
-            // The explicit type witness is preserved by the parser, but
-            // this frontend cannot yet prove generic/alias empty-construction
-            // capability and emit guest Map/Record/Tuple constructors.
-            // Fail closed before runtime rather than erasing T or inventing
-            // a nominal/default constructor.
+            // First proven slice: syntactically concrete, zero-field readonly
+            // records and zero-arity tuples. Both use the canonical existing
+            // type/layout and runtime representations. Do not accept aliases,
+            // nominal types, generic placeholders or Maps until their
+            // compile-time kind and zero-construction proofs are implemented.
+            Ast.TypeRef witness = typed.aggregateType();
+            if (witness.isReadonlyRecordType() && witness.recordMembers().isEmpty()) {
+                return new Record(Map.of(), true, AggregateKind.RECORD);
+            }
+            if (witness.isTupleType() && witness.arguments().isEmpty()) {
+                return new Tuple(List.of(), TupleKind.TUPLE);
+            }
+            if (witness.isRecordType() && !witness.recordMembers().isEmpty()
+                    || witness.isTupleType() && !witness.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "typed empty aggregate cannot synthesize required record fields "
+                                + "or tuple elements: " + witness);
+            }
             throw new IllegalArgumentException(
-                    "~<T>() requires compile-time aggregate-kind and zero-initialization "
-                            + "proof plus typed guest lowering; not yet enabled for "
-                            + typed.aggregateType());
+                    "typed empty aggregate requires compile-time aggregate-kind and "
+                            + "zero-initialization proof plus typed guest lowering; "
+                            + "unresolved or unsupported witness " + witness);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
