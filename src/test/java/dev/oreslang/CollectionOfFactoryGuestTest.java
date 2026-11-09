@@ -103,4 +103,56 @@ final class CollectionOfFactoryGuestTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(program("const r = Record.of<int>(x: 1);")));
     }
+    private static Ast.Expr firstFactoryInitializer(String source) {
+        Ast.Program program = Parser.parse(source);
+        Ast.FunctionDecl function = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(declaration -> declaration instanceof Ast.FunctionDecl)
+                .map(declaration -> (Ast.FunctionDecl) declaration)
+                .findFirst().orElseThrow();
+        return function.body().stream()
+                .filter(statement -> statement instanceof Ast.BindingStmt)
+                .map(statement -> ((Ast.BindingStmt) statement).initializer())
+                .reduce((first, later) -> later).orElseThrow();
+    }
+
+    @Test
+    void canonicalFactoriesLowerDirectlyToExistingCheckedAggregateAst() {
+        assertInstanceOf(Ast.TupleExpr.class, firstFactoryInitializer(
+                program("const t = Tuple.of(1, true);")));
+        assertInstanceOf(Ast.ListExpr.class, firstFactoryInitializer(
+                program("const a = Array.of(1, 2);")));
+        assertInstanceOf(Ast.ListExpr.class, firstFactoryInitializer(
+                program("const a = ~array(1, 2);")));
+        assertInstanceOf(Ast.ObjectExpr.class, firstFactoryInitializer(
+                program("const r = Record.of(ready: true);")));
+        assertInstanceOf(Ast.MapLiteralExpr.class, firstFactoryInitializer(
+                program("const m = Map.of<string,int>(\"x\" => 1);")));
+    }
+
+    @Test
+    void nominalOrLexicalShadowingNeverHijacksOrdinaryOfCalls() {
+        for (String source : new String[]{
+                "define class Tuple as end\n" +
+                    program("const t = Tuple.of(1, 2);"),
+                "import class NamedTuple as Tuple from \"./named-tuple.ores\";\n" +
+                    program("const t = Tuple.of(1, 2);"),
+                program("const Tuple = 1; const t = Tuple.of(1, 2);"),
+                "define class Map as end\n" +
+                    program("const m = Map.of(\"x\", 1);"),
+                program("const Array = 1; const t = Array.of(1, 2);")
+        }) {
+            assertInstanceOf(Ast.CallExpr.class,
+                    firstFactoryInitializer(source), source);
+        }
+    }
+
+    @Test
+    void spreadsCannotPiggybackOnTupleAndArrayFactories() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("const t = Tuple.of(...source);")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("const a = Array.of(...source);")));
+    }
+
 }
