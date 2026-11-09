@@ -7844,6 +7844,20 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
+            if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
+                // Defensive runtime check: only canonical, fully concrete
+                // aggregate shapes previously admitted by type+ownership
+                // checking may reach this branch.
+                Ast.TypeRef witness = typed.aggregateType();
+                if (witness.isReadonlyRecordType() && witness.recordMembers().isEmpty()) {
+                    return new ReadonlyRecordValue(new LinkedHashMap<>());
+                }
+                if (witness.isTupleType() && witness.arguments().isEmpty()) {
+                    return List.of();
+                }
+                throw new IllegalArgumentException(
+                        "unverified typed empty aggregate cannot execute: " + witness);
+            }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
                 if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
