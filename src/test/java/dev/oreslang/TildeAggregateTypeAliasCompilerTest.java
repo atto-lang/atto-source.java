@@ -95,6 +95,63 @@ final class TildeAggregateTypeAliasCompilerTest {
     }
 
     @Test
+    void nominalTupleClassIsNeverRewrittenIntoBuiltinTuple() {
+        String declarations = """
+                define class Tuple<A, B> as
+                  pub val A first;
+                  pub val B second;
+                end
+                fnc accept_nominal(Tuple<int, string> value): void { return; }
+                fnc accept_positional(~tuple<int, string> value): void { return; }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(declarations)));
+
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                        declarations + """
+                        pub fnc main(): void {
+                          val positional: ~tuple<int, string> = (42, "answer");
+                          accept_nominal(positional);
+                          return;
+                        }
+                        """)));
+        assertTrue(mismatch.getMessage().contains("argument"), mismatch::getMessage);
+    }
+
+    @Test
+    void tildeAliasesAlsoResolveInParametersReturnsAndNestedTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc make_values(): ~array<int> {
+                  return arr[1, 2, 3];
+                }
+                fnc passthrough(~array<int> xs): Array[int] {
+                  return xs;
+                }
+                fnc accept_nested(~array<~array<int>> xs): void {
+                  return;
+                }
+                pub fnc main(): void {
+                  val values: Array[int] = passthrough(make_values());
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void existingFixedArrayAndTupleKindRemainIncompatible() {
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                        fnc needs_tuple(~tuple<int, string> item): void { return; }
+                        pub fnc main(): void {
+                          val fixed: ~fixed_array[int, string] = [42, "answer"];
+                          needs_tuple(fixed);
+                          return;
+                        }
+                        """)));
+        assertTrue(mismatch.getMessage().contains("argument"), mismatch::getMessage);
+    }
+
+    @Test
     void tildeTypeIsAllowlistedAndValueUnaryTildeIsUnchanged() {
         IllegalArgumentException unknown = assertThrows(IllegalArgumentException.class,
                 () -> typeOf("~tupel<int, string>"));
