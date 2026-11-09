@@ -4581,6 +4581,21 @@ public final class Parser {
         return expr;
     }
 
+    /** Dispatch only explicit, allowlisted ~kind(...) / ~kind<T>(...) heads.
+     *  Ordinary unary ~expr remains on the original operator path.
+     */
+    private boolean isTildeAggregateConstructorHead() {
+        if (!check(TILDE) || current + 2 >= tokens.size()
+                || tokens.get(current + 1).type() != IDENT) return false;
+        Token.Type suffix = tokens.get(current + 2).type();
+        if (suffix != LPAREN && suffix != LT) return false;
+        return switch (tokens.get(current + 1).lexeme()) {
+            case "array", "tuple", "vector", "fixed_array", "fixed_list",
+                    "list", "slice", "set", "map", "entry", "pair", "record" -> true;
+            default -> false;
+        };
+    }
+
     private Ast.Expr parseUnary() {
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
@@ -4604,39 +4619,9 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
-        // Explicit tilde aggregate constructors are compiler-owned forms,
-        // not calls to an arbitrary function named array/tuple. Reuse the
-        // existing value nodes: no new storage, type, ownership, or ABI kind.
-        // All unimplemented aggregate kinds fail closed instead of leaking
-        // through unary '~' and an ordinary host/guest callable.
-        if (check(TILDE) && current + 2 < tokens.size()
-                && tokens.get(current + 1).type() == IDENT) {
-            String kind = tokens.get(current + 1).lexeme();
-            Token.Type suffix = tokens.get(current + 2).type();
-            if (suffix == LPAREN || suffix == LT) {
-                if (kind.equals("array") || kind.equals("tuple")) {
-                    if (suffix == LT) {
-                        throw error(tokens.get(current + 2),
-                                "~" + kind + "<...>(...) requires checked explicit-constructor type witnesses; "
-                                        + "declare the expected type or use the untyped literal");
-                    }
-                    advance(); // ~
-                    advance(); // the explicitly selected built-in kind
-                    consume(LPAREN, "expected '(' after ~" + kind);
-                    List<Ast.Expr> values = parseArgumentsUntil(RPAREN);
-                    consume(RPAREN, "expected ')' after ~" + kind + " literal");
-                    return kind.equals("array")
-                            ? new Ast.ListExpr(values)
-                            : new Ast.TupleExpr(values);
-                }
-                if (java.util.Set.of("vector", "fixed_array", "fixed_list", "list",
-                        "slice", "set", "map", "entry", "pair", "record").contains(kind)) {
-                    throw error(tokens.get(current + 1),
-                            "~" + kind + "(...) requires reviewed compiler-owned "
-                                    + "aggregate lowering; no host fallback is allowed");
-                }
-            }
-        }
+        // Aggregate literals enter parsePostfix just like arr[...] and
+        // tuple(...), retaining indexed/member/call postfix behavior.
+        if (isTildeAggregateConstructorHead()) return parsePostfix();
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
@@ -5006,6 +4991,28 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // One semantic constructor path: reuse the old array/tuple AST.
+        // Explicit typed value constructors and other aggregate families
+        // remain unavailable until their runtime/type-witness reviews.
+        if (isTildeAggregateConstructorHead()) {
+            advance(); // tilde
+            String kind = advance().lexeme();
+            if (check(LT)) {
+                throw error(peek(), "~" + kind + "<...>(...) requires checked "
+                        + "explicit-constructor type witnesses; use a declared expected type");
+            }
+            if (kind.equals("array") || kind.equals("tuple")) {
+                consume(LPAREN, "expected '(' after ~" + kind);
+                List<Ast.Expr> values = parseArgumentsUntil(RPAREN);
+                consume(RPAREN, "expected ')' after ~" + kind + " literal");
+                return kind.equals("array")
+                        ? new Ast.ListExpr(values)
+                        : new Ast.TupleExpr(values);
+            }
+            throw error(previous(), "~" + kind
+                    + "(...) requires reviewed compiler-owned aggregate lowering; "
+                    + "no host fallback is allowed");
+        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
