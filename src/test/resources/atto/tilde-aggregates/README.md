@@ -20,3 +20,21 @@ record patterns, and AOT parity remain independently gated.
 
 **Status: source fixtures committed; real guest execution NOT_EXECUTED until
 exact-head JVM/Graal runs provide step receipts and outcomes.**
+
+## Explicit tuple and typed-empty extension
+
+- `tuples-empty-pass.atto` and `tuples-two-pass.atto` cover `~tuple()`
+  and `~tuple(1, "two")`. They reuse the canonical tuple AST.
+- `typed-empty-{map,record,tuple,generic}-parser-only.atto` are parser-positive
+  **and typechecker-negative for now**. The lexer/parser preserves the full
+  `~<T>()` type witness in `Ast.TypedEmptyAggregateExpr`, but no compiler
+  backend may construct it before the kind/zero-initialization proof and
+  ownership-safe lowering are implemented.
+- `typed-empty-{argument,missing-type}-reject.atto` are grammar-negative.
+  An explicit type witness does not permit arbitrary positional defaults.
+- The shared design authority is
+  `oreslang-common-source/contracts/v3/ATTO_TILDE_TYPED_EMPTY_AGGREGATES_V3.md`.
+  Its positive semantic expectations are **NOT IMPLEMENTED** by this slice.
+
+Current JUnit file: `TildeRecordLiteralGuestTest` (10 source-authored test
+methods; no claim of executed tests or backend parity).
