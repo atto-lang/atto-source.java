@@ -1,0 +1,85 @@
+name: Atto collection factories exact-head Java/Graal guest
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/atto-collection-factory-guest-exact-head.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/CollectionOfFactoryGuestTest.java'
+      - 'src/test/java/dev/oreslang/NonemptyTildeMapGuestTest.java'
+  push:
+    paths:
+      - '.github/workflows/atto-collection-factory-guest-exact-head.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/CollectionOfFactoryGuestTest.java'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compiler-owned-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact head without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check exact tree and Java compiler test source blob identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          for file in src/main/java/dev/oreslang/parser/Parser.java src/test/java/dev/oreslang/CollectionOfFactoryGuestTest.java src/main/java/dev/oreslang/types/TypeChecker.java src/main/java/dev/oreslang/types/OwnershipChecker.java src/main/java/dev/oreslang/nodes/OresEvalRootNode.java; do
+            test "$(git hash-object --no-filters "$file")" = "$(git rev-parse "HEAD:$file")"
+          done
+          git rev-parse 'HEAD^{tree}'
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Provision GraalVM 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run compiled AttoLang Truffle guest and type/ownership negatives
+        run: >-
+          mvn -B -ntp '-P!native-thread-unix'
+          -Dtest=TildeRecordLiteralGuestTest,TypedEmptyMapGuestTest,NonemptyTildeMapGuestTest,CollectionOfFactoryGuestTest
+          test
+      - name: Verify non-vacuous executed JUnit receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          classes = [
+              "TildeRecordLiteralGuestTest", "TypedEmptyMapGuestTest",
+              "NonemptyTildeMapGuestTest", "CollectionOfFactoryGuestTest",
+          ]
+          total = 0
+          for cls in classes:
+              paths = glob.glob(f"target/surefire-reports/TEST-*{cls}.xml")
+              if len(paths) != 1:
+                  raise SystemExit(f"MISSING_EXECUTED_JUNIT_RECEIPT: {cls}")
+              root = ET.parse(paths[0]).getroot()
+              tests = int(root.attrib.get("tests", "0"))
+              failures = int(root.attrib.get("failures", "0"))
+              errors = int(root.attrib.get("errors", "0"))
+              skipped = int(root.attrib.get("skipped", "0"))
+              if tests < (10 if cls == "CollectionOfFactoryGuestTest" else 1):
+                  raise SystemExit(f"INSUFFICIENT_EXECUTED_JUNIT_CASES: {cls}")
+              if failures or errors or skipped:
+                  raise SystemExit(f"NONZERO_JUNIT_FAILURE_OR_SKIP: {cls}")
+              total += tests
+          if total < 33:
+              raise SystemExit(f"INSUFFICIENT_EXECUTED_JUNIT_TOTAL: {total}")
+          print(f"ATTO_JAVA_FACTORY_GUEST_JUNIT_EXECUTED tests={total} failures=0 errors=0 skipped=0")
+          PY
+          echo "source_head=$(git rev-parse HEAD)"
+          echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
