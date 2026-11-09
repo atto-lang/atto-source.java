@@ -135,18 +135,30 @@ public final class ProcessGroupRegistry implements AutoCloseable {
      */
     @FunctionalInterface
     private interface LockedOperation<T> {
-        T run(List<Entry> retirements);
+        T run(List<Entry> retirements, List<Runnable> physicalCleanups);
     }
 
     private <T> T withRegistryLock(LockedOperation<T> operation) {
         List<Entry> retirements = new ArrayList<>();
+        List<Runnable> physicalCleanups = new ArrayList<>();
         T result = null;
         Throwable failure = null;
         synchronized (lock) {
             try {
-                result = operation.run(retirements);
+                result = operation.run(retirements, physicalCleanups);
             } catch (RuntimeException | Error problem) {
                 failure = problem;
+            }
+        }
+        // One logical fence covers epoch revocation, membership detach and
+        // subscription removal. No Channel/Future callback runs under lock.
+        // Try every cleanup even if one fails, then retire detached groups.
+        for (Runnable physicalCleanup : physicalCleanups) {
+            try {
+                physicalCleanup.run();
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (failure == null) failure = cleanupFailure;
+                else if (failure != cleanupFailure) failure.addSuppressed(cleanupFailure);
             }
         }
         try {
@@ -186,7 +198,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         Key key = key(scope, name);
         ActorRuntime.ActorId actorId = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg.joinCurrent requires actor execution"));
-        return withRegistryLock(retirements -> {
+        return withRegistryLock((retirements, physicalCleanups) -> {
             Entry entry = entryForJoinLocked(key, retirements);
             try {
                 boolean wasMember = entry.group.runtimeContains(actorId);
@@ -207,7 +219,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
      */
     public <M> void join(String scope, String name, ActorRuntime.ActorRef<M> ref) {
         Key key = key(scope, name);
-        withRegistryLock(retirements -> {
+        withRegistryLock((retirements, physicalCleanups) -> {
             Entry entry = entryForJoinLocked(key, retirements);
             try {
                 ActorRuntime.ActorId actorId = ref.id();
@@ -225,29 +237,27 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     public void leaveCurrent(String scope, String name) {
         Key key = key(scope, name);
-        ActorRuntime.ActorId actorId = ActorRuntime.currentActorId().orElseThrow(() ->
+        ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg.leaveCurrent requires actor execution"));
-        Entry entry = withRegistryLock(retirements -> {
-            Entry found = existingLocked(key, retirements);
-            if (found == null) throw new IllegalStateException("unknown pg group");
-            // Logical revocation precedes the callback-capable physical leave.
-            // Even a cached duplicate handle cannot cancel a later epoch.
-            found.memberEpochs.remove(actorId);
-            return found;
+        withRegistryLock((retirements, physicalCleanups) -> {
+            Entry entry = existingLocked(key, retirements);
+            if (entry == null) throw new IllegalStateException("unknown pg group");
+
+            // The groupMembershipLock is acquired while our registry fence
+            // is still held. A competing pg join cannot observe an old
+            // member, mint a new epoch, and then lose it to this leave.
+            Runnable cleanup = entry.group.runtimeDetachCurrentMembership();
+            entry.memberEpochs.remove(ActorRuntime.currentActorId().orElseThrow());
+            physicalCleanups.add(cleanup);
+            reclaimIfEmptyLocked(key, entry, retirements);
+            return null;
         });
-        // ActorGroup.leaveCurrent may settle Future callbacks; do not hold
-        // our registry monitor while entering its membership teardown.
-        try {
-            entry.group.leaveCurrent();
-        } finally {
-            reclaimIfEmpty(key, entry);
-        }
     }
 
     @SuppressWarnings("unchecked")
     public <M> List<ActorRuntime.ActorRef<M>> members(String scope, String name) {
         Key key = key(scope, name);
-        return withRegistryLock(retirements -> {
+        return withRegistryLock((retirements, physicalCleanups) -> {
             Entry entry = existingLocked(key, retirements);
             if (entry == null) return List.of();
             List<ActorRuntime.ActorRef<M>> refs = new ArrayList<>();
@@ -267,7 +277,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     public int memberCount(String scope, String name) {
         Key key = key(scope, name);
-        return withRegistryLock(retirements -> {
+        return withRegistryLock((retirements, physicalCleanups) -> {
             Entry entry = existingLocked(key, retirements);
             return entry == null ? 0 : entry.group.memberCount();
         });
@@ -275,7 +285,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     public boolean contains(String scope, String name, ActorRuntime.ActorRef<?> ref) {
         Key key = key(scope, name);
-        return withRegistryLock(retirements -> {
+        return withRegistryLock((retirements, physicalCleanups) -> {
             Entry entry = existingLocked(key, retirements);
             return entry != null && entry.group.contains(ref);
         });
@@ -285,7 +295,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
     public void delete(String scope, String name) {
         requireHostManager("delete pg groups");
         Key key = key(scope, name);
-        withRegistryLock(retirements -> {
+        withRegistryLock((retirements, physicalCleanups) -> {
             requireOpen();
             Entry entry = groups.get(key);
             if (entry != null) retireLocked(key, entry, retirements);
@@ -295,7 +305,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     public List<String> groupNames(String scope) {
         String normalizedScope = normalize("scope", scope);
-        return withRegistryLock(retirements -> {
+        return withRegistryLock((retirements, physicalCleanups) -> {
             requireOpen();
             pruneEmptyLocked(retirements);
             List<String> names = new ArrayList<>();
@@ -310,7 +320,7 @@ public final class ProcessGroupRegistry implements AutoCloseable {
     }
 
     public int groupCount() {
-        return withRegistryLock(retirements -> {
+        return withRegistryLock((retirements, physicalCleanups) -> {
             requireOpen();
             pruneEmptyLocked(retirements);
             return groups.size();
@@ -377,27 +387,20 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             throw new SecurityException(
                     "pg membership may only be left by the actor that joined it");
         }
-        Entry entry = withRegistryLock(retirements -> {
+        withRegistryLock((retirements, physicalCleanups) -> {
             requireOpen();
-            Entry found = groups.get(key);
-            if (found == null || found.group != group || !group.runtimeContains(actorId))
+            Entry entry = groups.get(key);
+            if (entry == null || entry.group != group || !group.runtimeContains(actorId))
                 return null; // stale duplicate handle: explicitly idempotent
-            if (!found.memberEpochs.remove(actorId, membershipEpoch))
+            if (!Objects.equals(entry.memberEpochs.get(actorId), membershipEpoch))
                 return null; // a newer join owns a different epoch
-            return found;
-        });
-        if (entry == null) return;
-        try {
-            group.leaveCurrent();
-        } finally {
-            reclaimIfEmpty(key, entry);
-        }
-    }
 
-    private void reclaimIfEmpty(Key key, Entry entry) {
-        withRegistryLock(retirements -> {
-            // Exact entry identity makes old leave/rejoin handles incapable
-            // of retiring a fresh group with the same human-readable name.
+            // Validate & detach while the registry lock still serializes pg
+            // join admission. Channel callbacks run via physicalCleanups,
+            // only after releasing both registry and group membership locks.
+            Runnable cleanup = group.runtimeDetachCurrentMembership();
+            entry.memberEpochs.remove(actorId, membershipEpoch);
+            physicalCleanups.add(cleanup);
             reclaimIfEmptyLocked(key, entry, retirements);
             return null;
         });
