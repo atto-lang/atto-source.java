@@ -512,25 +512,41 @@ public final class ActorEventBus implements AutoCloseable {
          * This lock is per reduction, not global to the bus, so unrelated topics
          * and reductions remain fully concurrent.
          */
-        synchronized (reduction) {
-            double current = reduction.current();
-            if (!reduction.improves(candidate, current)) {
-                return new DoubleReductionResult(
-                        current,
-                        false,
-                        new PublishReceipt(
-                                topic.subscriptions.size(),
-                                0,
-                                0,
-                                0,
-                                OresFuture.completed(List.of())));
+        // Reduction value and its publication still commit under the same
+        // reduction lock. Stale-subscriber channel/Future completion is
+        // explicitly deferred until AFTER that lock as well.
+        List<Subscription<?>> detached = new ArrayList<>();
+        Throwable publicationFailure = null;
+        try {
+            synchronized (reduction) {
+                double current = reduction.current();
+                if (!reduction.improves(candidate, current)) {
+                    return new DoubleReductionResult(
+                            current,
+                            false,
+                            new PublishReceipt(
+                                    topic.subscriptions.size(),
+                                    0, 0, 0, OresFuture.completed(List.of())));
+                }
+                ActorRuntime.FrozenActorGroupEventPayload frozen =
+                        runtime.freezeActorGroupEventPayload(candidate);
+                PublishReceipt receipt = publishFrozen(
+                        topic, frozen, publisher, () -> reduction.set(candidate),
+                        detached);
+                return new DoubleReductionResult(candidate, true, receipt);
             }
-
-            ActorRuntime.FrozenActorGroupEventPayload frozen =
-                    runtime.freezeActorGroupEventPayload(candidate);
-            PublishReceipt receipt = publishFrozen(
-                    topic, frozen, publisher, () -> reduction.set(candidate));
-            return new DoubleReductionResult(candidate, true, receipt);
+        } catch (RuntimeException | Error failure) {
+            publicationFailure = failure;
+            throw failure;
+        } finally {
+            try {
+                finishDetachedSubscriptions(detached);
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (publicationFailure != null) {
+                    if (publicationFailure != cleanupFailure)
+                        publicationFailure.addSuppressed(cleanupFailure);
+                } else throw cleanupFailure;
+            }
         }
     }
 
@@ -653,6 +669,17 @@ public final class ActorEventBus implements AutoCloseable {
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
             ActorRuntime.ActorId publisher,
             Runnable commitState) {
+        // Retain the four-argument admission boundary used by independent
+        // exact-head reduction-commit regression tests.
+        return publishFrozen(topic, frozenPayload, publisher, commitState, null);
+    }
+
+    private PublishReceipt publishFrozen(
+            TopicState topic,
+            ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
+            ActorRuntime.ActorId publisher,
+            Runnable commitState,
+            List<Subscription<?>> deferredCleanup) {
         Event<Object> event = null;
         List<Subscription<?>> detached = new ArrayList<>();
         Throwable publicationFailure = null;
@@ -846,9 +873,10 @@ public final class ActorEventBus implements AutoCloseable {
                 cleanupFailure = failure;
             }
             try {
-                // Detach happened under deliveryLock, but channel close,
-                // write cancellation and read callbacks must run after it.
-                finishDetachedSubscriptions(detached);
+                // Detach happened under deliveryLock. A reduction caller
+                // delegates cleanup until its own reduction lock is released.
+                if (deferredCleanup == null) finishDetachedSubscriptions(detached);
+                else deferredCleanup.addAll(detached);
             } catch (Throwable failure) {
                 if (cleanupFailure == null) cleanupFailure = failure;
                 else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
