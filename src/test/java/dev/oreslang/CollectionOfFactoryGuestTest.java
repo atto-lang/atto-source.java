@@ -148,6 +148,19 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void emptyArraysRequireAnExplicitlyCheckedElementType() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("const a = Array.of();")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("const a = ~array();")));
+        // Zero-arity products and closed records have well-defined shapes.
+        assertInstanceOf(Ast.TupleExpr.class,
+                firstFactoryInitializer(program("const t = Tuple.of();")));
+        assertInstanceOf(Ast.ObjectExpr.class,
+                firstFactoryInitializer(program("const r = Record.of();")));
+    }
+
+    @Test
     void spreadsCannotPiggybackOnTupleAndArrayFactories() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(program("const t = Tuple.of(...source);")));
