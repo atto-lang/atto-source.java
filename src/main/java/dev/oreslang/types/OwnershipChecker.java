@@ -1555,7 +1555,8 @@ public final class OwnershipChecker {
                     ValueKind.MOVE_ONLY,
                     null);
         }
-        if (expr instanceof Ast.ContextualEmptyMapExpr) {
+        if (expr instanceof Ast.ContextualEmptyMapExpr
+                || expr instanceof Ast.ContextualMapLiteralExpr) {
             throw error("unresolved ~map() cannot pass ownership admission");
         }
         if (expr instanceof Ast.TypedMapLiteralExpr literal) {

@@ -3406,15 +3406,20 @@ public final class Parser {
      */
     private Ast.Expr resolveDirectContextualEmptyMap(
             Ast.TypeRef declaredType, Ast.Expr initializer) {
-        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)) return initializer;
+        boolean empty = initializer instanceof Ast.ContextualEmptyMapExpr;
+        boolean nonempty = initializer instanceof Ast.ContextualMapLiteralExpr;
+        if (!empty && !nonempty) return initializer;
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
             throw error(previous(),
-                    "~map() requires a directly declared, fully typed Map<K,V> binding");
+                    "~map(...) requires a directly declared, fully typed Map<K,V> binding");
         }
         // Never lose the exact key/value witness. TypeChecker and
         // OwnershipChecker still independently validate both domains.
-        return new Ast.TypedEmptyAggregateExpr(declaredType);
+        return empty
+                ? new Ast.TypedEmptyAggregateExpr(declaredType)
+                : new Ast.TypedMapLiteralExpr(declaredType,
+                        ((Ast.ContextualMapLiteralExpr) initializer).entries());
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -4630,9 +4635,10 @@ public final class Parser {
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
                 if (match(LPAREN)) {
-                    consume(RPAREN, "~map() accepts no runtime arguments without explicit "
-                            + "K/V types; use ~map<K,V>(key => value) for entries");
-                    return new Ast.ContextualEmptyMapExpr();
+                    if (match(RPAREN)) return new Ast.ContextualEmptyMapExpr();
+                    List<Ast.MapLiteralEntry> entries = parseTildeMapEntries();
+                    consume(RPAREN, "expected ')' after Map entries");
+                    return new Ast.ContextualMapLiteralExpr(entries);
                 }
                 consume(LT, "expected explicit <K,V> or () after ~map");
                 Ast.TypeRef keyType = parseTypeRef();
@@ -4643,13 +4649,7 @@ public final class Parser {
                 Ast.TypeRef mapType = new Ast.TypeRef(
                         "Map", List.of(keyType, valueType), false);
                 if (match(RPAREN)) return new Ast.TypedEmptyAggregateExpr(mapType);
-                List<Ast.MapLiteralEntry> entries = new ArrayList<>();
-                do {
-                    Ast.Expr key = parseExpression();
-                    consume(FAT_ARROW, "~map<K,V> entries require key => value");
-                    Ast.Expr value = parseExpression();
-                    entries.add(new Ast.MapLiteralEntry(key, value));
-                } while (match(COMMA) && !check(RPAREN));
+                List<Ast.MapLiteralEntry> entries = parseTildeMapEntries();
                 consume(RPAREN, "expected ')' after typed Map entries");
                 return new Ast.TypedMapLiteralExpr(mapType, entries);
             }
@@ -5168,6 +5168,18 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    /** Parse nonempty typed/contextual Map entries, preserving source order. */
+    private List<Ast.MapLiteralEntry> parseTildeMapEntries() {
+        List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        do {
+            Ast.Expr key = parseExpression();
+            consume(FAT_ARROW, "~map entries require key => value");
+            Ast.Expr value = parseExpression();
+            entries.add(new Ast.MapLiteralEntry(key, value));
+        } while (match(COMMA) && !check(RPAREN));
+        return entries;
     }
 
     /**

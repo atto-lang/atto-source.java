@@ -4739,7 +4739,8 @@ public final class TypeChecker {
             }
             return new ListType(element);
         }
-        if (expr instanceof Ast.ContextualEmptyMapExpr) {
+        if (expr instanceof Ast.ContextualEmptyMapExpr
+                || expr instanceof Ast.ContextualMapLiteralExpr) {
             throw new IllegalArgumentException(
                     "~map() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");

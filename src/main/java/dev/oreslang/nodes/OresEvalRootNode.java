@@ -7844,7 +7844,8 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.ContextualEmptyMapExpr) {
+            if (expr instanceof Ast.ContextualEmptyMapExpr
+                || expr instanceof Ast.ContextualMapLiteralExpr) {
                 throw new IllegalArgumentException(
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");
             }

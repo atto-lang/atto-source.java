@@ -1,0 +1,5 @@
+pub fnc main(): void {
+    const Map<string, int> scores = ~map("one" => 1, "two" => 2);
+    stdio.println(scores.size);
+    return;
+}

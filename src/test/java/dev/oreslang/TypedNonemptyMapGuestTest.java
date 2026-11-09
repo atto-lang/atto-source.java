@@ -49,6 +49,24 @@ final class TypedNonemptyMapGuestTest {
     }
 
     @Test
+    void directlyTypedBindingInfersNonemptyMapAndExecutes() {
+        String program = fixture("nonempty-map-contextual-guest-pass.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source source = assertDoesNotThrow(() -> Source.newBuilder(
+                OresLanguage.ID, program, "nonempty-map-contextual-guest-pass.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(out).build()) {
+                context.eval(source);
+            }
+        });
+        assertEquals(fixture("nonempty-map-contextual-guest-pass.stdout"),
+                out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
     void wrongKeyAndValueTypesFailBeforeGuestExecution() {
         for (String file : List.of(
                 "nonempty-map-wrong-key-reject.atto",
@@ -110,6 +128,8 @@ final class TypedNonemptyMapGuestTest {
 
     @Test
     void untypedAndAmbiguousMapFormsRemainRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc f(): void { const m = ~map(\"x\" => 1); return; }"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc f(): void { const m = ~map(\"x\" => 1); return; }"));
         assertThrows(IllegalArgumentException.class,

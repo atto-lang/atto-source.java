@@ -1130,7 +1130,7 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, TypedMapLiteralExpr { }
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, ContextualMapLiteralExpr, TypedMapLiteralExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1167,6 +1167,16 @@ public final class Ast {
      *  witness. Never typecheck or execute this node as a dynamic map.
      */
     public record ContextualEmptyMapExpr() implements Expr { }
+
+    /** Untyped nonempty Map entries: only a direct typed binding may resolve it. */
+    public record ContextualMapLiteralExpr(List<MapLiteralEntry> entries) implements Expr {
+        public ContextualMapLiteralExpr {
+            entries = List.copyOf(entries);
+            if (entries.isEmpty()) {
+                throw new IllegalArgumentException("empty map must use ContextualEmptyMapExpr");
+            }
+        }
+    }
 
     /** Preserve source ordering and duplicate logical keys for batch rejection. */
     public record MapLiteralEntry(Expr key, Expr value) {
