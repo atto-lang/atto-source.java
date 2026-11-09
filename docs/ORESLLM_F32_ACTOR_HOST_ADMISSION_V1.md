@@ -22,7 +22,7 @@ Result:
 ORES_F32_JAVA_HOST_PREFLIGHT_V1_PASS|stolen_thread=DENIED|retired=DENIED|guest=NOT_EXECUTED
 ```
 
-Standalone source-org runner `tests/run-f32-actor-host-preflight-v1.sh` recompiles those same three sources without Maven and without fetching external dependencies.
+The **exact committed standalone source-org runner** `tests/run-f32-actor-host-preflight-v1.sh` (Git blob `3f304983c9373f0bd0ea52db572fffa17a017333`) was also reconstructed byte-for-byte, passed `bash -n`, and **executed locally** using the same three exact source Git blobs without Maven/network. It emitted `ORES_F32_JAVA_ADMISSION_MATRIX_PASS|jdk=21|guest=NOT_EXECUTED|native_image=NOT_EXECUTED`. It has **not** executed in GitHub-hosted CI.
 
 ### Not yet implemented or certified
 
