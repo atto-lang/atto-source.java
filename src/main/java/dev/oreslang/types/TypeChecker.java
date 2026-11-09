@@ -4752,6 +4752,29 @@ public final class TypeChecker {
             if (witness.isTupleType() && witness.arguments().isEmpty()) {
                 return new Tuple(List.of(), TupleKind.TUPLE);
             }
+            if (witness.name().equals("Map") && !witness.inferArguments()
+                    && witness.arguments().size() == 2) {
+                if (findClass("Map") != null) {
+                    throw new IllegalArgumentException(
+                            "typed empty Map requires the canonical built-in Map<K,V>, not a shadowing class");
+                }
+                Ast.TypeRef key = witness.arguments().get(0);
+                Ast.TypeRef value = witness.arguments().get(1);
+                if (!isAdmittedEmptyMapScalarKey(key)
+                        || !isAdmittedEmptyMapScalarValue(value)) {
+                    throw new IllegalArgumentException(
+                            "typed empty Map is currently limited to String/Symbol keys "
+                                    + "and primitive int/bool/string/Symbol values; "
+                                    + "unverified key/value domain " + witness);
+                }
+                Type map = resolve(witness, generics, self);
+                if (!(map instanceof Named named) || !named.name().equals("Map")
+                        || named.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "typed empty Map must resolve to canonical Map<K,V>");
+                }
+                return map;
+            }
             if (witness.isRecordType() && !witness.recordMembers().isEmpty()
                     || witness.isTupleType() && !witness.arguments().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -5215,6 +5238,22 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    /** Transitional statically typed Map constructor gate. No inferred/alias
+     * key or value kind is accepted before the compiler-owned descriptor and
+     * zero-copy/ownership representation have been proven end-to-end. */
+    private static boolean isAdmittedEmptyMapScalarKey(Ast.TypeRef type) {
+        return !type.inferArguments() && type.arguments().isEmpty()
+                && (type.name().equals("string") || type.name().equals("String")
+                        || type.name().equals("Symbol"));
+    }
+
+    private static boolean isAdmittedEmptyMapScalarValue(Ast.TypeRef type) {
+        return !type.inferArguments() && type.arguments().isEmpty()
+                && (type.name().equals("int") || type.name().equals("bool")
+                        || type.name().equals("Bool") || type.name().equals("string")
+                        || type.name().equals("String") || type.name().equals("Symbol"));
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -7936,6 +7975,13 @@ public final class TypeChecker {
 
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
+        if (receiver instanceof Named named && named.name().equals("Map")
+                && named.arguments().size() == 2) {
+            // Only the read-only scalar size observation is currently
+            // guest-exposed. All mutation, lookup and transport APIs wait
+            // for a complete typed key/value and ownership admission gate.
+            return member.equals("size") ? Primitive.INT : null;
+        }
         if (receiver instanceof ListType list) {
             return switch (member) {
                 case "size" -> Primitive.INT;
