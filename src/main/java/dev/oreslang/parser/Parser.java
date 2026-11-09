@@ -3905,18 +3905,25 @@ public final class Parser {
         }
 
         List<Ast.MatchArm> arms = new ArrayList<>();
+        boolean seenDefault = false;
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            boolean defaultArm = false;
             if (canonicalOver) {
-                if (!matchContextualIdentifier("on")) {
-                    if (check(ELSE) || check(DEFAULT)) {
-                        throw error(peek(), "match has no default/else keyword; use 'on _ -> { ... }'");
+                if (match(DEFAULT)) {
+                    if (seenDefault) throw error(previous(), "duplicate default match arm");
+                    seenDefault = true;
+                    defaultArm = true;
+                } else {
+                    if (seenDefault) throw error(peek(), "default match arm must be last");
+                    if (!matchContextualIdentifier("on")) {
+                        if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
+                        throw error(peek(), "every explicit match arm must start with 'on'");
                     }
-                    throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
                 }
             }
 
             Ast.Pattern pattern;
-            if (!canonicalOver && match(ELSE)) {
+            if (defaultArm || (!canonicalOver && match(ELSE))) {
                 pattern = new Ast.WildcardPattern();
             } else {
                 pattern = parsePattern();
@@ -3924,6 +3931,7 @@ public final class Parser {
 
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
+                if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
                 int previousGuardStart = matchGuardStartToken;
                 matchGuardStartToken = current;
                 try {
@@ -4001,18 +4009,25 @@ public final class Parser {
         // Canonical syntax is match value over ... end.
         boolean braced = match(LBRACE);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
+        boolean seenDefault = false;
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
-            if (!matchContextualIdentifier("on")) {
-                if (check(ELSE) || check(DEFAULT)) {
-                    throw error(peek(), "match has no default/else keyword; use 'on _'");
+            boolean defaultArm = match(DEFAULT);
+            if (defaultArm) {
+                if (seenDefault) throw error(previous(), "duplicate default match arm");
+                seenDefault = true;
+            } else {
+                if (seenDefault) throw error(peek(), "default match arm must be last");
+                if (!matchContextualIdentifier("on")) {
+                    if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
+                    throw error(peek(), "every explicit match arm must start with 'on'");
                 }
-                throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
             }
 
-            Ast.Pattern pattern = parsePattern();
+            Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
             Ast.Expr guard = null;
             if (matchWhenKeyword()) {
+                if (defaultArm) throw error(previous(), "default match arm cannot have a guard");
                 int previousGuardStart = matchGuardStartToken;
                 matchGuardStartToken = current;
                 try {
@@ -4544,6 +4559,89 @@ public final class Parser {
         return expr;
     }
 
+    /**
+     * Disambiguate tilde aggregate literals from the existing unary bitwise
+     * complement. For example, ~(x) must keep its old unary meaning, while
+     * ~(x: 1) is a statically named record. Do not eagerly interpret a colon
+     * belonging to a conditional expression as a record separator.
+     *
+     * This is a bounded lookahead over existing lexer tokens, not an eval,
+     * dynamic Map lookup or a new language-level runtime type.
+     */
+    private boolean looksLikeTildeAggregateLiteral() {
+        if (!check(TILDE) || current + 1 >= tokens.size()) return false;
+        Token after = tokens.get(current + 1);
+        if (after.type() == IDENT
+                && (after.lexeme().equals("record") || after.lexeme().equals("map"))) {
+            return true;
+        }
+        if (after.type() != LPAREN) return false;
+        int nesting = 1;
+        boolean conditional = false;
+        for (int at = current + 2; at < tokens.size(); at++) {
+            Token.Type kind = tokens.get(at).type();
+            if (kind == LPAREN || kind == LBRACKET || kind == LBRACE) nesting++;
+            else if (kind == RPAREN || kind == RBRACKET || kind == RBRACE) {
+                nesting--;
+                if (nesting == 0) return at == current + 2; // reserved ~()
+            }
+            if (nesting != 1) continue;
+            if (kind == QUESTION) conditional = true;
+            if (kind == COMMA) conditional = false;
+            if (kind == FAT_ARROW) return true; // map syntax: explicit fail-closed gate
+            if (kind == COLON && !conditional && current + 2 < tokens.size()) {
+                Token.Type first = tokens.get(current + 2).type();
+                if (first == IDENT || first == STRING || first == ELLIPSIS) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Stage 1: normalize tilde record spellings to the existing readonly
+     * ObjectKind.RECORD AST and preserve its ordinary checker/runtime gates.
+     *
+     * Map<K,V> needs compiler-owned key/value and ownership admission; do
+     * not flatten it into a record or emit a fake Map constructor.
+     */
+    private Ast.Expr parseTildeAggregateLiteral() {
+        Token tilde = consume(TILDE, "expected '~' before aggregate literal");
+        if (check(IDENT) && peek().lexeme().equals("map")) {
+            throw error(tilde, "~map(...) requires typed Map<K,V> literal lowering; "
+                    + "tilde map literals are not enabled on the Java backend yet");
+        }
+        boolean explicitRecord = check(IDENT) && peek().lexeme().equals("record");
+        if (explicitRecord) advance();
+        consume(LPAREN, "expected '(' after tilde record literal");
+        if (!explicitRecord && check(RPAREN)) {
+            throw error(peek(), "bare ~() is ambiguous; use ~record() or typed ~map()");
+        }
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do {
+                if (check(BACKTICK) || check(TEMPLATE_LITERAL)) {
+                    throw error(peek(), "tilde record field names must be static");
+                }
+                if (match(ELLIPSIS)) {
+                    if (!explicitRecord && check(RPAREN)) {
+                        throw error(peek(), "untyped ~(...spread) is ambiguous; use ~record(...spread)");
+                    }
+                    fields.add(Ast.ObjectField.spreading(parseExpression()));
+                } else {
+                    String field = consumeStaticObjectKeyName("expected statically named tilde record field");
+                    if (check(FAT_ARROW)) {
+                        throw error(peek(), "map entries use '=>': tilde Map<K,V> literals "
+                                + "require typed Map lowering and are not enabled yet");
+                    }
+                    consume(COLON, "expected ':' after tilde record field");
+                    fields.add(Ast.ObjectField.named(field, parseExpression()));
+                }
+            } while (match(COMMA) && !check(RPAREN));
+        }
+        consume(RPAREN, "expected ')' after tilde record");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
     private Ast.Expr parseUnary() {
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
@@ -4567,6 +4665,7 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
+        if (looksLikeTildeAggregateLiteral()) return parseTildeAggregateLiteral();
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
