@@ -182,6 +182,54 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void mapOfCannotPublishDuplicateStringOrSymbolKeys() {
+        for (String constructor : new String[]{
+                "Map.of<string,int>(\"dup\" => 1, \"dup\" => 2)",
+                "Map.of<Symbol,bool>(#ready => true, #ready => false)"
+        }) {
+            String text = program("const m = " + constructor + ";");
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(text));
+            Source guest = assertDoesNotThrow(() ->
+                    Source.newBuilder(OresLanguage.ID, text, "duplicate-of.atto")
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                RuntimeException failure = assertThrows(RuntimeException.class,
+                        () -> context.eval(guest));
+                assertTrue(String.valueOf(failure.getMessage())
+                                .contains("duplicate logical key"),
+                        constructor + ": " + failure.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void mapOfRejectsWrongKeyValueAndOversizedConstruction() {
+        for (String constructor : new String[]{
+                "Map.of<int,int>(1 => 1)",
+                "Map.of<string,int>(\"x\" => true)",
+                "Map.of<string,int>(1 => 1)"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(
+                            program("const m = " + constructor + ";")),
+                    constructor);
+        }
+        StringBuilder oversized = new StringBuilder(
+                "pub fnc main(): void { const m = Map.of<string,int>(");
+        for (int i = 0; i <= 4096; i++) {
+            if (i != 0) oversized.append(", ");
+            oversized.append("\"k").append(i).append("\" => ").append(i);
+        }
+        oversized.append("); return; }");
+        IllegalArgumentException problem = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(oversized.toString()));
+        assertTrue(problem.getMessage().contains("4096 entries"),
+                problem.getMessage());
+    }
+
+    @Test
     void spreadsCannotPiggybackOnTupleAndArrayFactories() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(program("const t = Tuple.of(...source);")));
