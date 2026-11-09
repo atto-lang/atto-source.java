@@ -14,12 +14,14 @@ import static org.junit.jupiter.api.Assertions.*;
 final class TildeAggregateTypeAliasCompilerTest {
     @Test
     void typedTupleAliasesShareTheExistingFiniteShapeAndMetadata() {
-        assertEquals(typeOf("Tuple[int, string]"), typeOf("Tuple<int, string>"));
         assertEquals(typeOf("Tuple[int, string]"), typeOf("~tuple<int, string>"));
+        // Preserve an unprefixed nominal Tuple<A,B> AST: only the type
+        // checker may select builtin tuple semantics after class lookup.
+        assertEquals(2, typeOf("Tuple<int, string>").arguments().size());
         assertEquals(typeOf("Tuple<align=64, size=2>[int, string]"),
                 typeOf("~tuple<align=64, size=2>[int, string]"));
-        assertEquals(typeOf("Tuple<int, string, align=64, size=2>"),
-                typeOf("Tuple<align=64, size=2>[int, string]"));
+        assertEquals(4, typeOf("Tuple<int, string, align=64, size=2>")
+                .arguments().size());
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
@@ -27,6 +29,7 @@ final class TildeAggregateTypeAliasCompilerTest {
                   val b: Tuple<int, string> = (8, "eight");
                   val c: Tuple[int, string] = (9, "nine");
                   val d: ~tuple<align=64, size=2>[int, string] = (10, "ten");
+                  val e: Tuple<int, string, align=64, size=2> = (11, "eleven");
                   return;
                 }
                 """)));
