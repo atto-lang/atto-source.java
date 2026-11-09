@@ -311,4 +311,50 @@ final class ActorGroupMembershipMonitorTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void monitorTokenAndNestedTokenCannotBeSentOrSharedAsData() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            AtomicReference<ActorRuntime.ActorGroup.MembershipMonitor> token =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Object> owner = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        try {
+                            token.set(group.monitorMembership(2));
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            registered.countDown();
+                        }
+                    });
+            ActorRuntime.ActorRef<Object> recipient = runtime.spawnShared(
+                    () -> (message, context) -> { });
+            group.join(owner, join);
+            owner.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            var monitor = token.get();
+            assertNotNull(monitor);
+            assertThrows(SecurityException.class, () -> recipient.send(monitor));
+            assertThrows(SecurityException.class, () -> recipient.send(List.of(monitor)));
+            assertThrows(SecurityException.class, () ->
+                    runtime.freezeActorGroupEventPayload(monitor));
+            assertThrows(SecurityException.class, () ->
+                    runtime.freezeActorGroupEventPayload(List.of(monitor)));
+            assertThrows(IllegalArgumentException.class, () -> runtime.shareReadonly(monitor));
+            assertEquals(1, group.activeMembershipMonitorCount(),
+                    "rejected transport must never mutate monitor authority");
+            group.close();
+            assertEquals(0, group.activeMembershipMonitorCount());
+            owner.stop();
+            recipient.stop();
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(recipient.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
