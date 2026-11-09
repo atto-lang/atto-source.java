@@ -1420,8 +1420,14 @@ public final class OwnershipChecker {
             }
             TaskCaptureProofBudget captureBudget = new TaskCaptureProofBudget();
             for (Capture capture : captured.values.values()) {
-                if (!capture.source.type.isBorrow()
-                        && forbiddenTaskCapability(capture.source.type, captureBudget)) {
+                if (capture.source.type.isBorrow()) continue;
+                boolean forbidden = forbiddenTaskCapability(
+                        capture.source.type, captureBudget);
+                if (captureBudget.exhausted) {
+                    throw error("independent task capture proof complexity limit exceeded"
+                            + " at '" + capture.name + "'");
+                }
+                if (forbidden) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
                             + "pass owned values or an explicit Channel<T> instead");
@@ -4273,6 +4279,7 @@ public final class OwnershipChecker {
 
     private static final class TaskCaptureProofBudget {
         private int remaining = TASK_CAPTURE_MAX_NODES;
+        private boolean exhausted;
     }
 
     private AutoTraitRules.Capabilities taskCaptureCapabilities(
@@ -4290,6 +4297,7 @@ public final class OwnershipChecker {
         AutoTraitRules.Capabilities none =
                 new AutoTraitRules.Capabilities(false, false, false);
         if (depth >= TASK_CAPTURE_MAX_DEPTH || budget.remaining-- <= 0) {
+            budget.exhausted = true;
             return none;
         }
         AutoTraitRules.Capabilities scalar =
