@@ -3406,7 +3406,10 @@ public final class Parser {
      */
     private Ast.Expr resolveDirectContextualEmptyMap(
             Ast.TypeRef declaredType, Ast.Expr initializer) {
-        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)) return initializer;
+        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)
+                && !(initializer instanceof Ast.MapLiteralExpr map && map.mapType() == null)) {
+            return initializer;
+        }
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
             throw error(previous(),
@@ -3414,7 +3417,9 @@ public final class Parser {
         }
         // Never lose the exact key/value witness. TypeChecker and
         // OwnershipChecker still independently validate both domains.
-        return new Ast.TypedEmptyAggregateExpr(declaredType);
+        return initializer instanceof Ast.MapLiteralExpr map
+                ? new Ast.MapLiteralExpr(declaredType, map.entries())
+                : new Ast.TypedEmptyAggregateExpr(declaredType);
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -4630,9 +4635,8 @@ public final class Parser {
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
                 if (match(LPAREN)) {
-                    consume(RPAREN, "~map() accepts no runtime arguments without explicit "
-                            + "K/V types; use ~map<K,V>(key => value) for entries");
-                    return new Ast.ContextualEmptyMapExpr();
+                    if (match(RPAREN)) return new Ast.ContextualEmptyMapExpr();
+                    return parseTildeMapEntries(null);
                 }
                 consume(LT, "expected explicit <K,V> or () after ~map");
                 Ast.TypeRef keyType = parseTypeRef();
@@ -4640,10 +4644,10 @@ public final class Parser {
                 Ast.TypeRef valueType = parseTypeRef();
                 consume(GT, "~map<K,V>() requires exactly two type arguments");
                 consume(LPAREN, "expected '(' after ~map<K,V>");
-                consume(RPAREN, "nonempty ~map<K,V>(...) is pending transactional map "
-                        + "entry insertion and ownership proofs");
-                return new Ast.TypedEmptyAggregateExpr(
-                        new Ast.TypeRef("Map", List.of(keyType, valueType), false));
+                Ast.TypeRef mapType = new Ast.TypeRef(
+                        "Map", List.of(keyType, valueType), false);
+                if (match(RPAREN)) return new Ast.TypedEmptyAggregateExpr(mapType);
+                return parseTildeMapEntries(mapType);
             }
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
@@ -4660,13 +4664,15 @@ public final class Parser {
                         return parseTildeRecordLiteral(false);
                     }
                     if (separator == FAT_ARROW) {
-                        throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                        advance(); // first '(' of shorthand map
+                        return parseTildeMapEntries(null);
                     }
                 }
                 if (tildeHasTopLevelMapSeparator()) {
-                    // Catch evaluated/computed key expressions, e.g. ~(f() => v),
-                    // rather than letting them fall through unary parsing.
-                    throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                    // Computed keys are still statically typed: the Map<K,V>
+                    // witness must come from an explicit local binding.
+                    advance(); // first '(' of shorthand map
+                    return parseTildeMapEntries(null);
                 }
             }
             return new Ast.UnaryExpr("~", parseUnary());
@@ -5196,6 +5202,32 @@ public final class Parser {
      * Java Map, dynamic object shape or unchecked runtime conversion.
      * Map literals have a separate typed guest runtime promotion gate.
      */
+    /**
+     * All entries are owned by one Map literal. The parser never inserts into
+     * storage; type/ownership preflight and atomic commit occur before a guest
+     * Map value becomes visible. Mixed record ':' syntax is not accepted.
+     * The '=>' token is consumed outside parseExpression's pipeline grammar.
+     */
+    private Ast.MapLiteralExpr parseTildeMapEntries(Ast.TypeRef mapType) {
+        List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        do {
+            if (check(ELLIPSIS)) {
+                throw error(peek(), "map spreads require explicit source-ownership "
+                        + "and transactional batch proofs");
+            }
+            Ast.Expr key = parseExpression();
+            consume(FAT_ARROW, "map literals require '=>' between key and value");
+            Ast.Expr value = parseExpression();
+            entries.add(new Ast.MapLiteralEntry(key, value));
+            if (entries.size() > 4096) {
+                throw error(peek(), "map literal exceeds 4096 entries");
+            }
+            if (!match(COMMA)) break;
+        } while (!check(RPAREN));
+        consume(RPAREN, "expected ')' to close map literal");
+        return new Ast.MapLiteralExpr(mapType, entries);
+    }
+
     private Ast.ObjectExpr parseTildeRecordLiteral(boolean explicit) {
         consume(LPAREN, "expected '(' after tilde record prefix");
         if (!explicit && check(RPAREN)) {
