@@ -123,17 +123,45 @@ final class TildeRecordLiteralGuestTest {
     }
 
     @Test
-    void typedEmptySyntaxCannotBypassUnimplementedTypeAndOwnershipProofs() {
+    void typedEmptyConcreteRecordAndTupleAreAdmitted() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                fixture("typed-empty-record-parser-only.atto")));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                fixture("typed-empty-tuple-parser-only.atto")));
+    }
+
+    @Test
+    void typedEmptyConcreteRecordAndTupleCompileAndExecute() {
+        String program = fixture("typed-empty-guest-pass.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source source = assertDoesNotThrow(() -> Source.newBuilder(
+                OresLanguage.ID, program, "typed-empty-guest-pass.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(out).build()) {
+                context.eval(source);
+            }
+        });
+        assertEquals(fixture("typed-empty-guest-pass.stdout"),
+                out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
+    void typedEmptySyntaxRejectsUnprovedOrNonEmptyTypeWitnesses() {
         for (String file : List.of(
                 "typed-empty-map-parser-only.atto",
-                "typed-empty-record-parser-only.atto",
-                "typed-empty-tuple-parser-only.atto",
-                "typed-empty-generic-parser-only.atto")) {
+                "typed-empty-generic-parser-only.atto",
+                "typed-empty-required-record-reject.atto",
+                "typed-empty-required-tuple-reject.atto",
+                "typed-empty-unresolved-reject.atto",
+                "typed-empty-nominal-reject.atto")) {
             IllegalArgumentException diagnostic = assertThrows(
                     IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
-            assertTrue(diagnostic.getMessage().contains("typed guest lowering")
-                            || diagnostic.getMessage().contains("zero-initialization"),
+            assertTrue(diagnostic.getMessage().contains("zero-initialization")
+                            || diagnostic.getMessage().contains("required"),
                     file + ": " + diagnostic.getMessage());
         }
         for (String file : List.of(
