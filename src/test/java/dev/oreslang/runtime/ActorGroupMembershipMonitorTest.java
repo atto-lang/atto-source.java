@@ -354,7 +354,7 @@ final class ActorGroupMembershipMonitorTest {
                     runtime.freezeActorGroupEventPayload(monitor));
             assertThrows(SecurityException.class, () ->
                     runtime.freezeActorGroupEventPayload(List.of(monitor)));
-            assertThrows(IllegalArgumentException.class, () -> runtime.shareReadonly(monitor));
+            assertThrows(SecurityException.class, () -> runtime.shareReadonly(monitor));
             assertEquals(1, group.activeMembershipMonitorCount(),
                     "rejected transport must never mutate monitor authority");
             group.close();
