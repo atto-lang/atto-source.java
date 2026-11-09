@@ -121,9 +121,15 @@ public final class ActorScalarCallMachine {
                     program, entry, arguments, safepoint, sourceTask.callContinuation(), arena);
         }
 
-        ExecutionContext execution = arena.newSynchronousExecution();
+        // Compiler source receives borrow their admitted invocation identity;
+        // stand-alone trusted actor callbacks still receive a fresh synchronous
+        // identity. In both cases child CALL frames are LIFO on one logical stack.
+        ActorReceiveInvocation receive = ActorRuntime.currentReceiveInvocation();
+        ExecutionContext execution = receive == null
+                ? arena.newSynchronousExecution() : receive.executionContext();
         ArrayDeque<Activation> activations = new ArrayDeque<>();
         long ticks = 0L;
+        boolean completed = false;
         try {
             pushActivation(arena, execution, activations, program, entry, arguments);
             while (true) {
@@ -194,7 +200,10 @@ public final class ActorScalarCallMachine {
                             throw invalid(arena, "scalar function must return int");
                         arena.pop(execution, active.ref());
                         activations.removeLast();
-                        if (activations.isEmpty()) return value;
+                        if (activations.isEmpty()) {
+                            completed = true;
+                            return value;
+                        }
                         Activation parent = activations.peekLast();
                         pushValue(arena, execution, parent,
                                 program.functions().get(parent.functionId()), value);
@@ -202,10 +211,17 @@ public final class ActorScalarCallMachine {
                 }
             }
         } finally {
-            // Cancellation, quota exhaustion, arithmetic failure, and
-            // scheduler safepoint errors all reclaim precisely this logical
-            // execution. The actor arena remains poisoned on hard limits.
-            arena.cancel(execution);
+            // A successful compiler source receive keeps its 64-byte root
+            // alive until its mailbox invocation completes (possibly after
+            // a Future wake). Ordinary synchronous callbacks own only their
+            // ephemeral execution. An exceptional source call is fail-stop:
+            // even a caught guest error cannot continue with a damaged root.
+            if (receive == null) {
+                arena.cancel(execution);
+            } else if (!completed) {
+                arena.poisonFromGuestGuard();
+                arena.cancel(execution);
+            }
             activations.clear();
         }
     }
