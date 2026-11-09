@@ -61,6 +61,21 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
+    void postfixIndexingOfTildeLiteralsUsesTheOldValuePath() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  stdio.stdout.write(~array(10, 21)[1]);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(~tuple(11, "eleven")[0]);
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+        assertEquals("21|11", run(program));
+    }
+
+    @Test
     void unsupportedAggregateConstructorsFailClosed() {
         for (String invalid : new String[]{
                 "~map(\"a\" => 1)", "~set(1, 2)", "~vector(1, 2)",
