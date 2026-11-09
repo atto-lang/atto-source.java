@@ -82,16 +82,17 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
         public void leave() {
             if (!left.compareAndSet(false, true)) return;
-            ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
-                    new SecurityException("pg membership leave requires actor execution"));
-            if (!current.equals(actorId)) {
-                left.set(false);
-                throw new SecurityException(
-                        "pg membership may only be left by the actor that joined it");
-            }
             try {
+                ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
+                        new SecurityException("pg membership leave requires actor execution"));
+                if (!current.equals(actorId)) {
+                    throw new SecurityException(
+                            "pg membership may only be left by the actor that joined it");
+                }
                 leaveMembership(key, actorId, group, membershipEpoch);
             } catch (RuntimeException | Error failure) {
+                // Unauthorized callers must not consume a legitimate actor's
+                // revocable membership handle merely by invoking leave().
                 left.set(false);
                 throw failure;
             }
