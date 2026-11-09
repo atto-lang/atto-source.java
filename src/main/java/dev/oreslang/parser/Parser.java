@@ -4613,6 +4613,16 @@ public final class Parser {
                 consume(RPAREN, "typed empty aggregate accepts no value arguments; use ~map, ~record or ~tuple");
                 return new Ast.TypedEmptyAggregateExpr(aggregateType);
             }
+            if (isContextualIdentifier("array") && checkNext(LPAREN)
+                    && adjacent(sigil, peek())) {
+                advance(); // explicit typed array convenience spelling
+                consume(LPAREN, "expected '(' after ~array");
+                List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+                consume(RPAREN, "expected ')' after ~array");
+                // Reuse [items] and Array.of(items) ListExpr admission, not
+                // a separate host array or dynamic sequence representation.
+                return new Ast.ListExpr(items);
+            }
             if (isContextualIdentifier("tuple") && checkNext(LPAREN)
                     && adjacent(sigil, peek())) {
                 advance();
