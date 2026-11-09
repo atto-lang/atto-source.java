@@ -1,0 +1,59 @@
+name: Actor state guest E2E candidate (exact-head JVM)
+
+on:
+  pull_request:
+    paths:
+      - 'tests/fixtures/actor-state-e2e-v1/**'
+      - 'scripts/test-actor-state-guest-e2e-v1.sh'
+      - '.github/workflows/actor-state-guest-e2e-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actor-guest-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact unprivileged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Verify source head and script syntax
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --no-ext-diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          bash -n scripts/test-actor-state-guest-e2e-v1.sh
+          printf 'HEAD=%s\nTREE=%s\nSTATUS=NOT_CERTIFIED\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" > "$RUNNER_TEMP/actor-guest-source.txt"
+      - name: Set up GraalVM/JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute actor guest and negative compiler case
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/test-actor-state-guest-e2e-v1.sh 2>&1 | tee "$RUNNER_TEMP/actor-guest-execution.log"
+      - name: Retain logs as unverified evidence candidates
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: actor-guest-java-unverified
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/actor-guest-source.txt
+            ${{ runner.temp }}/actor-guest-execution.log
