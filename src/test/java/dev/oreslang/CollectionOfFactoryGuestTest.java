@@ -68,14 +68,16 @@ final class CollectionOfFactoryGuestTest {
     void arrayTupleAndRecordFactoriesReuseExistingAggregateShapes() {
         String text = program("""
               const values = Array.of(1, 2, 3);
+              const shorthand = ~array(1, 2, 3);
               const tuple = Tuple.of(7, true);
               const record = Record.of(ready: true);
               stdio.println(values[0]);
+              stdio.println(shorthand[0]);
               stdio.println(tuple[0]);
               stdio.println(record.ready);
               """);
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(text));
-        assertEquals("1\n7\ntrue\n", guestStdout(text));
+        assertEquals("1\n1\n7\ntrue\n", guestStdout(text));
     }
 
     @Test
