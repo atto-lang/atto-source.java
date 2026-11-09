@@ -27,6 +27,8 @@ public final class SourceCooperationQuantum {
     private long backedgesThisDispatch;
     // Separate wrapping phase: the saturated long must not freeze polling.
     private int pollPhase;
+    // Consume at most one cold poll at each valid 128-backedge boundary.
+    private boolean pollDue;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -43,7 +45,9 @@ public final class SourceCooperationQuantum {
     public void beginDispatch() {
         dispatchStartedAtNanos = monotonicNanos.getAsLong();
         backedgesThisDispatch = 0;
-        pollPhase = 0;
+        // Do not reset pollPhase: repeated 127-edge awaits must not evade checks.
+        // Discard stale tickets; a fresh physical dispatch needs a new edge.
+        pollDue = false;
     }
 
     /**
@@ -64,8 +68,10 @@ public final class SourceCooperationQuantum {
         pollPhase++;
         if (pollPhase == LOOP_CHECK_INTERVAL) {
             pollPhase = 0;
+            pollDue = true;
             return true;
         }
+        pollDue = false;
         return false;
     }
 
@@ -78,6 +84,10 @@ public final class SourceCooperationQuantum {
     }
 
     public boolean shouldCooperateAtCheck(boolean watchdogRequested) {
+        // A direct/off-cycle call must never sample the clock or act on the watchdog.
+        // This method consumes exactly one ticket from completedBackedgeNeedsCheck().
+        if (!pollDue) return false;
+        pollDue = false;
         // A pending watchdog notice is advisory and must not cause another
         // clock read. Only the compiler-lowered caller may publish Cooperate.
         if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
@@ -91,6 +101,7 @@ public final class SourceCooperationQuantum {
     /** Called only for an actual rt cooperate / automatic scheduler handoff. */
     public void recordedCooperate() {
         lastCooperateAtNanos = monotonicNanos.getAsLong();
+        pollDue = false;
     }
 
     /**
