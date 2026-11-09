@@ -194,7 +194,8 @@ public final class TildeRecordParserSmoke {
         check(((Ast.TypedEmptyAggregateExpr) contextualValue).aggregateType().name().equals("Map"),
                 "contextual map witness must retain its sealed Map identity");
         rejects("~map()");
-        rejects("~map().size");
+        check(initializer("~map().size") instanceof Ast.MemberExpr,
+                "postfix is parsed, but unresolved map ownership must be rejected by TypeChecker");
         // Map typed-empty admissions from #2725 must coexist with #2721
         // match default + record syntax. This only proves AST/lexical behavior.
         var typedMap = initializer("~map<string,int>()");

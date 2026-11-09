@@ -96,6 +96,18 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
+    void unresolvedContextualMapPostfixCannotEvadeTypeOrOwnershipChecks() {
+        // The parser retains a scoped contextual AST inside member access,
+        // but no generated guest or host Map may escape type/ownership admission.
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        "fnc bad(): void { const value = ~map().size; return; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        "fnc bad(): void { const value = ~map().missing; return; }"));
+    }
+
+    @Test
     void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
         for (String file : new String[]{
                 "empty-map-nonempty-reject.atto",
