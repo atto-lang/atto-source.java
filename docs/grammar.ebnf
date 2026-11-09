@@ -444,6 +444,7 @@ type_atom       = borrow_type
                 | alias_marker
                 | callable_generic_type
                 | named_type
+                | tilde_named_type
                 | function_type
                 | grouped_type
                 | STRING_LITERAL
@@ -462,6 +463,18 @@ callable_generic_type
 named_type      = qualified_name
                   [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
                   { sequence_type_shape } ;
+tilde_named_type = "~" tilde_builtin_kind
+                  [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
+                  { sequence_type_shape } ;
+tilde_builtin_kind = "array" | "vector" | "tuple"
+                  | "fixed_array" | "fixed_list" | "list" | "slice"
+                  | "map" | "set" | "entry" | "pair" | "record" ;
+(* Tilde forms are type-position aliases for the corresponding built-in
+   capitalized family, not new types or runtime constructors. The entire
+   sequence-shape and layout grammar remains unchanged. Tuple<T1,T2,...>
+   and ~tuple<T1,T2,...> are additive forms of Tuple[T1,T2,...] when no
+   separate '[...]' shape is present; mixing the two forms is rejected.
+   Value-position ~kind(...) / Kind.of(...) is a separate, gated feature. *)
 type_arg_or_named = type_ref | named_type_param ;
 named_type_param = IDENT "=" meta_value ;
 meta_value      = INT_LITERAL | STRING_LITERAL | "true" | "false" | type_ref ;
