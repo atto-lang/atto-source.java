@@ -200,6 +200,49 @@ final class ProcessGroupRegistryReentrantNameReuseTest {
         }
     }
 
+    @Test
+    void registryAndMembershipTokensCannotCrossActorMessageOrFrozenDataBoundary()
+            throws Exception {
+        try (var runtime = new ActorRuntime();
+             var pg = new ProcessGroupRegistry(runtime, 1)) {
+            var ownerToken = new AtomicReference<ProcessGroupRegistry.Membership<String>>();
+            var failure = new AtomicReference<Throwable>();
+            var issued = new CountDownLatch(1);
+            var owner = runtime.<String>spawnSharedTrusted(
+                    factory -> (message, context) -> {
+                        try {
+                            ownerToken.set(pg.<String>joinCurrent("local", "private-capability"));
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            issued.countDown();
+                        }
+                    });
+            var recipient = runtime.<Object>spawnSharedTrusted(
+                    factory -> (message, context) -> { });
+            owner.send("join");
+            assertTrue(issued.await(10, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertNotNull(ownerToken.get());
+            assertThrows(SecurityException.class, () -> recipient.send(pg));
+            assertThrows(SecurityException.class, () -> recipient.send(ownerToken.get()));
+            assertThrows(SecurityException.class,
+                    () -> recipient.send(java.util.List.of(pg, ownerToken.get())));
+            assertThrows(SecurityException.class,
+                    () -> runtime.freezeActorGroupEventPayload(pg));
+            assertThrows(SecurityException.class,
+                    () -> runtime.freezeActorGroupEventPayload(
+                            java.util.Map.of("authority", ownerToken.get())));
+            assertEquals(1, pg.memberCount("local", "private-capability"),
+                    "rejected transport cannot mutate membership authority");
+            pg.delete("local", "private-capability");
+            owner.stop();
+            recipient.stop();
+            assertTrue(owner.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(recipient.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
     private static ActorRuntime.ActorGroup onlyGroup(ProcessGroupRegistry pg)
             throws Exception {
         Object monitor = field(pg.getClass(), "lock").get(pg);
