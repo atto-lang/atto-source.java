@@ -1,0 +1,5 @@
+fnc bad(): void {
+    const base = ~(name: "Ada");
+    const row = ~record(...base);
+    return;
+}
