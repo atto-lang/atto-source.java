@@ -4739,6 +4739,11 @@ public final class TypeChecker {
             }
             return new ListType(element);
         }
+        if (expr instanceof Ast.ContextualEmptyMapExpr) {
+            throw new IllegalArgumentException(
+                    "~map() requires a directly declared Map<K,V> type; "
+                            + "unresolved contextual map literals cannot be lowered");
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // First proven slice: syntactically concrete, zero-field readonly
             // records and zero-arity tuples. Both use the canonical existing
