@@ -4859,10 +4859,71 @@ public final class Parser {
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
 
+    /**
+     * Compiler-owned factories must lower to the same aggregate AST as the
+     * corresponding literals, not to dynamic members or host collections.
+     * Only kinds with an existing checked value representation are admitted.
+     */
+    private static String builtinOfFactory(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("of")
+                || !(member.receiver() instanceof Ast.NameExpr owner)) return null;
+        return switch (owner.name()) {
+            case "Map", "Array", "Tuple", "Record" -> owner.name();
+            default -> null;
+        };
+    }
+
+    private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
+        if (kind.equals("Map")) {
+            Ast.TypeRef witness = null;
+            if (explicitTypes != null) {
+                if (explicitTypes.size() != 2
+                        || explicitTypes.stream().anyMatch(Ast.TypeRef::isNamedParameter)) {
+                    throw error(previous(), "Map.of<K,V> requires exactly two positional type witnesses");
+                }
+                witness = new Ast.TypeRef("Map", explicitTypes, false);
+            }
+            if (match(RPAREN)) {
+                return witness == null
+                        ? new Ast.ContextualEmptyMapExpr()
+                        : new Ast.TypedEmptyAggregateExpr(witness);
+            }
+            return parseTildeMapEntries(witness);
+        }
+        if (explicitTypes != null) {
+            throw error(previous(), kind + ".of<T>(...) requires independently checked typed factory lowering");
+        }
+        if (kind.equals("Record")) {
+            // Record.of(...) uses the identical readonly static-field gate as
+            // ~record(...). parseTildeRecordLiteral owns its opening '('.
+            throw new IllegalStateException("Record factory must use parseTildeRecordLiteral");
+        }
+        List<Ast.Expr> elements = parseCallArgumentsUntil(RPAREN);
+        consume(RPAREN, "expected ')' after " + kind + ".of arguments");
+        return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements);
+    }
+
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
-            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+            String factory = builtinOfFactory(expr);
+            if (factory != null && check(LT) && adjacent(previous(), peek())
+                    && looksLikeTypeArgumentCall()) {
+                List<Ast.TypeRef> types = parseCallTypeArguments();
+                consume(LPAREN, "expected '(' after " + factory + ".of type arguments");
+                if (factory.equals("Record")) {
+                    throw error(previous(), "Record.of does not admit explicit generic arguments");
+                }
+                expr = parseFactoryOf(factory, types);
+            } else if (factory != null && check(LPAREN)) {
+                if (factory.equals("Record")) {
+                    expr = parseTildeRecordLiteral(true);
+                } else {
+                    advance(); // '('; parseFactoryOf owns the closing ')'
+                    expr = parseFactoryOf(factory, null);
+                }
+            } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 rejectUnsupportedActorFactory(expr);
