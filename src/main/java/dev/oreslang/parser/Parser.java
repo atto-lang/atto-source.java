@@ -4610,9 +4610,9 @@ public final class Parser {
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
                 if (!match(LT)) {
-                    throw error(peek(), "~map() requires an expected Map<K,V> descriptor; "
-                            + "contextual type-directed map lowering is not yet enabled; "
-                            + "use ~map<K,V>()");
+                    throw error(peek(), "tilde map literals require typed Map<K,V> admission; "
+                            + "~map() needs an expected key/value descriptor that this "
+                            + "frontend cannot lower yet; use ~map<K,V>()");
                 }
                 Ast.TypeRef keyType = parseTypeRef();
                 consume(COMMA, "~map<K,V>() requires both key and value types");
