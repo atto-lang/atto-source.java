@@ -64,10 +64,9 @@ final class TypedEmptyMapGuestTest {
 
     @Test
     void missingOrInvalidExpectedMapTypeFailsBeforeRuntime() {
-        assertDoesNotThrow(() -> Parser.parse(fixture("empty-map-untyped.atto")));
         IllegalArgumentException missing = assertThrows(
                 IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-untyped.atto")));
+                () -> Parser.parse(fixture("empty-map-untyped.atto")));
         assertTrue(missing.getMessage().contains("directly declared Map<K,V>"),
                 missing.getMessage());
         IllegalArgumentException wrongType = assertThrows(
