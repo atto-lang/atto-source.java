@@ -82,6 +82,13 @@ final class SupervisorFailureEscrowV1Standalone {
                 workers.shutdownNow();
             }
         }
+        var clean = new SupervisorFailureEscrowV1();
+        clean.registerRoot(1, 1);
+        clean.registerChild(2, 1, 1);
+        clean.completeNormally(2);
+        ok(!clean.snapshot().get(2L).alive(), "clean termination retires the actor");
+        ok(clean.pendingCount() == 0, "clean terminal creates no failure notice");
+        rejected(() -> clean.fail(2), "late failure cannot forge a previously clean terminal");
         System.out.println("PASS SupervisorFailureEscrowV1Standalone assertions=" + assertions);
     }
 }
