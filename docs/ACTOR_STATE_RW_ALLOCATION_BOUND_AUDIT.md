@@ -45,10 +45,12 @@ first-caller ownership assignment, not a unique-owner proof.
 4. Cancelling a queued reader frees capacity without blocking a writer.
 5. Invalid owner kind / unbound region / reader-count bounds fail closed.
 6. Released-loan observations cannot authorize a reacquired execution.
+7. A publisher already delivering a completion must notify physical retirement
+   after the last loan releases and the completion loop drains.
 
 The 12 original `ActorStateRwLoansTest` cases were updated to construct
 their arbiter with a predefined actor allocation. The resulting file has
-**18 authored JUnit cases, not yet executed** on the exact Java head.
+**19 authored JUnit cases, not yet executed** on the exact Java head.
 
 ## Remaining proof obligations and stop conditions
 
