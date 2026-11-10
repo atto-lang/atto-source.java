@@ -17,6 +17,7 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
+                | persistent_actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
@@ -31,6 +32,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type
 
 module_member   = contract_decl
                 | actor_decl
+                | persistent_actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
@@ -53,6 +55,17 @@ actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+
+(* Parsed as a distinct protected AST node. Type checking intentionally rejects
+   until fenced durable actor MIR / compiler-sealed state loans are implemented.
+   Protected methods are preserved as bounded, provenance-tagged tokens. *)
+persistent_actor_decl
+                = visibility "define" visibility "persistent" "actor" IDENT "as"
+                  "state" "{" { "let" type_ref IDENT ":" expression ";" } "}"
+                  { protected_actor_method } "end" ;
+protected_actor_method
+                = IDENT "(" [ param_list ] ")" "->" type_ref "::"
+                  protected_body_tokens "end" ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
