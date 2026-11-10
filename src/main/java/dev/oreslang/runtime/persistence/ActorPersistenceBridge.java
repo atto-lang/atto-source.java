@@ -107,6 +107,60 @@ public final class ActorPersistenceBridge {
         });
     }
 
+    /**
+     * Atomic command lowering entry point. Guest code supplies only owned
+     * immutable command/event/result bytes and a logical operation ID.
+     * Stable tenant/actor/epoch are bound to the trusted activation capability.
+     * Compiler must close all critical loans before invoking this method.
+     */
+    private static SqliteCommandTransactionStore.Command command(
+            Activation activation, String operationId, long expectedVersion,
+            int schemaVersion, byte[] commandBytes, java.util.List<byte[]> eventBytes,
+            byte[] resultBytes) {
+        Objects.requireNonNull(activation);
+        assertBoundTurn(activation);
+        return new SqliteCommandTransactionStore.Command(
+                activation.stableIdentity, operationId, activation.epoch,
+                expectedVersion, schemaVersion, commandBytes, eventBytes, resultBytes);
+    }
+
+    /** Owned Future carries verified multi-event logical command receipt. */
+    public static OresFuture<SqliteCommandTransactionStore.Receipt> submitOwnedCommand(
+            Activation activation, AtomicCommandSidecar sidecar,
+            String operationId, long expectedVersion, int schemaVersion,
+            byte[] commandBytes, java.util.List<byte[]> eventBytes, byte[] resultBytes) {
+        Objects.requireNonNull(sidecar);
+        var pending=command(activation, operationId, expectedVersion,
+                            schemaVersion, commandBytes, eventBytes, resultBytes);
+        return activation.runtime.ownCurrentActorFuture(
+                OresFuture.from(sidecar.submit(pending)));
+    }
+
+    /**
+     * Runtime invokes the completion ONLY in the owning actor continuation
+     * lane; the SQL worker never touches the originating private actor arena.
+     * A non-durable receipt is not a successful command acknowledgment.
+     */
+    public static void onCommandCompletionInCurrentActor(
+            Activation activation, AtomicCommandSidecar sidecar,
+            String operationId, long expectedVersion, int schemaVersion,
+            byte[] commandBytes, java.util.List<byte[]> eventBytes, byte[] resultBytes,
+            BiConsumer<? super SqliteCommandTransactionStore.Receipt,
+                       ? super Throwable> continuation) {
+        Objects.requireNonNull(sidecar);
+        Objects.requireNonNull(continuation);
+        var pending=command(activation, operationId, expectedVersion,
+                            schemaVersion, commandBytes, eventBytes, resultBytes);
+        ActorRuntime.ContinuationTarget target=
+                activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<SqliteCommandTransactionStore.Receipt> future=
+                OresFuture.from(sidecar.submit(pending));
+        activation.runtime.enqueueOnCompletion(future,target,(receipt,failure)->{
+            assertBoundTurn(activation);
+            continuation.accept(receipt,failure);
+        });
+    }
+
     public static OresFuture<Result> submitOwnedSnapshot(
             Activation activation, BatchPersistenceSidecar sidecar,
             String operationId, long expectedVersion, int schemaVersion, byte[] ownedBytes) {
