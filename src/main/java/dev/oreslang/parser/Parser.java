@@ -22,6 +22,9 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // Only a neuron actor's own methods may parse sealed handle_state loans.
+    // This is AST admission, NOT runtime authority or borrow-checked lowering.
+    private boolean parsingNeuronActor;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
             new java.util.ArrayDeque<>();
@@ -1080,6 +1083,8 @@ public final class Parser {
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
+        boolean previousNeuronActorContext = parsingNeuronActor;
+        parsingNeuronActor = prefix.role() == Ast.ActorRole.NEURON;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.FieldDecl> stateFields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
@@ -1272,6 +1277,7 @@ public final class Parser {
         }
         if (prefix.role() == Ast.ActorRole.NEURON && !seenState)
             throw error(previous(), "neuron actor requires exactly one state { ... } container");
+        parsingNeuronActor = previousNeuronActorContext;
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency,
@@ -4800,6 +4806,8 @@ public final class Parser {
         Ast.Expr expr = parsePrimary();
         while (true) {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+                if (parsingNeuronActor && isNeuronStateHandleCall(expr))
+                    throw error(peek(), "neuron handle_state cannot have type arguments");
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 rejectUnsupportedActorFactory(expr);
@@ -4808,7 +4816,10 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.Expr> args =
+                        parsingNeuronActor && isNeuronStateHandleCall(expr)
+                                ? parseNeuronStateCriticalArguments()
+                                : parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
@@ -4826,6 +4837,42 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private static boolean isNeuronStateHandleCall(Ast.Expr callee) {
+        return callee instanceof Ast.MemberExpr member
+                && member.member().equals("handle_state")
+                && member.receiver() instanceof Ast.NameExpr owner
+                && owner.name().equals("self");
+    }
+
+    /**
+     * Contextual read/write loan syntax, retained as an opaque, unforgeable
+     * runtime marker instead of pretending the hyphen means subtraction.
+     * TypeChecker still denies the entire neuron actor until the borrow
+     * checker and actor-owned state lowering prove the critical scope.
+     */
+    private List<Ast.Expr> parseNeuronStateCriticalArguments() {
+        consumeContextualIdentifier("critical",
+                "neuron handle_state requires critical-read or critical-write");
+        consume(MINUS, "expected '-' in critical-read / critical-write");
+        Token modeToken = consume(IDENT, "expected read or write in neuron critical loan");
+        String mode = modeToken.lexeme();
+        if (!mode.equals("read") && !mode.equals("write"))
+            throw error(modeToken, "neuron critical loan must be read or write");
+        if (!check(PIPE))
+            throw error(peek(), "neuron handle_state requires a |state| -> lambda");
+        Ast.LambdaExpr scope = parsePipeLambda(false);
+        if (scope.parameters().size() != 1
+                || scope.parameters().getFirst().name().equals("_")
+                || !scope.parameters().getFirst().type().inferArguments()
+                || scope.parameters().getFirst().mutable()) {
+            throw error(previous(), "neuron critical loan requires one inferred, "
+                    + "non-mut binding |s| for the state view");
+        }
+        if (check(COMMA))
+            throw error(peek(), "neuron handle_state takes exactly one critical loan");
+        return List.of(new Ast.RuntimeCallExpr("$neuron.critical." + mode, List.of(scope)));
     }
 
     /**
