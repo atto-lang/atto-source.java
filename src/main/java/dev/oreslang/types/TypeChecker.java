@@ -830,6 +830,22 @@ public final class TypeChecker {
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
+        if (iface.actorContract()) {
+            if (!iface.genericParameters().isEmpty() || !iface.parents().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor contract '" + iface.name()
+                                + "' cannot use generics or inheritance without static witness lowering");
+            }
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl fn)
+                        || fn.structural() || !fn.genericParameters().isEmpty()
+                        || !fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name()
+                                    + "' accepts only non-generic mtd signatures");
+                }
+            }
+        }
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
         Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
@@ -1921,7 +1937,11 @@ public final class TypeChecker {
             }
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.moduleContract()) throw new IllegalArgumentException("module/namespace contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.actorContract() && klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor contract '" + iface.name() + "' can only be implemented by actors");
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
