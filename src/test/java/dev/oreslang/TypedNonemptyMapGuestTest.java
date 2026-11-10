@@ -85,6 +85,19 @@ final class TypedNonemptyMapGuestTest {
     }
 
     @Test
+    void actorCallableCannotCarryMutableTypedMapWithoutSendProof() {
+        String program = """
+                define actor Worker as
+                    pub receive(Map<string,int> payload): void { return; }
+                end
+                """;
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(rejected.getMessage().contains("Map"), rejected.getMessage());
+    }
+
+    @Test
     void noUnverifiedHostMapMemberAccess() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(

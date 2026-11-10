@@ -6295,7 +6295,8 @@ public final class TypeChecker {
                 || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
                 || named.name().equals("DynamicSelectPlan")
                 || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")
+                || named.name().equals("Map")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
