@@ -120,6 +120,67 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
     }
 
     @Test
+    void testOnlyPhysicalOracleRebuildsNestedTreeTopDown()
+            throws Exception {
+        // The verifier is synthetic: proves epoch mechanics, NOT FFI cleanup.
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> true);
+            ActorRuntime.ActorRef<String> oldS = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        if ("crash".equals(message)) throw new IllegalStateException("S");
+                    });
+            ActorRuntime.ActorRef<String> oldT = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            ActorRuntime.ActorRef<String> oldA = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long oldSId = recovery.attach(oldS, null);
+            long oldTId = recovery.attach(oldT, oldS);
+            long oldAId = recovery.attach(oldA, oldT);
+            oldS.getReady().get(5, TimeUnit.SECONDS);
+            oldT.getReady().get(5, TimeUnit.SECONDS);
+            oldA.getReady().get(5, TimeUnit.SECONDS);
+            oldS.send("crash");
+            assertThrows(ExecutionException.class,
+                    () -> oldS.done().get(5, TimeUnit.SECONDS));
+            assertTrue(oldT.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(oldA.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(oldSId), () -> { }));
+
+            ActorRuntime.ActorRef<String> newS = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long newSId = recovery.attachReplacement(
+                    recovery.reserveRestart(oldSId), newS, null);
+            assertNotEquals(oldSId, newSId);
+            ActorRuntime.ActorRef<String> newT = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long newTId = recovery.attachReplacement(
+                    recovery.reserveRestart(oldTId), newT, newS);
+            assertNotEquals(oldTId, newTId);
+            ActorRuntime.ActorRef<String> newA = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long newAId = recovery.attachReplacement(
+                    recovery.reserveRestart(oldAId), newA, newT);
+            assertNotEquals(oldAId, newAId);
+            assertTrue(newS.generation() > oldS.generation());
+            assertTrue(newT.generation() > oldT.generation());
+            assertTrue(newA.generation() > oldA.generation());
+            assertEquals(newSId, bridge.snapshot().get(newTId).parentId());
+            assertEquals(newTId, bridge.snapshot().get(newAId).parentId());
+            newS.getReady().get(5, TimeUnit.SECONDS);
+            newT.getReady().get(5, TimeUnit.SECONDS);
+            newA.getReady().get(5, TimeUnit.SECONDS);
+            newA.send("hello");
+            assertTrue(newA.isAlive());
+            assertFalse(oldA.isAlive());
+            assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.ALREADY_REPLACED,
+                    recovery.restartBlocker(oldAId));
+        }
+    }
+
+    @Test
     void inlineControlExecutorFailsClosedInsteadOfRunningUnderActorLock()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
