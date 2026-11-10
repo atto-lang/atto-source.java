@@ -4365,7 +4365,19 @@ public final class Parser {
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
-            Ast.Expr stage = parsePostfix();
+            // A bare lambda stage uses the existing lambda AST. Parse its
+            // expression body below pipeline precedence so the next top-level
+            // |> starts the NEXT stage, not part of this lambda body.
+            // Parentheses allow a nested pipeline in the lambda expression.
+            Ast.Expr stage;
+            if (check(PIPE)) {
+                stage = parsePipeLambda(false, true);
+            } else if (check(NLEX) && checkNext(PIPE)) {
+                advance();
+                stage = parsePipeLambda(true, true);
+            } else {
+                stage = parsePostfix();
+            }
             if (actorPipe) {
                 value = new Ast.BinaryExpr("pipe", value, stage);
             } else if (stage instanceof Ast.CallExpr call) {
@@ -5127,6 +5139,10 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
+        return parsePipeLambda(nonLexical, false);
+    }
+
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean inlinePipelineStage) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -5150,10 +5166,15 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, inlinePipelineStage);
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+        return parseLambdaBody(params, nonLexical, false);
+    }
+
+    private Ast.LambdaExpr parseLambdaBody(
+            List<Ast.Param> params, boolean nonLexical, boolean inlinePipelineStage) {
         // Immediate '{' denotes an inferred block. Preserve expression-bodied
         // lambdas, while recognizing an explicitly typed *braced* block:
         //   || -> void { cleanup(); }
@@ -5187,7 +5208,13 @@ public final class Parser {
             throw error(peek(), "explicit lambda result type requires a braced body");
         }
         current = start;
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        // The lambda's body is an ordinary value expression. However when it
+        // appears unparenthesized immediately after |>, a following top-level
+        // |> belongs to the enclosing pipeline. Group (x |> inner) explicitly
+        // to request a nested pipeline inside the lambda.
+        return new Ast.LambdaExpr(
+                params, inlinePipelineStage ? parseConditional() : parseExpression(),
+                null, nonLexical);
     }
 
     private static boolean isBareScalarReturnType(String name) {
