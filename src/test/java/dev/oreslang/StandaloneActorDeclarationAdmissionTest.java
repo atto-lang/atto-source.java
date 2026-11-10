@@ -238,7 +238,7 @@ final class StandaloneActorDeclarationAdmissionTest {
     }
 
     @Test
-    void LegacyCanonicalClassConstructorStillHasNoStandaloneBinding() {
+    void legacyCanonicalClassConstructorStillHasNoStandaloneBinding() {
         var actor = new Ast.ClassDecl(
                 "Legacy", Ast.Visibility.PUBLIC, false, Ast.ActorKind.PRIVATE,
                 java.util.List.of(), java.util.List.of(), java.util.List.of(),
