@@ -173,6 +173,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         synchronized (monitor) {
             if (logical.slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slots.get(logical.slot.identity) != logical.slot)
+                throw new IllegalStateException("discarded virtual actor logical reference");
             return snapshot(logical.slot);
         }
     }
@@ -189,8 +191,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Slot slot = logical.slot;
             if (slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
-            if (slot.active || slot.published || slot.outstanding != 0)
-                throw new IllegalStateException("cannot discard an activated virtual actor identity");
+            if (slot.active || slot.published || slot.outstanding != 0 || slot.incarnation != 0)
+                throw new IllegalStateException("cannot discard a previously activated virtual actor identity");
             if (slots.get(slot.identity) == slot) {
                 advanceRevision();
                 slots.remove(slot.identity, slot);
@@ -266,6 +268,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Slot slot = logical.slot;
             if (slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slots.get(slot.identity) != slot)
+                throw new IllegalStateException("discarded virtual actor logical reference");
             boolean initializer = !slot.active;
             if (initializer && generationSupplier == null && nextIncarnation == Long.MAX_VALUE)
                 throw new IllegalStateException("virtual actor incarnation budget exhausted");
@@ -389,6 +393,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         synchronized (monitor) {
             if (logical.slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slots.get(logical.slot.identity) != logical.slot)
+                throw new IllegalStateException("discarded virtual actor logical reference");
             return logical.slot.outstanding;
         }
     }
