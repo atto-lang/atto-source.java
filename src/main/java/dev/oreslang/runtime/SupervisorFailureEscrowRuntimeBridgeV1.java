@@ -135,6 +135,12 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         return ledger.dataInFlightInSubtree(id);
     }
 
+    /** Detached diagnostic count, not proof of physically processed DATA. */
+    SupervisorFailureEscrowV1.DataAdmissionStatus dataAdmissionStatus(long id) {
+        runtime.requireSupervisorShutdownAuthority("inspect DATA admission trace counters");
+        return ledger.dataAdmissionStatus(id);
+    }
+
     SupervisorFailureEscrowV1.Delivery deliver(long id) {
         runtime.requireSupervisorShutdownAuthority("inspect supervisor failure CONTROL");
         return ledger.deliver(id);
