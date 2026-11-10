@@ -224,6 +224,43 @@ final class StandaloneActorDeclarationAdmissionTest {
     }
 
     @Test
+    void compactActorAndExpandedActorHaveIdenticalPublicInterfaceAbi() {
+        var header = new ExportInterfaceCodec.Header(
+                "", "test-compiler", "test-abi", "safe");
+        var compact = ExportInterfaceCollector.collect(
+                Parser.parse("pub define actor Cart;"), header);
+        var expanded = ExportInterfaceCollector.collect(Parser.parse("""
+                pub define actor Cart as
+                end
+                """), header);
+        assertEquals(expanded.sha256(), compact.sha256(),
+                "empty actor sugar must not change exported ABI");
+    }
+
+    @Test
+    void LegacyCanonicalClassConstructorStillHasNoStandaloneBinding() {
+        var actor = new Ast.ClassDecl(
+                "Legacy", Ast.Visibility.PUBLIC, false, Ast.ActorKind.PRIVATE,
+                java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), null, java.util.List.of(),
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC));
+        assertNull(actor.standaloneBinding(),
+                "old compiler/backend AST construction must retain semantics");
+    }
+
+    @Test
+    void OrdinaryClassCannotAcquireStandaloneActorBindingThroughAst() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new Ast.ClassDecl(
+                        "NotAnActor", Ast.Visibility.PUBLIC, false, Ast.ActorKind.NONE,
+                        java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                        java.util.List.of(), null, java.util.List.of(),
+                        Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC),
+                        "handle"));
+        assertTrue(error.getMessage().contains("standalone actor binding"));
+    }
+
+    @Test
     void compactActorDoesNotCreateASpuriousBinding() {
         var klass = actor("pub define actor Cart;", "Cart");
         assertNull(klass.standaloneBinding());
