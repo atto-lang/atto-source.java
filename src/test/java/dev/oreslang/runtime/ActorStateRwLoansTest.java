@@ -465,4 +465,120 @@ final class ActorStateRwLoansTest {
                 "publisher drains to zero and must notify exactly once");
     }
 
+
+    @Test
+    void stopWaitsForQueuedFutureHostNotificationDrain() throws Exception {
+        var retirementWakeups = new AtomicInteger();
+        var loans = new ActorStateRwLoans(OWNER, 2, 1,
+                retirementWakeups::incrementAndGet);
+        var held = loans.acquireWriteAsync(actor(8501, 251, 1)).join();
+        var queued = loans.acquireReadAsync(actor(8502, 252, 1));
+        var notificationEntered = new CountDownLatch(1);
+        var allowNotificationExit = new CountDownLatch(1);
+        var closerFailure = new AtomicReference<Throwable>();
+        var callbackFailure = new AtomicReference<Throwable>();
+
+        queued.whenCompleteRuntime((ignored, failure) -> {
+            notificationEntered.countDown();
+            try {
+                if (!allowNotificationExit.await(5, TimeUnit.SECONDS)) {
+                    callbackFailure.set(new AssertionError("host notification timed out"));
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                callbackFailure.set(e);
+            }
+        });
+        var closer = Thread.ofPlatform().start(() -> {
+            try {
+                loans.close();
+            } catch (Throwable failure) {
+                closerFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(notificationEntered.await(5, TimeUnit.SECONDS),
+                    "STOP should deliver a terminal notification to queued host listener");
+            assertTrue(queued.isCompletedExceptionally());
+            held.close();
+            assertFalse(loans.physicallyRetired(),
+                    "reclamation must wait for terminal Future callbacks to return");
+            assertEquals(0, retirementWakeups.get());
+        } finally {
+            allowNotificationExit.countDown();
+            closer.join(5000);
+        }
+        assertFalse(closer.isAlive());
+        assertNull(callbackFailure.get());
+        assertNull(closerFailure.get());
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, retirementWakeups.get());
+    }
+
+    @Test
+    void cancelledPendingFutureCannotMakeStopPhysicallyRetireEarly() throws Exception {
+        var retirementWakeups = new AtomicInteger();
+        var loans = new ActorStateRwLoans(OWNER, 2, 1,
+                retirementWakeups::incrementAndGet);
+        var held = loans.acquireWriteAsync(actor(8601, 261, 1)).join();
+        var queued = loans.acquireReadAsync(actor(8602, 262, 1));
+        var cancellationCallbackEntered = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        var cancellationFailure = new AtomicReference<Throwable>();
+        var callbackFailure = new AtomicReference<Throwable>();
+        var cancellationWon = new AtomicBoolean();
+        queued.whenCompleteRuntime((ignored, failure) -> {
+            cancellationCallbackEntered.countDown();
+            try {
+                if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                    callbackFailure.set(new AssertionError("cancel callback timed out"));
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                callbackFailure.set(e);
+            }
+        });
+        var canceller = Thread.ofPlatform().start(() -> {
+            try {
+                cancellationWon.set(queued.cancel(false));
+            } catch (Throwable failure) {
+                cancellationFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(cancellationCallbackEntered.await(5, TimeUnit.SECONDS));
+            loans.close();
+            held.close();
+            assertFalse(loans.physicallyRetired(),
+                    "cancelled Future is removed from queue but notifications remain live");
+            assertEquals(0, retirementWakeups.get());
+        } finally {
+            releaseCallback.countDown();
+            canceller.join(5000);
+        }
+        assertFalse(canceller.isAlive());
+        assertTrue(cancellationWon.get());
+        assertNull(cancellationFailure.get());
+        assertNull(callbackFailure.get());
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, retirementWakeups.get());
+    }
+
+    @Test
+    void pendingCapacityHasFiniteRuntimeCeiling() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(OWNER, 8193, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(OWNER, Integer.MAX_VALUE, 1));
+
+        try (var loans = new ActorStateRwLoans(OWNER, 0, 1)) {
+            var held = loans.acquireWriteAsync(actor(8701, 271, 1)).join();
+            assertTrue(loans.acquireReadAsync(actor(8702, 272, 1))
+                    .isCompletedExceptionally(),
+                    "zero pending capacity must reject a contending reader");
+            held.close();
+            loans.acquireReadAsync(actor(8703, 273, 1)).join().close();
+        }
+    }
+
 }
