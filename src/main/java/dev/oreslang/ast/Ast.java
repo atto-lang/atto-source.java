@@ -735,7 +735,21 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
+
+    /** Compile-time declaration within a lexical callable/block scope.
+     *  Nominal named structs are not admitted by runtime lowering yet.
+     */
+    public record LocalTypeDeclStmt(String name, TypeRef target, boolean nominal) implements Stmt {
+        public LocalTypeDeclStmt {
+            if (name == null || name.isBlank() || target == null) {
+                throw new IllegalArgumentException("local type declaration needs a name and target");
+            }
+            if (nominal && !target.isStructType()) {
+                throw new IllegalArgumentException("named local struct requires a struct shape");
+            }
+        }
+    }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -832,8 +846,16 @@ public final class Ast {
      * Borrowed captures remain separately gated by compiler-issued scoped
      * READ authority.
      */
-    public record TaskScopeStmt(List<Stmt> body) implements Stmt {
+    /**
+     * {@code task scope [deadline(ms)] [supervise] { ... }}. A deadline cancels
+     * the scope's child tasks when it expires (the scope body itself keeps
+     * running to its exit, then joins). {@code supervise}: a failed child does
+     * not fail the scope; inspect it through its task handle's get_done().
+     */
+    public record TaskScopeStmt(List<Stmt> body, Expr deadlineMillis, boolean supervise)
+            implements Stmt {
         public TaskScopeStmt { body = List.copyOf(body); }
+        public TaskScopeStmt(List<Stmt> body) { this(body, null, false); }
     }
     /**
      * Scoped transport/resource loan syntax. Keeping it as a distinct AST node
@@ -934,7 +956,9 @@ public final class Ast {
         }
     }
 
+    /** errorName == null means {@code try { } finally { }} with no catch. */
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
+        public boolean hasCatch() { return errorName != null; }
         public TryStmt {
             body = List.copyOf(body);
             catchBody = List.copyOf(catchBody);
@@ -1105,7 +1129,31 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
+
+    /** Statically named local aggregate constructor; not a dynamic object allocation.
+     *  Deliberately retained until checked identity/layout and backend lowering exist.
+     */
+    public record LocalAggregateConstructExpr(
+            String typeName, List<Expr> positionalArguments,
+            List<ObjectField> namedArguments) implements Expr {
+        public LocalAggregateConstructExpr {
+            if (typeName == null || typeName.isBlank()) {
+                throw new IllegalArgumentException("aggregate constructor needs a named type");
+            }
+            positionalArguments = List.copyOf(positionalArguments);
+            namedArguments = List.copyOf(namedArguments);
+            if (!positionalArguments.isEmpty() && !namedArguments.isEmpty()) {
+                throw new IllegalArgumentException("cannot mix positional and named aggregate fields");
+            }
+            java.util.Set<String> names = new HashSet<>();
+            for (ObjectField field : namedArguments) {
+                if (!names.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
+                }
+            }
+        }
+    }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1116,19 +1164,114 @@ public final class Ast {
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
-     * Expression-form match: each arm returns a value *to this expression*,
-     * never to the surrounding callable. Distinct from procedural MatchStmt.
+     * Expression-form match arm. Source block arms spell their result as
+     * `return value;`, but parsing normalizes that token sequence into this
+     * dedicated value field. Ordinary ReturnStmt is therefore always
+     * FUNCTION_RETURN; MatchValueArm.value is always ARM_RESULT.
      *
-     * The initial compiler admission accepts exactly one explicit return
-     * expression per arm. More complex arm bodies need an explicit local
-     * control-flow representation and must not be silently lowered.
+     * V1 permits lexical prefix statements followed by exactly one terminal
+     * top-level ARM_RESULT. Prefix control flow may not contain ReturnStmt.
      */
-    public record MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+    public record MatchValueArm(
+            Pattern pattern,
+            Expr guard,
+            List<Stmt> prefixStatements,
+            Expr value) {
         public MatchValueArm {
             java.util.Objects.requireNonNull(pattern, "value match pattern");
-            java.util.Objects.requireNonNull(value, "value match return expression");
+            prefixStatements = List.copyOf(java.util.Objects.requireNonNull(
+                    prefixStatements, "value match prefix"));
+            java.util.Objects.requireNonNull(value, "value match ARM_RESULT");
+            for (Stmt statement : prefixStatements) {
+                if (valueArmPrefixContainsReturn(statement)) {
+                    throw new IllegalArgumentException(
+                            "value match arm v1 permits only its dedicated terminal ARM_RESULT");
+                }
+            }
+        }
+
+        /** Compatibility constructor for expression arms. */
+        public MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+            this(pattern, guard, List.of(), value);
+        }
+
+        /**
+         * Runtime/checker lowering helper. The synthetic ReturnStmt is created
+         * only after the AST has already typed the destination as ARM_RESULT.
+         * Consumers must catch it at the value-arm boundary.
+         */
+        public List<Stmt> loweringBody() {
+            java.util.ArrayList<Stmt> lowered = new java.util.ArrayList<>(prefixStatements);
+            lowered.add(new ReturnStmt(value));
+            return List.copyOf(lowered);
         }
     }
+
+    /**
+     * ARM_RESULT prefix scanning deliberately walks statement control flow but
+     * not expressions. Returns inside nested lambdas/tasks/value-dispatch
+     * expressions belong to their own control-flow domain.
+     */
+    private static boolean valueArmPrefixContainsReturn(Stmt statement) {
+        if (statement instanceof ReturnStmt) return true;
+        if (statement instanceof BlockStmt block) {
+            return block.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TaskScopeStmt scope) {
+            return scope.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof UsingBorrowStmt loan) {
+            return loan.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof IfStmt conditional) {
+            return conditional.branches().stream()
+                            .anyMatch(branch -> branch.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || conditional.elseBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof MatchStmt matched) {
+            return matched.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        if (statement instanceof SwitchStmt switched) {
+            return switched.cases().stream()
+                            .anyMatch(arm -> arm.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || switched.defaultBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TryStmt attempted) {
+            return attempted.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.catchBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.finallyBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfDestructureStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForStmt loop) {
+            return (loop.initializer() != null
+                            && valueArmPrefixContainsReturn(loop.initializer()))
+                    || loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof DoWhileStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof LoopStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof SelectStmt selected) {
+            return selected.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        return false;
+    }
+
     public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
         public MatchExpr {
             java.util.Objects.requireNonNull(subject, "value match subject");
@@ -1891,13 +2034,27 @@ public final class Ast {
      * <p>The field name is part of the compile-time struct shape. Runtime or
      * computed field names are intentionally not representable in the AST.</p>
      */
-    public record ObjectField(String name, Expr value) {
+    public record ObjectField(String name, Expr value, boolean spread) {
         public ObjectField {
-            requireStaticFieldName(name);
+            if (spread) {
+                if (name != null) {
+                    throw new IllegalArgumentException("aggregate spread must not carry a field name");
+                }
+            } else {
+                requireStaticFieldName(name);
+            }
             java.util.Objects.requireNonNull(value, "value");
         }
+        /** Preserve the named-field AST builder for existing source and tests. */
+        public ObjectField(String name, Expr value) {
+            this(name, value, false);
+        }
         public static ObjectField named(String name, Expr value) {
-            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value);
+            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value, false);
+        }
+        /** Statically checked aggregate spread operand; not call-argument spread. */
+        public static ObjectField spreading(Expr value) {
+            return new ObjectField(null, value, true);
         }
     }
 
@@ -1943,7 +2100,7 @@ public final class Ast {
             // construction, not merely during parser/type-checker traversal.
             java.util.Set<String> fieldNames = new java.util.HashSet<>();
             for (ObjectField field : fields) {
-                if (!fieldNames.add(field.name())) {
+                if (!field.spread() && !fieldNames.add(field.name())) {
                     throw new IllegalArgumentException("duplicate struct field '" + field.name() + "'");
                 }
             }
@@ -1984,7 +2141,8 @@ public final class Ast {
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
+    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                             boolean nonLexical, TypeRef declaredReturnType) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
@@ -1992,9 +2150,17 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
+            if (declaredReturnType != null && blockBody == null) {
+                throw new IllegalArgumentException(
+                        "explicit lambda return types require a braced block body");
+            }
+        }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                          boolean nonLexical) {
+            this(parameters, expressionBody, blockBody, nonLexical, null);
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
-            this(parameters, expressionBody, blockBody, false);
+            this(parameters, expressionBody, blockBody, false, null);
         }
     }
 }

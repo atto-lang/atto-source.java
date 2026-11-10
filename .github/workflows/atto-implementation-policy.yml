@@ -1,0 +1,70 @@
+name: AttoLang-first implementation review
+
+# The policy cannot be enforced by a workflow definition supplied by the PR
+# it is supposed to inspect. pull_request_target runs reviewed base YAML only.
+# NEVER check out or execute PR-head source in this workflow.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atto-first-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  atto-first:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed base only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          # Needed to fetch the PR ref from this private source repository.
+          # No scripts or actions from that ref are executed.
+          persist-credentials: true
+      - name: Fetch PR Git objects as data, never execute PR code
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ && "$EXPECTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          git diff --quiet --exit-code
+          # Fetch the target repository's GitHub-owned pull ref, not any
+          # user-supplied remote URL or arbitrary branch expression.
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          git cat-file -e "${EXPECTED_BASE}^{commit}"
+          git cat-file -e "${EXPECTED_HEAD}^{commit}"
+          git merge-base "$EXPECTED_BASE" "$EXPECTED_HEAD" >/dev/null
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          echo "ATTO_POLICY_TRUSTED_BASE=$EXPECTED_BASE"
+          echo "ATTO_POLICY_PR_HEAD_DATA=$EXPECTED_HEAD"
+      - name: Check source placement using only reviewed base code
+        shell: bash
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: |
+          set -euo pipefail
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/atto-pr-body.txt"
+          # Both shell scripts are loaded from the immutable base checkout.
+          # Never use git show HEAD_OF_PR:<path>, and never source PR files.
+          test "$(git rev-parse HEAD)" = "$PR_BASE"
+          test -f scripts/check_atto_first_policy.sh
+          test -f tests/test_atto_first_policy.sh
+          bash scripts/check_atto_first_policy.sh "$PR_BASE" "$PR_HEAD" "$RUNNER_TEMP/atto-pr-body.txt" "$PR_CREATED_AT"
+      - name: Source-free policy selftests (reviewed base checkout)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/test_atto_first_policy.sh

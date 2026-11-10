@@ -1,0 +1,144 @@
+{
+  "schema_version": "1.0.0",
+  "status": "SPEC_ONLY",
+  "target": "docs/COPY_POLICIES_V1.md",
+  "note": "Unimplemented future syntax. Do not claim conformance or a successful compiler test until this suite is executed on each exact compiler head.",
+  "backend_status": {
+    "graal": "pending",
+    "llvm": "pending",
+    "net": "pending",
+    "wasm": "pending",
+    "js": "pending"
+  },
+  "cases": [
+    {
+      "id": "nocopy.class",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "nocopy.field",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "nocopy.transitive",
+      "outcome": "reject",
+      "code": "E_COPY_TRANSITIVE"
+    },
+    {
+      "id": "nocopy.field.borrow",
+      "outcome": "accept"
+    },
+    {
+      "id": "nocopy.instance.copy",
+      "outcome": "reject",
+      "code": "E_COPY_INSTANCE"
+    },
+    {
+      "id": "nocopy.instance.take",
+      "outcome": "accept"
+    },
+    {
+      "id": "nocopy.instance.escape",
+      "outcome": "reject",
+      "code": "E_COPY_SEAL_ESCAPE"
+    },
+    {
+      "id": "nocopy.instance.alias",
+      "outcome": "reject",
+      "code": "E_COPY_SEAL_ESCAPE"
+    },
+    {
+      "id": "singleton.copy",
+      "outcome": "reject",
+      "code": "E_SINGLETON_COPY"
+    },
+    {
+      "id": "singleton.take",
+      "outcome": "reject",
+      "code": "E_SINGLETON_IDENTITY"
+    },
+    {
+      "id": "singleton.new",
+      "outcome": "reject",
+      "code": "E_SINGLETON_IDENTITY"
+    },
+    {
+      "id": "singleton.borrow",
+      "outcome": "accept"
+    },
+    {
+      "id": "copyable.unproven",
+      "outcome": "reject",
+      "code": "E_COPY_UNPROVEN"
+    },
+    {
+      "id": "copy.warnoncopy",
+      "outcome": "warn",
+      "code": "W_COPY_DISCOURAGED"
+    },
+    {
+      "id": "copy.conflict",
+      "outcome": "reject",
+      "code": "E_COPY_ANNOTATION"
+    },
+    {
+      "id": "copy.generic.unbound",
+      "outcome": "reject",
+      "code": "E_COPY_UNPROVEN"
+    },
+    {
+      "id": "copy.actor",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "nocopy.class.take.owner",
+      "outcome": "accept"
+    },
+    {
+      "id": "nocopy.field.take.unproven",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "nocopy.field.dynamic_index",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "nocopy.field.cast_copy",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "field.take.unproven",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "copy.conditional.nocopy",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "copy.match.nocopy",
+      "outcome": "reject",
+      "code": "E_COPY_FORBIDDEN"
+    },
+    {
+      "id": "take.conditional.partial",
+      "outcome": "reject",
+      "code": "E_MOVE_UNPROVEN"
+    },
+    {
+      "id": "field.ordinary.alias",
+      "outcome": "accept"
+    },
+    {
+      "id": "field.move-only.borrow",
+      "outcome": "accept"
+    }
+  ]
+}

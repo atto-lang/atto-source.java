@@ -1,0 +1,40 @@
+name: Oreslang client scalar Java reference guests
+on:
+  pull_request:
+    paths:
+      - 'contracts/clients/scalar-v1/**'
+      - 'src/test/java/dev/oreslang/launcher/ClientScalarV1Test.java'
+      - '.github/workflows/clients-scalar-reference.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-graal-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          echo "SOURCE_HEAD=$EXPECTED"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute SHA-pinned real reference compiler and scalar guest regressions
+        run: mvn -B -ntp -Dtest=ClientScalarV1Test test
+      - name: Explicit reference-only result
+        run: |
+          echo 'This tests GraalVM-hosted reference guests (mode=aot).'
+          echo 'It does not establish Native Image or five-backend parity or full SDK support.'

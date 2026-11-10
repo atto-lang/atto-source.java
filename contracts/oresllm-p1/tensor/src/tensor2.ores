@@ -1,0 +1,68 @@
+// Small, allocation-explicit fixed-shape numerical reference.
+// NOT the N-dimensional tensor allocator, a GPU tensor, or an aliasing view.
+define module tensor2 as
+  pub define class Vector2 as
+    pub val float x0;
+    pub val float x1;
+  end
+
+  pub define class Matrix2 as
+    pub val float m00;
+    pub val float m01;
+    pub val float m10;
+    pub val float m11;
+  end
+
+  pub fnc add_vector(&Vector2 a, &Vector2 b): Vector2 {
+    return new Vector2(a.x0 + b.x0, a.x1 + b.x1);
+  }
+
+  pub fnc dot_vector(&Vector2 a, &Vector2 b): float {
+    return a.x0 * b.x0 + a.x1 * b.x1;
+  }
+
+  pub fnc add_matrix(&Matrix2 a, &Matrix2 b): Matrix2 {
+    return new Matrix2(
+      a.m00 + b.m00, a.m01 + b.m01,
+      a.m10 + b.m10, a.m11 + b.m11
+    );
+  }
+
+  pub fnc transpose(&Matrix2 a): Matrix2 {
+    return new Matrix2(a.m00, a.m10, a.m01, a.m11);
+  }
+
+  pub fnc mul_matrix_vector(&Matrix2 a, &Vector2 x): Vector2 {
+    return new Vector2(
+      a.m00 * x.x0 + a.m01 * x.x1,
+      a.m10 * x.x0 + a.m11 * x.x1
+    );
+  }
+
+  pub fnc mul_matrix(&Matrix2 a, &Matrix2 b): Matrix2 {
+    return new Matrix2(
+      a.m00 * b.m00 + a.m01 * b.m10,
+      a.m00 * b.m01 + a.m01 * b.m11,
+      a.m10 * b.m00 + a.m11 * b.m10,
+      a.m10 * b.m01 + a.m11 * b.m11
+    );
+  }
+
+  pub fnc scale_vector(&Vector2 a, float scale): Vector2 {
+    return new Vector2(a.x0 * scale, a.x1 * scale);
+  }
+
+  pub fnc scale_matrix(&Matrix2 a, float scale): Matrix2 {
+    return new Matrix2(
+      a.m00 * scale, a.m01 * scale,
+      a.m10 * scale, a.m11 * scale
+    );
+  }
+
+  pub fnc outer_product(&Vector2 a, &Vector2 b): Matrix2 {
+    return new Matrix2(
+      a.x0 * b.x0, a.x0 * b.x1,
+      a.x1 * b.x0, a.x1 * b.x1
+    );
+  }
+end

@@ -1,0 +1,10 @@
+// Canonical AttoLang source-extension numerical smoke.
+pub routine main(): void {
+  val float left = 6.0;
+  val float right = 7.0;
+  val float product = left * right;
+  val float sum = 1.5 + 2.5;
+  stdio.stdout.println(product);
+  stdio.stdout.println(sum);
+  return;
+}

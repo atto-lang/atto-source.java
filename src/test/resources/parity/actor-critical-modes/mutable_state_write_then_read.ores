@@ -1,0 +1,29 @@
+// Mutable actor-state scalar: portable Oreslang guest program.
+// The test is valid only when a real backend compiles and executes this source.
+// A runtime host-class test or a syntax-only parser result is not a pass.
+define actor Probe as
+  state { revision: int = 0; }
+  receive(ActorMail<String> mail): void {
+    let String outcome = "mutable-state-container-failed";
+    self.handle_state(critical[write] |s| -> {
+      s.revision = 41;
+      s.revision = s.revision + 1;
+    });
+    self.handle_state(critical[read] |s| -> {
+      if s.revision == 42; do
+        outcome = "mutable-state-container-ok";
+      fi
+    });
+    stdio.stdout.write(outcome);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn Probe();
+  await worker.get_ready();
+  worker.send("tick");
+  await worker.get_done();
+  return;
+}

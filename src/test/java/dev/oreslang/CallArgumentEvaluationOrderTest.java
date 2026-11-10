@@ -29,7 +29,7 @@ final class CallArgumentEvaluationOrderTest {
         var program = Parser.parse(HEAD + """
                 fnc bad(): int {
                   val Cell q = new Cell();
-                  return consume(rt borrow mut q, q.value);
+                  return consume(rt mut borrow q, q.value);
                 }
                 """);
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program),
@@ -41,7 +41,7 @@ final class CallArgumentEvaluationOrderTest {
         var program = Parser.parse(HEAD + """
                 fnc bad(): int {
                   val Cell q = new Cell();
-                  return consume(rt borrow mut q, q.bump());
+                  return consume(rt mut borrow q, q.bump());
                 }
                 """);
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program),
@@ -65,7 +65,7 @@ final class CallArgumentEvaluationOrderTest {
         var program = Parser.parse(HEAD + """
                 fnc good(): int {
                   val Cell q = new Cell();
-                  return consume(rt borrow mut q, 42);
+                  return consume(rt mut borrow q, 42);
                 }
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(program));

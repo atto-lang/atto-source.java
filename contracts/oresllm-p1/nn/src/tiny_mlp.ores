@@ -1,0 +1,55 @@
+// Reference 1->1->1 ReLU network with explicit immutable parameter snapshots.
+// The update uses a single forward-pass snapshot for all gradients.
+define module tiny_mlp as
+  pub define class TinyState as
+    pub val float w0;
+    pub val float b0;
+    pub val float w1;
+    pub val float b1;
+  end
+
+  pub fnc relu(float x): float {
+    if x > 0.0; do
+      return x;
+    fi
+    return 0.0;
+  }
+
+  pub fnc hidden(&TinyState state, float input): float {
+    return relu(state.w0 * input + state.b0);
+  }
+
+  pub fnc predict(&TinyState state, float input): float {
+    return state.w1 * hidden(&state, input) + state.b1;
+  }
+
+  pub fnc squared_loss(&TinyState state, float input, float target): float {
+    val float delta = predict(&state, input) - target;
+    return delta * delta;
+  }
+
+  pub fnc train_step(&TinyState state, float input, float target, float learning_rate): TinyState {
+    // Fail closed on zero, negative, out-of-bound or NaN learning rates.
+    if !(learning_rate > 0.0 && learning_rate <= 1.0); do
+      rt fail("invalid learning rate");
+    fi
+    val float preactivation = state.w0 * input + state.b0;
+    val float activation = relu(preactivation);
+    val float output = state.w1 * activation + state.b1;
+    val float grad_output = 2.0 * (output - target);
+    val float grad_w1 = grad_output * activation;
+    val float grad_b1 = grad_output;
+    let float grad_hidden = 0.0;
+    if preactivation > 0.0; do
+      grad_hidden = grad_output * state.w1;
+    fi
+    val float grad_w0 = grad_hidden * input;
+    val float grad_b0 = grad_hidden;
+    return new TinyState(
+      state.w0 - learning_rate * grad_w0,
+      state.b0 - learning_rate * grad_b0,
+      state.w1 - learning_rate * grad_w1,
+      state.b1 - learning_rate * grad_b1
+    );
+  }
+end

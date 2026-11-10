@@ -38,6 +38,24 @@ final class SharedCodeImageStoreTest {
     }
 
     @Test
+    void codeImageIdentityIsStableUntilStoreRetirementThenRevoked() {
+        Ast.Program parsedOnce = Parser.parse("pub routine main(): void { return; }");
+        SharedCodeImageStore store = new SharedCodeImageStore();
+        SharedCodeImageStore.CodeImage image =
+                store.publish("identity/main.ores", parsedOnce);
+        CodeImageIdentity identity = image.identity();
+
+        assertTrue(identity.runtimeAuthenticated());
+        assertTrue(identity.isActive());
+        assertSame(identity, store.get("identity/main.ores").identity());
+        assertSame(identity, store.publish("identity/main.ores", parsedOnce).identity());
+
+        store.close();
+        assertFalse(identity.isActive(),
+                "closing the code store must revoke its code-image authority");
+    }
+
+    @Test
     void concurrentReadersNeverConstructANewCodeImage() throws Exception {
         Ast.Program parsedOnce = Parser.parse("pub routine main(): void { return; }");
         try (SharedCodeImageStore store = new SharedCodeImageStore()) {
