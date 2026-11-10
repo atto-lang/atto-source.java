@@ -1,0 +1,1 @@
+pub fnc main(): int { const p = (40, 2); return p[0] + p[1]; }

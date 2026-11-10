@@ -1,0 +1,1 @@
+pub fnc main(): int { return match 1 over on 1 -> 42 default -> 0 default -> 0 end; }

@@ -1,0 +1,1 @@
+pub fnc main(): int { const key = "answer"; const Map<String,int> m = ~(key => 41); const r = ~(key: 1); return m["answer"] + r.key; }

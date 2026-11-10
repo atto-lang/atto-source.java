@@ -1,0 +1,1 @@
+pub fnc main(): int { const x = ~record(foo: 1, foo: 2); return 42; }
