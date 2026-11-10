@@ -1,0 +1,9 @@
+define actor Cart as
+  pub get_count(): int {
+    return 0;
+  }
+end
+
+pub fnc foo(ActorRef<Cart> cart): int {
+  return cart.get_count();
+}
