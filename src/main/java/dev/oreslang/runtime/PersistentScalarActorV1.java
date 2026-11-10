@@ -101,14 +101,14 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
         requireActive();
         if (stateVersion == Long.MAX_VALUE)
             throw new IllegalStateException("state version exhausted");
-        long before = state.tryRead().orElseThrow(
-                () -> new IllegalStateException("actor state read unavailable"));
-        // Checked arithmetic MUST precede durable mutation. Overflow cannot
-        // corrupt the snapshot or silently acknowledge a dropped message.
-        long next = Math.addExact(before, delta);
-        var turn = new DurableActorStore.Turn(address, epoch, stateVersion,
-                deliveryId, plan.snapshot(stateVersion + 1, next), List.of());
         try {
+            long before = state.tryRead().orElseThrow(
+                    () -> new IllegalStateException("actor state read unavailable"));
+            // Checked arithmetic MUST precede durable mutation. Overflow leaves
+            // the delivery pending and poisons this activation until recovery.
+            long next = Math.addExact(before, delta);
+            var turn = new DurableActorStore.Turn(address, epoch, stateVersion,
+                    deliveryId, plan.snapshot(stateVersion + 1, next), List.of());
             long committed = storage.commitTurn(turn);
             if (committed != stateVersion + 1)
                 throw new IllegalStateException("store returned invalid committed version");
