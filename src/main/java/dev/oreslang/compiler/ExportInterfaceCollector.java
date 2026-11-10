@@ -81,6 +81,13 @@ public final class ExportInterfaceCollector {
                         } else if (member instanceof Ast.InterfaceActorDecl actor) {
                             field(part, "actor-requirement");
                             field(part, actor.name());
+                        } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                            field(part, "actor-receiver-method-requirement");
+                            field(part, method.actorName());
+                            field(part, method.name());
+                            field(part, method.visibility().name());
+                            params(part, method.parameters());
+                            requiredType(part, method.returnType());
                         } else {
                             throw new IllegalArgumentException("unhandled interface member in export ABI");
                         }
