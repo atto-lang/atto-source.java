@@ -1,0 +1,16 @@
+// Suspension-aware AttoLang value block guest conformance.
+async fnc answer(): int {
+  rt cooperate;
+  return 42;
+}
+
+pub async fnc main(): void {
+  val result: int = true ? {
+    val value = await answer();
+    value
+  } : {
+    stdio.stdout.write("WRONG");
+    0
+  };
+  stdio.stdout.write(result);
+}
