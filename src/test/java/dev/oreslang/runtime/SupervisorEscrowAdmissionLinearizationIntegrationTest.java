@@ -155,6 +155,8 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
             Throwable failure = SPAWN_DENIED.get();
             assertNotNull(failure, "unregistered nested child should be rejected");
             assertTrue(failure.getMessage().contains("atomic CONTROL child registration"));
+            assertEquals(1, runtime.actorCount(),
+                    "nested spawn denial before ActorCell allocation must not leak actor slots");
             assertEquals(0, bridge.pendingCount(),
                     "denial must not falsely report supervisor panic");
             assertTrue(supervisor.isAlive());
