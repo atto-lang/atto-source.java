@@ -176,6 +176,12 @@ public final class TypeChecker {
                                     + "' is parsed with logical identity metadata but requires "
                                     + "fenced activation, scheduler and CONTROL MIR lowering");
                 }
+                if (declaration instanceof Ast.PersistentActorDecl actor) {
+                    throw new IllegalArgumentException(
+                            "PERSISTENT_ACTOR_MIR_UNSUPPORTED: '" + actor.name()
+                                    + "' needs compiler-sealed state loans, durable-before-ack "
+                                    + "turn transactions and fenced activation lowering");
+                }
                 if (declaration instanceof Ast.ClassDecl klass) {
                     rejectUnloweredCheckedClassEffects(klass);
                 }
