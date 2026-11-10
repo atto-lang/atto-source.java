@@ -97,6 +97,25 @@ public final class SingletonSharedDomainHostSmoke {
                 new SingletonSharedDomain.Key("tenant", "module", "Huge"),
                 () -> "x".repeat(8193)).join(), "too long");
 
+        var bounded = new SingletonSharedDomain(2);
+        bounded.snapshotOnce(new SingletonSharedDomain.Key("tenant", "pkg", "A"),
+                () -> 1).join();
+        bounded.snapshotOnce(new SingletonSharedDomain.Key("tenant", "pkg", "B"),
+                () -> 2).join();
+        rejects(() -> bounded.snapshotOnce(
+                new SingletonSharedDomain.Key("tenant", "pkg", "C"), () -> 3).join(),
+                "singleton identity quota exceeded");
+
+        // Caller may complete its own derived future, never the registry cell.
+        var authoritativeKey = new SingletonSharedDomain.Key("tenant", "pkg", "Receipt");
+        var receipt = new SingletonSharedDomain();
+        check(receipt.snapshotOnce(authoritativeKey, () -> 41).join().equals(41),
+                "initial registry value");
+        var derived = receipt.snapshotOnce(authoritativeKey, () -> 99);
+        derived.obtrudeValue(1000);
+        check(receipt.snapshotOnce(authoritativeKey, () -> 99).join().equals(41),
+                "external future obtrusion cannot overwrite canonical value");
+
         var concurrentKey = new SingletonSharedDomain.Key("tenant", "module", "Once");
         var count = new AtomicInteger();
         var pool = Executors.newFixedThreadPool(12);
@@ -144,6 +163,11 @@ public final class SingletonSharedDomainHostSmoke {
         var late = region.acquire(lateP, region.delegateForRuntime(owner, lateP, SingletonSharedDomain.Access.READ));
         check(region.pendingCount() == 2, "writer barrier queue");
         check(!waitingW.isDone() && !late.isDone(), "writer and late reader await");
+        rejects(() -> waitingW.complete(null), "runtime-owned future");
+        rejects(() -> waitingW.completeExceptionally(new IllegalStateException("forged")),
+                "runtime-owned future");
+        rejects(() -> waitingW.obtrudeValue(null), "runtime-owned future");
+        check(!waitingW.isDone(), "forged caller completion never grants a lease");
         rejects(() -> ar.write(a, old -> old), "exclusive");
 
         var overlap = new CountDownLatch(2);
@@ -170,7 +194,7 @@ public final class SingletonSharedDomainHostSmoke {
         ar.release(a);
         check(!waitingW.isDone(), "writer waits for second reader");
         br.release(b);
-        var wl = waitingW.orTimeout(10, TimeUnit.SECONDS).join();
+        var wl = waitingW.copy().orTimeout(10, TimeUnit.SECONDS).join();
         check(region.activeWriters() == 1 && region.activeReaders() == 0,
                 "exclusive logical writer");
         rejects(() -> ar.read(a), "revoked");
@@ -179,7 +203,7 @@ public final class SingletonSharedDomainHostSmoke {
         check(((Map<?, ?>) wl.read(writerP)).get("count").equals(1), "write published");
         check(!late.isDone(), "late reader must not bypass writer");
         wl.release(writerP);
-        var lr = late.orTimeout(10, TimeUnit.SECONDS).join();
+        var lr = late.copy().orTimeout(10, TimeUnit.SECONDS).join();
         check(((Map<?, ?>) lr.read(lateP)).get("count").equals(1),
                 "reader after writer sees committed value");
         lr.release(lateP);
@@ -268,7 +292,7 @@ public final class SingletonSharedDomainHostSmoke {
                 owner, late, SingletonSharedDomain.Access.READ));
         check(!following.isDone(), "writer barrier prevents bypass");
         check(writer.cancel(false), "queued writer cancellation accepted");
-        var second = following.orTimeout(10, TimeUnit.SECONDS).join();
+        var second = following.copy().orTimeout(10, TimeUnit.SECONDS).join();
         check(region.activeReaders() == 2, "later reader joins after writer cancellation");
         second.release(late);
         reader.release(owner);
