@@ -1,0 +1,8 @@
+define actor Cart as
+end
+
+define type CartHandle = ActorRef<Cart>;
+
+pub fnc forge(): CartHandle {
+  return new CartHandle();
+}
