@@ -54,3 +54,27 @@ shape, named generic parameter, or type-alias syntax.
 
 No certification, full-AOT guarantee, or five-backend equivalence follows
 from this source-only branch.
+
+
+## 2026-11-10 parser/postfix and exact-head guest gate
+
+The branch fixes `~array(...)[index]` and `~tuple(...)[index]`
+by routing only adjacent, lexically recognized `~array(` and `~tuple(`
+constructor heads through `parsePrimary` + `parsePostfix`, not the generic
+unary `~` branch. A new positive source/Truffle guest test compares them
+against `Array.of(...)[index]` and `Tuple.of(...)[index]`. Separate negative
+tests protect whitespace-separated unary `~`, `~map<K,V>(...)`, namespace
+shadowing, dynamic spreads, untyped empty Arrays, duplicates and Map bounds.
+
+`CollectionOfFactoryGuestTest` now has **14 authored JUnit methods**;
+the four focused suites contain **37 authored test methods**. The committed
+workflow requires all suites' Surefire XML and zero failures/errors/skips.
+**Authored ≠ executed**: source-org Actions still returns zero-step jobs
+without runners; no guest output, Maven build, compiler or AOT claim is
+certified at this branch head.
+
+This branch is stacked on Java #2732, while #2734 is stacked on #2733.
+The shared `~array()` empty-element-type policy must be reconciled before
+combining them. Symbol-owned factory identity remains a TypeChecker/linked-
+import proof obligation; conservative lexical disambiguation is a preflight,
+not a full semantic resolver.
