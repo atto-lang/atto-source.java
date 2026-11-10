@@ -616,4 +616,32 @@ final class ActorStateRwLoansTest {
         assertEquals(1, retirementWakeups.get());
     }
 
+
+    @Test
+    void nearEpochExhaustionReservesCapacityForAlreadyQueuedRequest() throws Exception {
+        try (var loans = new ActorStateRwLoans(OWNER, 3, 1)) {
+            var held = loans.acquireWriteAsync(actor(9001, 301, 1)).join();
+            // Test-only near-overflow injection under no concurrent callers.
+            // Production code never modifies the monotonic epoch ledger.
+            var nextEpoch = ActorStateRwLoans.class.getDeclaredField("nextEpoch");
+            nextEpoch.setAccessible(true);
+            nextEpoch.setLong(loans, Long.MAX_VALUE - 1);
+
+            var grantedLastEpoch = loans.acquireReadAsync(actor(9002, 302, 1));
+            assertFalse(grantedLastEpoch.isDone());
+            assertTrue(loans.acquireReadAsync(actor(9003, 303, 1))
+                    .isCompletedExceptionally(),
+                    "queue must reserve grant epochs before accepting another waiter");
+            assertEquals(1, loans.pendingCount());
+            held.close();
+
+            var finalLoan = grantedLastEpoch.join();
+            assertEquals(Long.MAX_VALUE, finalLoan.epoch());
+            finalLoan.close();
+            assertTrue(loans.acquireReadAsync(actor(9004, 304, 1))
+                    .isCompletedExceptionally(),
+                    "an exhausted grant epoch must never wrap or resurrect authority");
+        }
+    }
+
 }
