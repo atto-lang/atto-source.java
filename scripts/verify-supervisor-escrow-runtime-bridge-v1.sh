@@ -10,10 +10,10 @@ verify_blob() {
     exit 2
   fi
 }
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java ae70ed809b3c8c4760ed954fce5009cdb4d8057d
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 4580dde144fbc8a00a0fc01836e8c2ed63f0c73f
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 59a7cf70132b58516b81a5192b0cb078025825f0
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 046030137057deb814594f5d0c874563fa3d9818
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java 0760e04d1ccc57828317aebe9416324e08185b34
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java ec5e572336b58415daf2792a93fc3db49ee42b82
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java bb2038f98522d4904632b2c67103ca8891dba169
 
 # The existing dependency-free 554-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
