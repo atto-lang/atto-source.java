@@ -144,7 +144,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                 "default when true -> 42;",
                 "default -> 42; default -> 0;",
                 "default -> 42; on 1 -> 0;",
-                "on default -> 42;",
+                "on default when true -> 42;",
                 "else -> 42;")) {
             String source = "fnc f(int x): int { return match<int> x over "
                     + body + " end; }";
@@ -159,6 +159,22 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                             end
                         }
                         """));
+    }
+
+    @Test
+    void legacyOnDefaultRemainsAnInputAliasOfWildcardFallback() {
+        Ast.FunctionDecl value = function("""
+                fnc f(int x): int {
+                    return match<int> x over
+                        on 1 -> 42
+                        on default -> 0
+                    end;
+                }
+                """);
+        Ast.MatchExpr expression = assertInstanceOf(Ast.MatchExpr.class,
+                ((Ast.ReturnStmt) value.body().getFirst()).value());
+        assertEquals(2, expression.arms().size());
+        assertInstanceOf(Ast.WildcardPattern.class, expression.arms().getLast().pattern());
     }
 
     @Test

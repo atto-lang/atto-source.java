@@ -3929,16 +3929,19 @@ public final class Parser {
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
             boolean defaultArm = false;
             if (canonicalOver) {
-                if (match(DEFAULT)) {
-                    if (seenDefault) throw error(previous(), "duplicate default match arm");
-                    seenDefault = true;
-                    defaultArm = true;
-                } else {
+                defaultArm = match(DEFAULT);
+                if (!defaultArm) {
                     if (seenDefault) throw error(peek(), "default match arm must be last");
                     if (!matchContextualIdentifier("on")) {
                         if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
                         throw error(peek(), "every explicit match arm must start with 'on'");
                     }
+                    // Accept legacy fallback spelling as a final wildcard.
+                    defaultArm = match(DEFAULT);
+                }
+                if (defaultArm) {
+                    if (seenDefault) throw error(previous(), "duplicate default match arm");
+                    seenDefault = true;
                 }
             }
 
@@ -3994,6 +3997,7 @@ public final class Parser {
     private Ast.MatchExpr parseValueMatch() {
         // A single result type is an expression constraint, not the subject type.
         // Preserve the historical <ret=T> spelling while preferring <T>.
+        boolean canonicalFirst = matchContextualIdentifier("first");
         Ast.TypeRef declaredResult = null;
         if (match(LT)) {
             if (check(IDENT) && checkNext(EQUAL)) {
@@ -4007,10 +4011,10 @@ public final class Parser {
             consume(GT, "match result parameter requires exactly one type argument and closing '>'");
         }
 
-        // Historical value-match sources could spell `match<T> first value over`.
-        // MatchExpr is source-ordered already, so retain the marker only as a
-        // compatibility parse surface; it carries no separate runtime mode.
-        matchContextualIdentifier("first");
+        // Selected canonical order: match first<T> subject over ...
+        // Preserve historical match<T> first subject over ... as input.
+        // Both enter the existing ordered MatchExpr path pending disjointness proof.
+        if (!canonicalFirst) matchContextualIdentifier("first");
 
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
@@ -4033,15 +4037,18 @@ public final class Parser {
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
             boolean defaultArm = match(DEFAULT);
-            if (defaultArm) {
-                if (seenDefault) throw error(previous(), "duplicate default match arm");
-                seenDefault = true;
-            } else {
+            if (!defaultArm) {
                 if (seenDefault) throw error(peek(), "default match arm must be last");
                 if (!matchContextualIdentifier("on")) {
                     if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
                     throw error(peek(), "every explicit match arm must start with 'on'");
                 }
+                // Historical 'on default' is an input-only alias of final 'default'.
+                defaultArm = match(DEFAULT);
+            }
+            if (defaultArm) {
+                if (seenDefault) throw error(previous(), "duplicate default match arm");
+                seenDefault = true;
             }
 
             Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
@@ -4111,9 +4118,17 @@ public final class Parser {
             }
 
             Ast.Expr value = parseExpression();
-            // Canonical expression arms are deliberately explicit: a newline
-            // never substitutes for this semicolon.
-            consume(SEMICOLON, "value match expression arm must end with ';'");
+            // Arm delimiters are token-boundary based, never newline-sensitive.
+            // Retain ';' for compatibility, but the canonical over/on/default/end
+            // grammar also allows adjacent arms without redundant punctuation.
+            // Do not let arbitrary expressions substitute for an arm terminator.
+            if (!match(SEMICOLON)
+                    && !check(DEFAULT)
+                    && !check(END)
+                    && !(braced && check(RBRACE))
+                    && !(check(IDENT) && peek().lexeme().equals("on"))) {
+                throw error(peek(), "value match arm requires ';', 'on', 'default' or 'end' boundary");
+            }
             valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
         }
 
