@@ -182,3 +182,41 @@ transfer. Those results verify only synthetic SQLite behavior and
 alternate-runner admission, **not** the exact Java source or compiled
 AttoLang guest. Private source export remains disabled pending
 independent destination-specific approval.
+
+
+### 2026-11-10 adversarial follow-up: direct acknowledgments and recovery
+
+An audit of the **legacy single-event** SQLite path found that a matching
+operation ID/digest alone could previously return a durable duplicate even
+if the corresponding `events` BLOB was deleted or changed. Its
+`SqlitePersistenceStore.commit` duplicate path and
+`verifyDurableCommit` now share a transaction-scoped
+`committedPayloadPresent` check against the **actual** event BLOB/schema
+or active snapshot bytes. A corrupted or compacted-away legacy event
+must never be represented as a verified durable success. Legacy
+`loadFenced` also now verifies each event/snapshot against its original
+`ops` record rather than relying solely on contiguous versions and
+lengths; new tests rewrite same-size payloads and assert fail-closed
+restore.
+
+`SqlitePersistenceStore.commit` also checks the shared
+`command_commits` table when present and refuses a legacy event or
+snapshot reusing a logical command ID. This is symmetric with the atomic
+provider's prohibition on reusing old legacy IDs, including a test
+that tries to reuse a durable logical deposit as a legacy event.
+
+The **atomic command sidecar** no longer invokes arbitrary future
+dependents before releasing admission capacity, and protects against
+a synchronous future callback calling `close()` from its own writer
+thread. A later external `close()` still joins the writer before
+its SQLite Store may be disposed. Tests cover inline callback close,
+second owner close and durable command retention.
+
+`SqlitePersistenceStore.loadFenced` is now intentionally a strictly
+legacy-only verified replay interface; logical multi-event command
+journals must reactivate through the command-aware
+`SqliteCommandTransactionStore.loadVerified` API. This behavior
+is not a transparent migration of historical unverified databases.
+The actual Java/JDBC and guest tests remain NOT_EXECUTED as long as
+source-owned Actions jobs have no executed steps. Keep all related
+PRs in DRAFT and preserve source-export restrictions.
