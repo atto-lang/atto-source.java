@@ -506,7 +506,8 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            List<FieldDecl> stateFields) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             if (actorKind == ActorKind.NONE
@@ -518,6 +519,19 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            stateFields = List.copyOf(stateFields);
+            if (actorConcurrency.role() != ActorRole.NEURON && !stateFields.isEmpty())
+                throw new IllegalArgumentException("only neuron actors may carry a protected state schema");
+        }
+
+        /** Compatibility constructor for existing AST/JIT clients. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, actorConcurrency, List.of());
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
