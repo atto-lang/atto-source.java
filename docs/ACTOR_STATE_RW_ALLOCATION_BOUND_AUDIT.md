@@ -23,13 +23,23 @@ first-caller ownership assignment, not a unique-owner proof.
   `ExecutionContext.AllocationDomain` itself is a value type and not an
   unforgeable capability. The constructor change **does not independently
   authorize source-language sharing with a supervisor**.
-- Add explicit `maxReaders` (1..65,536) separate from `maxPending`.
-  At the cap, new readers queue; `promoteLocked` admits a FIFO prefix up
-  to available reader capacity. An older writer remains a barrier to
+- Add explicit `maxReaders` (1..65,536) separate from `maxPending`
+  (now strictly 0..8,192 to prevent an effectively unbounded queued-Future
+  retention budget). At the reader cap, new readers queue; `promoteLocked`
+  admits a FIFO prefix up to capacity. An older writer remains a barrier to
   later readers, including across cancellation.
 - `physicallyRetiredLocked()` also requires the `reserved` authority
   ledger to be empty; no reclaimed actor domain may have a leftover
   reservation even if its other queues look empty.
+- **New P0 physical-retirement race:** removing a queued `OresFuture` from
+  `pending` on STOP or cancellation does not imply its synchronous runtime
+  notifications have returned. A host notification can still be blocked after
+  the Future terminal CAS. Track every queued Future through
+  `whenNotificationsDrainedRuntime`, including already-cancelled requests,
+  and require the `pendingNotificationDrains` counter to reach zero before
+  `physicallyRetired()` or the supervisor retirement wakeup succeeds.
+  The ledger is registered before any future escapes the monitor.
+  These are host-notification receipts, **not** guest compiler proofs.
 - A publication callback failure cannot bypass the retirement wakeup check
   after a physical loan's `close()`: use a `try/finally` boundary.
 - Expose an **observation-only**, generation/region-bound
@@ -47,10 +57,15 @@ first-caller ownership assignment, not a unique-owner proof.
 6. Released-loan observations cannot authorize a reacquired execution.
 7. A publisher already delivering a completion must notify physical retirement
    after the last loan releases and the completion loop drains.
+8. STOP cannot reclaim while a failed queued Future's runtime listener is blocked.
+9. A cancelled queued Future's callback must drain before STOP finalizes even
+   after the cancellation hook removed it from the pending queue.
+10. Extremely large pending queue budgets (8,193 / MAX_VALUE) reject; zero
+    pending capacity remains valid for no-wait configurations.
 
 The 12 original `ActorStateRwLoansTest` cases were updated to construct
 their arbiter with a predefined actor allocation. The resulting file has
-**19 authored JUnit cases, not yet executed** on the exact Java head.
+**22 authored JUnit cases, not yet executed** on the exact Java head.
 
 ## Remaining proof obligations and stop conditions
 
@@ -62,6 +77,10 @@ their arbiter with a predefined actor allocation. The resulting file has
   proof in the compiler.
 - Couple read/write tickets to protected data operations, not a
   `heldBy()` check followed by an unrelated raw access.
+- Bind terminal Future notification receipts to actor STOP and cancellation;
+  the standalone ledger now covers `Pending` futures only. Full supervisor
+  resource/continuation accounting and production `ActorRuntime` integration
+  remain outstanding.
 - Bound release to physical guest-turn unwind; a foreign
   `StateLoan.close()` may not prematurely unlock another execution's
   state. Prove STOP/quiescence and all cleanup, cancellation, and failure
