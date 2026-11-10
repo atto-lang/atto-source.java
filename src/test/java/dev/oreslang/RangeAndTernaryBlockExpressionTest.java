@@ -27,6 +27,15 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void suspendableValueBlockRetainsSelectedArmAndLexicalScope() throws Exception {
+        String source = Files.readString(
+                Path.of("tests", "conformance", "ternary_blocks_ranges_async.atto"),
+                StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("42", run(source));
+    }
+
+    @Test
     void recognizesRangesWithoutChangingArgumentSpread() {
         assertTrue(new Lexer("1..3").scan().stream().anyMatch(t -> t.type() == Token.Type.RANGE_EXCLUSIVE));
         assertTrue(new Lexer("1..=3").scan().stream().anyMatch(t -> t.type() == Token.Type.RANGE_INCLUSIVE));
