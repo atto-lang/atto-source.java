@@ -102,8 +102,15 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
 
     /** Called by ActorRuntime after real actor finalization. */
     void finalizedFromRuntime(long id, boolean failed) {
-        if (failed) ledger.fail(id);
-        else ledger.completeNormally(id);
+        if (failed) {
+            // An on_stop/final-cleanup fault may be the first failure.
+            failedFromRuntime(id);
+        } else {
+            ledger.completeNormally(id);
+            // Even a clean supervisor exit must retire its managed subtree.
+            SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+            if (coordinator != null) coordinator.failedFromRuntime(id);
+        }
     }
 
     /** Host admission guard: must be rechecked at the mailbox commit point. */
