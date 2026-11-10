@@ -9,6 +9,112 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorStateReadWriteLoansTest {
+    @Test void actorOwnedFloatStorageRequiresInitializedFieldsAndLiveWriterLoan() {
+        try (var state = new ActorStateReadWriteLoans(
+                29, 4, java.util.List.of("weight", "bias"))) {
+            Object init = new Object(), inference = new Object();
+            assertEquals(2, state.scalarFieldCount());
+            try (var writer = state.acquireWriteAsync(init, 29).join()) {
+                assertThrows(IllegalStateException.class,
+                        () -> state.readFloat(writer, init, 29, "weight"),
+                        "uninitialized state must not silently be zero");
+                state.writeFloat(writer, init, 29, "weight", 2.0);
+                state.writeFloat(writer, init, 29, "bias", 1.0);
+                assertEquals(2.0, state.readFloat(writer, init, 29, "weight"));
+                assertThrows(IllegalStateException.class,
+                        () -> state.readFloat(writer, inference, 29, "weight"),
+                        "nonowner cannot borrow an existing handler's loan");
+            }
+
+            try (var reader = state.acquireReadAsync(inference, 29).join()) {
+                double weight = state.readFloat(reader, inference, 29, "weight");
+                double bias = state.readFloat(reader, inference, 29, "bias");
+                assertEquals(7.0, weight * 3.0 + bias);
+                assertThrows(IllegalStateException.class,
+                        () -> state.readFloat(reader, inference, 30, "weight"),
+                        "generation mismatch must fence scalar loads");
+                assertThrows(IllegalArgumentException.class,
+                        () -> state.readFloat(reader, inference, 29, "secret"));
+            }
+
+            try (var read = state.acquireReadAsync(inference, 29).join()) {
+                var pendingWrite = state.acquireWriteAsync(new Object(), 29);
+                assertFalse(pendingWrite.isDone());
+                assertEquals(2.0, state.readFloat(read, inference, 29, "weight"));
+                assertTrue(pendingWrite.cancel(false));
+            }
+        }
+    }
+
+    @Test void stateLayoutIsBoundedPrivateAndNeverPublishesArrayAliases() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, java.util.List.of("x", "x")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, java.util.List.of("")));
+        assertThrows(NullPointerException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, null));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorStateReadWriteLoans(1, 1,
+                        java.util.Collections.nCopies(129, "field")));
+
+        try (var first = new ActorStateReadWriteLoans(1, 1, java.util.List.of("w"));
+             var second = new ActorStateReadWriteLoans(1, 1, java.util.List.of("w"))) {
+            Object owner = new Object();
+            var foreign = first.acquireWriteAsync(owner, 1).join();
+            assertThrows(IllegalStateException.class,
+                    () -> second.writeFloat(foreign, owner, 1, "w", 42),
+                    "identical generations do not grant cross-actor authority");
+            first.writeFloat(foreign, owner, 1, "w", 4);
+            foreign.close();
+            assertThrows(IllegalStateException.class,
+                    () -> first.readFloat(foreign, owner, 1, "w"),
+                    "closed writer must not retain its borrowing authority");
+            try (var borrowed = second.acquireWriteAsync(owner, 1).join()) {
+                assertThrows(IllegalStateException.class,
+                        () -> second.readFloat(borrowed, owner, 1, "w"));
+            }
+        }
+    }
+
+    @Test void cancellationOfQueuedWriterUnblocksReadersWhileEarlierReaderLives() {
+        try (var state = new ActorStateReadWriteLoans(3, 3,
+                java.util.List.of("weight"))) {
+            Object oldOwner = new Object(), writeOwner = new Object(), newOwner = new Object();
+            var originalReader = state.acquireReadAsync(oldOwner, 3).join();
+            var queuedWriter = state.acquireWriteAsync(writeOwner, 3);
+            var queuedReader = state.acquireReadAsync(newOwner, 3);
+            assertFalse(queuedReader.isDone());
+            assertTrue(queuedWriter.cancel(false));
+            assertTrue(queuedReader.isDone(),
+                    "cancelled head writer must not strand safe readers until old read closes");
+            var nextReader = queuedReader.join();
+            assertEquals(2, state.activeReaderCount());
+            originalReader.close();
+            nextReader.close();
+            assertEquals(0, state.activeCount());
+        }
+    }
+
+    @Test void retirementFencesStorageAndWaitsForPhysicalLoanReleaseBeforeClear() {
+        var state = new ActorStateReadWriteLoans(41, 2, java.util.List.of("weight"));
+        Object handler = new Object();
+        var writer = state.acquireWriteAsync(handler, 41).join();
+        state.writeFloat(writer, handler, 41, "weight", 2.0);
+        assertFalse(state.tryClearRetiredScalarStorage(), "must be retired first");
+        state.close();
+        assertFalse(state.tryClearRetiredScalarStorage(),
+                "logical cancellation is not physical loan cleanup");
+        assertThrows(IllegalStateException.class,
+                () -> state.readFloat(writer, handler, 41, "weight"));
+        assertThrows(IllegalStateException.class,
+                () -> state.writeFloat(writer, handler, 41, "weight", 99.0));
+        writer.close();
+        assertTrue(state.tryClearRetiredScalarStorage());
+        assertTrue(state.tryClearRetiredScalarStorage(), "reclaim must be idempotent");
+        assertEquals(0, state.activeCount());
+        assertTrue(state.acquireReadAsync(new Object(), 41).isCompletedExceptionally());
+    }
+
     @Test void concurrentReadersAndWaitingWriterHaveStrictFifoAndNoOverlap() {
         try (var loans = new ActorStateReadWriteLoans(17, 4)) {
             Object readerA = new Object(), readerB = new Object();
