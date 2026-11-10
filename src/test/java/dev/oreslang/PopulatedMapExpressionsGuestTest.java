@@ -105,6 +105,41 @@ final class PopulatedMapExpressionsGuestTest {
     }
 
     @Test
+    void failingLaterValueRetainsPriorEffectsButDoesNotPublishMap() {
+        String guest = """
+                fnc first_value(): int {
+                    stdio.println("first-value");
+                    return 1;
+                }
+                fnc failing_value(int divisor): int {
+                    stdio.println("second-value");
+                    return 10 / divisor;
+                }
+                pub fnc main(): void {
+                    const map = ~map<string, int>(
+                        "first" => first_value(),
+                        "second" => failing_value(0)
+                    );
+                    stdio.println("published");
+                    return;
+                }
+                """;
+        checked(guest);
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        Source source = assertDoesNotThrow(() -> Source.newBuilder(
+                OresLanguage.ID, guest, "map-failing-value-guest.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build());
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            assertThrows(PolyglotException.class, () -> context.eval(source));
+        }
+        // Entry evaluations are performed once in source order. The caller
+        // sees their side effects, but never the unpublished partial Map.
+        assertEquals("first-value\\nsecond-value\\n".replace("\\n", "\n"),
+                stdout.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
     void badComputedValueTypeAndBorrowedContainersFailClosed() {
         rejected("""
                 fnc invalid(): bool { return true; }
