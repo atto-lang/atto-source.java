@@ -642,17 +642,24 @@ public final class TypeChecker {
 
         for (Ast.InterfaceMember member : contract.members()) {
             if (member instanceof Ast.InterfaceActorDecl actorRequirement) {
-                boolean present = module.declarations().stream().anyMatch(decl ->
-                        decl instanceof Ast.ClassDecl actor
-                                && actor.name().equals(actorRequirement.name())
-                                && actor.visibility() == Ast.Visibility.PUBLIC
-                                && actor.actorKind() != Ast.ActorKind.NONE
-                                // Stage one has no generic-actor requirement syntax.
-                                // Worker<T> must not silently satisfy actor Worker;.
-                                && actor.genericParameters().isEmpty());
-                if (!present) {
+                Ast.ClassDecl matching = null;
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.ClassDecl klass
+                            && klass.name().equals(actorRequirement.name())) {
+                        matching = klass;
+                        break;
+                    }
+                }
+                if (matching == null || matching.actorKind() == Ast.ActorKind.NONE
+                        || matching.visibility() != Ast.Visibility.PUBLIC) {
                     throw new IllegalArgumentException(
                             "module '" + module.name() + "' is missing required public actor '"
+                                    + contract.name() + "." + actorRequirement.name() + "'");
+                }
+                if (!matching.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' generic actor '" + matching.name()
+                                    + "' cannot satisfy non-generic contract actor requirement '"
                                     + contract.name() + "." + actorRequirement.name() + "'");
                 }
                 continue;
