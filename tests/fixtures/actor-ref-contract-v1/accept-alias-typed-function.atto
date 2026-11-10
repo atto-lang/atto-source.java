@@ -1,0 +1,21 @@
+define actor Cart as
+  receive(ActorMail<int> mail): void {
+    self.end();
+    return;
+  }
+end
+
+define type CartHandle = ActorRef<Cart>;
+
+pub fnc queue_item(CartHandle cart): void {
+  cart.send(1);
+  return;
+}
+
+pub async routine main(): void {
+  val cart = spawn Cart();
+  await cart.get_ready();
+  queue_item(cart);
+  await cart.get_done();
+  return;
+}
