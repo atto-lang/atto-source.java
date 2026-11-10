@@ -225,3 +225,20 @@ test('source-free workflow mutation attempts cannot silently drop gates', () => 
     yaml.replace('  contents: read\n', '  contents: write\n'),
   ]) assert.throws(() => assertSourceFreeCoverage(broken));
 });
+
+
+test('publisher final receipt requires authorization after both ref readbacks', () => {
+  const source = readFileSync(path.join(ROOT,
+    'scripts/publish-private-ci-source-v3.py'), 'utf8');
+  const section = source.slice(source.indexOf(
+    '        # Do not trust create responses alone. Re-read both live refs'));
+  assert.ok(section.length > 0, 'missing final handoff block');
+  const authorizationReadback = section.indexOf(
+    '            repository, authorization, commit_sha, contract["repository_id"]\n'
+    + '        )');
+  const finalGuard = section.indexOf('\n        auth()\n', authorizationReadback);
+  const rollback = section.indexOf('\n    except BaseException as exc:', authorizationReadback);
+  assert.ok(authorizationReadback >= 0 && finalGuard > authorizationReadback
+    && rollback > finalGuard,
+    'revoked authorization must be rejected before successful handoff return');
+});

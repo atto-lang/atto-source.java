@@ -1446,7 +1446,7 @@ class PrivateCiV3Test(unittest.TestCase):
             [call.args for call in verify_source_pr.call_args_list[1:]],
             [(1482, "4" * 40, PROTECTED), (1482, "4" * 40, PROTECTED)],
         )
-        self.assertEqual(authorize_write.call_count, 7)
+        self.assertEqual(authorize_write.call_count, 8)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
@@ -1956,6 +1956,145 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
             ],
         )
+
+
+    def _exercise_synthetic_handoff_fault(self, fault):
+        """Source-free fake GitHub API: never send blobs/refs to any repository."""
+        carrier = contract()
+        state = {
+            "auth_calls": 0, "posts": [], "readbacks": [],
+            "cleanup": [], "result": None, "error": None,
+        }
+
+        def auth(*_args, **_kwargs):
+            state["auth_calls"] += 1
+            if (fault in ("late_revocation", "incomplete_rollback")
+                    and state["auth_calls"] == 8):
+                raise v3.Denied("approval revoked after ref readback")
+
+        def api(route, method="GET", payload=None):
+            if method == "POST" and route.endswith("/git/blobs"):
+                data = base64.b64decode(payload["content"], validate=True)
+                if (fault == "receipt_mismatch"
+                        and b'"schema":"ores-private-ci-receipt-v3"' in data):
+                    return {"sha": "9" * 40}
+                return {"sha": v3.git_blob_sha(data)}
+            if method == "POST" and route.endswith("/git/trees"):
+                return {
+                    "sha": SOURCE_TREE
+                    if payload.get("base_tree") is None else ROOT_TREE
+                }
+            if method == "POST" and route.endswith("/git/commits"):
+                return {"sha": COMMIT}
+            if method == "POST" and route.endswith("/git/refs"):
+                state["posts"].append(payload["ref"])
+                return {
+                    "ref": payload["ref"],
+                    "object": {"sha": payload["sha"]},
+                }
+            raise AssertionError((method, route))
+
+        def readback(*args):
+            state["readbacks"].append(args)
+
+        def cleanup(*args):
+            state["cleanup"].append(args)
+            if (fault == "incomplete_rollback"
+                    and args[1] == "ci/authorized-" + COMMIT):
+                raise v3.Denied("carrier refused authorization ref deletion")
+            return True
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "hello.ores").write_text("synthetic\n")
+            with (
+                patch.object(v3.legacy, "require_preflight"),
+                patch.object(
+                    v3.legacy, "checked_policy_approval",
+                    return_value=(POLICY, carrier["repository_id"]),
+                ),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+                patch.object(v3, "checked_control_plane"),
+                patch.object(v3, "checked_contract", return_value=carrier),
+                patch.object(
+                    v3, "verify_source_pr",
+                    return_value=v3.SOURCE_REPOSITORY_ID,
+                ),
+                patch.object(
+                    v3, "checked_destination",
+                    return_value=(
+                        {
+                            "id": carrier["repository_id"],
+                            "private": True, "visibility": "private",
+                        },
+                        "3" * 40, PLAN,
+                    ),
+                ),
+                patch.object(
+                    v3.legacy, "collect_source",
+                    return_value=[("hello.ores", b"synthetic\n", "100644")],
+                ),
+                patch.object(
+                    v3.legacy, "verified_exact_source_tree",
+                    return_value=SOURCE_TREE,
+                ),
+                patch.object(v3, "authorize_write", side_effect=auth),
+                patch.object(v3, "require_exact_ref", side_effect=readback),
+                patch.object(v3, "delete_exact_ref", side_effect=cleanup),
+                patch.object(v3.legacy, "gh_api", side_effect=api),
+            ):
+                try:
+                    state["result"] = v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                        now=dt.datetime(
+                            2026, 10, 20, tzinfo=dt.timezone.utc,
+                        ),
+                    )
+                except BaseException as exc:
+                    state["error"] = exc
+        return state
+
+    def test_publish_final_ref_readback_revocation_rejects_success(self):
+        state = self._exercise_synthetic_handoff_fault("late_revocation")
+        self.assertIsNone(state["result"], "revoked handoff cannot succeed")
+        self.assertIsInstance(state["error"], v3.Denied)
+        self.assertIn("approval revoked after ref readback", str(state["error"]))
+        self.assertEqual(state["auth_calls"], 8)
+        self.assertEqual(
+            [item[1] for item in state["readbacks"]],
+            [
+                "ci/oreslang-" + SOURCE_TREE,
+                "ci/oreslang-" + SOURCE_TREE,
+                "ci/authorized-" + COMMIT,
+            ],
+        )
+        self.assertEqual(
+            [item[1] for item in state["cleanup"]],
+            ["ci/authorized-" + COMMIT, "ci/oreslang-" + SOURCE_TREE],
+        )
+
+    def test_publish_incomplete_rollback_is_not_a_success_receipt(self):
+        state = self._exercise_synthetic_handoff_fault("incomplete_rollback")
+        self.assertIsNone(state["result"], "partial cleanup cannot succeed")
+        self.assertIsInstance(state["error"], v3.Denied)
+        self.assertIn("rollback was incomplete", str(state["error"]))
+        self.assertEqual(state["auth_calls"], 8)
+        self.assertEqual(
+            [item[1] for item in state["cleanup"]],
+            ["ci/authorized-" + COMMIT, "ci/oreslang-" + SOURCE_TREE],
+            "payload cleanup must still run after authorization cleanup fails",
+        )
+
+    def test_publish_receipt_blob_mismatch_never_creates_executable_refs(self):
+        state = self._exercise_synthetic_handoff_fault("receipt_mismatch")
+        self.assertIsNone(state["result"], "bad receipt cannot succeed")
+        self.assertIsInstance(state["error"], v3.Denied)
+        self.assertIn("uploaded receipt digest mismatch", str(state["error"]))
+        self.assertEqual(state["posts"], [], "bad receipt must not publish refs")
+        self.assertEqual(state["cleanup"], [], "no refs existed to roll back")
 
     def test_ref_request_accepts_exact_authorization_ref_and_uses_get_route(self):
         response = type(

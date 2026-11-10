@@ -1306,6 +1306,11 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
+        # Revocation may land after ref publication and read-back. Do not
+        # return a success receipt if governance has since changed. This is
+        # a final fail-closed recheck, not an atomic GitHub ref transaction;
+        # the carrier must independently validate its execution admission.
+        auth()
     except BaseException as exc:
         # Ref POSTs can succeed server-side before the client observes a
         # response. Cleanup therefore applies to interrupts and unexpected
