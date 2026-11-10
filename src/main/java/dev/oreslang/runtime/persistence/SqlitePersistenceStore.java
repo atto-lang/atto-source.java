@@ -106,6 +106,47 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             throw new IllegalStateException("epoch grant outcome unknown",error);
         }
     }
+    /**
+     * Executed with the caller's SQLite transaction already established.
+     * The original operation row alone cannot prove that the matching
+     * event or active snapshot bytes still exist after corruption/compaction.
+     */
+    private boolean committedPayloadPresent(Write write,long version) throws SQLException {
+        Identity id=write.id();
+        if (write.kind()==Kind.EVENT) {
+            try (PreparedStatement q=db.prepareStatement(
+                    "SELECT schema,length(payload),substr(payload,1,1048577) " +
+                    "FROM events WHERE tenant=? AND actor=? AND slot=? AND version=?")) {
+                bindKey(q,id);q.setLong(4,version);
+                try (ResultSet row=q.executeQuery()) {
+                    if(!row.next())return false;
+                    long size=row.getLong(2);
+                    byte[] persisted=row.getBytes(3);
+                    return row.getInt(1)==write.schemaVersion() &&
+                           size==write.ownedPayload().length &&
+                           persisted!=null &&
+                           Arrays.equals(persisted,write.ownedPayload());
+                }
+            }
+        }
+        try (PreparedStatement q=db.prepareStatement(
+                "SELECT snapshot_version,snapshot_schema,length(snapshot)," +
+                "substr(snapshot,1,1048577) FROM state " +
+                "WHERE tenant=? AND actor=? AND slot=?")) {
+            bindKey(q,id);
+            try (ResultSet row=q.executeQuery()) {
+                if(!row.next())return false;
+                long size=row.getLong(3);
+                byte[] persisted=row.getBytes(4);
+                return row.getLong(1)==version &&
+                       row.getInt(2)==write.schemaVersion() &&
+                       size==write.ownedPayload().length &&
+                       persisted!=null &&
+                       Arrays.equals(persisted,write.ownedPayload());
+            }
+        }
+    }
+
     @Override public synchronized List<Result> commit(List<Write> batch) throws SQLException {
         checkOpen();Objects.requireNonNull(batch);
         List<Result> out=new ArrayList<>(batch.size());
@@ -130,8 +171,11 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                             boolean same=r.getLong(1)==w.epoch()&&r.getLong(2)==w.expectedVersion()&&
                                 r.getInt(3)==kind&&r.getInt(4)==w.schemaVersion()&&
                                 Arrays.equals(r.getBytes(5),w.ownedPayload());
+                            long committedVersion=r.getLong(6);
+                            if(same && !committedPayloadPresent(w,committedVersion))
+                                throw new SQLException("INCOMPLETE_OPERATION_LEDGER");
                             out.add(new Result(w.operationId(),same?Status.DUPLICATE:Status.OP_ID_CONFLICT,
-                                same?r.getLong(6):-1,false));continue;
+                                same?committedVersion:-1,false));continue;
                         }
                     }
                 }
@@ -215,47 +259,7 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             // still contains the original immutable event. Verify the actual
             // event payload, or the active snapshot barrier, in this SAME
             // fenced SQLite read transaction before authorizing publication.
-            if (valid && write.kind() == Kind.EVENT) {
-                try (PreparedStatement q=db.prepareStatement(
-                        "SELECT schema,length(payload),substr(payload,1,1048577) " +
-                        "FROM events WHERE tenant=? AND actor=? AND slot=? AND version=?")) {
-                    bindKey(q,id);
-                    q.setLong(4,receipt.version());
-                    try (ResultSet row=q.executeQuery()) {
-                        if (!row.next()) valid=false;
-                        else {
-                            int schema=row.getInt(1);
-                            long length=row.getLong(2);
-                            byte[] stored=row.getBytes(3);
-                            valid=schema==write.schemaVersion() &&
-                                    length==write.ownedPayload().length &&
-                                    stored!=null &&
-                                    Arrays.equals(stored,write.ownedPayload());
-                        }
-                    }
-                }
-            } else if (valid && write.kind() == Kind.SNAPSHOT) {
-                try (PreparedStatement q=db.prepareStatement(
-                        "SELECT snapshot_version,snapshot_schema,length(snapshot)," +
-                        "substr(snapshot,1,1048577) FROM state " +
-                        "WHERE tenant=? AND actor=? AND slot=?")) {
-                    bindKey(q,id);
-                    try (ResultSet row=q.executeQuery()) {
-                        if (!row.next()) valid=false;
-                        else {
-                            long snapshotVersion=row.getLong(1);
-                            int schema=row.getInt(2);
-                            long length=row.getLong(3);
-                            byte[] stored=row.getBytes(4);
-                            valid=snapshotVersion==receipt.version() &&
-                                    schema==write.schemaVersion() &&
-                                    length==write.ownedPayload().length &&
-                                    stored!=null &&
-                                    Arrays.equals(stored,write.ownedPayload());
-                        }
-                    }
-                }
-            }
+            if(valid)valid=committedPayloadPresent(write,receipt.version());
             commitTransaction();
             return valid;
         } catch (Exception error) {
