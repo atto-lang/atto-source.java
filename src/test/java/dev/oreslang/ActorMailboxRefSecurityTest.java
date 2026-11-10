@@ -73,6 +73,14 @@ final class ActorMailboxRefSecurityTest {
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::drain);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    spoofed::getReady);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    spoofed::getDone);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    spoofed::parentId);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    spoofed::childIds);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::gracefulStop);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::stop);
