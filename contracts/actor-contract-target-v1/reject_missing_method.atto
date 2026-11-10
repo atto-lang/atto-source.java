@@ -1,0 +1,9 @@
+// EXPECT: actor Foo does not implement interface FooContract.
+define contract FooContract for actor as
+  mtd abc(): void;
+  mtd xyz(): void;
+end
+
+pub define actor Foo implements FooContract as
+  pub abc(): void { return; }
+end
