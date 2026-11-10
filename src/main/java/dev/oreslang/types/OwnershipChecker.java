@@ -3505,6 +3505,43 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordFieldPattern fields) {
+            // No bindings or ownership transfers are authorized in this
+            // initial record-field match subset. Prove the source shape
+            // independently of TypeChecker even for programmatic ASTs.
+            if (subjectType == null) {
+                throw error("record field match requires a known readonly source type");
+            }
+            if (subjectType.isReadonlyRecordType()) {
+                for (Ast.RecordFieldTest field : fields.fields()) {
+                    if (!subjectType.recordMembers().containsKey(field.name())) {
+                        throw error("unknown readonly record field pattern '" + field.name() + "'");
+                    }
+                }
+            } else {
+                if (!fields.explicitStructural()) {
+                    throw error("nominal record field patterns require 'structural'");
+                }
+                Ast.ClassDecl klass = findClass(subjectType.name());
+                if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw error("record field pattern cannot inspect actor state, host values or unknown nominal types");
+                }
+                for (Ast.RecordFieldTest field : fields.fields()) {
+                    ResolvedField target = findFieldTarget(
+                            klass, subjectType, field.name(), new LinkedHashSet<>());
+                    if (target == null || target.field().visibility() != Ast.Visibility.PUBLIC) {
+                        throw error("structural field pattern requires visible public field '" + field.name() + "'");
+                    }
+                }
+            }
+            for (Ast.RecordFieldTest field : fields.fields()) {
+                if (!(field.test() instanceof Ast.LiteralPattern)
+                        && !(field.test() instanceof Ast.WildcardPattern)) {
+                    throw error("record field pattern cannot bind/move borrowed field values");
+                }
+            }
+            return;
+        }
         if (pattern instanceof Ast.StructuralPattern structural) {
             if (structural.binding() != null) {
                 defineRefinementAlias(structural.binding(), structural.target(), source, destination);

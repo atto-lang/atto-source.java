@@ -9939,6 +9939,25 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
+            if (pattern instanceof Ast.RecordFieldPattern fields) {
+                // Never use host Map/reflective dictionaries as an implicit
+                // record view. ReadonlyRecordValue is compiler constructed;
+                // OresObject accesses are restricted to visible public fields
+                // of ordinary non-actor classes.
+                boolean readonly = value instanceof ReadonlyRecordValue;
+                boolean approvedClass = fields.explicitStructural()
+                        && value instanceof OresObject object
+                        && object.klass.actorKind() == Ast.ActorKind.NONE;
+                if (!readonly && !approvedClass) return false;
+                for (Ast.RecordFieldTest field : fields.fields()) {
+                    Object projection = publicStructuralMember(value, field.name());
+                    if (projection == Env.MISSING
+                            || !patternMatches(field.test(), projection, bindings)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
             if (pattern instanceof Ast.StructuralPattern structural) {
                 if (!structuralPatternMatches(value, structural.target())) return false;
                 if (structural.binding() != null) {

@@ -3989,10 +3989,9 @@ public final class Parser {
                     : "match requires at least one arm");
         }
 
-        // Canonical match is source-ordered. Legacy bare match retains the
-        // old exclusivity/proof semantics unless explicitly written
-        // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, procedural);
+        // Canonical match must pass overlap proofs. Only the explicit
+        // contextual 'first' marker authorizes source-order priority.
+        return new Ast.MatchStmt(subject, legacyFirst, arms, procedural);
     }
 
     /**
@@ -4016,10 +4015,9 @@ public final class Parser {
             consume(GT, "match result parameter requires exactly one type argument and closing '>'");
         }
 
-        // Historical value-match sources could spell `match<T> first value over`.
-        // MatchExpr is source-ordered already, so retain the marker only as a
-        // compatibility parse surface; it carries no separate runtime mode.
-        matchContextualIdentifier("first");
+        // Retain the explicit priority marker for the checker. Ordinary
+        // value match is proof-checked; runtime still evaluates arms in order.
+        boolean orderedFirst = matchContextualIdentifier("first");
 
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
@@ -4140,7 +4138,7 @@ public final class Parser {
         if (valueArms.isEmpty()) {
             throw error(previous(), "value match requires at least one 'on' arm");
         }
-        return new Ast.MatchExpr(subject, valueArms, declaredResult);
+        return new Ast.MatchExpr(subject, valueArms, declaredResult, orderedFirst);
     }
 
     /**
@@ -4201,6 +4199,32 @@ public final class Parser {
         return false;
     }
 
+    /** Narrow field-pattern syntax; no dynamic keys, spreads, nested matches or bindings. */
+    private Ast.Pattern parseReadonlyFieldPattern(boolean explicitStructural) {
+        consume(LPAREN, "record pattern requires '~(field: literal)'");
+        if (check(RPAREN)) throw error(peek(), "record field pattern cannot be empty");
+        List<Ast.RecordFieldTest> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        do {
+            if (check(ELLIPSIS)) {
+                throw error(peek(), "record field pattern spreads are not ownership-admitted");
+            }
+            String name = consumeStaticObjectKeyName("record field pattern needs a static name");
+            if (!names.add(name)) {
+                throw error(previous(), "duplicate record field pattern '" + name + "'");
+            }
+            consume(COLON, "record field pattern uses ':'; Map '=>' patterns are not enabled");
+            Ast.Pattern test = parsePattern();
+            if (!(test instanceof Ast.LiteralPattern) && !(test instanceof Ast.WildcardPattern)) {
+                throw error(previous(), "record field patterns currently require literals or '_'; no captured borrows");
+            }
+            fields.add(new Ast.RecordFieldTest(name, test));
+            if (fields.size() > 64) throw error(previous(), "record field pattern limit exceeded (64)");
+        } while (match(COMMA) && !check(RPAREN));
+        consume(RPAREN, "expected ')' after record field pattern");
+        return new Ast.RecordFieldPattern(explicitStructural, fields);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
@@ -4210,12 +4234,15 @@ public final class Parser {
             return new Ast.TypePattern(negative, binding);
         }
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
+            if (match(TILDE)) return parseReadonlyFieldPattern(true);
             Ast.TypeRef target = parseTypeRef();
             String binding = check(IDENT) && !peek().lexeme().equals("_")
                     ? advance().lexeme()
                     : null;
             return new Ast.StructuralPattern(target, binding);
         }
+
+        if (match(TILDE)) return parseReadonlyFieldPattern(false);
 
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();

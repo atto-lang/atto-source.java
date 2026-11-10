@@ -4720,7 +4720,7 @@ public final class TypeChecker {
                 }
 
                 checkValueMatchCoverage(
-                        valueMatch.arms(), subject, generics, self);
+                        valueMatch.arms(), subject, generics, self, valueMatch.ordered());
                 return result;
             } finally {
                 // Only the selected arm executes at runtime. Type-checking all
@@ -6669,6 +6669,16 @@ public final class TypeChecker {
 
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
+            if (!matched.ordered() && arm.pattern() instanceof Ast.RecordFieldPattern fieldPattern) {
+                for (int j = 0; j < i; j++) {
+                    if (arms.get(j).pattern() instanceof Ast.RecordFieldPattern prior
+                            && !recordFieldPatternsProvablyDisjoint(prior, fieldPattern)) {
+                        throw new IllegalArgumentException(
+                                "ordinary match has overlapping/unproved record field patterns; "
+                                + "use 'match first' for intentional priority");
+                    }
+                }
+            }
             if (arm.guard() != null) {
                 requireAssignable(typeOfCondition(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
             }
@@ -6705,9 +6715,21 @@ public final class TypeChecker {
             List<Ast.MatchValueArm> arms,
             Type subject,
             Set<String> generics,
-            Type self) {
+            Type self,
+            boolean ordered) {
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchValueArm arm = arms.get(i);
+
+            if (!ordered && arm.pattern() instanceof Ast.RecordFieldPattern fieldPattern) {
+                for (int j = 0; j < i; j++) {
+                    if (arms.get(j).pattern() instanceof Ast.RecordFieldPattern prior
+                            && !recordFieldPatternsProvablyDisjoint(prior, fieldPattern)) {
+                        throw new IllegalArgumentException(
+                                "ordinary match has overlapping/unproved record field patterns; "
+                                + "use 'match first' for intentional priority");
+                    }
+                }
+            }
 
             if (i > 0 && patternsProvablyExhaustive(
                     arms.subList(0, i).stream()
@@ -6785,6 +6807,39 @@ public final class TypeChecker {
                         typed.binding(),
                         overlayReadonlyCapabilities(subject, target),
                         Ast.BindingKind.VAL);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.RecordFieldPattern fieldPattern) {
+            Record publicShape;
+            if (subject instanceof Record record && record.readOnly()) {
+                publicShape = record;
+            } else if (fieldPattern.explicitStructural() && subject instanceof Named named) {
+                Ast.ClassDecl klass = findClass(named.name());
+                if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "structural field pattern requires an ordinary nominal class, never actor state or Map");
+                }
+                if (klass.genericParameters().size() != named.arguments().size()) {
+                    throw new IllegalArgumentException("unproved generic nominal structural field projection");
+                }
+                publicShape = (Record) substituteGenerics(
+                        publicClassShape(klass, new LinkedHashSet<>()),
+                        classGenericBindings(klass, named));
+            } else {
+                throw new IllegalArgumentException(
+                        "record field pattern requires a readonly record; nominal classes require 'structural'");
+            }
+            for (Ast.RecordFieldTest field : fieldPattern.fields()) {
+                Type fieldType = publicShape.members().get(field.name());
+                if (fieldType == null) {
+                    throw new IllegalArgumentException(
+                            "missing or non-public record field pattern '" + field.name() + "'");
+                }
+                // Literal and '_' tests bind no reference and never lend a
+                // mutable capability. The ordinary checker verifies scalar
+                // type compatibility, Symbol policy and value identity.
+                checkPattern(field.test(), fieldType, bindings, generics, self);
             }
             return;
         }
@@ -6993,6 +7048,22 @@ public final class TypeChecker {
                 || value instanceof Integer || value instanceof Long;
     }
 
+    /** Two field tests are disjoint only if a shared key requires unequal scalars. */
+    private boolean recordFieldPatternsProvablyDisjoint(
+            Ast.RecordFieldPattern left, Ast.RecordFieldPattern right) {
+        for (Ast.RecordFieldTest a : left.fields()) {
+            for (Ast.RecordFieldTest b : right.fields()) {
+                if (a.name().equals(b.name())
+                        && a.test() instanceof Ast.LiteralPattern al
+                        && b.test() instanceof Ast.LiteralPattern bl
+                        && !literalPatternRuntimeEquals(al.value(), bl.value())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -7001,6 +7072,19 @@ public final class TypeChecker {
             Type self) {
         if (earlier instanceof Ast.WildcardPattern || earlier instanceof Ast.BindingPattern) return true;
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
+        if (earlier instanceof Ast.RecordFieldPattern a && later instanceof Ast.RecordFieldPattern b) {
+            for (Ast.RecordFieldTest required : a.fields()) {
+                Ast.RecordFieldTest actual = b.fields().stream()
+                        .filter(field -> field.name().equals(required.name()))
+                        .findFirst().orElse(null);
+                if (actual == null) return false;
+                if (required.test() instanceof Ast.WildcardPattern) continue;
+                if (!(required.test() instanceof Ast.LiteralPattern rl)
+                        || !(actual.test() instanceof Ast.LiteralPattern al)
+                        || !literalPatternRuntimeEquals(rl.value(), al.value())) return false;
+            }
+            return true;
+        }
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
             // Runtime patterns use numeric value equality, not Java boxed

@@ -893,7 +893,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, RecordFieldPattern, TuplePattern, ConstructorPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -908,6 +908,35 @@ public final class Ast {
      * whose public shape is matched without requiring nominal implementation.
      */
     public record StructuralPattern(TypeRef target, String binding) implements Pattern { }
+
+    /** A static, readonly record-field test. No captured field borrows in v4. */
+    public record RecordFieldTest(String name, Pattern test) {
+        public RecordFieldTest {
+            if (name == null || name.isBlank() || test == null) {
+                throw new IllegalArgumentException("record pattern requires a named field and test");
+            }
+            if (!(test instanceof LiteralPattern) && !(test instanceof WildcardPattern)) {
+                throw new IllegalArgumentException("record field patterns currently admit literals or '_', not bindings");
+            }
+        }
+    }
+
+    /** Explicit shape intent is retained. Field tests never grant mutation or reflection. */
+    public record RecordFieldPattern(boolean explicitStructural, List<RecordFieldTest> fields)
+            implements Pattern {
+        public RecordFieldPattern {
+            fields = List.copyOf(fields);
+            if (fields.isEmpty() || fields.size() > 64) {
+                throw new IllegalArgumentException("record field pattern requires 1..64 fields");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (RecordFieldTest field : fields) {
+                if (!seen.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate record field pattern '" + field.name() + "'");
+                }
+            }
+        }
+    }
 
     /** Fixed-arity recursive tuple pattern. Lists deliberately do not participate. */
     public record TuplePattern(List<Pattern> elements) implements Pattern {
@@ -928,9 +957,9 @@ public final class Ast {
     }
 
     /**
-     * Match arms use source order: the first matching arm wins. The ordered
-     * flag is retained for AST compatibility; canonical source syntax is
-     * always ordered and the parser emits true.
+     * Match execution visits arms in source order. The ordered flag records
+     * source-authorized overlap: match first permits priority, ordinary match
+     * must prove disjointness. Runtime order is not a proof of disjointness.
      */
     public record MatchStmt(
             Expr subject, boolean ordered, List<MatchArm> arms, boolean procedural) implements Stmt {
@@ -1330,15 +1359,19 @@ public final class Ast {
         return false;
     }
 
-    public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
+    public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType,
+            boolean ordered) implements Expr {
         public MatchExpr {
             java.util.Objects.requireNonNull(subject, "value match subject");
             arms = List.copyOf(arms);
             if (arms.isEmpty()) throw new IllegalArgumentException("value match requires arms");
         }
-        /** Backwards-compatible inferred-result expression. */
+        /** Backwards-compatible proof-checked ordinary match expression. */
+        public MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) {
+            this(subject, arms, resultType, false);
+        }
         public MatchExpr(Expr subject, List<MatchValueArm> arms) {
-            this(subject, arms, null);
+            this(subject, arms, null, false);
         }
     }
 
