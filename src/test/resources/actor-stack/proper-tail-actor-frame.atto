@@ -1,10 +1,4 @@
-fnc tail_count(int n, int acc): int {
-  if n == 0; do
-    return acc;
-  else
-    return tail_count(n - 1, acc + 1);
-  fi
-}
+import fnc tail_count from './actor_frame_helpers.atto';
 
 define actor FrameWorker as
   receive(ActorMail<String> mail): void {

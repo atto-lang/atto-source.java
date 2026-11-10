@@ -14,9 +14,6 @@ import static org.junit.jupiter.api.Assertions.*;
 final class GuestCallDepthLanguageTest {
     @Test
     void nonTailRecursionFailsAtGuestBudgetAndFreshExecutionStillRuns() throws Exception {
-        // The Java reference compiler still consumes legacy .ores on main.
-        // The canonical .atto version belongs in backend conformance once
-        // parser/import admission is independently executable.
         Source recursive = Source.newBuilder(OresLanguage.ID, """
                 fnc descend(int n): int {
                   if n == 0; do
@@ -30,7 +27,7 @@ final class GuestCallDepthLanguageTest {
                   stdio.stdout.write(descend(10000));
                   return;
                 }
-                """, "guest-depth-budget.ores")
+                """, "guest-depth-budget.atto")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
 
@@ -48,7 +45,7 @@ final class GuestCallDepthLanguageTest {
                   stdio.stdout.write(42);
                   return;
                 }
-                """, "healthy-after-budget.ores")
+                """, "healthy-after-budget.atto")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
         try (Context ctx = IsolatePolicy.developer()

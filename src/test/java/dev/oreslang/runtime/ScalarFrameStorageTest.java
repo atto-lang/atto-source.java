@@ -12,6 +12,22 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class ScalarFrameStorageTest {
     @Test
+    void overflowingFrameLayoutCannotWrapPastTheSlotLimit() {
+        try (ScalarFrameStorage storage = new ScalarFrameStorage()) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> storage.enter(Integer.MAX_VALUE, Integer.MAX_VALUE));
+            assertThrows(IllegalArgumentException.class,
+                    () -> storage.enter(Integer.MAX_VALUE, 1));
+            assertThrows(IllegalArgumentException.class, () -> storage.enter(256, 1));
+            assertEquals(0, storage.liveFrames());
+            var frame = storage.enter(255, 1);
+            frame.putLocal(254, ScalarFrameStorage.Scalar.ofLong(42));
+            assertEquals(42, frame.local(254).asLong());
+            storage.leave(frame);
+        }
+    }
+
+    @Test
     void typedLocalOperandAndPcSlotsFollowLifoAndRejectStaleHandles() {
         try (ScalarFrameStorage storage = new ScalarFrameStorage()) {
             var outer = storage.enter(2, 2);
@@ -61,7 +77,7 @@ final class ScalarFrameStorageTest {
                 IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
             AtomicReference<ActorFrameArena> observed = new AtomicReference<>();
             AtomicInteger executed = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
                 observed.set(arena);
                 assertEquals(0, arena.usedBytes());
@@ -98,7 +114,7 @@ final class ScalarFrameStorageTest {
             AtomicReference<ActorFrameArena> compromised = new AtomicReference<>();
             AtomicReference<ActorFrameArena> other = new AtomicReference<>();
             AtomicInteger siblingMessages = new AtomicInteger();
-            var failing = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var failing = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 compromised.set(ActorRuntime.currentActorFrameArena());
                 try (ScalarFrameStorage storage = new ScalarFrameStorage()) {
                     var lease = storage.enter(0, 1);
@@ -108,7 +124,7 @@ final class ScalarFrameStorageTest {
                     assertThrows(IllegalStateException.class, lease::pc);
                 }
             });
-            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var sibling = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 other.set(ActorRuntime.currentActorFrameArena());
                 siblingMessages.incrementAndGet();
                 turn.self().stop();
@@ -135,7 +151,7 @@ final class ScalarFrameStorageTest {
             AtomicReference<ActorFrameArena> exhausted = new AtomicReference<>();
             AtomicReference<ActorFrameArena> healthy = new AtomicReference<>();
             AtomicInteger responses = new AtomicInteger();
-            var failing = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var failing = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 exhausted.set(ActorRuntime.currentActorFrameArena());
                 try (ScalarFrameStorage store = new ScalarFrameStorage()) {
                     for (int index = 0; index < 128; index++) {
@@ -144,7 +160,7 @@ final class ScalarFrameStorageTest {
                     }
                 }
             });
-            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var sibling = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 healthy.set(ActorRuntime.currentActorFrameArena());
                 responses.incrementAndGet();
                 turn.self().stop();

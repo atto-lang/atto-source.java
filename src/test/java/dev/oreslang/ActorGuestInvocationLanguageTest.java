@@ -1,7 +1,5 @@
 package dev.oreslang;
 
-import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -48,14 +46,17 @@ final class ActorGuestInvocationLanguageTest {
         assertFalse(sourceText.isBlank());
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, sourceText, scenario)
-                .mimeType(OresLanguage.MIME_TYPE)
-                .build();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .out(output)
-                .build()) {
-            context.eval(source);
+        org.junit.jupiter.api.function.Executable execute = () -> dev.oreslang.runtime.LinkedProgramRunner.run(
+                java.nio.file.Path.of(ActorGuestInvocationLanguageTest.class.getResource(resource).toURI()),
+                dev.oreslang.runtime.IsolatePolicy.developer(),
+                dev.oreslang.runtime.ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        if (scenario.equals("sibling-after-budget-failure.atto")) {
+            RuntimeException failure = assertThrows(RuntimeException.class, execute);
+            assertTrue(failure.toString().contains("ActorFrameArena$BudgetExceeded: actor-owned frame byte quota exhausted"),
+                    () -> "expected the failed actor's physical completion outcome: " + failure);
+        } else {
+            assertDoesNotThrow(execute);
         }
         return output.toString(StandardCharsets.UTF_8);
     }

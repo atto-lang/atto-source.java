@@ -277,7 +277,7 @@ final class ActorFrameArenaTest {
             AtomicReference<ActorFrameArena> failed = new AtomicReference<>();
             AtomicReference<ActorFrameArena> survivor = new AtomicReference<>();
             AtomicInteger liveResponses = new AtomicInteger();
-            var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var a = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
                 failed.set(frames);
                 var domain = frames.allocationDomain();
@@ -288,7 +288,7 @@ final class ActorFrameArenaTest {
                         frames.push(ctx, 1));
                 // An attempted host catch must not let another user turn run.
             });
-            var b = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var b = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
                 survivor.set(frames);
                 assertNotSame(failed.get(), frames);
@@ -313,7 +313,7 @@ final class ActorFrameArenaTest {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicInteger observed = new AtomicInteger();
-            var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var a = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
                 assertNotNull(frames);
                 int outer = GuestCallDepthGuard.enter();
@@ -351,7 +351,7 @@ final class ActorFrameArenaTest {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicReference<ActorFrameArena> failedArena = new AtomicReference<>();
             AtomicInteger siblingResponses = new AtomicInteger();
-            var a = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var a = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena frames = ActorRuntime.currentActorFrameArena();
                 failedArena.set(frames);
                 int[] depths = new int[GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS];
@@ -376,7 +376,7 @@ final class ActorFrameArenaTest {
                 // The host callback swallowed the typed failure. Dispatch
                 // must still fail-stop this actor before a second mailbox turn.
             });
-            var b = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var b = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 assertNotSame(failedArena.get(), ActorRuntime.currentActorFrameArena());
                 siblingResponses.incrementAndGet();
                 turn.self().stop();

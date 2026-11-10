@@ -23,7 +23,7 @@ final class GuestInvocationFrameTest {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicReference<ActorFrameArena> observed = new AtomicReference<>();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena store = ActorRuntime.currentActorFrameArena();
                 observed.set(store);
                 assertEquals(ExecutionContext.AllocationKind.ACTOR,
@@ -67,7 +67,7 @@ final class GuestInvocationFrameTest {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicReference<Throwable> foreignFault = new AtomicReference<>();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 try (GuestInvocationFrame frame = GuestInvocationFrame.enter(1, 1)) {
                     Thread stranger = new Thread(() -> {
                         try {
@@ -100,7 +100,7 @@ final class GuestInvocationFrameTest {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicReference<ActorFrameArena> failed = new AtomicReference<>();
             AtomicInteger sibling = new AtomicInteger();
-            var exhausted = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var exhausted = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
                 ExecutionContext execution = arena.newSynchronousExecution();
                 failed.set(arena);
@@ -109,7 +109,7 @@ final class GuestInvocationFrameTest {
                     assertThrows(ActorFrameArena.BudgetExceeded.class,
                             () -> GuestInvocationFrame.enter(1, 1));
                     assertTrue(arena.isPoisoned());
-                    assertThrows(GuestCallDepthExceededException.class,
+                    assertThrows(ActorFrameArena.BudgetExceeded.class,
                             GuestCallDepthGuard::enter,
                             "actor generation may not reenter after frame quota failure");
                 } finally {
@@ -118,7 +118,7 @@ final class GuestInvocationFrameTest {
                 // The actor must fail-stop, although this host handler swallowed
                 // the typed failure. The sibling can use the same worker.
             });
-            var healthy = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var healthy = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 try (var frame = GuestInvocationFrame.enter(0, 0)) {
                     assertEquals(GuestCallDepthGuard.MANAGED_FRAME_CHARGE_BYTES,
                             ActorRuntime.currentActorFrameArena().usedBytes());
@@ -128,7 +128,7 @@ final class GuestInvocationFrameTest {
             });
             exhausted.send("overflow");
             assertTrue(exhausted.awaitTermination(3, TimeUnit.SECONDS));
-            assertInstanceOf(ActorFrameArena.BudgetExceeded.class,
+            assertInstanceOf(GuestCallDepthExceededException.class,
                     exhausted.failure().orElseThrow());
             assertEquals(0, failed.get().usedBytes());
             healthy.send("alive");

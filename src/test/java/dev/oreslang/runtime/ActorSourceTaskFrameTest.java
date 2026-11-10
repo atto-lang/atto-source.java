@@ -32,7 +32,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ExecutionContext> after = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
             AtomicInteger runs = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) {
                     turn.self().stop();
                     return;
@@ -83,7 +83,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ExecutionContext> first = new AtomicReference<>();
             AtomicReference<ExecutionContext> second = new AtomicReference<>();
             AtomicInteger calls = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 result.set(runtime.startActorTask(resume -> {
@@ -122,7 +122,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<OresFuture<Integer>> secondResult = new AtomicReference<>();
             AtomicInteger firstCount = new AtomicInteger();
             AtomicInteger secondCount = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 firstResult.set(runtime.startActorTask(resume -> {
@@ -168,7 +168,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> running = new AtomicReference<>();
             AtomicInteger entered = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 arena.set(ActorRuntime.currentActorFrameArena());
                 running.set(runtime.startActorTask(resume -> {
@@ -246,7 +246,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ExecutionContext> resumedIdentity = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> taskResult = new AtomicReference<>();
             AtomicInteger resumes = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
                 owner.set(arena);
@@ -304,7 +304,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ActorFrameArena> failedArena = new AtomicReference<>();
             AtomicReference<ActorFrameArena> healthyArena = new AtomicReference<>();
             AtomicInteger healthyResponses = new AtomicInteger();
-            var overflowing = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var overflowing = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 failedArena.set(ActorRuntime.currentActorFrameArena());
                 runtime.startActorTask(resume -> {
                     int[] depths = new int[GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS];
@@ -321,7 +321,7 @@ final class ActorSourceTaskFrameTest {
                     }
                 });
             });
-            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var sibling = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 healthyArena.set(ActorRuntime.currentActorFrameArena());
                 healthyResponses.incrementAndGet();
                 turn.self().stop();
@@ -349,7 +349,7 @@ final class ActorSourceTaskFrameTest {
             AtomicReference<ActorFrameArena> owner = new AtomicReference<>();
             AtomicReference<OresFuture<Integer>> taskResult = new AtomicReference<>();
             AtomicInteger chargedDuringCallback = new AtomicInteger(-1);
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
                 ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
                 owner.set(arena);

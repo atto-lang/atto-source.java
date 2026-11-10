@@ -133,10 +133,10 @@ final class ScalarFrameMachineTest {
         ScalarFrameMachine.Plan plan = ScalarFrameMachine.compile(sum,
                 (name, arity) -> name.equals("sum") ? sum : null);
         assertNotNull(plan);
-        IllegalStateException failure = assertThrows(IllegalStateException.class,
+        var failure = assertThrows(dev.oreslang.runtime.GuestCallDepthExceededException.class,
                 () -> ScalarFrameMachine.execute(plan,
                         List.of(4_096L), math(), () -> { }));
-        assertTrue(failure.getMessage().contains("bounded non-actor scalar call depth"));
+        assertTrue(failure.getMessage().contains("guest call depth exceeded (max 2048)"));
         assertEquals(4L, ScalarFrameMachine.execute(plan,
                 List.of(4L), math(), () -> { }),
                 "a previous root call's frames must not contaminate a fresh call");

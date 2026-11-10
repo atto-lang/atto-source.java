@@ -146,11 +146,11 @@ public final class ScalarFrameStorage implements AutoCloseable {
     public Frame enter(int localSlots, int operandSlots) {
         if (closed) throw new IllegalStateException("closed scalar frame storage");
         if (localSlots < 0 || operandSlots < 0
-                || localSlots + operandSlots > MAX_SLOTS) {
+                || localSlots > MAX_SLOTS || operandSlots > MAX_SLOTS - localSlots) {
             throw new IllegalArgumentException("invalid scalar frame layout");
         }
         if (arena == null && frames.size() >= MAX_ROOT_FRAMES) {
-            throw new IllegalStateException("bounded non-actor scalar call depth exceeded");
+            throw new GuestCallDepthExceededException(MAX_ROOT_FRAMES);
         }
         int byteSize = HEADER_BYTES + SLOT_BYTES * (localSlots + operandSlots);
         ActorFrameArena.FrameRef lease = arena == null ? null : arena.push(execution, byteSize);

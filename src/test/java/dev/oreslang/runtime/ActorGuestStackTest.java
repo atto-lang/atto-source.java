@@ -53,7 +53,7 @@ final class ActorGuestStackTest {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicReference<ActorGuestStack> first = new AtomicReference<>();
             AtomicInteger seen = new AtomicInteger();
-            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 ActorGuestStack current = ActorRuntime.currentActorGuestStack();
                 assertNotNull(current);
                 if (first.get() == null) first.set(current);
@@ -84,7 +84,7 @@ final class ActorGuestStackTest {
             AtomicReference<ActorGuestStack> healthyStack = new AtomicReference<>();
             AtomicInteger siblingCalls = new AtomicInteger();
 
-            var exhausted = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var exhausted = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 failedStack.set(ActorRuntime.currentActorGuestStack());
                 int depth = 0;
                 try {
@@ -99,7 +99,7 @@ final class ActorGuestStackTest {
                     while (depth > 0) GuestCallDepthGuard.leave(depth--);
                 }
             });
-            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+            var sibling = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
                 healthyStack.set(ActorRuntime.currentActorGuestStack());
                 int depth = GuestCallDepthGuard.enter();
                 try {
