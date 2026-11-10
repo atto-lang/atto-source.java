@@ -49,10 +49,10 @@ public final class ActorNativeArena implements AutoCloseable {
         Runnable reserve(int bytes);
     }
 
-    /** Trusted package-local seam for deterministic native admission OOM tests. */
+    /** Package-local pre-allocation fault injector; cannot return unsafe buffers. */
     @FunctionalInterface
-    interface NativeAllocator {
-        ByteBuffer allocate(int bytes);
+    interface NativeAdmissionProbe {
+        void beforeAllocate(int bytes);
     }
 
     /**
@@ -140,7 +140,7 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private final Runnable checkOwner;
     private final Budget budget;
-    private final NativeAllocator nativeAllocator;
+    private final NativeAdmissionProbe nativeAdmissionProbe;
     private final long limit;
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
     private final ArrayList<Long> slabBases = new ArrayList<>();
@@ -172,19 +172,16 @@ public final class ActorNativeArena implements AutoCloseable {
     private ActorLinearMemory linearMemory;
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget) {
-        this(limit, checkOwner, budget, bytes -> {
-            NativeCarrierExecutor.ensureNativeLibraryLoaded();
-            return allocateNative(bytes);
-        });
+        this(limit, checkOwner, budget, bytes -> { });
     }
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget,
-                     NativeAllocator nativeAllocator) {
+                     NativeAdmissionProbe nativeAdmissionProbe) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
         this.limit = limit;
         this.checkOwner = Objects.requireNonNull(checkOwner);
         this.budget = Objects.requireNonNull(budget);
-        this.nativeAllocator = Objects.requireNonNull(nativeAllocator);
+        this.nativeAdmissionProbe = Objects.requireNonNull(nativeAdmissionProbe);
     }
 
     /** Fixed field names are layout metadata; values are stored only in native slots. */
@@ -786,7 +783,9 @@ public final class ActorNativeArena implements AutoCloseable {
         Region staged = null;
         final long priorOffset = nextActorOffset;
         try {
-            memory = nativeAllocator.allocate(bytes);
+            nativeAdmissionProbe.beforeAllocate(bytes);
+            NativeCarrierExecutor.ensureNativeLibraryLoaded();
+            memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
             long baseOffset = reserveActorOffset(bytes, Long.BYTES);
             staged = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
@@ -1122,7 +1121,9 @@ public final class ActorNativeArena implements AutoCloseable {
                 slabBases.ensureCapacity(slabBases.size() + 1);
                 releases.ensureCapacity(releases.size() + 1);
                 long slabBase = reserveActorOffset(capacity, Long.BYTES);
-                slab = nativeAllocator.allocate(capacity);
+                nativeAdmissionProbe.beforeAllocate(capacity);
+                NativeCarrierExecutor.ensureNativeLibraryLoaded();
+                slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
                 slab.order(ByteOrder.LITTLE_ENDIAN);
                 slabs.add(slab);
