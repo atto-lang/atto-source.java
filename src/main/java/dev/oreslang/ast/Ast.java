@@ -1126,7 +1126,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, BlockValueExpr, RangeExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
@@ -1162,6 +1162,34 @@ public final class Ast {
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
+
+    /** A checked, lazy signed-integer iterator with no materialized collection. */
+    public record RangeExpr(Expr start, Expr end, boolean inclusive) implements Expr {
+        public RangeExpr {
+            java.util.Objects.requireNonNull(start, "range start");
+            java.util.Objects.requireNonNull(end, "range end");
+        }
+    }
+
+    /** A lexical value block: prefix statements followed by one unterminated expression.
+     * The result belongs to the block, never to the enclosing callable.
+     */
+    public record BlockValueExpr(List<Stmt> prefixStatements, Expr value) implements Expr {
+        public BlockValueExpr {
+            prefixStatements = List.copyOf(java.util.Objects.requireNonNull(
+                    prefixStatements, "value block prefix"));
+            java.util.Objects.requireNonNull(value, "value block result");
+            if (prefixStatements.stream().anyMatch(Ast::valueArmPrefixContainsReturn)) {
+                throw new IllegalArgumentException("value block prefix cannot return from a callable");
+            }
+        }
+
+        public List<Stmt> loweringBody() {
+            java.util.ArrayList<Stmt> lowered = new java.util.ArrayList<>(prefixStatements);
+            lowered.add(new ReturnStmt(value));
+            return List.copyOf(lowered);
+        }
+    }
 
     /**
      * Expression-form match arm. Source block arms spell their result as
