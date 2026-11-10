@@ -6021,19 +6021,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
         }
-        if (actors.remove(cell.ref.id(), cell)) {
+        boolean physicallyRemoved = actors.remove(cell.ref.id(), cell);
+        if (physicallyRemoved) {
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
         }
-        if (deregistrationFailure == null) {
-            // The last writer of a physical activation is this exact
-            // ActorRuntime retirement path, never a queued terminal callback.
-            // A failed group cleanup leaves its slot quarantined.
-            if (!actors.containsKey(cell.ref.id()))
-                virtualActorFences.retire(cell.ref.id());
+        // The last writer of a physical activation is this exact runtime
+        // retirement path, never a queued terminal callback. Release only
+        // after exact-cell removal AND successful group cleanup. Any mismatch
+        // keeps the logical activation quarantined.
+        if (deregistrationFailure == null && physicallyRemoved) {
+            virtualActorFences.retire(cell.ref.id());
         }
         if (deregistrationFailure != null) {
             if (deregistrationFailure instanceof RuntimeException runtime) throw runtime;
