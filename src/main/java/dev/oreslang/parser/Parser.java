@@ -99,6 +99,17 @@ public final class Parser {
             if (token.type() == QUANTUM) {
                 throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
             }
+            // Reserved GPU actor declaration: fail closed before ordinary actor
+            // desugaring could erase the execution-domain distinction. This
+            // remains unsupported until typed GPU actor state, mailbox effects,
+            // device admission and physical lowering are proven.
+            if (token.type() == GPU
+                    && i + 1 < tokens.size()
+                    && tokens.get(i + 1).type() == ACTOR) {
+                throw error(token, "gpu actor declarations require checked GPU actor "
+                        + "state ownership, mailbox scheduling and device lowering; "
+                        + "not yet enabled; no implicit CPU fallback");
+            }
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
                         i + 2 < tokens.size()
