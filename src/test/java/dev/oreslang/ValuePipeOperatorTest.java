@@ -434,4 +434,131 @@ final class ValuePipeOperatorTest {
                 """)));
     }
 
+
+    @Test
+    void inlineLambdaStagesMixWithNamedStagesAndExecuteLeftToRight() throws Exception {
+        String program = """
+                fnc fetch_users(): int {
+                  stdio.println("fetch");
+                  return 4;
+                }
+                fnc validate(int n): int { return n + 1; }
+                fnc filter(int users, int predicate): int { return users * predicate; }
+                fnc sort(int n): int { return n + 2; }
+                fnc take(int sorted, int count): int { return sorted - count; }
+                pub fnc main(): void {
+                  stdio.println(fetch_users()
+                    |> validate
+                    |> |users| -> filter(users, 3)
+                    |> sort
+                    |> |sorted| -> take(sorted, 5));
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(program);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        Ast.FunctionDecl main = (Ast.FunctionDecl) parsed.modules().getFirst().declarations().get(5);
+        Ast.CallExpr print = assertInstanceOf(Ast.CallExpr.class,
+                ((Ast.ExprStmt) main.body().getFirst()).expression());
+        Ast.CallExpr lastStage = assertInstanceOf(Ast.CallExpr.class, print.arguments().getFirst());
+        assertEquals(Ast.CallOrigin.VALUE_PIPE_ARGUMENT, lastStage.origin());
+        assertInstanceOf(Ast.LambdaExpr.class, lastStage.callee());
+        assertEquals("sorted", ((Ast.LambdaExpr) lastStage.callee()).parameters().getFirst().name());
+        Ast.CallExpr sort = assertInstanceOf(Ast.CallExpr.class, lastStage.arguments().getFirst());
+        assertEquals("sort", ((Ast.NameExpr) sort.callee()).name());
+        assertInstanceOf(Ast.LambdaExpr.class,
+                ((Ast.CallExpr) sort.arguments().getFirst()).callee());
+
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-inline-lambda.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("fetch", "12"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void inlineLambdaPipelineEvaluatesUpstreamOnceEvenWhenReadTwice() throws Exception {
+        String program = """
+                fnc once(): int {
+                  stdio.println("once");
+                  return 7;
+                }
+                fnc increment(int n): int { return n + 1; }
+                pub fnc main(): void {
+                  stdio.println(once() |> |n| -> n + n |> increment);
+                  stdio.println(2 |> |n| -> (n |> increment) |> increment);
+                  stdio.println(3 |> nlex |n| -> n + 1);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-lambda-once.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("once", "15", "4", "4"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void inlinePipelineLambdaBlocksReturnTypedValuesNotImplicitStatementResults() throws Exception {
+        String program = """
+                fnc increment(int n): int { return n + 1; }
+                pub fnc main(): void {
+                  stdio.println(2 |> |n| -> { return n * 3; } |> increment);
+                  stdio.println(2 |> |n| -> int { return n * 4; } |> increment);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-lambda-block.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("7", "9"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void inlinePipelineLambdaRejectsBadArityInputTypeAndUnknownBlockResult() {
+        IllegalArgumentException empty = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int { return 2 |> || -> 3; }
+                    """)));
+        assertTrue(empty.getMessage().contains("exactly one parameter"), empty::toString);
+
+        IllegalArgumentException many = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int { return 2 |> |x, y| -> x + y; }
+                    """)));
+        assertTrue(many.getMessage().contains("exactly one parameter"), many::toString);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): string { return 2 |> |string s| -> s; }
+                    """)));
+
+        IllegalArgumentException block = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int {
+                      return 2 |> |n| -> { val x = n + 1; x; };
+                    }
+                    """)));
+        assertTrue(block.getMessage().contains("explicit result type")
+                || block.getMessage().contains("block lambda"), block::toString);
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc broken(): int { return 2 |> |n| -> n + 1 |> 99; }
+                """));
+    }
 }
