@@ -1099,6 +1099,8 @@ public final class Parser {
                     throw error(peek(), "actor state schema requires compiler-sealed "
                             + "state ownership and handle_state lowering; not yet enabled");
                 if (seenState) throw error(peek(), "duplicate neuron state container");
+                if (!methods.isEmpty()) throw error(peek(),
+                        "neuron state must be declared before actor methods");
                 if (!annotations.isEmpty() || mods.visibilitySeen || mods.async || mods.suspends
                         || mods.generator || mods.structural || mods.nonLexical || mods.trapped
                         || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted)
