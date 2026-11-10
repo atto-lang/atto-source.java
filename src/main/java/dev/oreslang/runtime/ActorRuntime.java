@@ -4426,6 +4426,10 @@ public final class ActorRuntime implements AutoCloseable {
         Throwable failure = cell.ref.terminationCause.get();
         VirtualActorTerminalBinding virtualBinding =
                 virtualActorTerminalBindings.get(cell.ref.id());
+        // Keep the activation bound until both the terminal CONTROL slot and
+        // group/actor cleanup have settled; a replacement must never overtake
+        // a still-registered physical worker.
+        boolean terminalControlSettled = false;
         if (lane != null && failure != null) {
             SupervisorFailureControl.Kind failureKind =
                     failure instanceof CancellationException
@@ -4444,20 +4448,12 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? failure.getMessage() : "",
                         virtualBinding == null
                                 ? Optional.empty() : Optional.of(virtualBinding.logical())));
-                if (virtualBinding != null) {
-                    virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
-                    virtualActorActiveBindings.remove(
-                            virtualBinding.logical().identity(), cell.ref.id());
-                }
+                terminalControlSettled = true;
             }
         }
         if (lane != null && failure == null) {
             lane.releaseReservation(cell.ref.id());
-            if (virtualBinding != null) {
-                virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
-                virtualActorActiveBindings.remove(
-                        virtualBinding.logical().identity(), cell.ref.id());
-            }
+            terminalControlSettled = true;
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
@@ -4472,7 +4468,14 @@ public final class ActorRuntime implements AutoCloseable {
                 actorCount.incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
+            if (virtualBinding != null && terminalControlSettled) {
+                virtualActorTerminalBindings.remove(cell.ref.id(), virtualBinding);
+                virtualActorActiveBindings.remove(
+                        virtualBinding.logical().identity(), cell.ref.id());
+            }
         }
+        // If group/actor accounting or CONTROL failed, leave the activation
+        // quarantined instead of allowing an unproven replacement.
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
