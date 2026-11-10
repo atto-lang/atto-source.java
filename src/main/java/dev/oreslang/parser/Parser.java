@@ -1595,6 +1595,12 @@ public final class Parser {
     }
 
     private String parseMethodName() {
+        // `new` remains reserved as an expression keyword, but an explicit
+        // user-authored method/factory signature may name it. This alone does
+        // not synthesize a static factory or grant Newable implementation.
+        if (match(NEW)) {
+            return "new";
+        }
         if (match(LBRACKET)) {
             String namespace = consume(IDENT, "expected symbol namespace").lexeme();
             consume(DOT, "expected '.' in symbol method");
