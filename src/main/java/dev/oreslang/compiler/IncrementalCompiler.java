@@ -500,8 +500,11 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
-            // Private contracts/traits/interfaces are not part of the imported ABI.
-            if (iface.visibility() != Ast.Visibility.PUBLIC) return;
+            // Namespace conformance is a package-wide ABI obligation even
+            // when the contract declaration is private to its namespace.
+            // Ordinary private interfaces and module contracts stay private.
+            if (iface.visibility() != Ast.Visibility.PUBLIC
+                    && !iface.namespaceContract()) return;
             abi.append(iface.namespaceContract() ? "namespace-contract "
                     : iface.moduleContract() ? "contract " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
