@@ -1,0 +1,57 @@
+name: Opto Sync exact-byte Atto Java real scalar guests
+on:
+  pull_request:
+    paths:
+      - 'contracts/opto-sync/scalar-v1/**'
+      - 'src/test/java/dev/oreslang/launcher/OptoSyncScalarGuestTest.java'
+      - '.github/workflows/opto-sync-scalar-java.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-graal-real-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Exact triggering commit; no persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact head and source tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          echo "ATTO_OPTO_JAVA_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_OPTO_JAVA_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM 25 JDK
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile, typecheck and execute exactly three real scalar guests; deny two invalid sources
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=OptoSyncScalarGuestTest clean test
+      - name: Verify nonempty, unskipped, zero-failure exact JUnit report
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.launcher.OptoSyncScalarGuestTest.xml
+          test -s "$report"
+          grep -Eq '<testsuite[^>]*tests="6"' "$report"
+          ! grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"
+          echo 'ATTO_OPTO_JAVA_GUEST_EXECUTED tests=6 positives=3 negative_compiler=2'
+          echo 'Graal JVM --mode=aot is NOT Graal Native Image or Opto Sync SDK support.'
+      - name: Preserve real JUnit receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: atto-opto-sync-java-guest-junit
+          path: target/surefire-reports/*OptoSyncScalarGuestTest*
+          if-no-files-found: error
