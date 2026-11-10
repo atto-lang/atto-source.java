@@ -5174,6 +5174,11 @@ public final class Parser {
     private List<Ast.MapLiteralEntry> parseTildeMapEntries() {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
         do {
+            // Abort before parsing another entry, rather than admitting an
+            // unbounded AST and relying on later runtime quota enforcement.
+            if (entries.size() >= Ast.MAX_TILDE_MAP_LITERAL_ENTRIES) {
+                throw error(peek(), "typed Map literal exceeds maximum key count");
+            }
             Ast.Expr key = parseExpression();
             consume(FAT_ARROW, "~map entries require key => value");
             Ast.Expr value = parseExpression();

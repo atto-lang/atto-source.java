@@ -6,6 +6,13 @@ import java.util.HashSet;
 public final class Ast {
     private Ast() { }
 
+    /**
+     * Compilation-time admission ceiling for individual tilde Map literals.
+     * Keep equal to the canonical guest storage MAX_ENTRIES, and verify the
+     * invariant in JUnit. This cap also applies to direct AST construction.
+     */
+    public static final int MAX_TILDE_MAP_LITERAL_ENTRIES = 4096;
+
     /** Shared guest AST admission rule for closed structural field keys. */
     private static String requireStaticFieldName(String name) {
         if (name == null || name.length() > 1024) {
@@ -1175,6 +1182,9 @@ public final class Ast {
             if (entries.isEmpty()) {
                 throw new IllegalArgumentException("empty map must use ContextualEmptyMapExpr");
             }
+            if (entries.size() > MAX_TILDE_MAP_LITERAL_ENTRIES) {
+                throw new IllegalArgumentException("typed Map literal exceeds maximum key count");
+            }
         }
     }
 
@@ -1196,6 +1206,9 @@ public final class Ast {
                     || aggregateType.arguments().size() != 2 || entries.isEmpty()) {
                 throw new IllegalArgumentException(
                         "nonempty Map literal requires explicit Map<K,V> and at least one entry");
+            }
+            if (entries.size() > MAX_TILDE_MAP_LITERAL_ENTRIES) {
+                throw new IllegalArgumentException("typed Map literal exceeds maximum key count");
             }
         }
     }

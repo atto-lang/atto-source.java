@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresKeyedMap;
 import org.graalvm.polyglot.Context;
@@ -127,11 +128,66 @@ final class TypedNonemptyMapGuestTest {
     }
 
     @Test
+    void mapLiteralQuotaAppliesToParserAndDirectAstConstruction() {
+        assertEquals(OresKeyedMap.MAX_ENTRIES, Ast.MAX_TILDE_MAP_LITERAL_ENTRIES,
+                "parser and guest Map admission limits cannot drift");
+        StringBuilder source = new StringBuilder(
+                "fnc f(): void { const m = ~map<string,int>(");
+        for (int i = 0; i <= Ast.MAX_TILDE_MAP_LITERAL_ENTRIES; i++) {
+            if (i != 0) source.append(", ");
+            source.append("\"key_").append(i).append("\" => ").append(i);
+        }
+        source.append("); return; }");
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source.toString()));
+        assertTrue(rejected.getMessage().contains("maximum key count"), rejected.getMessage());
+
+        Ast.MapLiteralEntry entry = new Ast.MapLiteralEntry(
+                new Ast.LiteralExpr("x"), new Ast.LiteralExpr(1L));
+        List<Ast.MapLiteralEntry> oversized =
+                java.util.Collections.nCopies(Ast.MAX_TILDE_MAP_LITERAL_ENTRIES + 1, entry);
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.ContextualMapLiteralExpr(oversized));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.TypedMapLiteralExpr(
+                        new Ast.TypeRef("Map",
+                                List.of(Ast.TypeRef.simple("string"), Ast.TypeRef.simple("int")), false),
+                        oversized));
+    }
+
+    @Test
+    void adversarialBatchCannotReenterMutationOrPoisonLaterTransactions() {
+        OresKeyedMap<String, Object> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.putDistinctEntries(List.of(Map.entry("initial", 1L)));
+        List<Map.Entry<String, Object>> hostile =
+                new java.util.AbstractList<>() {
+                    @Override
+                    public Map.Entry<String, Object> get(int index) {
+                        map.put("intrusion", 42L);
+                        return Map.entry("unreachable", 2L);
+                    }
+
+                    @Override
+                    public int size() {
+                        return 1;
+                    }
+                };
+        assertThrows(IllegalStateException.class, () -> map.putDistinctEntries(hostile));
+        assertEquals(1, map.size());
+        assertFalse(map.containsKey("intrusion"));
+        // Failure must reset the bulk-mutation admission guard.
+        map.putDistinctEntries(List.of(Map.entry("after", 3L)));
+        assertEquals(2, map.size());
+        assertEquals(3L, map.getRequired("after"));
+    }
+
+    @Test
     void untypedAndAmbiguousMapFormsRemainRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc f(): void { const m = ~map(\"x\" => 1); return; }"));
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("fnc f(): void { const m = ~map(\"x\" => 1); return; }"));
+                () -> Parser.parse("fnc f(): void { const m = ~map<string,int>(\"x\" => 1,,); return; }"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc f(): void { const m = ~(); return; }"));
     }
