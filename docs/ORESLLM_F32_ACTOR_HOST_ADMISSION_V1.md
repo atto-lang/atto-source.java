@@ -29,3 +29,17 @@ The **exact committed standalone source-org runner** `tests/run-f32-actor-host-p
 This is an **internal staging guard**; `HOST_PREFLIGHT_ONLY` is not native host call permission. The runtime must mint/revoke it from its **real actor turn dispatcher**, fence STOP against completion, own the tensor/pool pointers privately, bind the trusted native bridge, and invoke actual GEMM only after a lifetime pin is held throughout the call. Guest-supplied IDs must never become host authority. In addition, the compiler must lower typechecked `rt borrow`/`rt take` and produce compile-negative ownership diagnostics.
 
 No Java/GraalVM Native Image build, guest GEMM compile/execute, external-effect authorization or protected tenant isolation is claimed. Source-org hosted CI remains an independent exact-head verification gate. No private source was copied across GitHub organizations; the existing OresLLM compiler-source incident remains open.
+
+## Stage 2: in-flight operation pin under STOP (2026-11-10)
+
+The same package-private `F32ActorHostPreflightV1` now provides `pinOperation(...)` returning a single-use `OperationPin`. Under **one synchronized monitor**, the host rechecks authority, shape and quota and increments the live count before a supervisor's `retireTurn` may close admission. The original physical worker must return its own pin; another thread or a double close fails. `awaitQuiescent()` waits for **both** retired admission and zero live pins; a physical owner waiting on its own active pin is rejected to avoid self-deadlock. STOP alone does **not** reclaim f32 memory.
+
+Exact matching Git blobs locally compiled and executed (JDK 21.0.12.1, using the exact committed `tests/run-f32-actor-host-preflight-v1.sh`):
+
+- existing `ExecutionContext.java`: `bff7ed59bad105e2b0548921600caec7bb724dbe`
+- updated `F32ActorHostPreflightV1.java`: `ed5793389fe7c10a4ef9b9560b7ce8cc4e871afc`
+- original `F32ActorHostPreflightV1Smoke.java`: `9b0545bb6f71674ee2ba91ff2e76c0ef5d214f2a`
+- new `F32ActorTurnLeaseV1Smoke.java`: `6a4b2b8abc5c5f61c72f7ead2b133186d4d2d6f4`
+- updated runner script: `ac96f50f442ca7bf80e98921e3c8843739e39fa2`
+
+Both smoke binaries passed; the second forces a supervisor STOP while the original owner holds a pin, confirms no early quiescence or post-STOP admission, rejects foreign-thread close and double return, and denies the old actor context after restart. **Not yet connected to ActorRuntime's actual dispatch or the native GEMM broker**; this is executable host-only staging, not a JVM/GraalVM guest or Native Image proof.
