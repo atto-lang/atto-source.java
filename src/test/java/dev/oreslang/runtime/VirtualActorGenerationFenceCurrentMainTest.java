@@ -181,6 +181,32 @@ final class VirtualActorGenerationFenceCurrentMainTest {
     }
 
     @Test
+    void failedPhysicalCleanupMustQuarantineLogicalActivation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var first = worker(group);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(first, ID, 1L);
+
+            // A trusted native/host exit hook may fail after guest STOP.
+            // This must not be interpreted as successful physical retirement.
+            runtime.setActorExitHook(domain -> {
+                throw new IllegalStateException("deliberate physical cleanup failure");
+            });
+            first.stop();
+            var error = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> first.getDone().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, error.getCause());
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 1L, first.id()),
+                    "no terminal decision may use a failed physical retirement gate");
+            assertThrows(IllegalStateException.class,
+                    () -> group.reserveNextVirtualActorGeneration(ID),
+                    "failed exit hook must quarantine old physical ownership");
+            group.close();
+        }
+    }
+
+    @Test
     @Timeout(60)
     void stopVsBindCannotStrandPhysicalOwnershipOrAdmitStaleGeneration()
             throws Exception {
