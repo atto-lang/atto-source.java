@@ -32,6 +32,12 @@ final class ActorRefParameterContractTest {
     }
 
     @Test
+    void transparentActorReferenceAliasPreservesMintedHandleTyping() throws Exception {
+        assertDoesNotThrow(() -> TypeChecker.check(
+                Parser.parse(source("accept-alias-typed-function.atto"))));
+    }
+
+    @Test
     void typedFunctionActorSendExecutesThroughGuestMailbox() throws Exception {
         String program = source("accept-typed-function.atto");
         Source source = Source.newBuilder(
@@ -63,6 +69,20 @@ final class ActorRefParameterContractTest {
                 "requires exactly one explicit actor type argument");
         expectRejected("reject-multiple-type-arguments.atto",
                 "requires exactly one explicit actor type argument");
+    }
+
+    @Test
+    void actorReferencesCannotBeConstructedAsObjectsOrThroughAliases() throws Exception {
+        expectRejected("reject-new-actor-ref.atto",
+                "ActorRef capabilities cannot be constructed with new");
+        expectRejected("reject-alias-new-actor-ref.atto",
+                "ActorRef capabilities cannot be constructed with new");
+    }
+
+    @Test
+    void genericValuesCannotImpersonateActorReferenceCapabilities() throws Exception {
+        expectRejected("reject-generic-capability-coercion.atto", "argument 1");
+        expectRejected("reject-nested-generic-capability-coercion.atto", "argument 1");
     }
 
     @Test
