@@ -73,11 +73,16 @@ public final class IncrementalCompiler {
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
+        Map<String, Set<String>> importDependencies =
+                ImportGraph.resolveDependencies(
+                        parsed, normalized.keySet(), normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
-                NamespaceContractChecker.addNamespaceDependencies(
-                        parsed, ImportGraph.resolveDependencies(
-                                parsed, normalized.keySet(), normalizedImportResolutions));
-        List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
+                NamespaceContractChecker.addNamespaceDependencies(parsed, importDependencies);
+        // Namespace peers are compiler ABI invalidation dependencies, NOT
+        // runtime init/import edges. Never let a namespace contract collapse
+        // unrelated source-unit init hooks into an artificial SCC barrier.
+        List<List<String>> initializationGroups =
+                ImportGraph.initializationGroups(importDependencies);
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
