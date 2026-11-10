@@ -7,6 +7,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -212,6 +215,25 @@ final class ActorReceiverContractSignatureTest {
                 end
                 """);
         assertDoesNotThrow(() -> compiler.compile(source));
+    }
+
+    @Test
+    void portableReceiverContractFixturesReachRealParserAndTypeChecker() throws IOException {
+        Path root = Path.of("contracts", "actor-receiver-v1");
+        assertDoesNotThrow(() -> check(Files.readString(root.resolve(
+                "accept_existing_actor_method.atto"))));
+        Map<String, String> failures = Map.of(
+                "reject_missing_method.atto", "missing required receiver method",
+                "reject_private_method.atto", "must be public",
+                "reject_wrong_return.atto", "incompatible receiver contract return type",
+                "reject_unrequired_receiver.atto", "unrequired actor");
+        for (Map.Entry<String, String> fixture : failures.entrySet()) {
+            String program = Files.readString(root.resolve(fixture.getKey()));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> check(program), fixture.getKey());
+            assertTrue(error.getMessage().contains(fixture.getValue()),
+                    () -> fixture.getKey() + ": " + error.getMessage());
+        }
     }
 
     @Test
