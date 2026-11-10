@@ -2073,10 +2073,18 @@ public final class ActorRuntime implements AutoCloseable {
             if (logicalActivationGeneration <= 0)
                 throw new IllegalArgumentException("virtual activation generation must be positive");
             ActorCell<?> cell = actors.get(worker.id());
-            if (cell == null || cell.ref != worker || !worker.isAlive())
+            if (cell == null || cell.ref != worker)
                 throw new IllegalStateException("virtual activation worker is not live in this ActorRuntime");
+            // STOP/finalization holds lifecycleLock before unregistering this
+            // actor. Publish its virtual identity under that same lock, then
+            // acquire group authorityLock (the existing lifecycle -> authority
+            // ordering used by manageWorker and releaseWorker).
+            synchronized (cell.lifecycleLock) {
             synchronized (authorityLock) {
-                if (groupClosed.get() || managedWorkers.get(worker.id()) != worker
+                if (cell.stopped.get() || cell.finalized || cell.forceKillFenced
+                        || actors.get(worker.id()) != cell
+                        || stoppingWorkers.contains(worker.id())
+                        || groupClosed.get() || managedWorkers.get(worker.id()) != worker
                         || !id.equals(cell.managedByGroup.get())
                         || cell.supervision.get() != supervisorControl
                         || !worker.isAlive()) {
@@ -2117,6 +2125,7 @@ public final class ActorRuntime implements AutoCloseable {
                     virtualActorActiveBindings.remove(identity, worker.id());
                     throw failure;
                 }
+            }
             }
         }
 
