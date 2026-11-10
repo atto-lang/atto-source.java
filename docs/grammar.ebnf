@@ -479,12 +479,15 @@ tilde_named_type = "~" tilde_builtin_kind
 tilde_builtin_kind = "array" | "vector" | "tuple"
                   | "fixed_array" | "fixed_list" | "list" | "slice"
                   | "map" | "set" | "entry" | "pair" | "record" ;
-(* Tilde forms are type-position aliases for the corresponding built-in
-   capitalized family, not new types or runtime constructors. The entire
-   sequence-shape and layout grammar remains unchanged. Tuple<T1,T2,...>
-   and ~tuple<T1,T2,...> are additive forms of Tuple[T1,T2,...] when no
-   separate '[...]' shape is present; mixing the two forms is rejected.
-   Value-position ~kind(...) / Kind.of(...) is a separate, gated feature. *)
+(* Canonical positional tuple annotations, including function returns, use
+   Tuple[T1,T2,...]. Tuple<T1,T2,...> and ~tuple<T1,T2,...>
+   remain compatibility type spellings when no separate '[...]' shape is
+   present; mixing the two forms is rejected. Intrinsic bracketed shapes
+   cannot be shadowed by nominal Tuple definitions.
+   Value-position ~tuple(v1,v2,...) constructs a tuple value and must not
+   be used as a return type. ~array(v1,v2,...) is explicitly an array,
+   never contextually coerced to a Tuple return, unlike legacy [...] literals.
+   Other ~kind(...) value constructors remain independently gated. *)
 type_arg_or_named = type_ref | named_type_param ;
 named_type_param = IDENT "=" meta_value ;
 meta_value      = INT_LITERAL | STRING_LITERAL | "true" | "false" | type_ref ;
