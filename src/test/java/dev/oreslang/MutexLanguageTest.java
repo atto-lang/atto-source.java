@@ -16,6 +16,44 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class MutexLanguageTest {
     @Test
+    void mutexPromotionConsumesRawStateBeforeItCanBypassTheGuard() {
+        for (String factory : java.util.List.of("Mutex", "SharedMutex")) {
+            var program = Parser.parse("""
+                    define module app
+                      fnc bad(): void {
+                        val raw = [10];
+                        val mutex = %s.new(raw);
+                        raw.set(0, 99);
+                        return;
+                      }
+                    end
+                    """.formatted(factory));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(program), factory);
+            assertTrue(error.getMessage().contains("moved"), error.getMessage());
+        }
+    }
+
+    @Test
+    void sharedCapabilityAliasesDoNotAliasTheUnprotectedPayload() {
+        var program = TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc good(): int {
+                    val raw = [10];
+                    val shared = SharedMutex.new(raw);
+                    val another_capability = shared;
+                    val lock_guard = another_capability.lock();
+                    lock_guard.set(0, 11);
+                    val result = lock_guard.get(0);
+                    lock_guard.release();
+                    return result;
+                  }
+                end
+                """));
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
     void nestedSharedMutexTypesAreRejectedConservatively() {
         var program = Parser.parse("""
                 define module app

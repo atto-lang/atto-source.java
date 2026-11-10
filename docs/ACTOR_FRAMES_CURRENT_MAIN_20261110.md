@@ -1,5 +1,19 @@
 # Actor frame integration on current main
 
+## Shared-memory ownership regression matrix
+
+The existing exclusive `SharedMutex` matrix passes **107 tests** locally:
+`MutexRuntimeTest`, `MutexLanguageTest`, `SharedMutexPublicationTest`,
+`TaskOwnedMutexRetirementTest`, and `LiveMutexGuardCountTest`.
+Two added language regressions verify that both `Mutex.new` and
+`SharedMutex.new` consume the mutable payload owner (later raw mutation is
+rejected), while aliases to the shared capability remain accepted and require
+a guard for payload access. These are executed static ownership checks, not a
+new shared-region or reader/writer implementation. Existing runtime cases cover
+cross-actor guard rejection, asynchronous acquisition, publication rollback,
+cancellation, poisoning and quiescent task retirement. The result does not
+certify arbitrary host aliases or LLVM/.NET parity.
+
 ## Execution-scope hardening follow-up
 
 `ScalarFrameStorage` now validates its exact logical scheduler/invocation context
