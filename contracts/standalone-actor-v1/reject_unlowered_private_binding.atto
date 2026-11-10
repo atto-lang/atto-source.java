@@ -1,0 +1,2 @@
+// REJECT (type checker): private binding cannot bypass activation gates.
+define actor Cart as cart;
