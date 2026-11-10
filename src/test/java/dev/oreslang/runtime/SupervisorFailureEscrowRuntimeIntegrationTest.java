@@ -80,7 +80,8 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
             assertEquals(2, bridge.pendingCount(),
                     "failed policy action cannot silently acknowledge CONTROL");
             assertTrue(bridge.commitAndAcknowledge(ancestor, () -> { }));
-            assertFalse(bridge.acknowledgeCommitted(ancestor), "duplicate ACK must be inert");
+            assertFalse(bridge.commitAndAcknowledge(ancestor, () -> { }),
+                    "duplicate ACK must be inert");
             assertTrue(bridge.commitAndAcknowledge(bridge.deliver(supervisorId), () -> { }));
             assertEquals(0, bridge.pendingCount());
         } finally {
