@@ -1,0 +1,6 @@
+define actor Cart<T> as
+end
+
+pub fnc inspect<T>(ActorRef<Cart<T>> cart): void {
+  return;
+}
