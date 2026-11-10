@@ -239,7 +239,16 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                // Compatibility: both `pub define fnc` and `define pub fnc`
+                // denote the same file-root callable, with identical modifiers.
+                if (check(FNC) || check(ROUTINE)) {
+                    Ast.Decl callable = parseDeclarationAfterModifiers(annotations, modifiers);
+                    if (callable != null) {
+                        rootDeclarations.add(callable);
+                        continue;
+                    }
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, fnc, or routine after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -474,7 +483,12 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            // Legacy nested `define` is accepted, but never creates a new
+            // scope or changes the callable's public symbol identity.
+            if (check(FNC) || check(ROUTINE)) {
+                return parseDeclarationAfterModifiers(annotations, modifiers);
+            }
+            throw error(previous(), "expected class, interface, trait, type, fnc, or routine after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -655,6 +669,11 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
 
+            // Nested members never require `define`, but admit either legacy
+            // modifier ordering so formatting is not a prerequisite to parsing.
+            if (match(DEFINE)) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
             if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
                     || check(ACTOR) || check(ISOACTOR)) {
                 throw error(peek(),
@@ -1080,6 +1099,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (match(DEFINE)) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
             // A typed state schema is not a legacy actor field/method.
             // Reject it with an explicit admission error until the AST,
             // checker, lifetime rules and runtime-owned loan are integrated.
@@ -1274,6 +1296,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
+            if (match(DEFINE)) {
+                memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
+            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
