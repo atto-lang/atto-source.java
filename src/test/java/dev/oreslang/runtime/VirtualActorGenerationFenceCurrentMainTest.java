@@ -110,6 +110,8 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             var old = worker(group);
             group.reserveVirtualActorGeneration(ID, 1L);
             group.bindVirtualActorIdentity(old, ID, 1L);
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 1L, old.id()),
+                    "a live physical worker must never authorize a terminal receipt");
             assertThrows(IllegalStateException.class, () -> group.releaseWorker(old));
 
             var stopped = stopper.submit(() -> {
@@ -121,11 +123,15 @@ final class VirtualActorGenerationFenceCurrentMainTest {
                         "STOP must reach its host physical-cleanup hook");
                 assertThrows(IllegalStateException.class,
                         () -> group.reserveVirtualActorGeneration(ID, 2L));
+                assertFalse(group.isCurrentVirtualActorTerminal(ID, 1L, old.id()),
+                        "host physical-retirement hook has not yet quiesced");
             } finally {
                 allowCleanup.countDown();
             }
             stopped.get(5, TimeUnit.SECONDS);
             old.getDone().get(5, TimeUnit.SECONDS);
+            assertTrue(group.isCurrentVirtualActorTerminal(ID, 1L, old.id()),
+                    "a retired worker may now produce an exact terminal receipt");
 
             group.reserveVirtualActorGeneration(ID, 2L);
             var replacement = worker(group);
@@ -192,6 +198,8 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             var old = worker(group);
             group.reserveVirtualActorGeneration(ID, 10L);
             group.bindVirtualActorIdentity(old, ID, 10L);
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 10L, old.id()),
+                    "the exact ActorId is insufficient before physical retirement");
             old.stop();
             old.getDone().get(5, TimeUnit.SECONDS);
 
@@ -211,9 +219,11 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             var next = worker(group);
             group.bindVirtualActorIdentity(next, ID, 12L);
             assertFalse(group.isCurrentVirtualActorTerminal(ID, 12L, old.id()));
-            assertTrue(group.isCurrentVirtualActorTerminal(ID, 12L, next.id()));
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 12L, next.id()),
+                    "a newly bound but still-live generation cannot claim retirement");
             next.stop();
             next.getDone().get(5, TimeUnit.SECONDS);
+            assertTrue(group.isCurrentVirtualActorTerminal(ID, 12L, next.id()));
             group.close();
             assertFalse(group.isCurrentVirtualActorTerminal(ID, 12L, next.id()));
         }
