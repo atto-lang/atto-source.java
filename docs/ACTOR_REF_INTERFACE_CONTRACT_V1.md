@@ -130,7 +130,7 @@ five-backend parity.
 
 ## Reusable source conformance inputs
 
-This branch adds `tests/fixtures/actor-ref-contract-v1/*.atto`:
+This branch adds ten `tests/fixtures/actor-ref-contract-v1/*.atto` files:
 
 | Fixture | Expected |
 | --- | --- |
@@ -138,6 +138,7 @@ This branch adds `tests/fixtures/actor-ref-contract-v1/*.atto`:
 | `reject-primitive-target.atto` | Type rejection |
 | `reject-class-target.atto` | Type rejection |
 | `reject-interface-target.atto` | Fail closed until actor-interface RPC is lowered |
+| `reject-unbound-generic-target.atto` | Unresolved actor type argument rejection |
 | `reject-missing-type-argument.atto` | Generic arity rejection |
 | `reject-multiple-type-arguments.atto` | Generic arity rejection |
 | `reject-direct-actor-method.atto` | No direct `ActorRef` method call |
