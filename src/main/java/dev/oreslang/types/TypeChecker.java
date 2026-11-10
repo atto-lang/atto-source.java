@@ -209,6 +209,10 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        if (!program.namespaceContracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "namespace contract conformance requires a complete, validated multi-file compilation");
+        }
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
