@@ -76,8 +76,8 @@ public final class Lexer {
             case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA);
             case '.' -> {
                 if (match('.')) {
-                    if (!match('.')) throw error("unexpected '..'; argument spread uses '...'");
-                    add(ELLIPSIS);
+                    if (match('.')) add(ELLIPSIS);
+                    else add(match('=') ? RANGE_INCLUSIVE : RANGE_EXCLUSIVE);
                 } else add(DOT);
             }
             case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
