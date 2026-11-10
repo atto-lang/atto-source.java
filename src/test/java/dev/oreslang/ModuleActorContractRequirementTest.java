@@ -267,12 +267,16 @@ final class ModuleActorContractRequirementTest {
     }
 
     @Test
-    void standaloneActorBindingIsNotYetAccepted() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    void standaloneActorBindingParsesButCannotExecuteWithoutLowering() {
+        String source = """
                 define module cart_mod as
                   pub define actor Cart as cart;
                 end
-                """));
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> check(source));
+        assertTrue(failure.getMessage().contains("not executable yet"));
     }
 
     @Test
