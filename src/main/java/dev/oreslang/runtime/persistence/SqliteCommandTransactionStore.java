@@ -283,9 +283,10 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
             return answer;
         } catch (Exception failure) {
             rollback();
-            if (failure instanceof SQLException sql) throw sql;
-            if (failure instanceof RuntimeException runtime) throw runtime;
-            throw new SQLException("OUTCOME_UNKNOWN",failure);
+            // After an attempted write, exception propagation must never
+            // imply a durable rejection: the COMMIT result could be unknown.
+            if (failure instanceof SecurityException security) throw security;
+            throw new SQLException("OUTCOME_UNKNOWN: " + failure.getMessage(),failure);
         }
     }
 
