@@ -3501,6 +3501,19 @@ public final class ActorRuntime implements AutoCloseable {
          * reservation burns N even if initialization aborts. The matching
          * bind must occur before exposing the physical actor to guest code.
          */
+        /** Prefer this host-minted generation for ordinary local activation. */
+        public long reserveNextVirtualActorGeneration(
+                VirtualActorActivationRegistry.Identity identity) {
+            requireSupervisor("reserve next virtual actor generation");
+            requireCallerRuntimeAffinity("reserve next virtual actor generation");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor owner group");
+                return virtualActorFences.reserveNext(supervisor.id(), id, identity);
+            }
+        }
+
         public void reserveVirtualActorGeneration(
                 VirtualActorActivationRegistry.Identity identity, long generation) {
             requireSupervisor("reserve virtual actor generation");
