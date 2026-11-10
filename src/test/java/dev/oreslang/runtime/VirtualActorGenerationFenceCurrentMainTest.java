@@ -336,6 +336,45 @@ final class VirtualActorGenerationFenceCurrentMainTest {
     }
 
     @Test
+    void concurrentTerminalClaimersCannotBothExecuteOneReceipt() throws Exception {
+        try (ExecutorService pool = Executors.newFixedThreadPool(2);
+             ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var physical = worker(group);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(physical, ID, 1L);
+            physical.stop();
+            physical.getDone().get(5, TimeUnit.SECONDS);
+
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch go = new CountDownLatch(1);
+            var winners = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.Callable<Void> claim = () -> {
+                ready.countDown();
+                assertTrue(go.await(5, TimeUnit.SECONDS));
+                try (var ignored = group.beginVirtualActorTerminalDecision(
+                        ID, 1L, physical.id())) {
+                    winners.incrementAndGet();
+                } catch (IllegalStateException alreadyClaimed) {
+                    // Expected for precisely one of the concurrent attempts.
+                }
+                return null;
+            };
+            var first = pool.submit(claim);
+            var second = pool.submit(claim);
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            go.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            second.get(5, TimeUnit.SECONDS);
+            assertEquals(1, winners.get(), "one terminal receipt has one policy owner");
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 1L, physical.id()));
+            assertEquals(2L, group.reserveNextVirtualActorGeneration(ID));
+            group.abortVirtualActorGeneration(ID, 2L);
+            group.close();
+        }
+    }
+
+    @Test
     void physicalWorkerCannotOwnMultipleLogicalIdentities() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
