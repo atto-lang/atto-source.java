@@ -3595,6 +3595,26 @@ public final class ActorRuntime implements AutoCloseable {
                     supervisor.id(), id, identity, generation, physical);
         }
 
+        /**
+         * Internal supervisor CONTROL admission, not a guest-callable API.
+         * The one-shot lease blocks replacement reservation until a trusted
+         * terminal policy decision has finished outside the ledger lock.
+         */
+        VirtualActorRuntimeGenerationFence.TerminalDecisionLease
+        beginVirtualActorTerminalDecision(
+                VirtualActorActivationRegistry.Identity identity,
+                long generation, ActorId physical) {
+            requireSupervisor("begin virtual actor terminal CONTROL decision");
+            requireCallerRuntimeAffinity("begin virtual actor terminal CONTROL decision");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor group");
+                return virtualActorFences.beginTerminalDecision(
+                        supervisor.id(), id, identity, generation, physical);
+            }
+        }
+
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
             return Optional.ofNullable(creator);
