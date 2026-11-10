@@ -3450,6 +3450,23 @@ public final class OwnershipChecker {
         }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.MapLiteralExpr e) {
+            // A Task may hide a captured mutable owner, actor self or borrow
+            // in *either* key or value. Treat both expressions as ordinary
+            // read-only traversals in evaluation order and route each root
+            // name through existing Send/Move/loan capture admission.
+            for (Ast.MapEntryExpr entry : e.entries()) {
+                scanExpr(entry.key(), locals, outer, recursiveBinding, captures, false);
+                scanExpr(entry.value(), locals, outer, recursiveBinding, captures, false);
+            }
+        }
+        else if (expr instanceof Ast.ContextualEmptyMapExpr) {
+            // A placeholder has no child expressions and remains
+            // unlowerable until a canonical Map type witness is supplied.
+        }
+        else if (expr instanceof Ast.TypedEmptyAggregateExpr) {
+            // Fully concrete empty aggregate has no free variables.
+        }
         else if (expr instanceof Ast.ObjectExpr e) {
             for (Ast.ObjectField field : e.fields()) {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);

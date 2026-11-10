@@ -144,6 +144,28 @@ final class PopulatedMapSuspendCancelGuestTest {
     }
 
     @Test
+    void mapKeyAndValueCapturesAreCheckedForMoveAfterSpawn() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub let int value = 7;
+                end
+                pub async fnc main(): void {
+                    let Box owner = new Box();
+                    let Future<void> child = task {
+                        const map = ~map<string, int>(
+                            "item" => owner.value
+                        );
+                        return;
+                    };
+                    stdio.stdout.write(owner.value);
+                    await child;
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void exceedingMapEntryQuotaFailsBeforeAnyGuestEffect() {
         StringBuilder guest = new StringBuilder("""
                 fnc side_effect(): int {
