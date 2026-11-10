@@ -115,6 +115,25 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         return value;
     }
 
+    /**
+     * Guard the public identity lookup surface before any hash-map access.
+     * Identity is a public record and may not have been issued by resolve().
+     * Canonical issuance normalizes keys; inspection must never normalize an
+     * attacker-supplied candidate into another actor's existing identity.
+     */
+    static void validateLookupIdentity(Identity identity) {
+        Objects.requireNonNull(identity, "identity");
+        requireName(identity.domain(), "domain");
+        requireName(identity.declaration(), "declaration");
+        String key = Objects.requireNonNull(identity.key(), "key");
+        if (key.isEmpty() || key.length() > MAX_KEY_BYTES)
+            throw new IllegalArgumentException("invalid virtual actor lookup key");
+        checkUnicode(key, "key");
+        if (!Normalizer.isNormalized(key, Normalizer.Form.NFC)
+                || key.getBytes(StandardCharsets.UTF_8).length > MAX_KEY_BYTES)
+            throw new IllegalArgumentException("non-canonical or oversized virtual actor lookup key");
+    }
+
     public final class LogicalRef {
         private final Slot slot;
         private LogicalRef(Slot slot) { this.slot = slot; }
@@ -159,8 +178,10 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
      */
     public Optional<Inspection> inspectIdentity(Identity identity) {
         Objects.requireNonNull(identity, "identity");
+        // Preserve foreign-domain non-disclosure without hashing unbounded IDs.
+        if (!domain.equals(identity.domain())) return Optional.empty();
+        validateLookupIdentity(identity);
         synchronized (monitor) {
-            if (!domain.equals(identity.domain())) return Optional.empty();
             Slot slot = slots.get(identity);
             if (slot == null) return Optional.empty();
             return Optional.of(snapshot(slot));
@@ -205,6 +226,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             throw new IllegalArgumentException("virtual actor page size must be 1..256");
         if (expectedRevision < -1 || (after != null && expectedRevision < 0))
             throw new IllegalArgumentException("invalid virtual actor page cursor");
+        if (after != null) validateLookupIdentity(after);
         Comparator<Identity> order = Comparator.comparing(Identity::declaration)
                 .thenComparing(Identity::key);
         synchronized (monitor) {
