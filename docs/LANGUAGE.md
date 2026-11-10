@@ -6,6 +6,18 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 A source file may begin with an optional, flat, compile-time `namespace name;` declaration. The source namespace identifies the source unit for compiler metadata and ABI invalidation; it is **not** a runtime value, a type-only declaration container, an import alias, or a replacement for the physical source-unit identity. It does not grant access to private declarations, and cross-file imports still require explicit paths and selectors. Dotted/nested source namespaces are not part of the current syntax.
 
+A stacked Java frontend supports `namespace shop conforms ShopApi;`
+when checked by a **complete explicit multi-file compilation**. The
+namespace-specific `define contract ShopApi for namespace as ... end`
+requirement is different from an ordinary module contract. A package/build
+input supplies the closed set of source units sharing that namespace; no
+filesystem directory is searched automatically, and no cross-package name
+joining or imported actor-state authority is inferred. The stage-one
+namespace contract checker accepts only required public non-generic
+nominal actors and public synchronous non-generic `fnc` signatures; other
+requirements and standalone single-file proof paths reject. See
+[NAMESPACE_CONTRACTS_V1.md](NAMESPACE_CONTRACTS_V1.md).
+
 A source file may contain multiple named modules. A module owns declarations and is itself a runtime-qualified value scope: exported members are accessed through the module name, such as `math.add(1, 2)`. Modules may expose functions, classes, bindings, and module state; type names and value names are checked in their respective declaration namespaces. Modules are flat and cannot contain other modules. The implementation-reserved name `__root__` represents file-root declarations and cannot be declared or imported as a module.
 
 A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
