@@ -76,6 +76,9 @@ public final class SingletonSharedDomain {
     }
 
     private final Map<Key, CompletableFuture<Object>> values = new ConcurrentHashMap<>();
+    // Protected by the values monitor. Checked compiler publications must never
+    // silently reuse a declaration whose resolved schema has changed.
+    private final Map<Key, String> compiledSchemas = new HashMap<>();
     private final int maxSnapshots;
 
     public SingletonSharedDomain() { this(4096); }
@@ -122,19 +125,48 @@ public final class SingletonSharedDomain {
      * Recursive same-turn initialization fails instead of deadlocking.
      */
     public CompletableFuture<Object> snapshotOnce(Key key, Supplier<?> initialize) {
+        return snapshotInternal(key, null, initialize);
+    }
+
+    /**
+     * Compiler-only immutable declaration publication. The fingerprint covers
+     * the checked and canonicalized field names, types, and literal contents.
+     * Different code-unit text spelling is okay; a different schema is not.
+     * Unchecked and compiler-checked callers never share one registry entry.
+     */
+    public CompletableFuture<Object> snapshotOnceChecked(
+            Key key, String compilerFingerprint, Supplier<?> initialize) {
+        if (compilerFingerprint == null
+                || !compilerFingerprint.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("invalid compiler singleton fingerprint");
+        }
+        return snapshotInternal(key, compilerFingerprint, initialize);
+    }
+
+    private CompletableFuture<Object> snapshotInternal(
+            Key key, String compilerFingerprint, Supplier<?> initialize) {
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(initialize, "initialize");
         CompletableFuture<Object> existing;
         CompletableFuture<Object> created = null;
         synchronized (values) {
             existing = values.get(key);
-            if (existing == null) {
+            if (existing != null) {
+                String original = compiledSchemas.get(key);
+                if (!Objects.equals(original, compilerFingerprint)) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("singleton declaration schema mismatch"));
+                }
+            } else {
                 if (values.size() >= maxSnapshots) {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("singleton identity quota exceeded"));
                 }
                 created = new CompletableFuture<>();
                 values.put(key, created);
+                if (compilerFingerprint != null) {
+                    compiledSchemas.put(key, compilerFingerprint);
+                }
             }
         }
         if (existing != null) {
