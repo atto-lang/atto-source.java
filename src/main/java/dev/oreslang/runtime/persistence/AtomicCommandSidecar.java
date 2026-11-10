@@ -30,6 +30,7 @@ public final class AtomicCommandSidecar implements AutoCloseable {
     private final long maxOutstandingBytes;
     private final Object admission = new Object();
     private final Set<CompletableFuture<Receipt>> unresolved=new HashSet<>();
+    private volatile Thread writerThread;
     private int outstanding;
     private long outstandingBytes;
     private boolean closed;
@@ -45,6 +46,7 @@ public final class AtomicCommandSidecar implements AutoCloseable {
         this.writer=Executors.newSingleThreadExecutor(r -> {
             Thread worker=new Thread(r,"ores-event-command-writer");
             worker.setDaemon(true);
+            this.writerThread=worker;
             return worker;
         });
     }
@@ -69,8 +71,10 @@ public final class AtomicCommandSidecar implements AutoCloseable {
             unresolved.add(answer);
             try {
                 writer.execute(() -> {
+                    Receipt committed=null;
+                    Throwable error=null;
                     try {
-                        Receipt committed=store.commit(command);
+                        committed=store.commit(command);
                         if (committed.durable() &&
                             (committed.status()==Status.COMMITTED ||
                              committed.status()==Status.DUPLICATE)) {
@@ -83,16 +87,19 @@ public final class AtomicCommandSidecar implements AutoCloseable {
                                 !java.util.Arrays.equals(proof.resultBytes(),committed.resultBytes()))
                                 throw new IllegalStateException("OUTCOME_UNKNOWN");
                         }
-                        answer.complete(committed);
-                    } catch (Throwable error) {
-                        answer.completeExceptionally(error);
+                    } catch (Throwable failure) {
+                        error=failure;
                     } finally {
+                        // Never run arbitrary CompletableFuture dependents while
+                        // holding our admission lock or before freeing capacity.
                         synchronized (admission) {
                             unresolved.remove(answer);
                             outstanding--;
                             outstandingBytes-=charge;
                         }
                     }
+                    if (error!=null) answer.completeExceptionally(error);
+                    else answer.complete(committed);
                 });
             } catch (RuntimeException rejected) {
                 unresolved.remove(answer);
@@ -111,29 +118,25 @@ public final class AtomicCommandSidecar implements AutoCloseable {
             closed=true;
             writer.shutdown();
         }
+        // A synchronous CompletableFuture dependent may execute on the writer.
+        // It must never await termination of its own thread.
+        if (Thread.currentThread()==writerThread) return;
         boolean interrupted=false;
         try {
-            while (true) {
-                try {
-                    if (writer.awaitTermination(30,TimeUnit.SECONDS)) break;
-                    // All accepted but unsettled operations have unknown outcome.
-                    // Never strand a future when the bounded worker cannot stop.
-                    synchronized (admission) {
-                        for (CompletableFuture<Receipt> future:unresolved)
-                            future.completeExceptionally(new IllegalStateException("OUTCOME_UNKNOWN"));
-                    }
-                    writer.shutdownNow();
-                    break;
-                } catch (InterruptedException e) {
-                    interrupted=true;
-                    synchronized (admission) {
-                        for (CompletableFuture<Receipt> future:unresolved)
-                            future.completeExceptionally(new IllegalStateException("OUTCOME_UNKNOWN"));
-                    }
-                    writer.shutdownNow();
-                    break;
-                }
+            try {
+                if (writer.awaitTermination(30,TimeUnit.SECONDS)) return;
+            } catch (InterruptedException e) {
+                interrupted=true;
             }
+            // Capture accepted unresolved requests while holding the lock, but
+            // publish failures OUTSIDE it (dependent callbacks are arbitrary).
+            java.util.List<CompletableFuture<Receipt>> abandoned;
+            synchronized (admission) {
+                abandoned=java.util.List.copyOf(unresolved);
+            }
+            for (CompletableFuture<Receipt> future:abandoned)
+                future.completeExceptionally(new IllegalStateException("OUTCOME_UNKNOWN"));
+            writer.shutdownNow();
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
