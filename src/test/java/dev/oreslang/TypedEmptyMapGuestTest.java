@@ -108,12 +108,14 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
-    void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
-        for (String file : new String[]{
-                "empty-map-nonempty-reject.atto",
-                "empty-map-bad-arity.atto"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(fixture(file)), file);
-        }
+    void explicitPopulatedLiteralIsAdmittedButMalformedTypedArityRemainsBlocked() {
+        // This fixture was previously a nonempty rejection case. Its narrow
+        // literal-only form is now a positive compiler and ownership fixture.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                fixture("empty-map-nonempty-reject.atto")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("empty-map-bad-arity.atto")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc f(): void { const m = ~map(\"x\" => 1); return; }"));
     }
 }

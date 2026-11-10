@@ -97,9 +97,12 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
 
     @Test
     void mapLiteralsAndAmbiguousSyntaxFailClosed() {
+        Ast.MapLiteralExpr typed = assertInstanceOf(Ast.MapLiteralExpr.class,
+                initializer("~map<String,bool>(\"ready\" => true)"));
+        assertEquals(1, typed.entries().size());
+
         for (String source : List.of(
                 "~()", "~map(\"ready\" => true)",
-                "~map<String,bool>(\"ready\" => true)",
                 "~(\"ready\" => true)",
                 "~(ready => true)",
                 "~record(\"ready\" => true)",
