@@ -31,7 +31,8 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
 
     enum RestartBlocker {
         READY, CONTROL_FAILED, UNKNOWN_NODE, ALREADY_REPLACED, STILL_ALIVE, PENDING_FAILURE,
-        CHILD_STILL_RUNNING, PHYSICAL_RELEASE_UNVERIFIED, PARENT_UNAVAILABLE
+        DATA_ADMISSIONS_IN_FLIGHT, CHILD_STILL_RUNNING,
+        PHYSICAL_RELEASE_UNVERIFIED, PARENT_UNAVAILABLE
     }
 
     static final class RestartPermit {
@@ -210,6 +211,11 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             if (parent == null || !parent.alive() || parent.fenced())
                 return RestartBlocker.PARENT_UNAVAILABLE;
         }
+        // One accepted-but-still-settling DATA permit is sufficient to deny
+        // reuse of the subtree. Java DONE and a test-only release oracle
+        // cannot erase a logical admission that predates the crash fence.
+        if (bridge.dataInFlightInSubtree(nodeId) != 0)
+            return RestartBlocker.DATA_ADMISSIONS_IN_FLIGHT;
         for (var entry : states.entrySet()) {
             long id = entry.getKey();
             if (id != nodeId && !isBelow(id, nodeId, states)) continue;
