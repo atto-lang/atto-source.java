@@ -1,0 +1,79 @@
+name: Actor nested suspends scalar exact-head
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/ActorScalarSuspendingLowering.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorScalarSuspendingMachine.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorScalarSuspendingLoweringTest.java'
+      - 'docs/ACTOR_SCALAR_SUSPENDS_LOWERING_M3P3B.md'
+      - '.github/workflows/actor-scalar-suspends-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nested-source-await:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Exact source checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify head tree and newly authored exact blobs
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "EXACT_HEAD=$(git rev-parse HEAD)"
+          echo "EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+          for path in \
+            src/main/java/dev/oreslang/compiler/ActorScalarSuspendingLowering.java \
+            src/main/java/dev/oreslang/runtime/ActorScalarSuspendingMachine.java \
+            src/main/java/dev/oreslang/runtime/ActorReceiveInvocation.java \
+            src/main/java/dev/oreslang/runtime/ActorCallContinuation.java \
+            src/test/java/dev/oreslang/runtime/ActorScalarSuspendingLoweringTest.java; do
+            test "$(git hash-object "$path")" = "$(git rev-parse "HEAD:$path")"
+            echo "BLOB $path $(git hash-object "$path")"
+          done
+      - name: GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run checked-source nested await and receive stack regression
+        run: mvn -B -ntp -Dtest=ActorScalarSuspendingLoweringTest,ActorReceiveInvocationTest,SourceActorReceiveInvocationTest -DfailIfNoTests=true test
+      - name: Fail if JUnit output missing, failing or skipped
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          classes = [
+            "ActorScalarSuspendingLoweringTest",
+            "ActorReceiveInvocationTest",
+            "SourceActorReceiveInvocationTest",
+          ]
+          total=0
+          for klass in classes:
+            path=Path("target/surefire-reports/TEST-dev.oreslang.runtime."+klass+".xml")
+            if not path.is_file(): raise SystemExit("MISSING_JUNIT "+klass)
+            root=ET.parse(path).getroot()
+            counts={k:int(root.get(k,"0")) for k in ("tests","failures","errors","skipped")}
+            print("HOST_RUNTIME_JUNIT",klass,counts)
+            if counts["tests"]<1 or counts["failures"] or counts["errors"] or counts["skipped"]:
+              raise SystemExit("BAD_JUNIT "+klass)
+            total+=counts["tests"]
+          if total<8: raise SystemExit("EXPECTED_8_PLUS_ASSERTION_METHODS")
+          print("HOST_COMPILER_SOURCE_JUNIT_PASS",total)
+          print("SOURCE_RECEIVE_GUEST_ENTRY_AND_NATIVE_AOT_NOT_CERTIFIED")
+          PY
