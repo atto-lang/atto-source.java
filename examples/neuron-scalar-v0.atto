@@ -1,17 +1,15 @@
-// Candidate .atto guest execution: one physical actor hosts one scalar neuron.
-// No automatic differentiation or train-step commit is claimed.
+// Canonical AttoLang protected neuron-state schema. Parser/AST fixture only.
+// NOT executable until critical state-loan MIR is integrated.
 define neuron actor LinearNeuron as
-  let float weight;
-  let float bias;
-
-  on_start(): void {
-    self.weight = 2.0;
-    self.bias = 1.0;
-    return;
+  state {
+    let float weight;
+    let float bias;
   }
 
   pub forward(float input): float {
-    return self.weight * input + self.bias;
+    // Placeholder. Eventually read weight/bias through a critical-read loan,
+    // never by treating them as self.weight/self.bias flat actor fields.
+    return input;
   }
 
   receive(ActorMail<float> mail): void {
@@ -20,16 +18,3 @@ define neuron actor LinearNeuron as
     return;
   }
 end
-
-pub async routine main(): void {
-  val neuron = spawn LinearNeuron();
-  await neuron.get_ready();
-  neuron.send(3.0);
-  val output = (await neuron.outputs.next()).value.unwrap();
-  if output.value != 7.0; do
-    rt fail("neuron forward result mismatch");
-  fi
-  stdio.stdout.write("NEURON-V0-PASS");
-  await neuron.get_done();
-  return;
-}
