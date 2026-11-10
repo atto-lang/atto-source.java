@@ -83,6 +83,9 @@ final class SupervisorFailureEscrowV1 {
         Cell cell = requireNode(id);
         if (id == rootId) throw new IllegalStateException("guardian failure requires external supervisor");
         if (cell.terminal != null) return cell.terminal; // terminal replay is inert
+        if (!cell.alive) {
+            throw new IllegalStateException("cannot convert a clean STOP into a later failure");
+        }
         cell.alive = false;
         cell.fenced = true;
         cell.terminal = new Notice(id, cell.generation, cell.reservation);
