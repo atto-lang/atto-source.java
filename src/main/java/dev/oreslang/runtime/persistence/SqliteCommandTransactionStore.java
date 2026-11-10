@@ -171,7 +171,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                 int count=r.getInt(4),schema=r.getInt(5);
                 byte[] recordedEvents=r.getBytes(6),recordedResultHash=r.getBytes(7),result=r.getBytes(8);
                 if (first<1 || count<1 || count>10000 || schema<1 ||
-                    last < first || last-first+1 != count || last>head(id) ||
+                    last==Long.MAX_VALUE || last < first ||
+                    last-first+1 != count || last>head(id) ||
                     result==null || recordedResultHash==null ||
                     !MessageDigest.isEqual(hash(result),recordedResultHash))
                     throw new SQLException("CORRUPT_COMMAND_RECORD");
@@ -347,7 +348,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                     }
                 }
             }
-            if(headVersion-snapshotVersion>10000)
+            if(headVersion==Long.MAX_VALUE ||
+               headVersion-snapshotVersion>10000)
                 throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
             // Index only the post-snapshot legacy events (snapshots themselves
             // are checked as barriers, not replayed) and command ranges.
@@ -387,7 +389,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                         int count=r.getInt(3),schema=r.getInt(4);
                         byte[] digest=r.getBytes(5),resultHash=r.getBytes(6),
                                resultBytes=r.getBytes(7);
-                        if(first<=snapshotVersion || first<1 || last>headVersion ||
+                        if(first<=snapshotVersion || first<1 ||
+                           last==Long.MAX_VALUE || last>headVersion ||
                            count<1 || count>10000 || last-first+1!=count ||
                            schema<1 || digest==null || resultHash==null ||
                            resultBytes==null || resultBytes.length>1_048_576 ||
