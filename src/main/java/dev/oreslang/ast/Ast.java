@@ -522,6 +522,25 @@ public final class Ast {
             stateFields = List.copyOf(stateFields);
             if (actorConcurrency.role() != ActorRole.NEURON && !stateFields.isEmpty())
                 throw new IllegalArgumentException("only neuron actors may carry a protected state schema");
+            if (actorConcurrency.role() == ActorRole.NEURON) {
+                if (actorKind == ActorKind.NONE || !fields.isEmpty() || stateFields.isEmpty()
+                        || constructor != null || actorConcurrency.requestConcurrency() != 1
+                        || actorConcurrency.messageConcurrency() != 1) {
+                    throw new IllegalArgumentException(
+                            "neuron actors require one protected state schema, no flat fields "
+                            + "or constructor, and one logical actor turn");
+                }
+                java.util.HashSet<String> protectedNames = new java.util.HashSet<>();
+                for (FieldDecl field : stateFields) {
+                    if (field.visibility() != Visibility.PRIVATE
+                            || field.bindingKind() != BindingKind.LET
+                            || field.type() == null || !field.annotations().isEmpty()
+                            || !protectedNames.add(field.name())) {
+                        throw new IllegalArgumentException(
+                                "invalid or duplicate protected neuron state field: " + field.name());
+                    }
+                }
+            }
         }
 
         /** Compatibility constructor for existing AST/JIT clients. */
