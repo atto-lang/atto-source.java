@@ -29,29 +29,53 @@ public final class ActorStateRwLoans implements AutoCloseable {
 
     private final Object monitor = new Object();
     private final int maxPending;
+    private final int maxReaders;
     private final ArrayDeque<Pending> pending = new ArrayDeque<>();
     private final ArrayDeque<Runnable> completions = new ArrayDeque<>();
     private final Map<Authority, StateLoan> readers = new LinkedHashMap<>();
     private final Set<Authority> reserved = new HashSet<>();
     private StateLoan writer;
-    private ExecutionContext.AllocationDomain boundAllocation;
+    private final ExecutionContext.AllocationDomain boundAllocation;
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
     private final Runnable retirementWakeup;
     private boolean retirementWakeupDelivered;
 
-    public ActorStateRwLoans(int maxPending) {
-        this(maxPending, () -> { });
+    /**
+     * The actor's region owner is selected at allocation time, NEVER by its
+     * first reader/writer. Only a trusted actor-runtime allocation registry
+     * may provide this value: a caller must not construct it from guest input.
+     */
+    public ActorStateRwLoans(
+            ExecutionContext.AllocationDomain ownerAllocation,
+            int maxPending, int maxReaders) {
+        this(ownerAllocation, maxPending, maxReaders, () -> { });
     }
 
     /**
      * Host/runtime constructor. Wakeup fires only after close() seals new
      * admission and the final physical reader/writer/completion retires.
+     * The active-reader limit is separate from the pending queue limit.
      */
-    public ActorStateRwLoans(int maxPending, Runnable retirementWakeup) {
-        if (maxPending < 0) throw new IllegalArgumentException("negative state RW queue capacity");
+    public ActorStateRwLoans(
+            ExecutionContext.AllocationDomain ownerAllocation,
+            int maxPending, int maxReaders, Runnable retirementWakeup) {
+        this.boundAllocation = Objects.requireNonNull(
+                ownerAllocation, "ownerAllocation");
+        if (boundAllocation.kind() != ExecutionContext.AllocationKind.ACTOR ||
+                !boundAllocation.isBound()) {
+            throw new IllegalArgumentException(
+                    "state RW region must be bound to an actor allocation at construction");
+        }
+        if (maxPending < 0) {
+            throw new IllegalArgumentException("negative state RW queue capacity");
+        }
+        if (maxReaders < 1 || maxReaders > 65536) {
+            throw new IllegalArgumentException("state RW reader capacity outside 1..65536");
+        }
         this.maxPending = maxPending;
+        this.maxReaders = maxReaders;
         this.retirementWakeup = Objects.requireNonNull(
                 retirementWakeup, "retirementWakeup");
     }
@@ -101,9 +125,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 return OresFuture.failed(new IllegalStateException(
                         "actor state RW loans closed"));
             }
-            if (boundAllocation == null) {
-                boundAllocation = execution.allocationDomain();
-            } else if (!boundAllocation.equals(execution.allocationDomain())) {
+            if (!boundAllocation.equals(execution.allocationDomain())) {
                 return OresFuture.failed(new IllegalArgumentException(
                         "actor state RW loans belong to a different actor allocation incarnation"));
             }
@@ -145,6 +167,22 @@ public final class ActorStateRwLoans implements AutoCloseable {
         synchronized (monitor) { return pending.size(); }
     }
 
+    /**
+     * Observational suspension precondition for this region. This is NOT an
+     * authorization capability: scheduler admission must independently check
+     * the authenticated execution/actor generation and all its region loans.
+     * A stale released handle cannot attest clearance while a new request
+     * from the same logical execution is reserved.
+     */
+    public boolean noOutstandingLoanFor(ExecutionContext execution) {
+        Objects.requireNonNull(execution, "execution");
+        if (!validStateExecution(execution) ||
+                !boundAllocation.equals(execution.allocationDomain())) return false;
+        synchronized (monitor) {
+            return !reserved.contains(authority(execution));
+        }
+    }
+
     private static boolean validStateExecution(ExecutionContext execution) {
         return execution.executionHandle().isBound() &&
                 execution.allocationDomain().kind() ==
@@ -163,7 +201,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
         if (access == Access.WRITE) {
             return writer == null && readers.isEmpty();
         }
-        return writer == null;
+        return writer == null && readers.size() < maxReaders;
     }
 
     private StateLoan createLocked(Authority authority, Access access) {
@@ -210,8 +248,10 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 return;
             }
 
-            // Head reader is eligible whenever no writer is active. Admit the
-            // entire contiguous reader cohort, then stop before the next writer.
+            // Admit only as many FIFO readers as there is physical capacity.
+            // A reader left queued at the head blocks later writers; once its
+            // predecessor retires, its reserved slot is promoted first.
+            if (readers.size() >= maxReaders) return;
             pending.removeFirst();
             StateLoan loan = createLocked(head.authority, Access.READ);
             completions.addLast(() -> {
