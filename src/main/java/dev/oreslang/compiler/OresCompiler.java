@@ -21,6 +21,16 @@ public final class OresCompiler {
         return ProtectedScalarMirV1.lower(Parser.parse(source));
     }
 
+    /**
+     * Opt-in executable persistent scalar slice: production Parser ->
+     * sealed-state MIR proof -> host-fenced durable actor executor.
+     * General guest compilation deliberately remains fail-closed pending
+     * ownership and scheduler integration for arbitrary state schemas.
+     */
+    public static PersistentScalarMirV1.Plan compilePersistentScalarI64(String source) {
+        return PersistentScalarMirV1.lower(source);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
