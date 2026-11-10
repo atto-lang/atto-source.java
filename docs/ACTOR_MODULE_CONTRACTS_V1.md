@@ -120,9 +120,13 @@ may be synthesized. This restriction applies to private and public actor
 bindings. Generic, inherited and transport-aware named bindings are not
 admitted in this slice.
 
-The stacked `StandaloneActorDeclarationAdmissionTest` adds 14 authored
+The stacked `StandaloneActorDeclarationAdmissionTest` adds 19 authored
 JUnit tests (UNEXECUTED), including namespace/contract conformance,
-old syntax equivalence, fail-closed named bindings and direct ABI refusal.
+old syntax equivalence, fail-closed named bindings, ABI equivalence,
+backward-compatible constructors, and direct ABI refusal. In particular,
+`AnnotationExpander` must preserve `standaloneBinding` when it rebuilds
+class declarations: erasing the marker would bypass type-check admission.
+A dedicated regression case checks this preservation and rejection.
 Portable `.atto` samples live in `contracts/standalone-actor-v1/`.
 Java/Graal parser/type-checker coverage and executable guest behavior
 remain **unverified** until exact-head, stepful runs.
