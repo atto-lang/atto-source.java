@@ -1300,8 +1300,11 @@ final class ParserTest {
                     IllegalArgumentException.class,
                     () -> Parser.parse(source),
                     domain);
+            String expectedDomainGate = domain.equals("quantum")
+                    ? "quantum execution domain requires explicit backend lowering"
+                    : "execution domain '" + domain;
             assertTrue(
-                    failure.getMessage().contains("execution domain '" + domain),
+                    failure.getMessage().contains(expectedDomainGate),
                     failure::toString);
             assertTrue(
                     failure.getMessage().contains("no implicit CPU fallback"),
