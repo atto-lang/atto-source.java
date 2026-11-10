@@ -518,15 +518,15 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 case CLOSED -> Lifecycle.CLOSED;
             };
             if (terminal != null) {
-                actorId = Optional.of(terminal.actorId());
-                actorKind = Optional.of(terminal.actorKind());
-                actorGeneration = terminal.actorGeneration();
+                // Preserve historical terminal diagnostics, but do not expose
+                // the previous incarnation's ActorId/generation as if they
+                // belonged to a newly reserved, still unpublished activation.
                 terminalFailure = Optional.ofNullable(terminal.failureClass());
                 terminalAt = Optional.of(terminal.terminalAt());
-                // A terminal record describes the preceding physical activation.
-                // Never let its outcome mask a newer reserved-but-unpublished
-                // generation. Preserve the historical failure fields separately.
                 if (lifecycle == Lifecycle.PASSIVATED) {
+                    actorId = Optional.of(terminal.actorId());
+                    actorKind = Optional.of(terminal.actorKind());
+                    actorGeneration = terminal.actorGeneration();
                     if (terminal.failureClass() != null) lifecycle = Lifecycle.FAILED;
                     else if (terminal.cancelled()) lifecycle = Lifecycle.CANCELLED;
                 }
