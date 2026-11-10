@@ -4587,8 +4587,15 @@ public final class Parser {
     private boolean isTildeAggregateConstructorHead() {
         if (!check(TILDE) || current + 2 >= tokens.size()
                 || tokens.get(current + 1).type() != IDENT) return false;
-        Token.Type suffix = tokens.get(current + 2).type();
-        if (suffix != LPAREN && suffix != LT) return false;
+        Token tilde = tokens.get(current);
+        Token kind = tokens.get(current + 1);
+        Token next = tokens.get(current + 2);
+        // A source sigil must be contiguous with its built-in kind. Preserve
+        // old unary "~ array(...)" and "~ tuple(...)" expressions verbatim.
+        if (!adjacent(tilde, kind)) return false;
+        Token.Type suffix = next.type();
+        // Spaced '<' is a comparison, not a generic constructor witness.
+        if (suffix != LPAREN && (suffix != LT || !adjacent(kind, next))) return false;
         return switch (tokens.get(current + 1).lexeme()) {
             case "array", "tuple", "vector", "fixed_array", "fixed_list",
                     "list", "slice", "set", "map", "entry", "pair", "record" -> true;
