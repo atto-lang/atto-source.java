@@ -121,6 +121,11 @@ public final class SqliteCommandTransactionStoreTestMain {
                 check(closedFromCallback.durable() &&
                       closedFromCallback.version()==2,
                       "synchronous completion could not close its own sidecar");
+                // A second close from the owner must still join the worker
+                // before the shared SQLite Store is disposed.
+                callbackSidecar.close();
+                check(commands.loadVerified(callbackId,1).version()==2,
+                      "callback-sidecar close lost a committed command");
             }
             // Restart provider and change physical activation generation, but
             // keep stable command identity and original committed result.
