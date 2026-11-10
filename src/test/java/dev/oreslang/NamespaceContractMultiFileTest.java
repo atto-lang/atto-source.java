@@ -7,6 +7,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -179,6 +182,56 @@ final class NamespaceContractMultiFileTest {
         var rebuilt = compiler.compile(changed);
         assertTrue(rebuilt.rebuilt("shop/contracts.atto"));
         assertTrue(rebuilt.rebuilt("shop/tick.atto"));
+    }
+
+    @Test
+    void portableAttoCorpusChecksActualMultiFileSources() throws IOException {
+        Path root = Path.of("contracts", "namespace-v1");
+        Map<String, String> sources = new LinkedHashMap<>();
+        for (String file : new String[] {"contracts.atto", "cart.atto", "tick.atto"}) {
+            sources.put("shop/" + file,
+                    Files.readString(root.resolve("shop").resolve(file)));
+        }
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(sources));
+
+        for (Map.Entry<String, String> mutation : Map.of(
+                "reject_private_actor", "missing public non-generic actor",
+                "reject_wrong_namespace", "missing public non-generic actor").entrySet()) {
+            Map<String, String> negative = new LinkedHashMap<>(sources);
+            negative.put("shop/cart.atto",
+                    Files.readString(root.resolve(mutation.getKey()).resolve("cart.atto")));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new IncrementalCompiler().compile(negative), mutation.getKey());
+            assertTrue(error.getMessage().contains(mutation.getValue()),
+                    () -> mutation.getKey() + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void namespaceContractCannotBeDeclaredInsideModule() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse("""
+                        namespace shop;
+                        define module nested as
+                          define contract ShopApi for namespace as
+                            actor Cart;
+                          end
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("file root"));
+    }
+
+    @Test
+    void actorAndCallableWithSameNameInDifferentFilesCollide() {
+        Map<String, String> sources = complete();
+        sources.put("shop/tick.atto", """
+                namespace shop;
+                pub fnc Cart(): int { return 1; }
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("duplicate runtime value"));
     }
 
     @Test
