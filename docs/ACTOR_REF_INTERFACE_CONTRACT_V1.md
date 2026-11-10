@@ -1,7 +1,6 @@
 # AttoLang ActorRef and actor-interface contract v1
 
-**Status (2026-11-10):** design contract plus a **narrow, implemented Java
-type-checker admission change** on this branch. This document is not evidence
+**Status (2026-11-10):** design contract plus **Java compiler type-admission and capability-forgery guards** on this branch. This document is not evidence
 of executable actor-interface RPC, `ActorContext<T>`, or virtual-actor guest
 lowering. Preserve `.ores` compatibility; new fixtures are `.atto`.
 
@@ -60,6 +59,27 @@ ordinary message capability from supervisor CONTROL/lifecycle authority,
 preferably through a separate non-guest-forgeable control capability and a
 compatible migration path. Do not make a new restricted actor interface expose
 those control methods by default.
+
+## November 10 security hardening audit
+
+The initial actor-target checker left two paths to accidental/forged authority
+that now fail closed in source type checking:
+
+1. `new ActorRef<Cart>()` and `new CartHandle()` (transparent aliases)
+   previously fell through the general non-class `new` expression path and
+   could acquire a static actor-reference type without a runtime-minted handle.
+   Compiler admission now rejects `new` for any resolved actor-ref-bearing type.
+2. The permissive `Unknown`/`Generic` assignability rule could otherwise let
+   a value with no proven minted handle flow into `ActorRef<Cart>`, including
+   under `Option`, `Result`, lists, records and function results. The shared
+   `Types.isAssignable` relation and source checker now guard these shapes.
+   Positive typed handles and ordinary non-capability generic inference remain
+   available.
+
+The nominal `ActorRef` name is reserved against class/interface/type-alias
+shadowing. This does **not** certify that all identity-bearing actor-local values
+are unescapable; supervisor CONTROL, `self` borrowing, source-level actor
+interfaces, and RPC dispatch need separate compiler/runtime verification.
 
 ## Proposed method protocol (not yet admitted)
 
@@ -130,7 +150,7 @@ five-backend parity.
 
 ## Reusable source conformance inputs
 
-This branch adds ten `tests/fixtures/actor-ref-contract-v1/*.atto` files:
+This branch adds eighteen `tests/fixtures/actor-ref-contract-v1/*.atto` files:
 
 | Fixture | Expected |
 | --- | --- |
@@ -139,11 +159,23 @@ This branch adds ten `tests/fixtures/actor-ref-contract-v1/*.atto` files:
 | `reject-class-target.atto` | Type rejection |
 | `reject-interface-target.atto` | Fail closed until actor-interface RPC is lowered |
 | `reject-unbound-generic-target.atto` | Unresolved actor type argument rejection |
+| `accept-alias-typed-function.atto` | Runtime-minted ActorRef passes through a transparent source alias |
+| `reject-new-actor-ref.atto` | A new-expression must not mint an actor capability |
+| `reject-alias-new-actor-ref.atto` | Alias of ActorRef must not bypass the constructor gate |
+| `reject-generic-capability-coercion.atto` | Unbounded generic cannot impersonate ActorRef |
+| `reject-nested-generic-capability-coercion.atto` | Option of generic cannot impersonate Option of ActorRef |
+| `reject-ref-shadow-class.atto` | Built-in name cannot be replaced by class |
+| `reject-ref-shadow-interface.atto` | Built-in name cannot be replaced by interface |
+| `reject-ref-shadow-alias.atto` | Built-in name cannot be replaced by type alias |
 | `reject-missing-type-argument.atto` | Generic arity rejection |
 | `reject-multiple-type-arguments.atto` | Generic arity rejection |
 | `reject-direct-actor-method.atto` | No direct `ActorRef` method call |
 | `reject-self-as-reference.atto` | Actor-local self is not a reference |
 | `reject-other-actor-type.atto` | Nominal mismatch rejection |
+
+Two JUnit suites target these cases: `ActorRefParameterContractTest` includes
+real guest execution, and `types.ActorRefCapabilityAssignabilityTest` tests
+the shared type relation (a host-only unit test, never a guest receipt).
 
 Execution receipt requirements: record exact branch head SHA, fixture blobs,
 nonzero actual compiler and guest steps, diagnostics, and output. A host-only
