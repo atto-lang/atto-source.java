@@ -77,22 +77,44 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
         requireActive();
         if (deliveryId == null || deliveryId.isBlank())
             throw new IllegalArgumentException("delivery ID is required");
-        if (!storage.enqueue(address, new DurableActorStore.Inbound(
-                deliveryId, plan.encode(delta))))
-            return OptionalLong.empty();
-        return OptionalLong.of(process_committed_delivery(deliveryId, delta));
+        try {
+            // This is an actor-origin message, so the epoch check and durable
+            // admission are one SQLite transaction. Stale actors may not
+            // enqueue commands for the new incarnation to execute.
+            if (!storage.enqueueFenced(address, epoch, new DurableActorStore.Inbound(
+                    deliveryId, plan.encode(delta))))
+                return OptionalLong.empty();
+            return OptionalLong.of(process_committed_delivery(deliveryId, delta));
+        } catch (RuntimeException | Error failure) {
+            poison();
+            throw failure;
+        }
     }
 
     /** Actor-private read: does not expose a pointer or writable state loan. */
     public synchronized long get_count() {
         requireActive();
-        return state.tryRead().orElseThrow(
-                () -> new IllegalStateException("persistent actor state unavailable"));
+        try {
+            // The checked local scalar cannot be exposed after this epoch was
+            // replaced in SQLite, even if its private memory is still alive.
+            storage.requireActive(address, epoch, stateVersion);
+            return state.tryRead().orElseThrow(
+                    () -> new IllegalStateException("persistent actor state unavailable"));
+        } catch (RuntimeException | Error failure) {
+            poison();
+            throw failure;
+        }
     }
 
     public synchronized long state_version() {
         requireActive();
-        return stateVersion;
+        try {
+            storage.requireActive(address, epoch, stateVersion);
+            return stateVersion;
+        } catch (RuntimeException | Error failure) {
+            poison();
+            throw failure;
+        }
     }
 
     public long activation_epoch() { return epoch; }
@@ -121,10 +143,14 @@ public final class PersistentScalarActorV1 implements AutoCloseable {
         } catch (RuntimeException | Error failure) {
             // A transport/driver exception does not prove a failed transaction.
             // Never let this possibly-stale incarnation process another turn.
-            closed = true;
-            state.close();
+            poison();
             throw failure;
         }
+    }
+
+    private void poison() {
+        closed = true;
+        state.close();
     }
 
     private void requireActive() {
