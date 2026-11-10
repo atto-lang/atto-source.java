@@ -156,6 +156,35 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
         }
     }
 
+    /**
+     * Cross-epoch logical-command receipts may outlive compacted event BLOBs,
+     * but only behind a *verified* durable snapshot barrier. Never trust the
+     * state row's snapshot bytes merely because its version is present.
+     * Invoke only inside a pinned read/write SQLite transaction.
+     */
+    private void verifySnapshotBarrier(Identity id, long version, int schema,
+                                       byte[] snapshot) throws SQLException {
+        if(version<1 || schema<1 || snapshot==null ||
+           snapshot.length>1_048_576)
+            throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        try(PreparedStatement q=db.prepareStatement(
+                "SELECT schema,length(payload),substr(payload,1,1048577) " +
+                "FROM ops WHERE tenant=? AND actor=? AND slot=? " +
+                "AND kind=1 AND version=?")) {
+            bindId(q,id);q.setLong(4,version);
+            try(ResultSet r=q.executeQuery()) {
+                if(!r.next())throw new SQLException("UNVERIFIED_SNAPSHOT");
+                int originalSchema=r.getInt(1);
+                long size=r.getLong(2);
+                byte[] original=r.getBytes(3);
+                if(originalSchema!=schema || size!=snapshot.length ||
+                   original==null || original.length!=size ||
+                   !Arrays.equals(snapshot,original) || r.next())
+                    throw new SQLException("CORRUPT_SNAPSHOT_PROOF");
+            }
+        }
+    }
+
     // Must be called within the same read/write transaction as epoch validation.
     private Receipt proof(Command command) throws SQLException {
         Identity id=command.id();
@@ -179,10 +208,27 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                     throw new SQLException("CORRUPT_COMMAND_RECORD");
                 long snapshotVersion=0;
                 try (PreparedStatement snap=db.prepareStatement(
-                        "SELECT snapshot_version FROM state WHERE tenant=? AND actor=? AND slot=?")) {
+                        "SELECT snapshot_version,snapshot_schema,length(snapshot)," +
+                        "substr(snapshot,1,1048577) FROM state " +
+                        "WHERE tenant=? AND actor=? AND slot=?")) {
                     bindId(snap,id);
                     try (ResultSet q=snap.executeQuery()) {
-                        if (q.next()) snapshotVersion=q.getLong(1);
+                        if (q.next()) {
+                            snapshotVersion=q.getLong(1);
+                            int snapSchema=q.getInt(2);
+                            long size=q.getLong(3);
+                            boolean nullSnapshot=q.wasNull();
+                            byte[] bytes=q.getBytes(4);
+                            if(snapshotVersion<0 || snapshotVersion>head(id))
+                                throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                            if(snapshotVersion>0) {
+                                if(nullSnapshot || size<0 || size>1_048_576 ||
+                                   bytes==null || bytes.length!=size)
+                                    throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                                verifySnapshotBarrier(id,snapshotVersion,snapSchema,bytes);
+                            } else if(snapSchema!=0 || !nullSnapshot)
+                                throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                        }
                     }
                 }
                 if (first<=snapshotVersion && last>snapshotVersion)
@@ -350,6 +396,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                     }
                 }
             }
+            if(snapshotVersion>0)
+                verifySnapshotBarrier(id,snapshotVersion,snapshotSchema,snapshot);
             if(headVersion==Long.MAX_VALUE ||
                headVersion-snapshotVersion>10000)
                 throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
