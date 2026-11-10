@@ -36,9 +36,9 @@ end
 Required by the candidate Java type checker:
 - The class is an ordinary generic-transport actor with one logical message turn (1,1); `neuron actor` cannot be mixed with HTTP/TCP/WebSocket transport or `isoactor` in this initial slice.
 - Exactly one nonstatic, public, synchronous `forward(float): float` instance method, with one value parameter, no generic parameters, no checked effects and no structural modifier.
-- Exactly one synchronous `receive(ActorMail<float>): void` instance method, nonstatic, nongeneric and without checked effects. It is a runtime mailbox entry point, not an API clients invoke directly.
+- Exactly one **private** synchronous `receive(ActorMail<float>): void` instance method, nonstatic, nongeneric and without checked effects. It is a runtime mailbox entry point, not an API clients invoke directly.
 - No generic neuron declaration yet. Ordinary actor field initialization, strict ownership, and lifecycle rules remain in force.
-- Methods named `forward` or `receive` with a different arity or signature fail closed. Other methods are ordinary methods and cannot claim to implement training intrinsics.
+- Methods named `forward` or `receive` with a different arity, visibility or signature fail closed. Other methods are ordinary methods and cannot claim to implement training intrinsics.
 - The new AST actor-role metadata survives annotation expansion and is not confused with connection transport.
 
 The runtime does **not** automatically route `forward` replies: the `receive` body explicitly calls `self.forward`, then emits via `self.send`. External callers send a `float` using `ActorRef` and read `ActorOutput`; they cannot obtain the instance or borrow its weights.
