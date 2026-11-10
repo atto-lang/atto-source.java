@@ -286,6 +286,11 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        // The final actor loan may have been released by a different thread
+        // while this publisher was still delivering an earlier completion.
+        // In that case StateLoan.close() sees publishing=true and cannot
+        // notify retirement; the publisher must recheck after it drains.
+        maybeWakeRetirement();
         if (firstFailure != null) {
             if (firstFailure instanceof Error fatal) throw fatal;
             if (firstFailure instanceof RuntimeException failure) throw failure;
