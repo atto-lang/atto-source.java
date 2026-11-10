@@ -1,0 +1,14 @@
+define actor Cart as
+end
+
+define actor Other as
+end
+
+pub fnc foo(ActorRef<Cart> cart): void {
+  return;
+}
+
+pub routine main(): void {
+  foo(spawn Other());
+  return;
+}
