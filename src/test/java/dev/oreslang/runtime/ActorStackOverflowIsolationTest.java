@@ -29,7 +29,7 @@ final class ActorStackOverflowIsolationTest {
 
     private static ActorScalarCallMachine.Program quotaProgram() {
          return new ActorScalarCallMachine.Program(List.of(
-                new ActorScalarCallMachine.Function("deep", 1, 1, 3, List.of(
+                new ActorScalarCallMachine.Function("deep", 1, 1, 12, List.of(
                         ActorScalarCallMachine.Instruction.at(ActorScalarCallMachine.Op.LOAD, 0),
                         ActorScalarCallMachine.Instruction.constant(0),
                         ActorScalarCallMachine.Instruction.of(ActorScalarCallMachine.Op.LE),
