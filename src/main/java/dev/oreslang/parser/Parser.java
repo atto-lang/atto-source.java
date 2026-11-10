@@ -19,6 +19,7 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    private final boolean singletonCheckOnly;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -43,6 +44,11 @@ public final class Parser {
             new java.util.IdentityHashMap<>();
 
     public Parser(List<Token> tokens) {
+        this(tokens, false);
+    }
+
+    private Parser(List<Token> tokens, boolean singletonCheckOnly) {
+        this.singletonCheckOnly = singletonCheckOnly;
         this.tokens = List.copyOf(tokens);
         // A public parser must not trust an externally supplied Token stream to
         // have come from Lexer. In particular, a synthesized IDENT("unsafe")
@@ -59,6 +65,14 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    /**
+     * TEST/CHECK ONLY: parse singleton ASTs without making them executable.
+     * The normal parser and runtime entry points continue to fail closed.
+     */
+    public static Ast.Program parseSingletonsCheckOnly(String source) {
+        return new Parser(new Lexer(source).scan(), true).parseProgram();
     }
 
     /**
@@ -181,6 +195,12 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isContextualIdentifier("singleton")) {
+                    Token keyword = advance();
+                    if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
+                    rootDeclarations.add(parseSingleton(modifiers, annotations, keyword));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -387,6 +407,44 @@ public final class Parser {
         }
     }
 
+    private IllegalArgumentException unsupportedSingleton(Token keyword) {
+        return error(keyword, "ORES-SINGLETON-UNSUPPORTED: define singleton requires "
+                + "compiler ownership, initialization and guest execution parity; "
+                + "the check-only AST does not authorize runtime lowering");
+    }
+
+    private Ast.SingletonDecl parseSingleton(
+            Modifiers modifiers, List<Ast.Annotation> annotations, Token keyword) {
+        validateOnlyVisibilityModifiers(modifiers, "singletons");
+        rejectDiscardedDeclarationAnnotations(annotations, "singleton declarations");
+        Token declaredName = consume(IDENT, "expected singleton name");
+        if (check(DOT)) throw error(peek(), "singleton names must be flat");
+        consume(AS, "singleton declaration requires 'as' before fields");
+        List<Ast.SingletonField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            Token position = peek();
+            List<Ast.Annotation> fieldAnnotations = parseAnnotations();
+            Modifiers fieldModifiers = parseModifiers();
+            validateOnlyVisibilityModifiers(fieldModifiers, "singleton fields");
+            if (!isBindingKind(peek().type())) {
+                throw error(peek(), "ORES-SINGLETON-CHECKONLY: only explicit const/val/let "
+                        + "field bindings are parsed; methods and runtime behavior are not enabled");
+            }
+            Ast.FieldDecl field = parseModuleBinding(fieldAnnotations, fieldModifiers.visibility);
+            if (!names.add(field.name())) {
+                throw error(position, "duplicate singleton field '" + field.name() + "'");
+            }
+            fields.add(new Ast.SingletonField(field, position.line(), position.column()));
+            if (fields.size() > 64) {
+                throw error(position, "ORES-SINGLETON-CHECKONLY: field budget exceeded");
+            }
+        }
+        consume(END, "expected 'end' to close singleton " + declaredName.lexeme());
+        return new Ast.SingletonDecl(declaredName.lexeme(), modifiers.visibility,
+                fields, keyword.line(), keyword.column());
+    }
+
     private Ast.Decl parseModuleMember() {
         rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
@@ -433,6 +491,11 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isContextualIdentifier("singleton")) {
+                Token keyword = advance();
+                if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
+                return parseSingleton(modifiers, annotations, keyword);
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
