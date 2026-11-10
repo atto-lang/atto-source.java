@@ -72,12 +72,12 @@ jobs:
               failures = int(root.attrib.get("failures", "0"))
               errors = int(root.attrib.get("errors", "0"))
               skipped = int(root.attrib.get("skipped", "0"))
-              if tests < (12 if cls == "CollectionOfFactoryGuestTest" else 1):
+              if tests < (13 if cls == "CollectionOfFactoryGuestTest" else 1):
                   raise SystemExit(f"INSUFFICIENT_EXECUTED_JUNIT_CASES: {cls}")
               if failures or errors or skipped:
                   raise SystemExit(f"NONZERO_JUNIT_FAILURE_OR_SKIP: {cls}")
               total += tests
-          if total < 35:
+          if total < 36:
               raise SystemExit(f"INSUFFICIENT_EXECUTED_JUNIT_TOTAL: {total}")
           print(f"ATTO_JAVA_FACTORY_GUEST_JUNIT_EXECUTED tests={total} failures=0 errors=0 skipped=0")
           PY
