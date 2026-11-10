@@ -66,6 +66,12 @@ canonical critical modes and `rt mut borrow`, with new exact Git blob checks.
 They are local ports of common-source #187, not unchanged original corpus bytes
 or verified equivalent LLVM/.NET execution.
 
+Four additional current-main admission tests pass after replacing the old
+blanket schema rejection with explicit compiler-marker/direct-access checks;
+the isolated-actor and intrinsic-spoofing fences remain tested. The 31 selected
+state/conformance/frame guest tests also pass with Surefire `-Xss512k`. These
+separate executions total 310 focused tests plus the low-stack repetition.
+
 Production source actors here still admit one physical turn at a time. Host RW
 concurrency does not establish concurrent-default guest actors. Synchronous
 source critical acquisition rejects queuing; scheduler-owned suspension/resume
