@@ -76,6 +76,41 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
+    void tildeConstructorsEvaluateArgumentsOnceInSourceOrder() throws Exception {
+        String program = """
+                routine emit(int value): int {
+                  stdio.stdout.write(value);
+                  return value;
+                }
+                pub routine main(): void {
+                  val array: ~array<int> = ~array(emit(1), emit(2), emit(3));
+                  val tuple: ~tuple<int, int> = ~tuple(emit(4), emit(5));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(array[2]);
+                  stdio.stdout.write(tuple[0]);
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+        assertEquals("12345|34", run(program));
+    }
+
+    @Test
+    void tildeTupleCannotBeImplicitlyPassedAsAnArray() {
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc takes_array(Array[int] values): void { return; }
+                        pub routine main(): void {
+                          val tuple: ~tuple<int, int> = ~tuple(1, 2);
+                          takes_array(tuple);
+                          return;
+                        }
+                        """)));
+        assertTrue(mismatch.getMessage().contains("argument"), mismatch::getMessage);
+    }
+
+    @Test
     void unsupportedAggregateConstructorsFailClosed() {
         for (String invalid : new String[]{
                 "~map(\"a\" => 1)", "~set(1, 2)", "~vector(1, 2)",
