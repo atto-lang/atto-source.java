@@ -581,4 +581,17 @@ final class ActorStateRwLoansTest {
         }
     }
 
+
+    @Test
+    void stoppedActorNeverReceivesSuspensionClearanceFromAnEmptyLoanLedger() {
+        var loans = new ActorStateRwLoans(OWNER, 2, 1);
+        var ownerExecution = actor(8801, 281, 1);
+        assertTrue(loans.noOutstandingLoanFor(ownerExecution));
+        loans.close();
+        assertTrue(loans.physicallyRetired());
+        assertFalse(loans.noOutstandingLoanFor(ownerExecution),
+                "an empty ledger on a stopped actor is not an execution permit");
+        assertTrue(loans.acquireReadAsync(ownerExecution).isCompletedExceptionally());
+    }
+
 }
