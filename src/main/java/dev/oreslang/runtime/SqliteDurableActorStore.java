@@ -205,6 +205,66 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
         });
     }
 
+    /**
+     * Fenced actor-origin admission. Unlike external enqueue(), this rejects
+     * messages from an actor incarnation already replaced by a supervisor.
+     * The fence check and INSERT share a BEGIN IMMEDIATE transaction.
+     */
+    @Override
+    public synchronized boolean enqueueFenced(Address a, long epoch, Inbound message) {
+        Objects.requireNonNull(a, "address");
+        Objects.requireNonNull(message, "message");
+        if (epoch <= 0) throw new IllegalArgumentException("invalid activation epoch");
+        checkBytes(message.payload());
+        return transaction(() -> {
+            requireActiveRow(a, epoch, null);
+            try (PreparedStatement q = db.prepareStatement("""
+                    INSERT OR IGNORE INTO durable_inbox
+                    (tenant,workflow,run,node,delivery_id,payload)
+                    VALUES (?,?,?,?,?,?)""")) {
+                bind(q, a);
+                q.setString(5, message.deliveryId());
+                q.setBytes(6, message.payload());
+                return q.executeUpdate() == 1;
+            }
+        });
+    }
+
+    /**
+     * A current-epoch read can linearize at the SQLite SELECT. The caller
+     * must keep its own actor turn / local state lease until it copies the
+     * checked value; this method does not expose mutable state.
+     */
+    @Override
+    public synchronized void requireActive(Address a, long epoch, long version) {
+        Objects.requireNonNull(a, "address");
+        if (epoch <= 0 || version < 0)
+            throw new IllegalArgumentException("invalid activation read fence");
+        try {
+            requireActiveRow(a, epoch, version);
+        } catch (SQLException failure) {
+            throw new IllegalStateException("durable activation read fence failed", failure);
+        }
+    }
+
+    /** Caller owns the SQLite connection monitor; a transaction is optional. */
+    private void requireActiveRow(Address a, long epoch, Long expectedVersion)
+            throws SQLException {
+        try (PreparedStatement q = db.prepareStatement("""
+                SELECT epoch,active,state_version FROM durable_actors
+                WHERE tenant=? AND workflow=? AND run=? AND node=?""")) {
+            bind(q, a);
+            try (ResultSet r = q.executeQuery()) {
+                if (!r.next() || r.getLong(1) != epoch || r.getInt(2) != 1
+                        || (expectedVersion != null
+                            && r.getLong(3) != expectedVersion)) {
+                    throw new IllegalStateException(
+                            "stale or inactive durable actor activation");
+                }
+            }
+        }
+    }
+
     @Override
     public synchronized long commitTurn(Turn turn) {
         Objects.requireNonNull(turn, "turn");
