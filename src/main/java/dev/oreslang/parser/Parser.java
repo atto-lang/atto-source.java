@@ -5013,7 +5013,7 @@ public final class Parser {
                 List<Ast.Expr> values = parseArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after ~" + kind + " literal");
                 return kind.equals("array")
-                        ? new Ast.ListExpr(values)
+                        ? new Ast.ListExpr(values, true)
                         : new Ast.TupleExpr(values);
             }
             throw error(previous(), "~" + kind
