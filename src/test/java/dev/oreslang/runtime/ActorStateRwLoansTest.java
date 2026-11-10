@@ -8,6 +8,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorStateRwLoansTest {
+    // Test-only actor owner identity: production code must get this from the
+    // authenticated allocation registry, never a client-controlled value.
+    private static final ExecutionContext.AllocationDomain OWNER =
+            ExecutionContext.actorBound(7, 1, 1, 1, 9, 3, 11, 0, 0)
+                    .allocationDomain();
+
     private static ExecutionContext actor(
             long execution, long slot, long executionGeneration) {
         return ExecutionContext.actorBound(
@@ -19,7 +25,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void readersCoexistWriterIsExclusiveAndLateReaderCannotBypassWriter() {
-        try (var loans = new ActorStateRwLoans(8)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 8, 1024)) {
             var r1ctx = actor(1001, 41, 1);
             var r2ctx = actor(1002, 42, 1);
             var wctx = actor(1003, 43, 1);
@@ -56,7 +62,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void contiguousQueuedReadersPromoteAsCohortBeforeFollowingWriter() {
-        try (var loans = new ActorStateRwLoans(8)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 8, 1024)) {
             var firstWriterCtx = actor(2001, 51, 1);
             var firstWriter = loans.acquireWriteAsync(firstWriterCtx).join();
 
@@ -84,7 +90,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void equivalentContextSurvivesCarrierMigrationButStaleGenerationDoesNot() throws Exception {
-        try (var loans = new ActorStateRwLoans(4)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 4, 1024)) {
             var original = actor(3001, 61, 8);
             var rematerialized = actor(3001, 61, 8);
             var stale = actor(3001, 61, 7);
@@ -106,7 +112,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void foreignOrStaleActorIncarnationCannotEnterBoundRwArbiter() {
-        try (var loans = new ActorStateRwLoans(4)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 4, 1024)) {
             var current = actor(3501, 66, 1);
             var loan = loans.acquireReadAsync(current).join();
 
@@ -127,7 +133,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void sameLogicalExecutionCannotRecursivelyAcquireOrChangeMode() {
-        try (var loans = new ActorStateRwLoans(4)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 4, 1024)) {
             var context = actor(4001, 71, 1);
             var equivalent = actor(4001, 71, 1);
             var read = loans.acquireReadAsync(context).join();
@@ -139,7 +145,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void cancellingQueuedWriterLetsFollowingReaderJoinLiveReaders() {
-        try (var loans = new ActorStateRwLoans(8)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 8, 1024)) {
             var first = loans.acquireReadAsync(actor(5001, 81, 1)).join();
             var writer = loans.acquireWriteAsync(actor(5002, 82, 1));
             var reader = loans.acquireReadAsync(actor(5003, 83, 1));
@@ -156,7 +162,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void unboundNonActorAndQueueOverflowFailClosed() {
-        try (var loans = new ActorStateRwLoans(1)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 1, 1024)) {
             assertTrue(loans.acquireReadAsync(
                     ExecutionContext.task(7, 6001)).isCompletedExceptionally());
             assertTrue(loans.acquireReadAsync(
@@ -174,7 +180,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void logicalRetirementFencesStateButDoesNotReleasePhysicalSuspensionBarrier() {
-        var loans = new ActorStateRwLoans(2);
+        var loans = new ActorStateRwLoans(OWNER, 2, 1024);
         var execution = actor(7101, 111, 5);
         var active = loans.acquireWriteAsync(execution).join();
 
@@ -194,7 +200,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void foreignAndStaleExecutionsCannotBypassLoanSuspensionBarrier() {
-        try (var loans = new ActorStateRwLoans(2)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 2, 1024)) {
             var owner = actor(7201, 121, 9);
             var sameExecutionOnAnotherCarrier = actor(7201, 121, 9);
             var staleSlot = actor(7201, 121, 8);
@@ -215,7 +221,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void oldReleasedLoanCannotCertifySuspensionAfterSameExecutionReacquires() {
-        try (var loans = new ActorStateRwLoans(2)) {
+        try (var loans = new ActorStateRwLoans(OWNER, 2, 1024)) {
             var owner = actor(7301, 131, 2);
             var first = loans.acquireReadAsync(owner).join();
             first.close();
@@ -235,7 +241,7 @@ final class ActorStateRwLoansTest {
     @Test
     void retirementWakeupFiresOnceOnlyAfterAllPhysicalReadersRelease() {
         var notifications = new AtomicInteger();
-        var loans = new ActorStateRwLoans(3, notifications::incrementAndGet);
+        var loans = new ActorStateRwLoans(OWNER, 3, 1024, notifications::incrementAndGet);
         var first = loans.acquireReadAsync(actor(7401, 141, 1)).join();
         var second = loans.acquireReadAsync(actor(7402, 142, 1)).join();
         var queued = loans.acquireWriteAsync(actor(7403, 143, 1));
@@ -261,7 +267,7 @@ final class ActorStateRwLoansTest {
 
     @Test
     void closeFailsPendingAndFencesActiveAuthority() {
-        var loans = new ActorStateRwLoans(2);
+        var loans = new ActorStateRwLoans(OWNER, 2, 1024);
         var activeContext = actor(7001, 101, 1);
         var active = loans.acquireWriteAsync(activeContext).join();
         var pending = loans.acquireReadAsync(actor(7002, 102, 1));
@@ -273,4 +279,125 @@ final class ActorStateRwLoansTest {
         active.close();
         assertEquals(0, loans.activeWriterCount());
     }
+
+    @Test
+    void foreignActorCannotClaimRegionEvenWhenItIsUnused() {
+        try (var loans = new ActorStateRwLoans(OWNER, 4, 2)) {
+            var foreignActor = ExecutionContext.actorBound(
+                    7, 9991, 901, 1, 9, 4, 11, 0, 0);
+            var staleIncarnation = ExecutionContext.actorBound(
+                    7, 9992, 902, 1, 9, 3, 10, 0, 0);
+            assertTrue(loans.acquireReadAsync(foreignActor).isCompletedExceptionally(),
+                    "a foreign first caller must not capture region ownership");
+            assertTrue(loans.acquireWriteAsync(staleIncarnation).isCompletedExceptionally(),
+                    "a stale actor generation must not capture an unused region");
+            assertEquals(0, loans.activeReaderCount());
+            assertEquals(0, loans.activeWriterCount());
+            loans.acquireReadAsync(actor(9993, 903, 1)).join().close();
+        }
+    }
+
+    @Test
+    void readerCapacityIsBoundedAndFifoWriterBarrierIsPreserved() {
+        try (var loans = new ActorStateRwLoans(OWNER, 4, 1)) {
+            var first = loans.acquireReadAsync(actor(8001, 201, 1)).join();
+            var second = loans.acquireReadAsync(actor(8002, 202, 1));
+            var writer = loans.acquireWriteAsync(actor(8003, 203, 1));
+            var lateReader = loans.acquireReadAsync(actor(8004, 204, 1));
+            assertEquals(1, loans.activeReaderCount());
+            assertEquals(3, loans.pendingCount());
+            assertFalse(second.isDone());
+            assertFalse(writer.isDone());
+            assertFalse(lateReader.isDone());
+
+            first.close();
+            var secondLoan = second.join();
+            assertEquals(1, loans.activeReaderCount());
+            assertFalse(writer.isDone());
+            assertFalse(lateReader.isDone());
+            secondLoan.close();
+            var writerLoan = writer.join();
+            assertEquals(1, loans.activeWriterCount());
+            assertFalse(lateReader.isDone(),
+                    "a new reader may not overtake an older writer");
+            writerLoan.close();
+            lateReader.join().close();
+            assertEquals(0, loans.pendingCount());
+        }
+    }
+
+    @Test
+    void overflowAtReaderCapFailsWithoutLeakingReservations() {
+        try (var loans = new ActorStateRwLoans(OWNER, 1, 1)) {
+            var firstContext = actor(8101, 211, 1);
+            var queuedContext = actor(8102, 212, 1);
+            var overflowContext = actor(8103, 213, 1);
+            var first = loans.acquireReadAsync(firstContext).join();
+            var queued = loans.acquireReadAsync(queuedContext);
+            assertFalse(queued.isDone());
+            assertTrue(loans.acquireReadAsync(overflowContext).isCompletedExceptionally(),
+                    "bounded queue must fail closed rather than allocate forever");
+            assertTrue(loans.noOutstandingLoanFor(overflowContext));
+            assertFalse(loans.noOutstandingLoanFor(queuedContext));
+            first.close();
+            queued.join().close();
+            assertTrue(loans.noOutstandingLoanFor(queuedContext));
+        }
+    }
+
+    @Test
+    void cancelledQueuedReaderDoesNotStealCapacityOrBlockWriter() {
+        try (var loans = new ActorStateRwLoans(OWNER, 3, 1)) {
+            var held = loans.acquireReadAsync(actor(8201, 221, 1)).join();
+            var cancelledContext = actor(8202, 222, 1);
+            var pendingRead = loans.acquireReadAsync(cancelledContext);
+            var writer = loans.acquireWriteAsync(actor(8203, 223, 1));
+            assertTrue(pendingRead.cancel(false));
+            assertTrue(loans.noOutstandingLoanFor(cancelledContext));
+            assertEquals(1, loans.pendingCount());
+            held.close();
+            writer.join().close();
+            assertEquals(0, loans.pendingCount());
+        }
+    }
+
+    @Test
+    void constructionRejectsUnboundNonActorAndUnsafeReaderLimits() {
+        assertThrows(NullPointerException.class,
+                () -> new ActorStateRwLoans(null, 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(
+                        ExecutionContext.AllocationDomain.none(), 1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(
+                        new ExecutionContext.AllocationDomain(
+                                ExecutionContext.AllocationKind.TASK, 9, 3, 11),
+                        1, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(OWNER, 1, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(OWNER, 1, 65537));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateRwLoans(OWNER, -1, 1));
+    }
+
+    @Test
+    void observedLoanReleaseCannotCertifyReacquiredExecution() {
+        try (var loans = new ActorStateRwLoans(OWNER, 2, 1)) {
+            var original = actor(8301, 231, 1);
+            var first = loans.acquireReadAsync(original).join();
+            assertFalse(loans.noOutstandingLoanFor(original));
+            first.close();
+            assertTrue(loans.noOutstandingLoanFor(original));
+            var second = loans.acquireWriteAsync(original).join();
+            assertFalse(loans.noOutstandingLoanFor(original),
+                    "old released loan is not proof against a new reservation");
+            second.close();
+            assertTrue(loans.noOutstandingLoanFor(original));
+            assertFalse(loans.noOutstandingLoanFor(
+                    ExecutionContext.actorBound(7, 8301, 231, 1, 9, 3, 12, 0, 0)));
+            assertFalse(loans.noOutstandingLoanFor(ExecutionContext.task(7, 8301)));
+        }
+    }
+
 }
