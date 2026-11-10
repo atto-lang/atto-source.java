@@ -4633,6 +4633,18 @@ public final class Parser {
         return expr;
     }
 
+    // A tilde sequence constructor is a postfix-capable primary, not a
+    // unary-operator result. Retain explicit adjacency so ~array_variable
+    // and ordinary unary ~ expressions keep their established semantics.
+    private boolean isTildeSequenceConstructorHead() {
+        if (!check(TILDE) || current + 2 >= tokens.size()) return false;
+        Token sigil = tokens.get(current);
+        Token name = tokens.get(current + 1);
+        return name.type() == IDENT && tokens.get(current + 2).type() == LPAREN
+                && adjacent(sigil, name)
+                && (name.lexeme().equals("array") || name.lexeme().equals("tuple"));
+    }
+
     private Ast.Expr parseUnary() {
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
@@ -4657,6 +4669,7 @@ public final class Parser {
             return new Ast.UnaryExpr("-", parseUnary());
         }
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        if (isTildeSequenceConstructorHead()) return parsePostfix();
         if (match(TILDE)) {
             Token sigil = previous();
             // Only a statically named ':' entry selects a short record.
@@ -5203,6 +5216,18 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (isTildeSequenceConstructorHead()) {
+            advance(); // '~'
+            String kind = advance().lexeme();
+            consume(LPAREN, "expected '(' after ~" + kind);
+            List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after ~" + kind);
+            if (kind.equals("array") && items.isEmpty()) {
+                throw error(previous(),
+                        "~array() needs a checked element type; an empty untyped array cannot infer T");
+            }
+            return kind.equals("tuple") ? new Ast.TupleExpr(items) : new Ast.ListExpr(items);
+        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
