@@ -89,6 +89,61 @@ public final class ActorRuntimeEventJournalIntegrationTestMain {
         return result;
     }
 
+    /**
+     * Provider receipts are not commit proof. A malicious/incorrect Store can
+     * claim COMMITTED=true while lacking a durable op ledger. The EVENT path
+     * must preserve old actor state even under such a fabricated response.
+     */
+    private static void checkForgedEventReceiptRejected() throws Exception {
+        Identity id = new Identity("tenant-bank", "account-forged", "ledger");
+        Store forged = new Store() {
+            @Override public void grantEpoch(String tenant, String actor, long epoch) {}
+            @Override public List<Result> commit(List<Write> writes) {
+                Write w = writes.get(0);
+                return List.of(new Result(w.operationId(), Status.COMMITTED,
+                        w.expectedVersion() + 1, true));
+            }
+            // verifyDurableCommit() remains the fail-closed default: false.
+        };
+        try (BatchPersistenceSidecar sidecar = new BatchPersistenceSidecar(
+                    id.tenant(), forged, 16, 8192, 1024, 8, 4096, 5);
+             ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Long> observed = new CompletableFuture<>();
+            ActorRuntime.ActorRef<Long> actor = runtime.spawnPrivateTrusted(context -> {
+                PrivateMemoryBlock block = context.privateMemory().orElseThrow()
+                        .allocatePrivateBytes(Long.BYTES);
+                block.writeLong(0, 7);
+                ActorPersistenceBridge.Activation binding =
+                        ActorPersistenceBridge.bindTrustedCurrentActor(context, id, 1);
+                return (amount, turn) -> {
+                    long original = block.readLong(0);
+                    ActorPersistenceBridge.onEventCompletionInCurrentActor(
+                            binding, sidecar, "forged-event", 0, 1, encode(amount),
+                            (receipt, error) -> {
+                                try {
+                                    check(ActorRuntime.currentActorId().orElseThrow()
+                                            .equals(turn.self().id()),
+                                            "rejected event callback escaped actor turn");
+                                    check(error != null, "forged committed event accepted");
+                                    check(block.readLong(0) == original,
+                                            "forged event published speculative state");
+                                    observed.complete(block.readLong(0));
+                                } catch (Throwable failure) {
+                                    observed.completeExceptionally(failure);
+                                } finally {
+                                    turn.runtime().endCurrentActor();
+                                }
+                            });
+                };
+            });
+            actor.ready().get(15, TimeUnit.SECONDS);
+            actor.send(300L);
+            check(observed.get(15, TimeUnit.SECONDS) == 7L,
+                    "unverified event modified actor state");
+            actor.done().get(15, TimeUnit.SECONDS);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path directory = Files.createTempDirectory("ores-event-ledger-");
         Path database = directory.resolve("ledger.sqlite");
@@ -137,6 +192,7 @@ public final class ActorRuntimeEventJournalIntegrationTestMain {
                 check(stale.status() == Status.STALE_EPOCH && !stale.durable(),
                         "old writer not fenced at provider");
             }
+            checkForgedEventReceiptRejected();
             System.out.println("PASS host ActorRuntime EVENT journal -> SQLite -> new actor arena -> replay");
         } finally {
             try (var files = Files.walk(directory)) {
