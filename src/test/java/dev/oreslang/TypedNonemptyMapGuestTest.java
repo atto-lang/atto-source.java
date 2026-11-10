@@ -88,7 +88,7 @@ final class TypedNonemptyMapGuestTest {
     void actorCallableCannotCarryMutableTypedMapWithoutSendProof() {
         String program = """
                 define actor Worker as
-                    pub receive(Map<string,int> payload): void { return; }
+                    receive(ActorMail<Map<string,int>> mail): void { return; }
                 end
                 """;
         IllegalArgumentException rejected = assertThrows(
