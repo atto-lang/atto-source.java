@@ -5181,6 +5181,37 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // Preserve left-to-right value-first evaluation even when the
+                // upstream expression takes the suspendable source-task path.
+                evalSuspendableArguments(
+                        task, call.arguments(), env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            evalSuspendableExpr(t, call.callee(), env,
+                                    (t2, callee, failure2) -> {
+                                        if (failure2 != null) {
+                                            continuation.accept(t2, null, failure2);
+                                            return;
+                                        }
+                                        try {
+                                            if (!(callee instanceof Invokable callable)) {
+                                                throw new IllegalArgumentException("pipeline lambda is not callable");
+                                            }
+                                            Invocation invocation = invokableInvocation(callable, values);
+                                            completeSourceInvocation(
+                                                    t2, invocation, false, env, continuation);
+                                        } catch (RuntimeException | Error callFailure) {
+                                            continuation.accept(t2, null, callFailure);
+                                        }
+                                    });
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -7077,6 +7108,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // A pipeline is value-first. Constructing a closure can read
+                // captures, so its environment must be observed AFTER the
+                // upstream expression has been evaluated exactly once.
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Object callee = eval(call.callee(), env);
+                if (!(callee instanceof Invokable callable)) {
+                    throw new IllegalArgumentException("pipeline lambda is not callable");
+                }
+                return invokableInvocation(callable, args);
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
