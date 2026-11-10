@@ -102,6 +102,31 @@ final class PersistentScalarActorRuntimeBridgeTest {
     }
 
     @Test
+    void abruptOsProcessHaltThenColdActorRuntimeReactivation() throws Exception {
+        Path database = temporary.resolve("actor-runtime-unclean.db");
+        assertTrue(runSubprocess("crash", database).contains("RUNTIME_BEFORE_CRASH=2"));
+        assertTrue(runSubprocess("recover", database).contains("RUNTIME_AFTER_RECOVERY=3"));
+    }
+
+    private static String runSubprocess(String mode, Path database) throws Exception {
+        String javaExecutable = Path.of(
+                System.getProperty("java.home"), "bin", "java").toString();
+        String classpath = System.getProperty(
+                "surefire.test.class.path", System.getProperty("java.class.path"));
+        Process process = new ProcessBuilder(javaExecutable, "-cp", classpath,
+                PersistentScalarRuntimeProcessMain.class.getName(),
+                mode, database.toString()).redirectErrorStream(true).start();
+        if (!process.waitFor(30, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new AssertionError("subprocess ActorRuntime recovery timed out");
+        }
+        String output = new String(process.getInputStream().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.exitValue(), output);
+        return output;
+    }
+
+    @Test
     void invalidMailboxCommandsFailWithoutMutatingDurableSnapshot() throws Exception {
         Path path = temporary.resolve("invalid-command.db");
         var plan = PersistentScalarMirV1.lower(PersistentScalarActorV1Test.SOURCE);
