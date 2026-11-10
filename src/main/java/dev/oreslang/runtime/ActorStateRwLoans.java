@@ -34,6 +34,10 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private final ArrayDeque<Runnable> completions = new ArrayDeque<>();
     private final Map<Authority, StateLoan> readers = new LinkedHashMap<>();
     private final Set<Authority> reserved = new HashSet<>();
+    // A queued Future may be logically removed before its terminal host
+    // notifications physically finish. Neither cancellation nor STOP may
+    // reclaim the actor arena while such a callback is still executing.
+    private int pendingNotificationDrains;
     private StateLoan writer;
     private final ExecutionContext.AllocationDomain boundAllocation;
     private long nextEpoch;
@@ -68,8 +72,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
             throw new IllegalArgumentException(
                     "state RW region must be bound to an actor allocation at construction");
         }
-        if (maxPending < 0) {
-            throw new IllegalArgumentException("negative state RW queue capacity");
+        if (maxPending < 0 || maxPending > 8192) {
+            throw new IllegalArgumentException(
+                    "state RW pending capacity outside 0..8192");
         }
         if (maxReaders < 1 || maxReaders > 65536) {
             throw new IllegalArgumentException("state RW reader capacity outside 1..65536");
@@ -90,6 +95,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private boolean physicallyRetiredLocked() {
         return closed && writer == null && readers.isEmpty()
                 && reserved.isEmpty() && pending.isEmpty()
+                && pendingNotificationDrains == 0
                 && completions.isEmpty() && !publishing;
     }
 
@@ -317,6 +323,22 @@ public final class ActorStateRwLoans implements AutoCloseable {
                     }
                 }
                 if (removed) publish();
+            });
+            // All Pending instances are constructed with monitor held.
+            // Track the *physical* drain, not merely the terminal CAS or
+            // removal from pending/reserved. The Future guarantees that this
+            // receipt runs once after host runtime subscribers unwind, for
+            // cancellation, an ordinary grant, and shutdown failure alike.
+            pendingNotificationDrains++;
+            future.whenNotificationsDrainedRuntime(() -> {
+                synchronized (monitor) {
+                    if (pendingNotificationDrains <= 0) {
+                        throw new IllegalStateException(
+                                "state RW notification-drain ledger corrupted");
+                    }
+                    pendingNotificationDrains--;
+                }
+                maybeWakeRetirement();
             });
         }
     }
