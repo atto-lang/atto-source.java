@@ -197,6 +197,16 @@ final class ModuleActorContractRequirementTest {
     }
 
     @Test
+    void actorRequirementCannotReuseGenericTypeParameter() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract Invalid<T> as
+                  actor T;
+                end
+                """));
+        assertTrue(error.getMessage().contains("cannot reuse a generic type-parameter name"));
+    }
+
+    @Test
     void importedContractRequiresCorrectActorInImplementingModule() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = new LinkedHashMap<>();
