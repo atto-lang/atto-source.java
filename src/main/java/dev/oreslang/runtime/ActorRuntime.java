@@ -2870,7 +2870,9 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
-            if (cell != null && !cell.stopped.get()) cell.schedule();
+            if (cell != null && cell.ref == this && !cell.stopped.get()) {
+                cell.schedule();
+            }
             return readyFuture;
         }
 
@@ -2925,6 +2927,14 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell == null) return true;
             cell.awaitFinalized(unit.toNanos(timeout));
             return cell.finalized();
+        }
+
+        /**
+         * Export a communication-only view, not a lifecycle or CONTROL
+         * capability. The backing ActorRef never escapes this wrapper.
+         */
+        public ActorMailboxRef<M> messageRef() {
+            return new ActorMailboxRef<>(this);
         }
 
         public void send(M message) {
@@ -3002,6 +3012,29 @@ public final class ActorRuntime implements AutoCloseable {
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
         }
+    }
+
+    /**
+     * Strictly attenuated message capability. Unlike the legacy ActorRef, it
+     * cannot stop, cancel, kill, or mint a supervisor CONTROL handle. It only
+     * forwards to the same runtime-checked mailbox and observation path.
+     */
+    public final class ActorMailboxRef<M> {
+        private final ActorRef<M> ref;
+
+        private ActorMailboxRef(ActorRef<M> ref) {
+            this.ref = Objects.requireNonNull(ref, "ref");
+        }
+
+        public ActorId id() { return ref.id(); }
+        public ActorKind kind() { return ref.kind(); }
+        public ActorAddress address() { return ref.address(); }
+        public boolean isAlive() { return ref.isAlive(); }
+        public void send(M message) { ref.send(message); }
+        public OresFuture<Void> sendAsync(M message) { return ref.sendAsync(message); }
+        public OresFuture<Void> drain() { return ref.drain(); }
+        public OresFuture<Void> getReady() { return ref.getReady(); }
+        public OresFuture<Void> getDone() { return ref.getDone(); }
     }
 
     /**
@@ -3126,6 +3159,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "cannot acquire CONTROL for stale or terminated ActorRef " + ref.id());
         }
         return new ActorControlHandle(ref);
     }
@@ -4975,14 +5013,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private void requireActorReferenceIdentity(
+            ActorRef<?> ref,
+            ActorCell<?> cell,
+            String operation) {
+        if (cell != null && cell.ref != ref) {
+            throw new ActorInvalidReferenceException(
+                    "stale ActorRef cannot " + operation
+                            + " actor " + ref.id() + ": incarnation identity mismatch");
+        }
+    }
+
     private void requireActorLifecycleAuthority(
             ActorRef<?> target,
             String operation) {
-        ActorCell<?> caller = currentActor.get();
-        if (caller == null) return;
-
+        // Validate even when called by the host/supervisor. A stale reference
+        // must never operate on a future activation with the same logical ID.
         ActorCell<?> targetCell = actors.get(target.id());
-        if (targetCell == null) return;
+        requireActorReferenceIdentity(target, targetCell, operation);
+        ActorCell<?> caller = currentActor.get();
+        if (caller == null || targetCell == null) return;
         if (caller == targetCell) return;
 
         for (ActorCell<?> ancestor = targetCell.parent;
@@ -6321,6 +6371,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
+        requireActorReferenceIdentity(ref, cell, "drain");
         if (cell == null) return OresFuture.failed(terminated(ref));
         return cell.drainAcceptedMessages();
     }
@@ -6371,6 +6422,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        requireActorReferenceIdentity(ref, cell, "send");
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
@@ -6524,6 +6576,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        requireActorReferenceIdentity(ref, cell, "sendAsync");
         if (cell == null || cell.stopped.get()) return OresFuture.failed(terminated(ref));
         if (currentActor.get() == cell) {
             return OresFuture.failed(new ActorSendWouldDeadlockException(ref.id()));
