@@ -9960,6 +9960,19 @@ public final class TypeChecker {
                             + "' is not imported; use the public class field contract");
         }
 
+        // The square-bracket sequence-shape syntax is an intrinsic type,
+        // even when a user alias/class has the same simple name. Resolve it
+        // before nominal aliases so Tuple[int,string], ~tuple<int,string>,
+        // Vector[...(int,string)], etc. cannot be rebound to a user-defined
+        // alias with different ownership, shape, or storage semantics.
+        // Plain Tuple<T...> (without a shape) still follows the preexisting
+        // nominal/generic lookup path and is handled in the collection switch.
+        if (Set.of("Array", "List", "Vector", "Slice",
+                "Tuple", "FixedArray", "FixedList").contains(ref.name())
+                && !sequenceShapeDimensions(ref).isEmpty()) {
+            return resolveCollectionType(ref, generics, self, allowNullMarker);
+        }
+
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
