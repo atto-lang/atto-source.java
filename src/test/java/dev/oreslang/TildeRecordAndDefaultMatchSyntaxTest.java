@@ -109,7 +109,10 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
         for (String source : List.of(
                 "~(\"ready\" => true)",
                 "~(ready => true)")) {
-            assertInstanceOf(Ast.MapLiteralExpr.class, initializer(source), source);
+            // The shorthand has no complete Map<K,V> witness in an inferred
+            // binding. It must fail before guest construction, not silently
+            // promote into an untyped host dictionary.
+            assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
             assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                     "fnc f(): void { const v = " + source + "; return; }"), source);
         }
