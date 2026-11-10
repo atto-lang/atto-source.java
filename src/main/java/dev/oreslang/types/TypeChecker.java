@@ -501,6 +501,13 @@ public final class TypeChecker {
                 String name;
                 String category;
                 if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.standaloneBinding() != null) {
+                        throw new IllegalArgumentException(
+                                "standalone actor binding '" + klass.name() + " as "
+                                        + klass.standaloneBinding()
+                                        + "' requires compiler-checked actor activation, receiver-method "
+                                        + "lowering and generation-fenced mailbox dispatch; not executable yet");
+                    }
                     name = klass.name();
                     category = "class";
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
