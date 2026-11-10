@@ -597,17 +597,29 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                     if (phase.compareAndSet(2, 3)) releaseSlot.run();
                     return;
                 }
+                // A completed Future may run dependent callbacks inline. Release
+                // the physical CONTROL reservation and grant *before* publishing
+                // completion: otherwise a legal thenCompose inspection using the
+                // same grant can fail spuriously as "already outstanding".
+                T observed = null;
+                Throwable captureFailure = null;
+                boolean captured = false;
                 try {
                     if (Thread.currentThread() == caller)
                         throw new IllegalStateException("INLINE_CONTROL_DISPATCH_FORBIDDEN");
                     requireGrant(grant, session);
-                    if (!result.isDone()) result.complete(capture.get());
+                    if (!result.isDone()) {
+                        observed = capture.get();
+                        captured = true;
+                    }
                 } catch (Throwable failure) {
-                    result.completeExceptionally(failure);
+                    captureFailure = failure;
                 } finally {
                     phase.set(3);
                     releaseSlot.run();
                 }
+                if (captureFailure != null) result.completeExceptionally(captureFailure);
+                else if (captured) result.complete(observed);
             });
         } catch (RuntimeException | Error failure) {
             result.completeExceptionally(failure);
