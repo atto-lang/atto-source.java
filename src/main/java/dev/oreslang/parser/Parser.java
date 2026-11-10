@@ -1286,7 +1286,12 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
-        return parseInterface(visibility, true);
+        Ast.InterfaceDecl contract = parseInterface(visibility, true);
+        if (contract.namespaceContract() && moduleForwards != null) {
+            throw error(previous(),
+                    "'for namespace' contracts must be declared at file root, not inside a module");
+        }
+        return contract;
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
