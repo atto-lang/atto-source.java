@@ -86,3 +86,70 @@ hardening branch. Those host tests must also run before claiming their passes.
    and SIGKILL-before/after-commit receipts, with exact-head stepful provenance.
 5. Extend the same source fixtures to LLVM, .NET Native AOT, Wasm and Forge;
    treat Cranelift separately from Forge.
+
+
+## Atomic event-sourced command bridge — 2026-11-10
+
+**Status: DRAFT HOST IMPLEMENTATION. Java source-guest lowering and exact-head execution NOT_VERIFIED.**
+
+Conformance contract: [PR #668](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/668)
+(stacked on #666/#231/#227). Unlike the earlier one-event `Kind.EVENT`
+sidecar, an event-sourced logical command may produce **multiple immutable
+events** and one stable command result.
+
+New additive host classes:
+- `SqliteCommandTransactionStore`: a trusted JDBC provider sharing
+  `fences`, `state`, `events`, and `ops` tables with
+  `SqlitePersistenceStore`. It creates a distinct `command_commits`
+  logical-command index, independent of activation epoch. Under
+  `BEGIN IMMEDIATE`, it validates epoch first, checks command hash/op ID,
+  enforces expected-version CAS, atomically appends all event payloads and
+  the new stream head, and commits the stable command-result record.
+  Durable duplicate proof checks event bytes hash, result hash, stream
+  version/count and snapshot barrier. The store NEVER runs on an actor
+  carrier; only its dedicated host worker may use blocking JDBC.
+- `AtomicCommandSidecar`: bounded tenant ownership, defensive byte copies,
+  serial worker, asynchronous future and **second trusted operation lookup**
+  before a COMMITTED/DUPLICATE success reaches the actor continuation.
+  Backpressure is not durability. If the worker cannot settle at close,
+  accepted pending futures become `OUTCOME_UNKNOWN`, not silent success.
+- `ActorPersistenceBridge.submitOwnedCommand` /
+  `onCommandCompletionInCurrentActor`: actor incarnation capability
+  supplies trusted tenant, stable identity and epoch; guest receives neither
+  the database path nor raw host Store/epoch.
+- `SqliteCommandTransactionStore.loadVerified`: epoch fence, head,
+  snapshot, bounded event replay and both single-event and logical-command
+  integrity are read in ONE SQLite read transaction. Missing, overlapping,
+  tampered, noncontiguous, too-large, and schema-inconsistent replay rows
+  fail before state publication.
+
+New host test mains:
+- `SqliteCommandTransactionStoreTestMain`: JDBC multi-event commit,
+  2nd-event SQL trigger rollback, epoch2 dedup, command-ID conflict,
+  caller-buffer ownership, compaction barrier, altered event hash.
+- `ActorRuntimeAtomicCommandIntegrationTestMain`: real
+  `ActorRuntime.spawnPrivateTrusted`, private actor arena, continuation
+  on owner lane, commit-before-publication, new runtime/arena replay,
+  epoch2 retry, and stale epoch rejection.
+
+Host workflows now run strict JDK 21 `javac -Xlint:all -Werror`
+with pinned JDBC dependencies and the new Java ActorRuntime mains. Both
+workflows explicitly checkout and assert the **exact pull-request head SHA**.
+The commands are added but **NOT_EXECUTED** on the current source head until
+a GitHub Actions job actually runs nonzero steps. This is not native
+GraalVM, source-compiled `.ores`, or five-backend conformance.
+
+### Important missing features
+
+The added command worker serializes admissions on a dedicated host worker,
+but has **not** proven cross-actor group COMMIT batching, scheduler
+fairness, distributed leases, transactional outbox, power-loss behavior or
+hard-real-time guarantees. Guest compiler/parser/borrow-checker integration
+is absent; compiler must still enforce sealed state, deterministic reducers
+and no suspended mutable loans. Snapshot migration and authenticated
+distributed activation authority also remain open. Retain draft status and
+fail closed for unknown provider outcomes.
+
+Private-source transfer to a different GitHub organization remains
+**not approved** by the source-owned security policy. No cross-org source
+mirror, source-main mutation or merge is authorized by this draft.
