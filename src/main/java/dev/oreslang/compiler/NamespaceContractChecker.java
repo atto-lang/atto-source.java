@@ -46,6 +46,7 @@ public final class NamespaceContractChecker {
         Map<String, Ast.ClassDecl> actors = new LinkedHashMap<>();
         Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
         Set<String> topLevelTypes = new LinkedHashSet<>();
+        Map<String, String> valueKinds = new LinkedHashMap<>();
         List<Ast.TypeRef> claimed = List.of();
         String ownerFile = null;
         for (Map.Entry<String, Ast.Program> unit : units.entrySet()) {
@@ -74,6 +75,9 @@ public final class NamespaceContractChecker {
                         if (!topLevelTypes.add(klass.name())) {
                             throw duplicate(namespace, klass.name(), "type");
                         }
+                        if (valueKinds.putIfAbsent(klass.name(), "class/actor") != null) {
+                            throw duplicate(namespace, klass.name(), "runtime value");
+                        }
                         if (klass.actorKind() != Ast.ActorKind.NONE
                                 && actors.putIfAbsent(klass.name(), klass) != null) {
                             throw duplicate(namespace, klass.name(), "actor");
@@ -83,9 +87,17 @@ public final class NamespaceContractChecker {
                             throw duplicate(namespace, alias.name(), "type");
                         }
                     } else if (decl instanceof Ast.FunctionDecl fn) {
+                        String previousKind = valueKinds.putIfAbsent(fn.name(), "callable");
+                        if (previousKind != null && !previousKind.equals("callable")) {
+                            throw duplicate(namespace, fn.name(), "runtime value");
+                        }
                         String key = fn.name() + "#" + fn.parameters().size();
                         if (functions.putIfAbsent(key, fn) != null) {
                             throw duplicate(namespace, key, "function slot");
+                        }
+                    } else if (decl instanceof Ast.FieldDecl field) {
+                        if (valueKinds.putIfAbsent(field.name(), "field") != null) {
+                            throw duplicate(namespace, field.name(), "runtime value");
                         }
                     }
                 }
@@ -146,6 +158,8 @@ public final class NamespaceContractChecker {
                         || witness.kind() != Ast.CallableKind.FNC
                         || witness.actorKind() != Ast.ActorKind.NONE
                         || witness.async() || witness.suspends()
+                        || witness.generator() || witness.trapped()
+                        || witness.structural() || witness.nonLexical()
                         || !witness.genericParameters().isEmpty()
                         || !witness.effects().isEmpty()
                         || !witness.returnType().equals(required.returnType())
@@ -159,7 +173,7 @@ public final class NamespaceContractChecker {
                     Ast.Param actual = witness.parameters().get(i);
                     if (!param.type().equals(actual.type())
                             || param.mutable() != actual.mutable()
-                            || actual.structural()) {
+                            || param.structural() || actual.structural()) {
                         throw new IllegalArgumentException(
                                 "namespace '" + namespace + "' function '" + required.name()
                                         + "' has incompatible parameter " + (i + 1));
