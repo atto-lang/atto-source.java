@@ -447,9 +447,10 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
-        if ("Symbol".equals(name)) {
-            throw new IllegalArgumentException("Symbol is a reserved nominal built-in; cannot declare "
-                    + declarationKind + " Symbol");
+        if ("Symbol".equals(name) || "ActorRef".equals(name)) {
+            throw new IllegalArgumentException(name
+                    + " is a reserved nominal built-in; cannot declare "
+                    + declarationKind + " " + name);
         }
     }
 
