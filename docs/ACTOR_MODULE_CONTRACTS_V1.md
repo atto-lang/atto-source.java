@@ -134,8 +134,15 @@ as an unrestricted alias for host memory.
 ## Evidence gates
 
 Stage-one tests live in
-`src/test/java/dev/oreslang/ModuleActorContractRequirementTest.java`.
-They prove Java parser/type-checker and ABI behavior **only when executed**.
+`src/test/java/dev/oreslang/ModuleActorContractRequirementTest.java`,
+which also reads the reusable `.atto` corpus at
+`contracts/actor-module-v1/` through the real Java parser/type checker.
+The corpus includes an acceptance fixture and negative fixtures for
+visibility, kind, generic arity, and inherited contract namespace collisions.
+The acceptance fixture still needs actual compiled **guest execution** for
+its `main(): int` value; a Java type-checking pass alone does not prove that.
+
+These tests prove Java parser/type-checker and ABI behavior **only when executed**.
 They are not compiler-backed guest behavior, NativeAOT evidence, or evidence
 of any other backend. An Actions workflow with `steps=[]`, `steps=null`,
 or `runner_id=0` is a runner-admission failure, not a pass.
