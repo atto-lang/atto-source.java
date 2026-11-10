@@ -1,0 +1,6 @@
+define actor Cart as
+end
+
+pub fnc foo(ActorRef<Cart, Cart> actor): void {
+  return;
+}
