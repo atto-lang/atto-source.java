@@ -871,6 +871,16 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "generic module contract receiver methods require type-substitution witness lowering");
                 }
+                // These names are runtime/control-plane hooks or compiler-owned
+                // intrinsics. Matching a source method may not establish a
+                // mailbox-callable user API or grant supervisor authority.
+                if (Set.of("tear_down", "handle_state", "on_panic", "on_throw",
+                        "on_throws", "on_raise", "on_recover", "on_start",
+                        "on_stop", "on_restart").contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "reserved actor lifecycle/control hook '" + method.name()
+                                    + "' is not a mailbox receiver contract method");
+                }
                 Set<String> declaredActors = new LinkedHashSet<>();
                 collectModuleContractActorNames(iface, declaredActors, new LinkedHashSet<>());
                 if (!declaredActors.contains(method.actorName())) {
