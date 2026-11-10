@@ -3061,6 +3061,7 @@ public final class Parser {
 
     private Ast.Stmt parseFor(boolean asyncIteration) {
         if (!match(LPAREN)) {
+            if (looksLikeInIteratorBinding()) return parseInIteratorBinding(asyncIteration, false);
             if (looksLikeUnparenthesizedForOf()) {
                 if (!isBindingKind(peek().type())) {
                     throw forOfUndeclaredBindingError();
@@ -3098,6 +3099,8 @@ public final class Parser {
             Ast.Expr update = check(LBRACE) || check(DO) ? null : parseForUpdate();
             return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
         }
+
+        if (looksLikeInIteratorBinding()) return parseInIteratorBinding(asyncIteration, true);
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
@@ -3191,6 +3194,26 @@ public final class Parser {
         Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
         consume(RPAREN, "expected ')' after for header");
         return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+    }
+
+    private boolean looksLikeInIteratorBinding() {
+        int offset = isBindingKind(peek().type()) ? 1 : 0;
+        return current + offset + 1 < tokens.size()
+                && tokens.get(current + offset).type() == IDENT
+                && tokens.get(current + offset + 1).type() == IDENT
+                && tokens.get(current + offset + 1).lexeme().equals("in");
+    }
+
+    private Ast.Stmt parseInIteratorBinding(boolean asyncIteration, boolean parenthesized) {
+        if (asyncIteration) {
+            throw error(peek(), "for await ... in is not supported; use 'for await ... of ...'");
+        }
+        Ast.BindingKind kind = isBindingKind(peek().type()) ? parseBindingKind() : Ast.BindingKind.CONST;
+        String name = consume(IDENT, "range iterator requires a binding name").lexeme();
+        consumeContextualIdentifier("in", "expected 'in' after iterator binding");
+        Ast.Expr iterable = parseExpression();
+        if (parenthesized) consume(RPAREN, "expected ')' after for-in iterator");
+        return new Ast.ForOfStmt(kind, name, iterable, false, parseLoopBody(), kind == Ast.BindingKind.VAL);
     }
 
     private boolean looksLikeUnparenthesizedForOf() {
@@ -4409,12 +4432,43 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parseRange();
         if (!match(QUESTION)) return condition;
-        Ast.Expr whenTrue = parseAssignment();
+        Ast.Expr whenTrue = check(LBRACE) ? parseValueBlock() : parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
-        Ast.Expr whenFalse = parseConditional();
+        Ast.Expr whenFalse = check(LBRACE) ? parseValueBlock() : parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    private Ast.Expr parseRange() {
+        Ast.Expr start = parseLogicalOr();
+        if (!match(RANGE_EXCLUSIVE, RANGE_INCLUSIVE)) return start;
+        boolean inclusive = previous().type() == RANGE_INCLUSIVE;
+        Ast.Expr end = parseLogicalOr();
+        if (check(RANGE_EXCLUSIVE) || check(RANGE_INCLUSIVE)) {
+            throw error(peek(), "range operators cannot be chained");
+        }
+        return new Ast.RangeExpr(start, end, inclusive);
+    }
+
+    private Ast.BlockValueExpr parseValueBlock() {
+        consume(LBRACE, "expected '{' to start value block");
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> prefix = new ArrayList<>();
+            while (!check(RBRACE) && !check(EOF)) {
+                Ast.Stmt statement = parseStatement();
+                if (statement instanceof Ast.ExprStmt expression && check(RBRACE)
+                        && previous().type() != SEMICOLON) {
+                    consume(RBRACE, "expected '}' after value block result");
+                    return new Ast.BlockValueExpr(prefix, expression.expression());
+                }
+                prefix.add(statement);
+            }
+            throw error(peek(), "value block requires a final expression without ';'");
+        } finally {
+            localTypeScopes.pop();
+        }
     }
 
     private Ast.Expr parseLogicalOr() {
@@ -4936,6 +4990,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (check(LBRACE)) return parseValueBlock();
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
