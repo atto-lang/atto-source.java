@@ -6038,7 +6038,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void unregisterActor(ActorCell<?> cell) {
+    private boolean unregisterActor(ActorCell<?> cell) {
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
@@ -6078,13 +6078,6 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("actor count accounting underflow");
             }
         }
-        // The last writer of a physical activation is this exact runtime
-        // retirement path, never a queued terminal callback. Release only
-        // after exact-cell removal AND successful group cleanup. Any mismatch
-        // keeps the logical activation quarantined.
-        if (deregistrationFailure == null && physicallyRemoved) {
-            virtualActorFences.retire(cell.ref.id());
-        }
         if (deregistrationFailure != null) {
             if (deregistrationFailure instanceof RuntimeException runtime) throw runtime;
             if (deregistrationFailure instanceof Error error) throw error;
@@ -6092,6 +6085,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorGroup deregistration failed during actor retirement",
                     deregistrationFailure);
         }
+        // Physical retirement authority must wait for parent child-finalization
+        // as well; this method reports only group and actor-map cleanup.
+        return physicallyRemoved;
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
@@ -9230,41 +9226,73 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             finalized = true;
+            // Only release virtual activation ownership after *all* physical
+            // reclamation, group deregistration and parent-child finalization.
+            // Cleanup failures quarantine the logical identity, not guest data.
+            boolean virtualPhysicalCleanupComplete = true;
             sourceScheduler = null;
             sourceTaskMailbox.close();
             try { drainMailboxReservations(); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
             staticSelectCursors.clear();
             codeActorState = null;
             try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
             for (ActorShardLease lease : List.copyOf(shardLeases)) {
                 try { lease.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             shardLeases.clear();
             for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
                 try { snapshot.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             shardSnapshotLeases.clear();
             if (memorySlice != null) {
                 try { memorySlice.close(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             try { actorExitHook.accept(executionDomain); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
-            try { unregisterActor(this); }
+            catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
+            boolean actorAndGroupDeregistered = false;
+            try { actorAndGroupDeregistered = unregisterActor(this); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
+            boolean parentReleased = parent == null;
             if (parent != null) {
-                try { parent.childFinalized(this); }
+                try {
+                    parent.childFinalized(this);
+                    parentReleased = true;
+                }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) { recordFinalizationFailure(failure); }
+            }
+            if (virtualPhysicalCleanupComplete && actorAndGroupDeregistered && parentReleased) {
+                try { virtualActorFences.retire(ref.id()); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
