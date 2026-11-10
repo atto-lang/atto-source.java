@@ -1,0 +1,9 @@
+// EXPECT: compile error containing "cannot satisfy non-generic".
+define contract CartApi as
+  actor Cart;
+end
+
+define module cart_mod conforms CartApi as
+  pub define actor Cart<T> as
+  end
+end
