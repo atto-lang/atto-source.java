@@ -38,6 +38,8 @@ final class VirtualActorRuntimeGenerationFence {
         ActorRuntime.ActorId lastBoundActor;
         Long pending;
         ActorRuntime.ActorId physical;
+        boolean terminalDecisionClaimed;
+        boolean terminalDecisionInFlight;
 
         Slot(ActorRuntime.SupervisorId supervisor) {
             this.supervisor = supervisor;
@@ -120,6 +122,9 @@ final class VirtualActorRuntimeGenerationFence {
                         "virtual actor group ownership transfer requires prior group closure");
             if (slot.physical != null)
                 throw new IllegalStateException("prior virtual actor has not physically retired");
+            if (slot.terminalDecisionInFlight)
+                throw new IllegalStateException(
+                        "terminal CONTROL decision must settle before replacement");
             if (slot.pending != null)
                 throw new IllegalStateException("virtual actor generation already pending");
             if (nextGeneration <= slot.generation)
@@ -170,6 +175,7 @@ final class VirtualActorRuntimeGenerationFence {
             slot.physical = physical;
             slot.lastBoundGeneration = generation;
             slot.lastBoundActor = physical;
+            slot.terminalDecisionClaimed = false;
             slot.pending = null;
         }
     }
@@ -221,7 +227,76 @@ final class VirtualActorRuntimeGenerationFence {
                     generation > 0 && generation == slot.generation &&
                     generation == slot.lastBoundGeneration &&
                     generation == slot.lastRetiredGeneration &&
-                    physical.equals(slot.lastBoundActor);
+                    physical.equals(slot.lastBoundActor) &&
+                    !slot.terminalDecisionClaimed;
+        }
+    }
+
+    /**
+     * One-use terminal CONTROL decision lease. Capturing an old notice is not
+     * permission to apply policy after a newer generation has been reserved.
+     * Claim publication and replacement reservation are serialized under
+     * the same monitor; the trusted supervisor executes its bounded policy
+     * outside this monitor, then closes the lease in a finally block.
+     *
+     * A lost lease quarantines the logical identity rather than incorrectly
+     * admitting a replacement. An already claimed notice cannot be replayed.
+     */
+    final class TerminalDecisionLease implements AutoCloseable {
+        private final VirtualActorActivationRegistry.Identity identity;
+        private final long generation;
+        private final ActorRuntime.ActorId physical;
+        private boolean released;
+
+        private TerminalDecisionLease(
+                VirtualActorActivationRegistry.Identity identity,
+                long generation, ActorRuntime.ActorId physical) {
+            this.identity = identity;
+            this.generation = generation;
+            this.physical = physical;
+        }
+
+        @Override public void close() {
+            synchronized (monitor) {
+                if (released) return;
+                Slot slot = slots.get(identity);
+                if (slot == null || !slot.terminalDecisionInFlight ||
+                        !slot.terminalDecisionClaimed ||
+                        slot.lastBoundGeneration != generation ||
+                        !physical.equals(slot.lastBoundActor))
+                    throw new IllegalStateException("terminal decision lease authority changed");
+                slot.terminalDecisionInFlight = false;
+                released = true;
+            }
+        }
+    }
+
+    TerminalDecisionLease beginTerminalDecision(
+            ActorRuntime.SupervisorId supervisor,
+            ActorRuntime.ActorGroupId group,
+            VirtualActorActivationRegistry.Identity identity,
+            long generation, ActorRuntime.ActorId physical) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(group, "group");
+        Objects.requireNonNull(physical, "physical");
+        validate(identity);
+        synchronized (monitor) {
+            Slot slot = slots.get(identity);
+            if (slot == null || !slot.supervisor.equals(supervisor) ||
+                    !group.equals(slot.lastGroup) || slot.lastGroupClosed ||
+                    slot.pending != null || slot.terminalDecisionClaimed ||
+                    slot.terminalDecisionInFlight || generation <= 0 ||
+                    generation != slot.generation ||
+                    generation != slot.lastBoundGeneration ||
+                    generation != slot.lastRetiredGeneration ||
+                    !physical.equals(slot.lastBoundActor))
+                throw new IllegalStateException("stale or claimed virtual terminal decision");
+            // Allocate the lease before mutating authority: allocation failure
+            // cannot leave a claimed in-flight decision with no close handle.
+            TerminalDecisionLease lease = new TerminalDecisionLease(identity, generation, physical);
+            slot.terminalDecisionClaimed = true;
+            slot.terminalDecisionInFlight = true;
+            return lease;
         }
     }
 
