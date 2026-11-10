@@ -119,6 +119,25 @@ final class TildeAggregateTypeAliasCompilerTest {
     }
 
     @Test
+    void explicitCollectionShapesCannotBeHijackedByNominalAliases() {
+        // A named generic alias remains available in unshaped type position,
+        // but an explicitly shaped intrinsic must retain its original kind.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Tuple<T> = T;
+                type Vector<T> = T;
+                fnc takes_tuple(~tuple<int, string> value): void { return; }
+                fnc takes_vector(~vector[...(int, string, bool)] value): void { return; }
+                pub fnc main(): void {
+                  val t: ~tuple<int, string> = (7, "seven");
+                  val v: ~vector[...(int, string, bool)] = [7, "seven", true];
+                  takes_tuple(t);
+                  takes_vector(v);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void tildeAliasesAlsoResolveInParametersReturnsAndNestedTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc make_values(): ~array<int> {
@@ -174,10 +193,12 @@ final class TildeAggregateTypeAliasCompilerTest {
                 """.formatted(type, initializer)));
     }
 
+    // Parser-only extraction: the initializer is deliberately a valid ordinary
+    // literal; these assertions do not claim type checking or execution.
     private static Ast.TypeRef typeOf(String type) {
         Ast.Program program = Parser.parse("""
                 pub fnc main(): void {
-                  val value: %s = null;
+                  val value: %s = 0;
                   return;
                 }
                 """.formatted(type));
