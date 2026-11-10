@@ -802,6 +802,11 @@ public final class TypeChecker {
                 if (!iface.moduleContract()) {
                     throw new IllegalArgumentException("nominal interfaces cannot require actor declarations");
                 }
+                if (generics.contains(actor.name())) {
+                    throw new IllegalArgumentException(
+                            "module contract actor requirement '" + iface.name() + "." + actor.name()
+                                    + "' cannot reuse a generic type-parameter name");
+                }
                 if (!memberKeys.add("actor:" + actor.name())) {
                     throw new IllegalArgumentException(
                             "duplicate contract actor requirement '" + iface.name() + "." + actor.name() + "'");
