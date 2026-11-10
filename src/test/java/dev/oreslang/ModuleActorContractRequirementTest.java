@@ -1,10 +1,14 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.ExportInterfaceCodec;
 import dev.oreslang.compiler.ExportInterfaceCollector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -111,6 +115,125 @@ final class ModuleActorContractRequirementTest {
                 end
                 """));
         assertTrue(error.getMessage().contains("actor requirements belong only in module contracts"));
+    }
+
+
+    @Test
+    void genericActorCannotSatisfyNonGenericActorRequirement() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract CartApi as
+                  actor Cart;
+                end
+                define module cart_mod conforms CartApi as
+                  pub define actor Cart<T> as
+                  end
+                end
+                """));
+        assertTrue(error.getMessage().contains("generic actor"));
+        assertTrue(error.getMessage().contains("cannot satisfy non-generic"));
+    }
+
+    @Test
+    void directActorAndCallableNameCollisionIsRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract Invalid as
+                  actor Cart;
+                  fnc Cart(): int;
+                end
+                """));
+        assertTrue(error.getMessage().contains("conflicts with a required field or callable"));
+    }
+
+    @Test
+    void directActorAndFieldNameCollisionIsRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract Invalid as
+                  actor Cart;
+                  Cart: int;
+                end
+                """));
+        assertTrue(error.getMessage().contains("conflicts with a required field or callable"));
+    }
+
+    @Test
+    void inheritedFunctionCannotAliasRequiredActorName() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract ActorBase as
+                  actor Cart;
+                end
+                define contract Invalid extends ActorBase as
+                  fnc Cart(): int;
+                end
+                """));
+        assertTrue(error.getMessage().contains("conflicts with a required field or callable"));
+    }
+
+    @Test
+    void inheritedFieldCannotAliasRequiredActorName() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract FieldBase as
+                  Cart: int;
+                end
+                define contract Invalid extends FieldBase as
+                  actor Cart;
+                end
+                """));
+        assertTrue(error.getMessage().contains("conflicts with a required field or callable"));
+    }
+
+    @Test
+    void actorAndDistinctPublicFunctionCanConformTogether() {
+        assertDoesNotThrow(() -> check("""
+                define contract CartApi as
+                  actor Cart;
+                  fnc status(): int;
+                end
+                define module cart_mod conforms CartApi as
+                  pub define actor Cart as
+                  end
+                  pub fnc status(): int { return 1; }
+                end
+                """));
+    }
+
+    @Test
+    void importedContractRequiresCorrectActorInImplementingModule() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("actor_api.atto", """
+                pub define contract CartApi as
+                  actor Cart;
+                end
+                """);
+        sources.put("cart_impl.atto", """
+                import contract CartApi from "./actor_api.atto";
+                define module cart_mod conforms CartApi as
+                  pub define actor Cart as
+                  end
+                end
+                """);
+        assertDoesNotThrow(() -> compiler.compile(sources));
+    }
+
+    @Test
+    void importedContractRejectsClassInPlaceOfActor() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("actor_api.atto", """
+                pub define contract CartApi as
+                  actor Cart;
+                end
+                """);
+        sources.put("cart_impl.atto", """
+                import contract CartApi from "./actor_api.atto";
+                define module cart_mod conforms CartApi as
+                  pub define class Cart as
+                  end
+                end
+                """);
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> compiler.compile(sources));
+        assertTrue(error.getMessage().contains("missing required public actor"));
     }
 
     @Test
