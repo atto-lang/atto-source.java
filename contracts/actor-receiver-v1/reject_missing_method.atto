@@ -1,0 +1,9 @@
+// EXPECT: missing required receiver method
+define contract CartApi as
+  actor Cart;
+  pub mtd count(Cart cart)(): int;
+end
+define module carts conforms CartApi as
+  pub define actor Cart as
+  end
+end
