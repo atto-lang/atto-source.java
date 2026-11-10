@@ -416,6 +416,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             Grant grant, Object authenticatedSession,
             VirtualActorActivationRegistry.Identity identity,
             long timeoutNanos) {
+        runtime.supervisorRegistryForObservation();
+        requireGrant(grant, authenticatedSession);
         Objects.requireNonNull(identity, "identity");
         if (!tenant.equals(identity.domain())
                 || !runtime.ownsVirtualActor(identity, supervisor))
@@ -427,6 +429,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     public CompletionStage<Optional<Snapshot>> requestInspectAddress(
             Grant grant, Object authenticatedSession, String address,
             long timeoutNanos) {
+        runtime.supervisorRegistryForObservation();
+        requireGrant(grant, authenticatedSession);
         VirtualActorActivationRegistry.Identity identity = VirtualActorAddressV1.decode(address);
         return requestInspect(grant, authenticatedSession, identity, timeoutNanos);
     }
@@ -435,6 +439,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             Grant grant, Object authenticatedSession,
             VirtualActorActivationRegistry.LogicalRef logical,
             long timeoutNanos) {
+        runtime.supervisorRegistryForObservation();
+        requireGrant(grant, authenticatedSession);
         Objects.requireNonNull(logical, "logical");
         if (!tenant.equals(logical.identity().domain())
                 || !runtime.ownsVirtualActor(logical.identity(), supervisor))
@@ -464,6 +470,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             VirtualActorActivationRegistry.Identity after,
             long timeoutNanos) {
         runtime.supervisorRegistryForObservation();
+        requireGrant(grant, authenticatedSession);
         if (limit < 1 || limit > 128)
             throw new IllegalArgumentException("supervisor virtual actor page size must be 1..128");
         if (after != null && (!tenant.equals(after.domain())
