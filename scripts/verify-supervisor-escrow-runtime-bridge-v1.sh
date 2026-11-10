@@ -15,7 +15,7 @@ verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBri
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java 0760e04d1ccc57828317aebe9416324e08185b34
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java bb2038f98522d4904632b2c67103ca8891dba169
 
-# The existing dependency-free 554-assertion host lane remains mandatory.
+# The existing dependency-free 557-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
 
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
