@@ -20,11 +20,11 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OptoSyncScalarGuestTest {
     private static final Path ROOT = Path.of("contracts", "opto-sync", "scalar-v1");
     private static final Map<String, String> DIGESTS = Map.of(
-            "scalar-order", "dca8db9791954aa794931e002fa35433d8f88075e433ec7559455bc6e8be7d06",
-            "scalar-parens", "c308ce14123d092be7614794b8307e492056ea248dfd5f211151b19e767290ac",
-            "scalar-boundary", "5ded4f6c37b81c9b072e17acb4be852d5be976edd594d20c76edc5a5ed9d69aa",
-            "reject-overflow", "1c1b1959a3b80ff4aebb97fdf18a80a02540c7fc8ecb8d3b3b953aadaf6b95f0",
-            "reject-invalid", "da78107d4ba848d2f27c3f6b0a4b5c6b191a137c47f25cd44010d8c51bed0ebc"
+            "scalar-order", "0dedccfdeff013995e1e5d784bf1767acf61b0c0485fa50aba6aa9dd473331f2",
+            "scalar-parens", "c1be02a97cbf9c02a3ff6ed2c3452cbde2e7adca77b03c93ea2a185b87fd5a8f",
+            "scalar-boundary", "48e5c6d9a4284d5d9c05bab779fa74a53341a981d5e6c63ce6cc5c52cbf323dd",
+            "reject-overflow", "dbc6368f793beef3465a061983134ef85621d9084bc179f8d53c096fa0242461",
+            "reject-invalid", "dce35f88681548d3e3e4e1d04394924a9b70f27925acc37a53689d74237ec33a"
     );
     private static Path source(String caseName) throws Exception {
         Path file = ROOT.resolve(caseName + ".ores");
@@ -76,7 +76,7 @@ final class OptoSyncScalarGuestTest {
     @Test void undefinedNameRejected() throws Exception {
         reject("reject-invalid", "unknown|undefined|undeclared|unresolved|identifier|symbol|not defined");
     }
-    @Test void constantArithmeticOverflowRejected() throws Exception {
+    @Test void outOfRangeI64LiteralRejected() throws Exception {
         reject("reject-overflow", "range|overflow|literal|integer|arithmetic");
     }
 }

@@ -16,3 +16,14 @@ This does **not** certify Graal Native Image, actor/HTTP transport,
 the `sync_admission.ores` structured module, durable database sync,
 any other backend or a published SDK. Even if a workflow is marked failed,
 absence of runner/steps means **NOT_EXECUTED**, not a compiler rejection.
+
+## Corrected common-subset fixture contract
+
+Sources now use `pub fnc main(): int` consistent with the existing
+shared Java and LLVM compiler fixtures. The `reject-overflow` source is
+specifically an *out-of-range signed i64 literal*, so its compile-time
+rejection requirement does not accidentally assert that every checked
+arithmetic overflow expression must be rejected at compile time.
+Checked arithmetic traps require a distinct executed guest fixture.
+All five source bytes must exactly match Opto Sync clients PR #165 and
+companion LLVM PR #1639 at the **current** PR HEADs.
