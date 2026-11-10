@@ -2489,6 +2489,37 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.RangeExpr range) {
+            requireAssignable(typeOf(range.start(), env, generics, self),
+                    Primitive.INT, "range start");
+            requireAssignable(typeOf(range.end(), env, generics, self),
+                    Primitive.INT, "range end");
+            return new Named("Iterator", List.of(Primitive.INT));
+        }
+        if (expr instanceof Ast.BlockValueExpr block) {
+            Env local = new Env(env);
+            Env previousTypeScope = currentTypeScope;
+            int previousLoopDepth = loopDepth;
+            currentTypeScope = local;
+            loopDepth = 0;
+            try {
+                checkStatementsInExistingScope(
+                        block.prefixStatements(), local, generics, Primitive.VOID, self);
+                Type result = typeOf(block.value(), local, generics, self);
+                if (result == Primitive.VOID || result == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "value block requires a statically known non-void result");
+                }
+                if (result instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            "borrowed values cannot escape a value block without proven loan lifetime");
+                }
+                return result;
+            } finally {
+                currentTypeScope = previousTypeScope;
+                loopDepth = previousLoopDepth;
+            }
+        }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
                     "local aggregate constructor '" + construct.typeName()
@@ -9061,6 +9092,12 @@ public final class TypeChecker {
             rejectStaticClassGenericReferences(conditional.condition(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(conditional.whenTrue(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(conditional.whenFalse(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.RangeExpr range) {
+            rejectStaticClassGenericReferences(range.start(), classGenerics, klass, method);
+            rejectStaticClassGenericReferences(range.end(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.BlockValueExpr block) {
+            rejectStaticClassGenericReferences(block.prefixStatements(), classGenerics, klass, method);
+            rejectStaticClassGenericReferences(block.value(), classGenerics, klass, method);
         } else if (expression instanceof Ast.SpreadExpr spread) {
             rejectStaticClassGenericReferences(spread.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
