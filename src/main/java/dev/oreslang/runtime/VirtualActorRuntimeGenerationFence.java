@@ -181,9 +181,10 @@ final class VirtualActorRuntimeGenerationFence {
     }
 
     /**
-     * Host CONTROL policy check at the side effect, not at receipt capture.
-     * The pending-generation watermark immediately makes all older terminal
-     * receipts stale; abort never restores them.
+     * Advisory generation watermark query, not terminal policy admission.
+     * It can be true while the corresponding worker is still live. CONTROL
+     * decisions must claim the exact retired ActorId using the one-shot
+     * beginTerminalDecision lease; abort never restores old generations.
      */
     boolean isCurrent(ActorRuntime.SupervisorId supervisor,
                       ActorRuntime.ActorGroupId group,
@@ -205,11 +206,11 @@ final class VirtualActorRuntimeGenerationFence {
     }
 
     /**
-     * Exact terminal CONTROL receipt authorization for a real physical actor.
+     * Non-atomic diagnostic query for an unclaimed exact terminal receipt.
      * A matching logical generation alone cannot authorize another actor's
-     * notice. This must be rechecked at the policy side effect. A live or
-     * still-cleaning-up physical worker has not generated an authoritative
-     * terminal notice, even if its identity and generation are known.
+     * notice. A live or still-cleaning-up physical worker is ineligible.
+     * Policy must first claim a TerminalDecisionLease atomically with
+     * replacement reservation and retain it through the policy side effect.
      */
     boolean isCurrentTerminal(ActorRuntime.SupervisorId supervisor,
                               ActorRuntime.ActorGroupId group,
