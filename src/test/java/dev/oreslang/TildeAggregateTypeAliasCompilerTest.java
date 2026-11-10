@@ -174,10 +174,12 @@ final class TildeAggregateTypeAliasCompilerTest {
                 """.formatted(type, initializer)));
     }
 
+    // Parser-only extraction: the initializer is deliberately a valid ordinary
+    // literal; these assertions do not claim type checking or execution.
     private static Ast.TypeRef typeOf(String type) {
         Ast.Program program = Parser.parse("""
                 pub fnc main(): void {
-                  val value: %s = null;
+                  val value: %s = 0;
                   return;
                 }
                 """.formatted(type));
