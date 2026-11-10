@@ -324,6 +324,69 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
+    void virtualActivationCannotReplaceWorkerDuringPhysicalRetirementHook()
+            throws Exception {
+        try (ExecutorService stopper = Executors.newSingleThreadExecutor();
+             ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch retiring = new CountDownLatch(1);
+            CountDownLatch releaseRetirement = new CountDownLatch(1);
+            var blockFirstRetirement = new java.util.concurrent.atomic.AtomicBoolean();
+            runtime.setActorExitHook(domain -> {
+                if (blockFirstRetirement.compareAndSet(false, true)) {
+                    retiring.countDown();
+                    try {
+                        if (!releaseRetirement.await(10, TimeUnit.SECONDS))
+                            throw new IllegalStateException("actor exit hook did not drain");
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("actor exit hook interrupted", interruption);
+                    }
+                }
+            });
+
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var behavior = (ActorRuntime.BehaviorFactory<String>)
+                    factory -> (message, context) -> { };
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                    "tenant-a", "7:defaultCart", "physical-quiescence");
+
+            var old = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), behavior);
+            old.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(
+                    old, identity.domain(), identity.declaration(), identity.key(), 1L);
+
+            var stop = stopper.submit(() -> {
+                old.stop();
+                return null;
+            });
+            try {
+                assertTrue(retiring.await(5, TimeUnit.SECONDS),
+                        "first worker must reach its host retirement hook");
+                var replacement = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), behavior);
+                replacement.getReady().get(5, TimeUnit.SECONDS);
+                assertThrows(IllegalStateException.class,
+                        () -> group.bindVirtualActorIdentity(replacement,
+                                identity.domain(), identity.declaration(), identity.key(), 2L));
+
+                releaseRetirement.countDown();
+                stop.get(5, TimeUnit.SECONDS);
+                old.getDone().get(5, TimeUnit.SECONDS);
+                group.bindVirtualActorIdentity(replacement,
+                        identity.domain(), identity.declaration(), identity.key(), 2L);
+                assertTrue(group.isCurrentVirtualActorGeneration(identity, 2L));
+                replacement.stop();
+                replacement.getDone().get(5, TimeUnit.SECONDS);
+            } finally {
+                // Even on assertion failure, do not strand STOP or a host hook.
+                releaseRetirement.countDown();
+            }
+            group.close();
+        }
+    }
+
+    @Test
     void generationReservationFencesOldTerminalReceiptEvenIfReplacementAborts()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
