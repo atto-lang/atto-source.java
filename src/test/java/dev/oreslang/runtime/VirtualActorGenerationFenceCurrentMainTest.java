@@ -264,6 +264,78 @@ final class VirtualActorGenerationFenceCurrentMainTest {
     }
 
     @Test
+    void terminalDecisionLeaseIsOneShotAndBlocksReplacementUntilSettled()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var worker = worker(group);
+            assertEquals(1L, group.reserveNextVirtualActorGeneration(ID));
+            group.bindVirtualActorIdentity(worker, ID, 1L);
+
+            assertThrows(IllegalStateException.class,
+                    () -> group.beginVirtualActorTerminalDecision(ID, 1L, worker.id()),
+                    "a live worker cannot claim a terminal decision");
+            worker.stop();
+            worker.getDone().get(5, TimeUnit.SECONDS);
+
+            assertThrows(IllegalStateException.class,
+                    () -> group.beginVirtualActorTerminalDecision(
+                            ID, 1L, ActorRuntime.ActorId.create()),
+                    "a wrong physical ActorId cannot claim the decision");
+            var lease = group.beginVirtualActorTerminalDecision(ID, 1L, worker.id());
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 1L, worker.id()),
+                    "claimed receipt is no longer available for replay");
+            assertThrows(IllegalStateException.class,
+                    () -> group.beginVirtualActorTerminalDecision(ID, 1L, worker.id()));
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> group.reserveNextVirtualActorGeneration(ID),
+                        "no successor may overtake an in-flight terminal policy");
+                // Unrelated identities can still progress: callbacks do not
+                // run while holding the runtime ledger monitor.
+                var other = new VirtualActorActivationRegistry.Identity(
+                        "tenant-a", "Cart", "unrelated");
+                assertEquals(1L, group.reserveNextVirtualActorGeneration(other));
+                group.abortVirtualActorGeneration(other, 1L);
+            } finally {
+                lease.close();
+                lease.close();
+            }
+            assertThrows(IllegalStateException.class,
+                    () -> group.beginVirtualActorTerminalDecision(ID, 1L, worker.id()),
+                    "terminal decisions are exactly once, including after release");
+            assertEquals(2L, group.reserveNextVirtualActorGeneration(ID));
+            group.abortVirtualActorGeneration(ID, 2L);
+            group.close();
+        }
+    }
+
+    @Test
+    void groupCloseCannotReleaseAnInFlightTerminalDecision()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            var first = runtime.createActorGroup(supervisor);
+            var next = runtime.createActorGroup(supervisor);
+            var actor = worker(first);
+            first.reserveVirtualActorGeneration(ID, 1L);
+            first.bindVirtualActorIdentity(actor, ID, 1L);
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
+
+            var lease = first.beginVirtualActorTerminalDecision(ID, 1L, actor.id());
+            first.close();
+            assertThrows(IllegalStateException.class,
+                    () -> next.reserveNextVirtualActorGeneration(ID),
+                    "group close must not bypass an outstanding terminal lease");
+            lease.close();
+            assertEquals(2L, next.reserveNextVirtualActorGeneration(ID));
+            next.abortVirtualActorGeneration(ID, 2L);
+            next.close();
+        }
+    }
+
+    @Test
     void physicalWorkerCannotOwnMultipleLogicalIdentities() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
