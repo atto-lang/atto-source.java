@@ -39,6 +39,14 @@ final class ActorRefCapabilityAssignabilityTest {
     }
 
     @Test
+    void identicalGenericFunctionSignatureDoesNotLoseKnownActorReference() {
+        Function exact = new Function(List.of(new Generic("T")), CART_REF);
+        assertTrue(Types.isAssignable(exact, exact));
+        assertFalse(Types.isAssignable(
+                new Function(List.of(new Generic("T")), Unknown.INSTANCE), exact));
+    }
+
+    @Test
     void readonlyRecordsAndFunctionResultsCannotForgeActorRefs() {
         Types.Record expected = new Types.Record(
                 Map.of("cart", CART_REF), true, AggregateKind.RECORD);
