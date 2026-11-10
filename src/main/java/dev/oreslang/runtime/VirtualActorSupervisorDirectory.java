@@ -418,7 +418,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             long timeoutNanos) {
         runtime.supervisorRegistryForObservation();
         requireGrant(grant, authenticatedSession);
-        Objects.requireNonNull(identity, "identity");
+        VirtualActorActivationRegistry.validateLookupIdentity(identity);
         if (!tenant.equals(identity.domain())
                 || !runtime.ownsVirtualActor(identity, supervisor))
             throw new SecurityException("virtual actor identity outside supervisor scope");
@@ -473,6 +473,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
         requireGrant(grant, authenticatedSession);
         if (limit < 1 || limit > 128)
             throw new IllegalArgumentException("supervisor virtual actor page size must be 1..128");
+        if (after != null)
+            VirtualActorActivationRegistry.validateLookupIdentity(after);
         if (after != null && (!tenant.equals(after.domain())
                 || !runtime.ownsVirtualActor(after, supervisor)))
             throw new SecurityException("virtual actor page cursor outside supervisor scope");
