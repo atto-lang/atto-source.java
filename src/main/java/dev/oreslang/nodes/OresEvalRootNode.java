@@ -7886,6 +7886,31 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unverified typed empty aggregate cannot execute: " + witness);
             }
+            if (expr instanceof Ast.TypedMapLiteralExpr literalMap) {
+                Ast.TypeRef witness = literalMap.aggregateType();
+                Ast.TypeRef keyType = witness.arguments().get(0);
+                Ast.TypeRef valueType = witness.arguments().get(1);
+                // No map escapes until the entire literal has been evaluated,
+                // validated and committed in one OresKeyedMap.putAll batch.
+                java.util.LinkedHashMap<Object, Object> staged = new java.util.LinkedHashMap<>();
+                for (Ast.MapLiteralEntry entry : literalMap.entries()) {
+                    if (!Ast.TypedMapLiteralExpr.admitsLiteral(keyType, entry.key())
+                            || !Ast.TypedMapLiteralExpr.admitsLiteral(valueType, entry.value())) {
+                        throw new IllegalArgumentException("unverified populated typed Map entry");
+                    }
+                    Object key = eval(entry.key(), env);
+                    Object value = eval(entry.value(), env);
+                    if (staged.containsKey(key)) {
+                        throw new IllegalArgumentException("duplicate logical key in populated typed Map literal");
+                    }
+                    staged.put(key, value);
+                }
+                Object target = eval(new Ast.TypedEmptyAggregateExpr(witness), env);
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> typedMap = (OresKeyedMap<Object, Object>) target;
+                typedMap.putAll(staged);
+                return typedMap;
+            }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
                 if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {

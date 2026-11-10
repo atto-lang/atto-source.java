@@ -1591,6 +1591,28 @@ public final class OwnershipChecker {
             }
             throw error("unproved typed empty aggregate constructor: " + witness);
         }
+        if (expr instanceof Ast.TypedMapLiteralExpr literalMap) {
+            Ast.TypeRef witness = literalMap.aggregateType();
+            // Independent ownership admission, even for forged/deserialized
+            // ASTs: only literal-only primitive domains, never borrowed graphs.
+            checkExpr(new Ast.TypedEmptyAggregateExpr(witness), scope, true);
+            Ast.TypeRef keyType = witness.arguments().get(0);
+            Ast.TypeRef valueType = witness.arguments().get(1);
+            java.util.Set<Object> keys = new java.util.HashSet<>();
+            for (Ast.MapLiteralEntry entry : literalMap.entries()) {
+                if (!Ast.TypedMapLiteralExpr.admitsLiteral(keyType, entry.key())
+                        || !Ast.TypedMapLiteralExpr.admitsLiteral(valueType, entry.value())) {
+                    throw error("populated typed Map literal requires concrete copyable scalar entries");
+                }
+                checkExpr(entry.key(), scope, true);
+                checkExpr(entry.value(), scope, true);
+                if (!keys.add(((Ast.LiteralExpr) entry.key()).value())) {
+                    throw error("duplicate logical key in populated typed Map literal");
+                }
+            }
+            // A populated Map is still an owned mutable resource, not COPY.
+            return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
             List<Ast.TypeRef> slots = new ArrayList<>(tuple.elements().size());

@@ -1130,7 +1130,7 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr, ContextualEmptyMapExpr { }
+            TypedEmptyAggregateExpr, TypedMapLiteralExpr, ContextualEmptyMapExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1174,6 +1174,42 @@ public final class Ast {
             if (aggregateType.inferArguments()) {
                 throw new IllegalArgumentException("typed empty aggregate needs an explicit type");
             }
+        }
+    }
+
+    /** Explicitly typed, populated Map with scalar-literal-only entries.
+     * Computed keys, spreads and effectful values remain excluded by construction.
+     */
+    public record MapLiteralEntry(Expr key, Expr value) {
+        public MapLiteralEntry {
+            java.util.Objects.requireNonNull(key, "Map literal key");
+            java.util.Objects.requireNonNull(value, "Map literal value");
+        }
+    }
+
+    public record TypedMapLiteralExpr(TypeRef aggregateType, List<MapLiteralEntry> entries) implements Expr {
+        public TypedMapLiteralExpr {
+            java.util.Objects.requireNonNull(aggregateType, "typed Map literal type");
+            entries = List.copyOf(entries);
+            if (!aggregateType.name().equals("Map") || aggregateType.inferArguments()
+                    || aggregateType.arguments().size() != 2 || entries.isEmpty()
+                    || entries.size() > dev.oreslang.runtime.OresKeyedMap.MAX_ENTRIES) {
+                throw new IllegalArgumentException("populated Map literal requires concrete Map<K,V> and bounded entries");
+            }
+        }
+
+        /** Explicit narrow scalar domains; checks are repeated independently in each compiler phase. */
+        public static boolean admitsLiteral(TypeRef type, Expr expression) {
+            if (!(expression instanceof LiteralExpr literal)
+                    || type.inferArguments() || !type.arguments().isEmpty()) return false;
+            Object value = literal.value();
+            return switch (type.name()) {
+                case "string", "String" -> value instanceof String;
+                case "Symbol" -> value instanceof dev.oreslang.runtime.OresSymbol;
+                case "int" -> value instanceof Long;
+                case "bool", "Bool" -> value instanceof Boolean;
+                default -> false;
+            };
         }
     }
 

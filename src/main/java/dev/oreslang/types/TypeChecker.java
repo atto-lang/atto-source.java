@@ -4791,6 +4791,31 @@ public final class TypeChecker {
                             + "zero-initialization proof plus typed guest lowering; "
                             + "unresolved or unsupported witness " + witness);
         }
+        if (expr instanceof Ast.TypedMapLiteralExpr literalMap) {
+            // Reuse canonical fully typed empty-Map admission: namespace
+            // shadowing and K/V domains must pass exactly the same checks.
+            Type mapType = typeOf(new Ast.TypedEmptyAggregateExpr(literalMap.aggregateType()),
+                    env, generics, self);
+            Ast.TypeRef keyType = literalMap.aggregateType().arguments().get(0);
+            Ast.TypeRef valueType = literalMap.aggregateType().arguments().get(1);
+            java.util.Set<Object> keys = new java.util.HashSet<>();
+            for (Ast.MapLiteralEntry entry : literalMap.entries()) {
+                if (!Ast.TypedMapLiteralExpr.admitsLiteral(keyType, entry.key())
+                        || !Ast.TypedMapLiteralExpr.admitsLiteral(valueType, entry.value())) {
+                    throw new IllegalArgumentException(
+                            "typed Map literal key/value does not match concrete Map<K,V> scalar domains");
+                }
+                // Even admitted literal shapes still pass the ordinary
+                // compiler checks, including untrusted actor Symbol export.
+                typeOf(entry.key(), env, generics, self);
+                typeOf(entry.value(), env, generics, self);
+                Object logicalKey = ((Ast.LiteralExpr) entry.key()).value();
+                if (!keys.add(logicalKey)) {
+                    throw new IllegalArgumentException("duplicate logical key in typed Map literal");
+                }
+            }
+            return mapType;
+        }
         if (expr instanceof Ast.TupleExpr tuple) {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }

@@ -4673,10 +4673,31 @@ public final class Parser {
                 Ast.TypeRef valueType = parseTypeRef();
                 consume(GT, "~map<K,V>() requires exactly two type arguments");
                 consume(LPAREN, "expected '(' after ~map<K,V>");
-                consume(RPAREN, "nonempty ~map<K,V>(...) is pending transactional map "
-                        + "entry insertion and ownership proofs");
-                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(
-                        new Ast.TypeRef("Map", List.of(keyType, valueType), false)));
+                Ast.TypeRef mapType = new Ast.TypeRef("Map", List.of(keyType, valueType), false);
+                if (match(RPAREN)) {
+                    return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(mapType));
+                }
+                List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+                do {
+                    if (check(ELLIPSIS)) {
+                        throw error(peek(), "populated typed Map spread is not yet ownership-admitted");
+                    }
+                    Ast.Expr key = parseExpression();
+                    consume(FAT_ARROW, "typed Map entries require key => value");
+                    Ast.Expr value = parseExpression();
+                    // Deliberately accept only inert scalar literals in the first
+                    // executable stage. Computed keys/values need an effect and
+                    // transactional ownership proof before admission.
+                    if (!(key instanceof Ast.LiteralExpr) || !(value instanceof Ast.LiteralExpr)) {
+                        throw error(previous(), "populated typed Map entries currently require literal scalar keys and values");
+                    }
+                    entries.add(new Ast.MapLiteralEntry(key, value));
+                    if (entries.size() > dev.oreslang.runtime.OresKeyedMap.MAX_ENTRIES) {
+                        throw error(previous(), "populated typed Map entry count exceeds runtime quota");
+                    }
+                } while (match(COMMA) && !check(RPAREN));
+                consume(RPAREN, "expected ')' after typed Map entries");
+                return parsePostfixSuffix(new Ast.TypedMapLiteralExpr(mapType, entries));
             }
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
