@@ -304,6 +304,165 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
             throw new SQLException("OUTCOME_UNKNOWN",failure);
         }
     }
+    /**
+     * Trusted actor reactivation: reads epoch, snapshot, head and post-snapshot
+     * journal in ONE SQLite snapshot and proves every replay event against its
+     * immutable legacy op or logical multi-event command record.
+     *
+     * No partially replayed state escapes on journal corruption. The caller
+     * must reconstruct into a fresh private arena and revalidate its
+     * activation authority before transitioning from RECOVERING to READY.
+     */
+    public synchronized SqlitePersistenceStore.Recovery loadVerified(Identity id,
+                                                                      long trustedEpoch)
+            throws SQLException {
+        Objects.requireNonNull(id);checkOpen();
+        if (trustedEpoch<1) throw new IllegalArgumentException("INVALID_RESTORE_EPOCH");
+        execute("BEGIN");
+        try {
+            if (currentEpoch(id)!=trustedEpoch)throw new SecurityException("STALE_EPOCH");
+            long headVersion=0,snapshotVersion=0;
+            int snapshotSchema=0;
+            byte[] snapshot=new byte[0];
+            try(PreparedStatement s=db.prepareStatement(
+                    "SELECT version,snapshot_version,snapshot_schema,length(snapshot)," +
+                    "substr(snapshot,1,1048577) FROM state " +
+                    "WHERE tenant=? AND actor=? AND slot=?")) {
+                bindId(s,id);
+                try(ResultSet r=s.executeQuery()){
+                    if(r.next()){
+                        headVersion=r.getLong(1);snapshotVersion=r.getLong(2);
+                        snapshotSchema=r.getInt(3);
+                        long size=r.getLong(4);
+                        boolean noSnapshot=r.wasNull();
+                        byte[] bytes=r.getBytes(5);
+                        if(headVersion<0 || snapshotVersion<0 ||
+                           snapshotVersion>headVersion ||
+                           (snapshotVersion==0 && (snapshotSchema!=0 || !noSnapshot)) ||
+                           (snapshotVersion>0 && (snapshotSchema<1 || noSnapshot)) ||
+                           size<0 || size>1_048_576 || (!noSnapshot && (bytes==null ||
+                           bytes.length!=size)))
+                            throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                        if(bytes!=null)snapshot=bytes;
+                    }
+                }
+            }
+            if(headVersion-snapshotVersion>10000)
+                throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+            // Index only the post-snapshot legacy events (snapshots themselves
+            // are checked as barriers, not replayed) and command ranges.
+            record Legacy(int schema, byte[] payload) {}
+            java.util.Map<Long,Legacy> legacy=new java.util.HashMap<>();
+            try(PreparedStatement s=db.prepareStatement(
+                    "SELECT version,schema,length(payload),substr(payload,1,1048577) " +
+                    "FROM ops WHERE tenant=? AND actor=? AND slot=? AND kind=2 " +
+                    "AND version>?")) {
+                bindId(s,id);s.setLong(4,snapshotVersion);
+                try(ResultSet r=s.executeQuery()){
+                    while(r.next()){
+                        long version=r.getLong(1),size=r.getLong(3);
+                        byte[] payload=r.getBytes(4);
+                        if(version<1 || version>headVersion || r.getInt(2)<1 ||
+                           size<0 || size>1_048_576 ||
+                           payload==null || payload.length!=size ||
+                           legacy.put(version,new Legacy(r.getInt(2),payload))!=null)
+                            throw new SQLException("CORRUPT_OPERATION_LEDGER");
+                        if(legacy.size()>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+                    }
+                }
+            }
+            record CommandRange(long first,long last,int schema,int count,
+                                byte[] hash,byte[] resultHash,byte[] resultBytes) {}
+            java.util.Map<Long,CommandRange> expectedCommands=new java.util.HashMap<>();
+            java.util.Map<Long,List<byte[]>> captured=new java.util.HashMap<>();
+            try(PreparedStatement s=db.prepareStatement(
+                    "SELECT first_version,last_version,event_count,schema,events_hash," +
+                    "result_hash,result_bytes FROM command_commits " +
+                    "WHERE tenant=? AND actor=? AND slot=? AND last_version>?")) {
+                bindId(s,id);s.setLong(4,snapshotVersion);
+                try(ResultSet r=s.executeQuery()){
+                    int commands=0;
+                    while(r.next()){
+                        long first=r.getLong(1),last=r.getLong(2);
+                        int count=r.getInt(3),schema=r.getInt(4);
+                        byte[] digest=r.getBytes(5),resultHash=r.getBytes(6),
+                               resultBytes=r.getBytes(7);
+                        if(first<=snapshotVersion || first<1 || last>headVersion ||
+                           count<1 || count>10000 || last-first+1!=count ||
+                           schema<1 || digest==null || resultHash==null ||
+                           resultBytes==null || resultBytes.length>1_048_576 ||
+                           !MessageDigest.isEqual(hash(resultBytes),resultHash))
+                            throw new SQLException("CORRUPT_COMMAND_RECORD");
+                        CommandRange span=new CommandRange(first,last,schema,count,
+                                                           digest,resultHash,resultBytes);
+                        for(long version=first;version<=last;version++){
+                            if(expectedCommands.put(version,span)!=null ||
+                               legacy.containsKey(version))
+                                throw new SQLException("OVERLAPPING_OPERATION_LEDGER");
+                        }
+                        captured.put(first,new ArrayList<>());
+                        if(++commands>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+                    }
+                }
+            }
+            List<SqlitePersistenceStore.Event> events=new ArrayList<>();
+            long expected=snapshotVersion+1,bytes=0;
+            try(PreparedStatement s=db.prepareStatement(
+                    "SELECT version,schema,length(payload),substr(payload,1,1048577) " +
+                    "FROM events WHERE tenant=? AND actor=? AND slot=? AND version>? " +
+                    "ORDER BY version ASC")) {
+                bindId(s,id);s.setLong(4,snapshotVersion);
+                try(ResultSet r=s.executeQuery()){
+                    while(r.next()){
+                        long version=r.getLong(1),size=r.getLong(3);
+                        int schema=r.getInt(2);
+                        byte[] payload=r.getBytes(4);
+                        if(version!=expected++ || schema<1 || size<0 ||
+                           size>1_048_576 || size>16_777_216L-bytes ||
+                           payload==null || payload.length!=size)
+                            throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
+                        bytes+=size;
+                        Legacy original=legacy.get(version);
+                        CommandRange command=expectedCommands.get(version);
+                        if(original==null && command==null)
+                            throw new SQLException("MISSING_OPERATION_PROOF");
+                        if(original!=null &&
+                           (original.schema()!=schema ||
+                            !Arrays.equals(original.payload(),payload)))
+                            throw new SQLException("CORRUPT_LEGACY_EVENT");
+                        if(command!=null) {
+                            if(command.schema()!=schema)
+                                throw new SQLException("CORRUPT_COMMAND_SCHEMA");
+                            captured.get(command.first()).add(payload);
+                        }
+                        events.add(new SqlitePersistenceStore.Event(version,schema,payload));
+                        if(events.size()>10000)
+                            throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+                    }
+                }
+            }
+            if(expected!=headVersion+1 ||
+               expectedCommands.size()+legacy.size()!=events.size())
+                throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
+            for(CommandRange command : new java.util.HashSet<>(expectedCommands.values())) {
+                List<byte[]> values=captured.get(command.first());
+                if(values==null || values.size()!=command.count() ||
+                   !MessageDigest.isEqual(eventHash(command.schema(),values),command.hash()))
+                    throw new SQLException("CORRUPT_COMMAND_EVENTS");
+            }
+            SqlitePersistenceStore.Recovery restored=
+                new SqlitePersistenceStore.Recovery(headVersion,snapshotVersion,
+                                                     snapshotSchema,snapshot,events);
+            execute("COMMIT");
+            return restored;
+        } catch(Exception failure) {
+            rollback();
+            if(failure instanceof SQLException sql)throw sql;
+            if(failure instanceof RuntimeException runtime)throw runtime;
+            throw new SQLException("UNVERIFIABLE_RESTORE",failure);
+        }
+    }
+
     @Override public synchronized void close() throws SQLException {
         if(!closed) {closed=true;db.close();}
     }
