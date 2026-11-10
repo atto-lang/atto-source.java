@@ -11,7 +11,7 @@ final class SupervisorFailureEscrowV1Standalone {
         try { action.run(); } catch (IllegalArgumentException | IllegalStateException | UnsupportedOperationException expected) { return; }
         throw new AssertionError(message);
     }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         var ledger = new SupervisorFailureEscrowV1();
         ledger.registerRoot(1, 1);
         ledger.registerChild(2, 1, 1); // supervisor S
@@ -49,6 +49,39 @@ final class SupervisorFailureEscrowV1Standalone {
         rejected(() -> view.clear(), "snapshot mutability");
         rejected(() -> ledger.fail(1), "guardian cannot self-recover");
         rejected(() -> ledger.registerChild(7, 2, 1), "failed parent denied admission");
+        // Real multithreaded host race: 64 independent terminal receipts,
+        // eight rounds, with no dropped or duplicate acknowledgments.
+        for (int round = 0; round < 8; round++) {
+            var concurrent = new SupervisorFailureEscrowV1();
+            concurrent.registerRoot(1, 1);
+            concurrent.registerChild(2, 1, 1);
+            for (int actor = 3; actor < 67; actor++) {
+                concurrent.registerChild(actor, 2, 1);
+            }
+            var workers = java.util.concurrent.Executors.newFixedThreadPool(8);
+            try {
+                var begin = new java.util.concurrent.CountDownLatch(1);
+                var results = new java.util.ArrayList<java.util.concurrent.Future<Void>>();
+                for (int actor = 3; actor < 67; actor++) {
+                    final int actorId = actor;
+                    results.add(workers.submit(() -> {
+                        begin.await();
+                        concurrent.fail(actorId);
+                        return null;
+                    }));
+                }
+                begin.countDown();
+                for (var result : results) result.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                ok(concurrent.pendingCount() == 64, "64 concurrent failure notices retained");
+                for (int actor = 3; actor < 67; actor++) {
+                    ok(concurrent.acknowledge(concurrent.deliver(actor)),
+                            "exact once CONTROL acknowledgement");
+                }
+                ok(concurrent.pendingCount() == 0, "no unacknowledged concurrent failure");
+            } finally {
+                workers.shutdownNow();
+            }
+        }
         System.out.println("PASS SupervisorFailureEscrowV1Standalone assertions=" + assertions);
     }
 }
