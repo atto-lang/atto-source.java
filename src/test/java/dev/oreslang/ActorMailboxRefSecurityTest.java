@@ -66,6 +66,15 @@ final class ActorMailboxRefSecurityTest {
                             runtime, real.id(), real.kind(), real.generation());
 
             assertFalse(spoofed.isAlive());
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> wrongGeneration = (ActorRuntime.ActorRef<String>)
+                    constructor.newInstance(
+                            runtime, real.id(), real.kind(), real.generation() + 1);
+            assertFalse(wrongGeneration.isAlive());
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> wrongGeneration.send("stale-generation"));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    wrongGeneration::stop);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> spoofed.send("forged"));
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
@@ -76,6 +85,8 @@ final class ActorMailboxRefSecurityTest {
                     spoofed::getReady);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::getDone);
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    spoofed::outputs);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::parentId);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
