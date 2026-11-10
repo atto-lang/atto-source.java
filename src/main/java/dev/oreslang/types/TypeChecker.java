@@ -4737,7 +4737,7 @@ public final class TypeChecker {
                 }
 
                 checkValueMatchCoverage(
-                        valueMatch.arms(), subject, generics, self);
+                        valueMatch.arms(), subject, generics, self, valueMatch.first());
                 return result;
             } finally {
                 // Only the selected arm executes at runtime. Type-checking all
@@ -6729,7 +6729,35 @@ public final class TypeChecker {
             List<Ast.MatchValueArm> arms,
             Type subject,
             Set<String> generics,
-            Type self) {
+            Type self,
+            boolean first) {
+        // Ordinary match is a proof-checked partition. A final, unguarded
+        // wildcard is the fallback and never counts as an overlapping explicit
+        // pattern. 'match first' explicitly chooses ordered priority and may
+        // overlap; both still require exhaustive coverage.
+        if (!first) {
+            int explicitEnd = arms.size();
+            Ast.MatchValueArm last = arms.getLast();
+            if (last.guard() == null && last.pattern() instanceof Ast.WildcardPattern) {
+                explicitEnd--;
+            }
+            for (int i = 0; i < explicitEnd; i++) {
+                Ast.MatchValueArm arm = arms.get(i);
+                for (int j = 0; j < i; j++) {
+                    Ast.MatchValueArm previous = arms.get(j);
+                    boolean patternDisjoint = patternsProvablyDisjoint(
+                            previous.pattern(), arm.pattern(), subject, generics, self);
+                    boolean guardDisjoint = previous.guard() != null && arm.guard() != null
+                            && guardsProvablyDisjoint(previous.guard(), arm.guard());
+                    if (!patternDisjoint && !guardDisjoint) {
+                        throw new IllegalArgumentException(
+                                "ordinary match requires provably disjoint explicit patterns "
+                                        + (j + 1) + " and " + (i + 1)
+                                        + "; use 'match first' for ordered overlap");
+                    }
+                }
+            }
+        }
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchValueArm arm = arms.get(i);
 

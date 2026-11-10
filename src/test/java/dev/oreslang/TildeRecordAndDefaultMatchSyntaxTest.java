@@ -103,8 +103,10 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
         assertEquals(1, typed.entries().size());
         assertNotNull(typed.mapType());
 
+        assertThrows(IllegalArgumentException.class,
+                () -> initializer("~map(\"ready\" => true)"),
+                "untyped explicit ~map(...) requires a directly declared Map<K,V>");
         for (String source : List.of(
-                "~map(\"ready\" => true)",
                 "~(\"ready\" => true)",
                 "~(ready => true)")) {
             assertInstanceOf(Ast.MapLiteralExpr.class, initializer(source), source);

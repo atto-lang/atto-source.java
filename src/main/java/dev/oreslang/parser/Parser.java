@@ -4018,8 +4018,8 @@ public final class Parser {
 
         // Selected canonical order: match first<T> subject over ...
         // Preserve historical match<T> first subject over ... as input.
-        // Both enter the existing ordered MatchExpr path pending disjointness proof.
-        if (!canonicalFirst) matchContextualIdentifier("first");
+        // Unlike ordinary match, the first form authorizes ordered overlaps.
+        boolean legacyFirst = !canonicalFirst && matchContextualIdentifier("first");
 
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
@@ -4143,7 +4143,8 @@ public final class Parser {
         if (valueArms.isEmpty()) {
             throw error(previous(), "value match requires at least one 'on' arm");
         }
-        return new Ast.MatchExpr(subject, valueArms, declaredResult);
+        return new Ast.MatchExpr(subject, valueArms, declaredResult,
+                canonicalFirst || legacyFirst);
     }
 
     /**
