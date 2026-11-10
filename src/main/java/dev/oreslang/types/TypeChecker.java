@@ -1374,7 +1374,8 @@ public final class TypeChecker {
                     "neuron actor '" + klass.name() + "' requires exactly one receive(ActorMail<float>): void");
         }
         Ast.MethodDecl receive = receives.getFirst();
-        if (receive.isStatic() || receive.isAbstract() || receive.async()
+        if (receive.visibility() != Ast.Visibility.PRIVATE
+                || receive.isStatic() || receive.isAbstract() || receive.async()
                 || receive.suspends() || receive.structural()
                 || !receive.genericParameters().isEmpty() || !receive.effects().isEmpty()
                 || receive.arity() != 1
@@ -1382,7 +1383,7 @@ public final class TypeChecker {
                 || !receive.returnType().equals(Ast.TypeRef.simple("void"))) {
             throw new IllegalArgumentException(
                     "neuron actor '" + klass.name()
-                    + "' receive must be synchronous receive(ActorMail<float>): void");
+                    + "' receive must be private, synchronous receive(ActorMail<float>): void");
         }
     }
 
