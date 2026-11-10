@@ -1,0 +1,95 @@
+name: TaskScope retirement hook safety (exact-head JVM)
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/task-scope-retirement-hook.yml"
+      - "src/main/java/dev/oreslang/runtime/TaskScope.java"
+      - "src/test/java/dev/oreslang/runtime/TaskScopeRetirementHookFailureTest.java"
+      - "src/test/java/dev/oreslang/runtime/TaskScopeTest.java"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact submitted head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head and record tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p target/retirement-evidence
+          printf 'head=%s\ntree=%s\nrun=%s\nattempt=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            | tee target/retirement-evidence/source.txt
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Execute focused real runtime JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp \
+            -Dtest=TaskScopeRetirementHookFailureTest,TaskScopeTest,TaskHandleTest \
+            -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Verify nonzero executed JUnit reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const suites = [
+            'TaskScopeRetirementHookFailureTest',
+            'TaskScopeTest',
+            'TaskHandleTest',
+          ];
+          let sum = 0;
+          for (const suite of suites) {
+            const path = `target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml`;
+            const xml = fs.readFileSync(path, 'utf8');
+            const tag = xml.match(/<testsuite\b[^>]*>/)?.[0];
+            if (!tag) throw new Error(`missing testsuite: ${suite}`);
+            const field = name => {
+              const match = tag.match(new RegExp(`\\b${name}="([0-9]+)"`));
+              if (!match) throw new Error(`missing ${name} for ${suite}`);
+              return Number(match[1]);
+            };
+            const tests = field('tests');
+            const failures = field('failures');
+            const errors = field('errors');
+            const skipped = field('skipped');
+            if (!tests || failures || errors || skipped) {
+              throw new Error(`${suite} tests=${tests} failures=${failures} errors=${errors} skipped=${skipped}`);
+            }
+            if (suite === 'TaskScopeRetirementHookFailureTest' && tests !== 2)
+              throw new Error('regression suite must execute both new tests');
+            console.log(`JUNIT_EXECUTED|${suite}|tests=${tests}|failures=0|errors=0|skipped=0`);
+            sum += tests;
+          }
+          if (sum < 3) throw new Error('invalid zero-step test evidence');
+          JS
+      - name: Preserve exact-head execution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: task-scope-retirement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/retirement-evidence/
+            target/surefire-reports/TEST-dev.oreslang.runtime.*.xml
+          retention-days: 7
+          if-no-files-found: warn
