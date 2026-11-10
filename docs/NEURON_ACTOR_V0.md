@@ -43,7 +43,11 @@ read or write. A supervisor must never receive these capabilities.
 contains **8 host-only JUnit test cases**, including reader batching, writer
 fairness, cancellation, generation restart/retirement, unpublished grants,
 callback lock discipline, contention and epoch exhaustion. These are source
-tests pending executed CI receipts, not verified pass results.
+tests pending executed CI receipts, not verified pass results. The targeted
+`.github/workflows/neuron-state-contract.yml` gate checks the exact PR head
+and tree before invoking Maven's `NeuronActorV0Test` and
+`ActorStateReadWriteLoansTest` suites. A queued/failed job with
+`steps=null` is not evidence that the Maven invocation occurred.
 
 ### Guest/compiler next implementation slice
 
