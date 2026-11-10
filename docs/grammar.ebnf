@@ -62,7 +62,11 @@ actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
    Scalar v0 type checking requires public forward(float):float and a
    receive(ActorMail<float>):void handler. Training is not implicitly admitted. *)
 neuron_actor_decl = "define" visibility [ "serial" ] "neuron" "actor" IDENT
-                    "as" { actor_member } "end" ;
+                    "as" neuron_state { actor_method_decl | static_function_decl } "end" ;
+neuron_state     = "state" "{" "let" type_ref IDENT [ "=" expression ] ";"
+                   { "let" type_ref IDENT [ "=" expression ] ";" } "}" ;
+(* Neuron state is retained as a separate sealed AST schema, not ordinary
+   actor fields; critical state-loan lowering is not yet implemented. *)
 
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
