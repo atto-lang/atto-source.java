@@ -56,7 +56,7 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
                     () -> supervisor.done().get(5, TimeUnit.SECONDS));
             assertEquals(2, bridge.pendingCount(),
                     "both real runtime failures remain in CONTROL escrow");
-            assertFalse(bridge.acknowledgeCommitted(beforeParentCrash),
+            assertFalse(bridge.commitAndAcknowledge(beforeParentCrash, () -> { }),
                     "a dead supervisor cannot acknowledge an old delivery");
 
             assertThrows(ActorRuntime.ActorSealedException.class,
@@ -73,9 +73,15 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
             assertNotNull(ancestor);
             assertEquals(1L, ancestor.controllerId(), "root guardian receives takeover");
             assertNotSame(beforeParentCrash, ancestor);
-            assertTrue(bridge.acknowledgeCommitted(ancestor));
+            assertThrows(IllegalStateException.class,
+                    () -> bridge.commitAndAcknowledge(ancestor, () -> {
+                        throw new IllegalStateException("policy commit failed");
+                    }));
+            assertEquals(2, bridge.pendingCount(),
+                    "failed policy action cannot silently acknowledge CONTROL");
+            assertTrue(bridge.commitAndAcknowledge(ancestor, () -> { }));
             assertFalse(bridge.acknowledgeCommitted(ancestor), "duplicate ACK must be inert");
-            assertTrue(bridge.acknowledgeCommitted(bridge.deliver(supervisorId)));
+            assertTrue(bridge.commitAndAcknowledge(bridge.deliver(supervisorId), () -> { }));
             assertEquals(0, bridge.pendingCount());
         } finally {
             SIBLING_PROGRESS.compareAndSet(siblingSignal, null);
