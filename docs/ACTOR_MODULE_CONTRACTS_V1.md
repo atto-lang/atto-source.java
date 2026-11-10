@@ -83,7 +83,51 @@ The Java frontend and linked/export ABI paths are changed; the corpus in
 `contracts/actor-receiver-v1/` and JUnit source tests are **UNEXECUTED**.
 Backend support, real guest execution, and parity remain unverified.
 
-## Proposed next stage: standalone actors and receiver methods
+## Stacked Java stage three: compact actors and guarded named bindings
+
+The following compact actor-type syntax reuses the **existing empty-body
+actor class** and carries existing nominal actor metadata, default serial
+scheduler settings, class export rules and contract identity:
+
+```atto
+define contract EmptyActorApi as
+  actor Cart;
+end
+
+define module carts conforms EmptyActorApi as
+  pub define actor Cart;
+end
+```
+
+`pub define actor Cart;` is an equivalent spelling of
+`pub define actor Cart as end`. It does **not** create an actor instance
+or invent any methods. Existing class-style actor syntax remains supported.
+
+The requested named binding is recognized and preserved as an explicit
+`ClassDecl.standaloneBinding` field:
+
+```atto
+define module carts as
+  pub define actor Cart as cart;
+end
+```
+
+This **parses**, but **must fail** type checking, incremental ABI
+generation, and exported-interface certification until checked activation
+and external receiver-method dispatch are implemented. No `cart` value,
+`ActorRef<Cart>`, implicit singleton, state loan or supervisor authority
+may be synthesized. This restriction applies to private and public actor
+bindings. Generic, inherited and transport-aware named bindings are not
+admitted in this slice.
+
+The stacked `StandaloneActorDeclarationAdmissionTest` adds 14 authored
+JUnit tests (UNEXECUTED), including namespace/contract conformance,
+old syntax equivalence, fail-closed named bindings and direct ABI refusal.
+Portable `.atto` samples live in `contracts/standalone-actor-v1/`.
+Java/Graal parser/type-checker coverage and executable guest behavior
+remain **unverified** until exact-head, stepful runs.
+
+## Proposed next stage: executable external receiver methods
 
 The intended surface grammar is:
 
