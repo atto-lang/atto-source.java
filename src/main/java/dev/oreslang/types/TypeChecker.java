@@ -10237,6 +10237,7 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (actual.equals(expected)) return true;
         // Unknown/generic compatibility is intentionally permissive for ordinary
         // data, but it is not evidence that a value carries a minted actor
         // capability. This also covers Option<ActorRef<T>>, records and returns.
