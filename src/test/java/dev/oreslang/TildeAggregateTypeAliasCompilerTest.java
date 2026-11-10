@@ -59,14 +59,15 @@ final class TildeAggregateTypeAliasCompilerTest {
     }
 
     @Test
-    void tildeAliasDoesNotCreateNewNominalProducts() {
+    void parserOnlyNominalAliasesDoNotCertifyFactoryOrRuntimeSemantics() {
         // Surface syntax alone: implementation of factories and runtime
         // representations is independently gated by each builtin's contract.
         assertEquals(typeOf("Map<string, bool>"), typeOf("~map<string, bool>"));
         assertEquals(typeOf("Entry<string, bool>"), typeOf("~entry<string, bool>"));
         assertEquals(typeOf("Pair<int, string>"), typeOf("~pair<int, string>"));
         assertEquals(typeOf("Set<int>"), typeOf("~set<int>"));
-        assertEquals(typeOf("Record<int>"), typeOf("~record<int>"));
+        assertEquals(typeOf("Record<{name: string, age: int}>"),
+                typeOf("~record<{name: string, age: int}>"));
         assertEquals(typeOf("List[int]"), typeOf("~list[int]"));
         assertEquals(typeOf("Slice[int]"), typeOf("~slice[int]"));
     }
@@ -127,11 +128,15 @@ final class TildeAggregateTypeAliasCompilerTest {
                 type Vector<T> = T;
                 fnc takes_tuple(~tuple<int, string> value): void { return; }
                 fnc takes_vector(~vector[...(int, string, bool)] value): void { return; }
+                fnc takes_alias(Tuple<int> value): void { return; }
+                fnc takes_vector_alias(Vector<int> value): void { return; }
                 pub fnc main(): void {
                   val t: ~tuple<int, string> = (7, "seven");
                   val v: ~vector[...(int, string, bool)] = [7, "seven", true];
                   takes_tuple(t);
                   takes_vector(v);
+                  takes_alias(11);
+                  takes_vector_alias(12);
                   return;
                 }
                 """)));
