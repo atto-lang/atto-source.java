@@ -8,7 +8,6 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -55,7 +54,7 @@ public final class SqliteCommandTransactionStoreTestMain {
                 legacy.grantEpoch(id.tenant(),id.actor(),1);
                 Command cmd=command(id,"deposit-100",1,0,40,60);
                 byte[] input=enc(40);
-                Command owned=new Command(id,"copy-proof",1,2,
+                Command owned=new Command(id,"copy-proof",1,2,1,
                         "copy-proof".getBytes(java.nio.charset.StandardCharsets.UTF_8),
                         List.of(input),enc(40));
                 input[0]=99; // command copied event data on construction.
