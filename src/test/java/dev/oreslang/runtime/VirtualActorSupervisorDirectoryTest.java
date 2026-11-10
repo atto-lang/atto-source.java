@@ -560,6 +560,11 @@ final class VirtualActorSupervisorDirectoryTest {
                     assertEquals(plan.descriptor().logicalGeneration(),
                             current.activationGeneration());
                     assertTrue(current.activationGeneration() > originalGeneration);
+                    // A stale physical ActorId must not be presented as the
+                    // currently reserved logical generation's activation.
+                    assertTrue(current.actorId().isEmpty());
+                    assertTrue(current.actorKind().isEmpty());
+                    assertEquals(0L, current.actorReferenceGeneration());
                     assertEquals("java.lang.IllegalStateException",
                             current.lastTerminalFailureClass().orElseThrow());
                 } finally {
