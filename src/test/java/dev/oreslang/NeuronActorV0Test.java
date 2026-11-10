@@ -31,7 +31,7 @@ final class NeuronActorV0Test {
         return (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
     }
 
-    @Test void neutronRoleIsPreservedWithoutReplacingActorTransport() {
+    @Test void neuronRoleIsPreservedWithoutReplacingActorTransport() {
         Ast.ClassDecl klass = neuron(BASE);
         assertEquals(Ast.ActorKind.SHARED, klass.actorKind());
         assertEquals(Ast.ActorRole.NEURON, klass.actorConcurrency().role());
@@ -52,19 +52,19 @@ final class NeuronActorV0Test {
                 {"pub forward(float input): float", "pub forward(float input): int", "forward"},
                 {"pub forward(float input): float", "pub forward(float input, float extra): float", "forward"},
                 {"receive(ActorMail<float> mail): void", "receive(ActorMail<int> mail): void", "receive"},
+                {"receive(ActorMail<float> mail): void", "pub receive(ActorMail<float> mail): void", "receive"},
                 {"receive(ActorMail<float> mail): void", "receive(ActorMail<float> mail, float x): void", "receive"}
         };
         for (String[] c : rejected) {
-            String source = c[1].isEmpty()
-                    ? BASE.replace(c[0] + " { return self.weight * input; }", "")
-                    : BASE.replace(c[0], c[1]);
+            String source = BASE.replace(c[0], c[1]);
+            assertNotEquals(BASE, source, "negative fixture must mutate the source");
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)), source);
             assertTrue(error.getMessage().contains(c[2]), error::getMessage);
         }
         assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(BASE.replace(
-                        "receive(ActorMail<float> mail): void {\n                self.send(self.forward(mail.value));\n                self.end();\n                return;\n              }", ""))));
+                () -> TypeChecker.check(Parser.parse(BASE.replace("receive(ActorMail<float> mail): void",
+                        "on_message(ActorMail<float> mail): void"))));
     }
 
     @Test void malformedRoleAndConflictingTransportFailClosed() {
