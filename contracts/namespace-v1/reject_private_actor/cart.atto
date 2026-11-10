@@ -1,0 +1,2 @@
+namespace shop;
+define actor Cart;
