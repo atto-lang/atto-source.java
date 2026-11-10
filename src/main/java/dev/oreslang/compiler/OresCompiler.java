@@ -25,6 +25,15 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Opt-in AST and conservative ownership/effect check ONLY. This returns
+     * declaration metadata, never executable bytecode or runtime authority.
+     * parseAndTypeCheck continues rejecting singleton source.
+     */
+    public static java.util.List<Ast.SingletonDecl> checkSingletonDeclarationsOnly(String source) {
+        return SingletonCheckOnly.check(Parser.parseSingletonsCheckOnly(source));
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
