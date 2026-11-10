@@ -185,6 +185,60 @@ final class VirtualActorGenerationFenceCurrentMainTest {
     }
 
     @Test
+    void delayedTerminalReceiptMustMatchExactPhysicalActorAndBurnedGeneration()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var old = worker(group);
+            group.reserveVirtualActorGeneration(ID, 10L);
+            group.bindVirtualActorIdentity(old, ID, 10L);
+            old.stop();
+            old.getDone().get(5, TimeUnit.SECONDS);
+
+            assertTrue(group.isCurrentVirtualActorTerminal(ID, 10L, old.id()));
+            assertFalse(group.isCurrentVirtualActorTerminal(
+                    ID, 10L, ActorRuntime.ActorId.create()),
+                    "wrong physical worker must never authorize terminal policy");
+
+            group.reserveVirtualActorGeneration(ID, 11L);
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 10L, old.id()),
+                    "new reservation fences any delayed old terminal receipt");
+            group.abortVirtualActorGeneration(ID, 11L);
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 10L, old.id()),
+                    "abort may not re-authorize the superseded physical actor");
+
+            group.reserveVirtualActorGeneration(ID, 12L);
+            var next = worker(group);
+            group.bindVirtualActorIdentity(next, ID, 12L);
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 12L, old.id()));
+            assertTrue(group.isCurrentVirtualActorTerminal(ID, 12L, next.id()));
+            next.stop();
+            next.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+            assertFalse(group.isCurrentVirtualActorTerminal(ID, 12L, next.id()));
+        }
+    }
+
+    @Test
+    void physicalWorkerCannotOwnMultipleLogicalIdentities() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var secondIdentity = new VirtualActorActivationRegistry.Identity(
+                    "tenant-a", "Cart", "second-cart");
+            var actor = worker(group);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.reserveVirtualActorGeneration(secondIdentity, 1L);
+            group.bindVirtualActorIdentity(actor, ID, 1L);
+            assertThrows(IllegalStateException.class,
+                    () -> group.bindVirtualActorIdentity(actor, secondIdentity, 1L));
+            group.abortVirtualActorGeneration(secondIdentity, 1L);
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
+    @Test
     void noncanonicalAndOversizedLogicalIdentitiesAreRejectedBeforeReservation()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
