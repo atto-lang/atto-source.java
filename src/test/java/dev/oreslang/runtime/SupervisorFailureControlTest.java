@@ -273,6 +273,7 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
+    @Timeout(60)
     void concurrentVirtualIdentityBindAndStopCannotStrandAnActivation() throws Exception {
         try (ExecutorService pool = Executors.newFixedThreadPool(2);
              ActorRuntime runtime = new ActorRuntime()) {
@@ -324,6 +325,7 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
+    @Timeout(40)
     void virtualActivationCannotReplaceWorkerDuringPhysicalRetirementHook()
             throws Exception {
         try (ExecutorService stopper = Executors.newSingleThreadExecutor();
