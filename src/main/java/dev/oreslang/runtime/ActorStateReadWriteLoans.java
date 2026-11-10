@@ -1,8 +1,12 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -22,6 +26,12 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     private final Object monitor = new Object();
     private final long generation;
     private final int maxPending;
+    // This VM-only scalar layout is allocated once per actor generation and
+    // never exposed as an array, reference or mutable field to guest code.
+    private final Map<String, Integer> scalarFieldSlots;
+    private final double[] scalarValues;
+    private final boolean[] scalarInitialized;
+    private boolean scalarStorageReclaimed;
     private final ArrayDeque<Pending> pending = new ArrayDeque<>();
     private final ArrayDeque<Runnable> notifications = new ArrayDeque<>();
     private final Set<Object> identities =
@@ -35,10 +45,32 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     private boolean publishing;
 
     public ActorStateReadWriteLoans(long generation, int maxPending) {
+        this(generation, maxPending, List.of());
+    }
+
+    /**
+     * Create actor-owned scalar storage for an already type-checked state schema.
+     * The compiler will eventually pass its private float field names here.
+     * No guest-facing or supervisor-visible memory reference is created.
+     */
+    public ActorStateReadWriteLoans(long generation, int maxPending,
+                                    List<String> scalarFieldNames) {
         if (generation < 1) throw new IllegalArgumentException("generation must be positive");
         if (maxPending < 0) throw new IllegalArgumentException("negative pending capacity");
+        Objects.requireNonNull(scalarFieldNames, "scalarFieldNames");
+        if (scalarFieldNames.size() > 128)
+            throw new IllegalArgumentException("scalar state exceeds 128 fields");
+        Map<String, Integer> slots = new HashMap<>();
+        for (int index = 0; index < scalarFieldNames.size(); index++) {
+            String name = Objects.requireNonNull(scalarFieldNames.get(index), "scalar field name");
+            if (name.isBlank() || slots.putIfAbsent(name, index) != null)
+                throw new IllegalArgumentException("invalid or duplicate scalar state field: " + name);
+        }
         this.generation = generation;
         this.maxPending = maxPending;
+        this.scalarFieldSlots = Map.copyOf(slots);
+        this.scalarValues = new double[scalarFieldNames.size()];
+        this.scalarInitialized = new boolean[scalarFieldNames.size()];
     }
 
     public long generation() { return generation; }
@@ -53,6 +85,68 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     }
     public int activeCount() {
         synchronized (monitor) { return active.size(); }
+    }
+
+    public int scalarFieldCount() { return scalarValues.length; }
+
+    /**
+     * Single-monitor validation + primitive access closes the ABA/check-use
+     * gap between Loan.heldBy() and actual host state storage. It is critical
+     * that these methods NEVER invoke guest-supplied callbacks under monitor.
+     * Returned values are scalar copies, never guest-borrowable references.
+     */
+    public double readFloat(Loan loan, Object handler,
+                            long expectedGeneration, String field) {
+        synchronized (monitor) {
+            int slot = checkedScalarSlotLocked(loan, handler, expectedGeneration, field, false);
+            if (!scalarInitialized[slot])
+                throw new IllegalStateException("uninitialized neuron state field: " + field);
+            return scalarValues[slot];
+        }
+    }
+
+    public void writeFloat(WriteLoan loan, Object handler,
+                           long expectedGeneration, String field, double value) {
+        synchronized (monitor) {
+            int slot = checkedScalarSlotLocked(loan, handler, expectedGeneration, field, true);
+            scalarValues[slot] = value;
+            scalarInitialized[slot] = true;
+        }
+    }
+
+    private int checkedScalarSlotLocked(Loan loan, Object handler, long expectedGeneration,
+                                        String field, boolean requireWrite) {
+        Objects.requireNonNull(loan, "state loan");
+        Objects.requireNonNull(handler, "logical handler");
+        Objects.requireNonNull(field, "state field");
+        // The loan must originate from THIS arbiter. The active identity set
+        // rejects forged, cross-actor and stale generation capabilities.
+        if (retired || scalarStorageReclaimed || expectedGeneration != generation
+                || loan.generation() != generation || loan.released
+                || loan.handler != handler || !active.contains(loan)
+                || (requireWrite && writer != loan)) {
+            throw new IllegalStateException("invalid, stale or insufficient actor state loan");
+        }
+        Integer slot = scalarFieldSlots.get(field);
+        if (slot == null)
+            throw new IllegalArgumentException("unknown or inaccessible neuron state field: " + field);
+        return slot;
+    }
+
+    /**
+     * Only clear retired scalar storage after every physical holder has
+     * released its loan. This is not an actor-wide turn/FFI quiescence receipt.
+     * Callers must separately await any external scheduler/region pins.
+     */
+    public boolean tryClearRetiredScalarStorage() {
+        synchronized (monitor) {
+            if (!retired || !active.isEmpty()) return false;
+            if (scalarStorageReclaimed) return true;
+            Arrays.fill(scalarValues, 0.0);
+            Arrays.fill(scalarInitialized, false);
+            scalarStorageReclaimed = true;
+            return true;
+        }
     }
 
     /**
@@ -135,9 +229,17 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     }
 
     private void cancelQueued(Pending request) {
+        boolean removed;
         synchronized (monitor) {
-            if (pending.remove(request)) identities.remove(request.handler);
+            removed = pending.remove(request);
+            if (removed) {
+                identities.remove(request.handler);
+                // A cancelled head-of-line writer must not strand compatible
+                // queued readers behind it until an unrelated loan closes.
+                promoteLocked();
+            }
         }
+        if (removed) publish();
     }
 
     /**
