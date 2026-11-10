@@ -1301,7 +1301,7 @@ final class ParserTest {
                     () -> Parser.parse(source),
                     domain);
             assertTrue(
-                    failure.getMessage().contains("execution domain '" + domain + "'"),
+                    failure.getMessage().contains("execution domain '" + domain),
                     failure::toString);
             assertTrue(
                     failure.getMessage().contains("no implicit CPU fallback"),

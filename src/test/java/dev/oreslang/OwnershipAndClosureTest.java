@@ -199,7 +199,12 @@ final class OwnershipAndClosureTest {
                           return rt borrow b;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("outlive its owner"));
+        // Both the direct-local and provenance-aware diagnostics mean the
+        // same forbidden ownership escape. Match the safety rejection, not
+        // an obsolete English wording of the outlives explanation.
+        assertTrue(error.getMessage().contains("cannot return borrow rooted")
+                        || error.getMessage().contains("borrowed value would outlive its owner"),
+                error::getMessage);
     }
 
     @Test
