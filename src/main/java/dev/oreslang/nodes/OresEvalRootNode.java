@@ -7844,6 +7844,40 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
+            if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+                if (mapLiteral.mapType() == null) {
+                    throw new IllegalArgumentException(
+                            "unresolved Map<K,V> literal cannot execute");
+                }
+                // Delegate descriptor validation and allocation to the exact
+                // existing typed-empty Map runtime path; never allocate an
+                // untyped host dictionary for the published guest value.
+                Object allocated = eval(
+                        new Ast.TypedEmptyAggregateExpr(mapLiteral.mapType()), env);
+                if (!(allocated instanceof OresKeyedMap<?, ?> rawMap)) {
+                    throw new IllegalArgumentException(
+                            "Map literal did not produce canonical guest storage");
+                }
+                // Evaluate key/value expressions in source order exactly once.
+                // No partially built map escapes to a guest binding. The
+                // stage rejects duplicate logical String/Symbol keys before
+                // OresKeyedMap.putAll performs atomic domain/quota validation.
+                LinkedHashMap<Object, Object> entries = new LinkedHashMap<>();
+                for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                    Object key = eval(entry.key(), env);
+                    Object value = eval(entry.value(), env);
+                    if (entries.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical key in Map literal");
+                    }
+                    entries.put(key, value);
+                }
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> target =
+                        (OresKeyedMap<Object, Object>) rawMap;
+                target.putAll(entries);
+                return target;
+            }
             if (expr instanceof Ast.ContextualEmptyMapExpr) {
                 throw new IllegalArgumentException(
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");

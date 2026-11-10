@@ -4739,6 +4739,39 @@ public final class TypeChecker {
             }
             return new ListType(element);
         }
+        if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+            Ast.TypeRef witness = mapLiteral.mapType();
+            if (witness == null) {
+                throw new IllegalArgumentException(
+                        "nonempty Map literal requires a directly declared Map<K,V> "
+                                + "or explicit ~map<K,V>(...) type witness");
+            }
+            // Use the same narrow, compiler-owned typed-map proof as the
+            // already admitted empty constructor. This rejects aliases,
+            // nominal shadowing, unknown K/V and unsupported value graphs.
+            Type result = typeOf(new Ast.TypedEmptyAggregateExpr(witness),
+                    env, generics, self);
+            if (!(result instanceof Named named)
+                    || !named.name().equals("Map")
+                    || named.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "nonempty map literal did not resolve to Map<K,V>");
+            }
+            Type expectedKey = named.arguments().get(0);
+            Type expectedValue = named.arguments().get(1);
+            for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                Type actualKey = typeOf(entry.key(), env, generics, self);
+                Type actualValue = typeOf(entry.value(), env, generics, self);
+                if (actualKey == Unknown.INSTANCE
+                        || actualValue == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "Map literal cannot admit unresolved key/value expression types");
+                }
+                requireAssignable(actualKey, expectedKey, "Map literal key");
+                requireAssignable(actualValue, expectedValue, "Map literal value");
+            }
+            return result;
+        }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw new IllegalArgumentException(
                     "~map() requires a directly declared Map<K,V> type; "

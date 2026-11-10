@@ -1,0 +1,4 @@
+fnc read(): void {
+    const invalid = ~map<string, int>("ready" => true);
+    return;
+}

@@ -1,0 +1,4 @@
+fnc read(): void {
+    const Map<string, int> bad = ~map(...other);
+    return;
+}

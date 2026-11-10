@@ -1,0 +1,8 @@
+pub fnc main(): void {
+    const duplicate = ~map<Symbol, bool>(
+        #ready => true,
+        #ready => false
+    );
+    stdio.println(duplicate.size);
+    return;
+}
