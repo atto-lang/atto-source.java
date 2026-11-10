@@ -48,6 +48,7 @@ public final class SingletonSharedDomainHostSmoke {
         concurrencyAndFairReaderWriterLoans();
         capabilityOwnerQueueAndStop();
         reentrantWriterPublicationFence();
+        cancellationAndCallbackStopPinning();
         System.out.println("SINGLETON_JAVA_HOST_ASSERTIONS=" + assertions);
         System.out.println("SINGLETON_JAVA_HOST_PASS=true");
         System.out.println("COMPILED_ATTO_GUEST=NOT_EXECUTED");
@@ -235,6 +236,8 @@ public final class SingletonSharedDomainHostSmoke {
                 owner, successor, SingletonSharedDomain.Access.WRITE));
         rejects(() -> first.write(owner, before -> {
             first.release(owner);
+            check(!pending.isDone(),
+                    "new writer cannot enter while old callback is physically live");
             return Map.of("count", 999);
         }), "revoked");
         var next = pending.join();
@@ -247,6 +250,41 @@ public final class SingletonSharedDomainHostSmoke {
         next.release(successor);
         region.stopForRuntime(owner);
         check(region.physicallyRetired(), "retirement after successful shutdown");
+    }
+
+    private static void cancellationAndCallbackStopPinning() {
+        var d = new SingletonSharedDomain();
+        var owner = d.principalForRuntime(41, 1, 0);
+        var writerP = d.principalForRuntime(42, 1, 1);
+        var late = d.principalForRuntime(43, 1, 2);
+        var region = d.regionForRuntime(
+                new SingletonSharedDomain.Key("tenant", "pkg", "Cancellation"),
+                owner, Map.of("number", 5), 4);
+        var reader = region.acquire(owner, region.delegateForRuntime(
+                owner, owner, SingletonSharedDomain.Access.READ)).join();
+        var writer = region.acquire(writerP, region.delegateForRuntime(
+                owner, writerP, SingletonSharedDomain.Access.WRITE));
+        var following = region.acquire(late, region.delegateForRuntime(
+                owner, late, SingletonSharedDomain.Access.READ));
+        check(!following.isDone(), "writer barrier prevents bypass");
+        check(writer.cancel(false), "queued writer cancellation accepted");
+        var second = following.orTimeout(10, TimeUnit.SECONDS).join();
+        check(region.activeReaders() == 2, "later reader joins after writer cancellation");
+        second.release(late);
+        reader.release(owner);
+        check(region.activeReaders() == 0, "reader cohort drained");
+
+        var exclusive = region.acquire(owner, region.delegateForRuntime(
+                owner, owner, SingletonSharedDomain.Access.WRITE)).join();
+        rejects(() -> exclusive.write(owner, before -> {
+            exclusive.release(owner);
+            region.stopForRuntime(owner);
+            check(!region.physicallyRetired(),
+                    "STOP cannot physically free region during executing callback");
+            return Map.of("number", 999);
+        }), "revoked");
+        check(region.physicallyRetired(),
+                "callback unwind releases the final physical reclamation pin");
     }
 
     private static void await(CountDownLatch latch) {
