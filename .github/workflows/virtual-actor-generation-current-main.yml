@@ -1,0 +1,59 @@
+name: Virtual actor current-main generation fence host tests
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/VirtualActorRuntimeGenerationFence.java'
+      - 'src/test/java/dev/oreslang/runtime/VirtualActorGenerationFenceCurrentMainTest.java'
+      - '.github/workflows/virtual-actor-generation-current-main.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: virtual-actor-current-main-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  current-main-virtual-actor-generation-fence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact source head and tree
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "HEAD_SHA=$EXPECTED_HEAD_SHA"
+          echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java
+          git hash-object src/main/java/dev/oreslang/runtime/VirtualActorRuntimeGenerationFence.java
+          git hash-object src/test/java/dev/oreslang/runtime/VirtualActorGenerationFenceCurrentMainTest.java
+
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Run exact-head generation fence and retirement tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=VirtualActorGenerationFenceCurrentMainTest -DfailIfNoTests=true test
+          report=target/surefire-reports/TEST-dev.oreslang.runtime.VirtualActorGenerationFenceCurrentMainTest.xml
+          test -s "$report"
+          grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+          ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' "$report"
+          echo "VERIFIED_VIRTUAL_ACTOR_HOST_SUITE=$report"
