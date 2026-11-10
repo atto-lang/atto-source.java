@@ -21,6 +21,10 @@ public final class ExportInterfaceCollector {
         String namespace = checked.namespace() == null ? "" : checked.namespace();
         if (!namespace.equals(header.namespace()))
             throw new IllegalArgumentException("interface namespace does not match checked source");
+        if (!checked.namespaceContracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "v1 single-file export cannot certify multi-file namespace contract conformance");
+        }
         if (!checked.imports().isEmpty()) {
             // Imported aliases, public type references and re-exports depend
             // on resolver inputs not represented by the current v1 envelope.
@@ -67,7 +71,7 @@ public final class ExportInterfaceCollector {
                 } else if (decl instanceof Ast.InterfaceDecl iface
                         && iface.visibility() == Ast.Visibility.PUBLIC) {
                     StringBuilder sig = new StringBuilder();
-                    flags(sig, iface.moduleContract());
+                    flags(sig, iface.moduleContract(), iface.namespaceContract());
                     strings(sig, iface.genericParameters());
                     types(sig, iface.parents());
                     List<String> members = new ArrayList<>();
