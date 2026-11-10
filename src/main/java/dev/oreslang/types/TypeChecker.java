@@ -10030,6 +10030,29 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of());
             }
+            case "ActorRef" -> {
+                // ActorRef is an opaque mailbox capability, never a structural
+                // wrapper that guest code can parameterize with arbitrary data.
+                // Interface-backed actor method dispatch needs its own sealed
+                // protocol + runtime adapter; do not pretend it exists here.
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "ActorRef<T> requires exactly one explicit actor type argument");
+                }
+                Type target = resolve(ref.arguments().getFirst(), generics, self);
+                if (!(target instanceof Named nominal)) {
+                    throw new IllegalArgumentException(
+                            "ActorRef target must be a known concrete actor class, got " + target);
+                }
+                Ast.ClassDecl actor = findClass(nominal.name());
+                if (actor == null || actor.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "ActorRef target '" + nominal.name()
+                                    + "' is not a known concrete actor class; "
+                                    + "actor interfaces and virtual actors require checked dispatcher lowering");
+                }
+                yield new Named("ActorRef", List.of(target));
+            }
             case "ActorStream" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2)
                     throw new IllegalArgumentException(
