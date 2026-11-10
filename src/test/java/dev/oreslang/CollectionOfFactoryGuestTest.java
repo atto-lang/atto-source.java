@@ -244,7 +244,7 @@ final class CollectionOfFactoryGuestTest {
         assertInstanceOf(Ast.IndexExpr.class, firstFactoryInitializer(
                 program("const n = ~tuple(31, true)[0];")));
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("23\\n23\\n31\\n31\\n", guestStdout(source));
+        assertEquals("23\n23\n31\n31\n", guestStdout(source));
     }
 
     @Test
