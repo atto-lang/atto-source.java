@@ -36,6 +36,21 @@ The existing collection system remains authoritative:
 Alias resolution uses the existing capitalized name in the AST. No
 `TildeArray`, `TildeTuple`, etc. is introduced.
 
+**Intrinsics versus nominal aliases:** An explicitly bracketed built-in
+sequence shape (including the normalized `~tuple<T1,T2>` form) is resolved by
+`resolveCollectionType` *before* lexical named type aliases. A source
+`type Tuple<T> = ...` or `type Vector<T> = ...` cannot replace
+`Tuple[int,string]` or `Vector[...(int,string)]` with an arbitrary type.
+Unshaped nominal references retain their existing lexical resolution policy.
+The type-prefix provenance problem for all other (notably map/entry/record)
+aliases remains a review gate until an explicit compiler-owned builtin type
+registry and validated namespace identity exist.
+
+**Typechecker evidence matters:** Equality of two parsed `Ast.TypeRef`s is
+necessary for some spellings but does not prove runtime collection-family
+identity. The focused tests must include positive and negative
+`TypeChecker.check`/ownership tests, especially under name shadowing.
+
 **For Tuple only:** generic positional arguments with no bracketed shape
 are normalized to the already supported finite tuple shape. Named metadata
 (`align`, `size`, `allocator`, etc.) is preserved and checked normally.
