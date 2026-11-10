@@ -257,8 +257,11 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
                     permit.oldParentId, permit.oldParentId);
             if (!issued.remove(permit) || permit.used || actualParent != expectedParent)
                 throw new IllegalStateException("stale, reused or misparented restart permit");
-            // Burn even if publication fails: retry only after new preflight.
+            // Reserve the successor slot BEFORE releasing lock. Until the new
+            // registration commits, -1 means permanently fenced/incomplete.
+            // No second permit may race in the gap between validation and attach.
             permit.used = true;
+            successorIds.put(permit.oldNodeId, -1L);
         }
         long newNode = attach(replacement, liveParent);
         synchronized (lock) { successorIds.put(permit.oldNodeId, newNode); }
