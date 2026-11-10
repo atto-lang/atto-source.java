@@ -113,7 +113,7 @@ final class PopulatedMapExpressionsGuestTest {
                 }
                 fnc failing_value(int divisor): int {
                     stdio.println("second-value");
-                    return 10 / divisor;
+                    return 10 % divisor;
                 }
                 pub fnc main(): void {
                     const map = ~map<string, int>(
