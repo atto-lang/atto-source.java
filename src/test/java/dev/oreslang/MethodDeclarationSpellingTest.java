@@ -220,4 +220,203 @@ final class MethodDeclarationSpellingTest {
         assertEquals("suspend", klass.methods().getFirst().name());
         assertFalse(klass.methods().getFirst().suspends());
     }
+
+    @Test
+    void bareAndExplicitMtdSupportBothClassMethodBodyStyles() {
+        Ast.Program program = Parser.parse("""
+                define class X1 as
+                    foo(): void {}
+                end
+                define class X2 as
+                    foo() -> void ::
+                    end
+                end
+                define class X3 as
+                    mtd foo(): void {}
+                end
+                define class X4 as
+                    mtd foo() -> void ::
+                    end
+                end
+                """);
+        assertEquals(4, program.modules().getFirst().declarations().size());
+        for (Ast.Decl declaration : program.modules().getFirst().declarations()) {
+            Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class, declaration);
+            assertEquals(1, klass.methods().size());
+            Ast.MethodDecl method = klass.methods().getFirst();
+            assertEquals("foo", method.name());
+            assertEquals(0, method.arity());
+            assertFalse(method.isStatic());
+            assertEquals("void", method.returnType().name());
+            assertTrue(method.body().isEmpty());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void mtdAndBareMethodsRetainIdenticalReceiverAndAritySemantics() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                    mtd read(): int { return 1; }
+                    mtd read(self, int n) -> int ::
+                        return n;
+                    end
+                    read(int n, int extra): int { return n + extra; }
+                end
+                """)));
+        for (String pair : new String[] {
+                "foo(): void {} mtd foo() -> void :: end",
+                "foo(self): void {} mtd foo() -> void :: end",
+                "mtd foo(self, int n): void {} foo(int n): void {}"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
+                    Parser.parse("define class Clash as " + pair + " end")));
+        }
+    }
+
+    @Test
+    void mtdIsContextualAndSupportsActorMethodsWithoutChangingStaticFnc() {
+        Ast.Program program = Parser.parse("""
+                define actor Worker as
+                    mtd run() -> void ::
+                    end
+                    mtd(): void {}
+                    method(): void {}
+                    static fnc utility(): void {}
+                end
+                """);
+        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals(4, actor.methods().size());
+        assertEquals("run", actor.methods().get(0).name());
+        assertEquals("mtd", actor.methods().get(1).name());
+        assertEquals("method", actor.methods().get(2).name());
+        assertTrue(actor.methods().get(3).isStatic());
+    }
+
+    @Test
+    void methodBodySeparatorsAndInvalidMarkerCombinationsFailClosed() {
+        for (String declaration : new String[] {
+                "foo(): void :: end",
+                "mtd foo(): void :: end",
+                "mtd fnc foo(): void {}",
+                "fnc mtd foo(): void {}",
+                "static mtd foo(): void {}",
+                "mtd static foo(): void {}",
+                "mtd foo() -> void :: return;",
+                "mtd foo() -> void :: end end"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define class Bad as " + declaration + " end"),
+                    declaration);
+        }
+    }
+
+
+    @Test
+    void mtdStartsAfterSemicolonFreeFieldsAndOwnsItsEnd() {
+        Ast.Program program = Parser.parse("""
+                define class Store as
+                    final int count = 1
+                    mtd read() -> int ::
+                        if true then
+                            return 1;
+                        else
+                            return 2;
+                        fi
+                    end
+                    mtd blank(): void {}
+                end
+                """);
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals(1, klass.fields().size());
+        assertEquals(2, klass.methods().size());
+        assertEquals(0, klass.methods().getFirst().arity());
+        assertFalse(klass.methods().getFirst().body().isEmpty());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void optionalMtdMarkerPreservesCallableNamesAndGenericHeaders() {
+        Ast.Program program = Parser.parse("""
+                define class Named as
+                    mtd do(): int { return 1; }
+                    mtd select() -> int ::
+                        return 2;
+                    end
+                    mtd mtd(): int { return 3; }
+                    mtd generic<T>(T value) -> T ::
+                        return value;
+                    end
+                    method mtd(int value): int { return value; }
+                end
+                """);
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals("do", klass.methods().get(0).name());
+        assertEquals("select", klass.methods().get(1).name());
+        assertEquals("mtd", klass.methods().get(2).name());
+        assertEquals("generic", klass.methods().get(3).name());
+        assertEquals(1, klass.methods().get(3).arity());
+        assertEquals("mtd", klass.methods().get(4).name());
+    }
+
+    @Test
+    void semicolonFreeFieldsAcceptKeywordNamedAndSymbolMarkedMethodsOnlyOnNewLines() {
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                Parser.parse("""
+                        define class Boundaries as
+                            final int count = 1
+                            mtd select(): int { return 2; }
+                            final int other = 3
+                            method do() -> int ::
+                                return 4;
+                            end
+                            final int another = 5
+                            mtd [Symbol.iterator](): int { return 6; }
+                        end
+                        """).modules().getFirst().declarations().getFirst());
+        assertEquals(3, klass.fields().size());
+        assertEquals(3, klass.methods().size());
+        assertEquals("select", klass.methods().get(0).name());
+        assertEquals("do", klass.methods().get(1).name());
+        assertEquals("Symbol.iterator", klass.methods().get(2).name());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Wrong as
+                    final int count = 1 mtd select(): int { return 2; }
+                end
+                """));
+    }
+
+
+    @Test
+    void semicolonFreeClassMembersMustHaveRealLineBoundary() {
+        for (String next : new String[] {
+                "pub mtd select(): int { return 2; }",
+                "private mtd select(): int { return 2; }",
+                "async mtd select(): int { return 2; }",
+                "mtd select(): int { return 2; }",
+                "mtd [Symbol.iterator](): int { return 2; }",
+                "final int other = 2"
+        }) {
+            String invalid = "define class C as final int count = 1 " + next + " end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(invalid), invalid);
+        }
+
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                Parser.parse("""
+                        define class C as
+                            final int count = 1;
+                            pub mtd select(): int { return 2; }
+                            final int other = 3
+                            private mtd [Symbol.iterator](): int { return 4; }
+                        end
+                        """).modules().getFirst().declarations().getFirst());
+        assertEquals(2, klass.fields().size());
+        assertEquals(2, klass.methods().size());
+    }
+
 }

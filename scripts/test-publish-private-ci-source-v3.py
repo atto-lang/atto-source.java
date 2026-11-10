@@ -173,20 +173,36 @@ class PrivateCiV3Test(unittest.TestCase):
             "user": {"id": 424242, "login": "author"},
             "head": {
                 "sha": "8" * 40,
-                "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                "repo": {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                },
             },
             "base": {
                 "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
-                "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                "repo": {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                },
             },
         }
         for field, value in (
             ("draft", True),
+            ("head_repo", {
+                "id": v3.SOURCE_REPOSITORY_ID + 1,
+                "full_name": v3.legacy.SOURCE_REPO,
+            }),
             ("base_repo", {"full_name": "other/repo"}),
+            ("base_repo_id", {
+                "id": v3.SOURCE_REPOSITORY_ID + 1,
+                "full_name": v3.legacy.SOURCE_REPO,
+            }),
         ):
             bad = json.loads(json.dumps(base_pr))
             if field == "draft":
                 bad["draft"] = value
+            elif field == "head_repo":
+                bad["head"]["repo"] = value
             else:
                 bad["base"]["repo"] = value
             with (
@@ -195,7 +211,99 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_source_pr_independent_review") as review,
             ):
                 with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
-                    v3.verify_source_pr(1482, "8" * 40)
+                    v3.verify_source_pr(1482, "8" * 40, PROTECTED)
+                review.assert_not_called()
+
+    def test_verify_source_pr_requires_current_protected_main_ancestry(self):
+        repo = {
+            "id": v3.SOURCE_REPOSITORY_ID,
+            "full_name": v3.legacy.SOURCE_REPO,
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+        }
+        source_commit = "8" * 40
+        pr = {
+            "number": 1482,
+            "state": "open",
+            "draft": False,
+            "user": {"id": 424242, "login": "author"},
+            "head": {
+                "sha": source_commit,
+                "repo": {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                },
+            },
+            "base": {
+                "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                "repo": {
+                    "id": v3.SOURCE_REPOSITORY_ID,
+                    "full_name": v3.legacy.SOURCE_REPO,
+                },
+            },
+        }
+        good = {
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "base_commit": {"sha": PROTECTED},
+            "merge_base_commit": {"sha": PROTECTED},
+        }
+
+        def api_for(comparison):
+            def api(route, method="GET", payload=None):
+                if route == "repos/" + v3.legacy.SOURCE_REPO:
+                    return repo
+                if route == "repos/" + v3.legacy.SOURCE_REPO + "/pulls/1482":
+                    return pr
+                if route == (
+                    "repos/" + v3.legacy.SOURCE_REPO
+                    + "/compare/" + PROTECTED + "..." + source_commit
+                ):
+                    return comparison
+                raise AssertionError(route)
+            return api
+
+        with (
+            patch.object(v3.legacy, "gh_api", side_effect=api_for(good)),
+            patch.object(
+                v3, "require_source_pr_independent_review"
+            ) as review,
+        ):
+            self.assertEqual(
+                v3.verify_source_pr(1482, source_commit, PROTECTED),
+                v3.SOURCE_REPOSITORY_ID,
+            )
+            review.assert_called_once_with(
+                1482, source_commit, pr["user"]
+            )
+
+        bad_comparisons = [
+            dict(good, status="diverged"),
+            dict(good, behind_by=1),
+            dict(good, base_commit={"sha": "9" * 40}),
+            dict(good, merge_base_commit={"sha": "9" * 40}),
+            dict(good, ahead_by=True),
+        ]
+        for comparison in bad_comparisons:
+            with (
+                self.subTest(comparison=comparison),
+                patch.object(
+                    v3.legacy, "gh_api", side_effect=api_for(comparison)
+                ),
+                patch.object(
+                    v3, "require_source_pr_independent_review"
+                ) as review,
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "does not contain protected main"
+                ):
+                    v3.verify_source_pr(
+                        1482, source_commit, PROTECTED
+                    )
                 review.assert_not_called()
 
     def test_authorized_main_rejects_unprotected_source(self):
@@ -840,14 +948,17 @@ class PrivateCiV3Test(unittest.TestCase):
                     "state": "open",
                     "head": {
                         "sha": "9" * 40,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                            "full_name": v3.legacy.SOURCE_REPO,
+                        },
                     },
                     "base": {"ref": "main"},
                 }
             raise AssertionError(route)
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "exact open PR head"):
-                v3.verify_source_pr(1482, "8" * 40)
+                v3.verify_source_pr(1482, "8" * 40, PROTECTED)
 
     def test_verify_source_pr_rejects_source_repository_id_replacement(self):
         def api(route, method="GET", payload=None):
@@ -864,7 +975,7 @@ class PrivateCiV3Test(unittest.TestCase):
             raise AssertionError(route)
         with patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
-                v3.verify_source_pr(1482, "8" * 40)
+                v3.verify_source_pr(1482, "8" * 40, PROTECTED)
 
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
@@ -1017,7 +1128,9 @@ class PrivateCiV3Test(unittest.TestCase):
                 Path("."), "trusted/ci", POLICY, carrier,
                 1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
             )
-        source_pr_check.assert_called_once_with(1482, "8" * 40)
+        source_pr_check.assert_called_once_with(
+            1482, "8" * 40, PROTECTED
+        )
         governance.assert_called_once_with(
             Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
         )
@@ -1175,6 +1288,39 @@ class PrivateCiV3Test(unittest.TestCase):
             policy.assert_not_called()
             repo.assert_not_called()
 
+    def test_publish_preflight_denial_precedes_carrier_contract(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            with (
+                patch.object(
+                    v3.legacy,
+                    "require_preflight",
+                    side_effect=v3.Denied(
+                        "destination approval was revoked or absent"
+                    ),
+                ) as preflight,
+                patch.object(v3, "authorized_main_sha") as origin,
+                patch.object(v3, "checked_control_plane") as control_plane,
+                patch.object(v3, "checked_contract") as checked_contract,
+                patch.object(v3, "verify_source_pr") as verify_source_pr,
+                patch.object(v3.legacy, "collect_source") as collect_source,
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "destination approval was revoked or absent"
+                ):
+                    v3.publish(
+                        "trusted/ci", source, "4" * 40, 1482,
+                        "ci/test-plans/java-pr1482.json", root,
+                    )
+                preflight.assert_called_once()
+                origin.assert_not_called()
+                control_plane.assert_not_called()
+                checked_contract.assert_not_called()
+                verify_source_pr.assert_not_called()
+                collect_source.assert_not_called()
+
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
         mismatched = dict(carrier, repository_id=carrier["repository_id"] + 1)
@@ -1292,6 +1438,14 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(checked_contract.call_count, 3)
         self.assertEqual(checked_destination.call_count, 3)
         self.assertEqual(verify_source_pr.call_count, 3)
+        self.assertEqual(
+            verify_source_pr.call_args_list[0].args,
+            (1482, "4" * 40, PROTECTED),
+        )
+        self.assertEqual(
+            [call.args for call in verify_source_pr.call_args_list[1:]],
+            [(1482, "4" * 40, PROTECTED), (1482, "4" * 40, PROTECTED)],
+        )
         self.assertEqual(authorize_write.call_count, 7)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)

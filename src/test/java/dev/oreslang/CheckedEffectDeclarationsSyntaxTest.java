@@ -25,6 +25,14 @@ final class CheckedEffectDeclarationsSyntaxTest {
     }
 
     @Test
+    void preservesCanonicalActorReadinessTerminationType() {
+        Ast.FunctionDecl f = function(
+                "fnc wait_ready_contract(): int throws ActorTerminated { return 1; }");
+        assertEquals(List.of(Ast.TypeRef.simple("ActorTerminated")),
+                f.effects().throwsTypes());
+    }
+
+    @Test
     void ordinaryFunctionsStayPureWithCompatibilityConstructors() {
         Ast.FunctionDecl fn = function("fnc pure(): int { return 1; }");
         assertTrue(fn.effects().isEmpty());

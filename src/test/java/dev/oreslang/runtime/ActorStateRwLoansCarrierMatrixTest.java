@@ -113,6 +113,11 @@ final class ActorStateRwLoansCarrierMatrixTest {
                                 var requested = write
                                         ? loans.acquireWriteAsync(execution)
                                         : loans.acquireReadAsync(execution);
+                                // get() can wake before the producer finishes
+                                // physical completion notifications. Reusing a
+                                // logical execution requires that receipt too.
+                                CountDownLatch drained = new CountDownLatch(1);
+                                requested.whenNotificationsDrainedRuntime(drained::countDown);
                                 try (var loan = requested.get(15, TimeUnit.SECONDS)) {
                                     assertTrue(loan.heldBy(execution));
                                     assertFalse(loan.readyToSuspend(execution));
@@ -144,6 +149,7 @@ final class ActorStateRwLoansCarrierMatrixTest {
                                         }
                                     }
                                 }
+                                assertTrue(drained.await(15, TimeUnit.SECONDS));
                             }
                         } catch (Exception error) {
                             throw new RuntimeException(error);

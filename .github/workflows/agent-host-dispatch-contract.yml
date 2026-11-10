@@ -1,0 +1,43 @@
+name: AI dispatch host contract (NOT native Oreslang guest)
+on:
+  pull_request:
+  push:
+    branches: [feat/agent-dispatch-host-gate-parity-20261029]
+permissions:
+  contents: read
+jobs:
+  host-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record exact tree and require a clean checkout
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Compile and execute host-only contract (not guest proof)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ores-agent-contract"
+          javac -d "$RUNNER_TEMP/ores-agent-contract" \
+            contracts/v1/agent-dispatch/AgentHostDispatchGate.java \
+            contracts/v1/agent-dispatch/AgentHostDispatchGateTest.java \
+            contracts/v1/agent-dispatch/DurableLocalDispatchClaim.java \
+            contracts/v1/agent-dispatch/AgentClaimProbe.java \
+            contracts/v1/agent-dispatch/DurableLocalDispatchClaimTest.java \
+            contracts/v1/agent-dispatch/DurableClaimPathSwapTest.java
+          java -cp "$RUNNER_TEMP/ores-agent-contract" AgentHostDispatchGateTest
+          java -cp "$RUNNER_TEMP/ores-agent-contract" DurableLocalDispatchClaimTest
+          java -cp "$RUNNER_TEMP/ores-agent-contract" DurableClaimPathSwapTest
+          echo "AGENT_HOST_ONLY_PASS native_guest_executed=false"

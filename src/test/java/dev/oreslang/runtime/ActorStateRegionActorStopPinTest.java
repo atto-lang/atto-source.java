@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Field;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -73,11 +74,19 @@ final class ActorStateRegionActorStopPinTest {
                     ? region.acquireWriteAsync(execution)
                     : region.acquireReadAsync(execution)).get(5, TimeUnit.SECONDS);
 
+            CompletableFuture<Void> hostStop = null;
             try {
                 if (cancel) {
                     assertTrue(actor.cancel(), "first structured STOP must be admitted");
                 } else {
-                    actor.stop();
+                    // Host STOP now joins physical finalization. Issue it on
+                    // another host thread so this holder can release its loan.
+                    hostStop = CompletableFuture.runAsync(actor::stop);
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (loan.heldBy(execution) && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertFalse(loan.heldBy(execution), "STOP did not revoke logical access");
                 }
                 assertFalse(arena.closed(),
                         "actor heap closed with a physically live state loan");
@@ -95,6 +104,7 @@ final class ActorStateRegionActorStopPinTest {
             } finally {
                 loan.close();
             }
+            if (hostStop != null) hostStop.get(10, TimeUnit.SECONDS);
 
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS),
                     "actor failed to finalize after last state loan released");

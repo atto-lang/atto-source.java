@@ -21,15 +21,18 @@ final class ActorPhysicalTurnGate {
         final Runnable task;
         final Consumer<Runnable> submit;
         final Consumer<Throwable> reject;
+        final java.util.concurrent.atomic.AtomicBoolean physicalStart;
         // Zero-cost-per-turn state: pending=0, running=1, rejected=2.
         // Synchronization on the existing Pending object linearizes guest
         // entry versus a submitter which enqueued work but then threw.
         private int claim;
 
-        Pending(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) {
+        Pending(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject,
+                java.util.concurrent.atomic.AtomicBoolean physicalStart) {
             this.task = task;
             this.submit = submit;
             this.reject = reject;
+            this.physicalStart = physicalStart;
         }
     }
 
@@ -53,9 +56,15 @@ final class ActorPhysicalTurnGate {
     synchronized int queued() { return pending.size(); }
 
     void dispatch(Runnable task, Consumer<Runnable> submit, Consumer<Throwable> reject) {
+        dispatchInternal(task, submit, reject, null);
+    }
+
+    private void dispatchInternal(Runnable task, Consumer<Runnable> submit,
+                                  Consumer<Throwable> reject,
+                                  java.util.concurrent.atomic.AtomicBoolean physicalStart) {
         Pending item = new Pending(
                 Objects.requireNonNull(task), Objects.requireNonNull(submit),
-                Objects.requireNonNull(reject));
+                Objects.requireNonNull(reject), physicalStart);
         synchronized (this) {
             if (closed) throw new RejectedExecutionException("actor turn gate closed");
             if (admitted >= maximum) {
@@ -71,6 +80,64 @@ final class ActorPhysicalTurnGate {
         launch(item);
     }
 
+    /**
+     * Bridge for a region-backed actor turn. A lifetime pin is acquired
+     * BEFORE the physical dispatch is enqueued, so STOP cannot reclaim the
+     * region while a queued or executing turn still owns the ticket.
+     *
+     * A rejected/closed submission releases its pin exactly once; an admitted
+     * task releases it only after its synchronous Runnable has physically
+     * returned (including its TurnExecutor boundary). A cancellation signal
+     * alone never releases the running task's pin.
+     *
+     * This is an opt-in host bridge, not yet enabled for every ActorCell or
+     * independently scheduled source Task. Reuse of the pinned region by an
+     * arbitrary guest callback still needs compiler ownership validation.
+     */
+    void dispatchPinned(ReusableLongStateRegion region, Runnable task,
+                        Consumer<Runnable> submit, Consumer<Throwable> reject) {
+        Objects.requireNonNull(region, "region");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(submit, "submit");
+        Objects.requireNonNull(reject, "reject");
+        long ticket = region.pin();
+        java.util.concurrent.atomic.AtomicBoolean released =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicBoolean started =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable complete = () -> {
+            if (released.compareAndSet(false, true)) region.releasePin(ticket);
+        };
+        try {
+            dispatchInternal(() -> {
+                try {
+                    if (!region.claimPinnedTurn(ticket)) {
+                        reject.accept(new RejectedExecutionException(
+                                "region retired before pinned turn entry"));
+                        return;
+                    }
+                    task.run();
+                } finally {
+                    complete.run();
+                }
+            }, submit, failure -> {
+                try {
+                    reject.accept(failure);
+                } finally {
+                    complete.run();
+                }
+            }, started);
+        } catch (RuntimeException | Error failure) {
+            // An executor may START a runnable and only then throw from
+            // submission. If the physical turn owns the pin, its finally
+            // block, not this submitting thread, must release it. If start
+            // lost, ActorPhysicalTurnGate has marked the wrapper rejected
+            // before propagating failure, so no later execution is possible.
+            if (!started.get()) complete.run();
+            throw failure;
+        }
+    }
+
     private void launch(Pending first) {
         // Executor admission callbacks must ENQUEUE, never run a guest turn
         // synchronously. Iterative failure draining prevents recursive
@@ -83,8 +150,10 @@ final class ActorPhysicalTurnGate {
                     boolean cancelledOnClose;
                     synchronized (accepted) {
                         if (accepted.claim != 0) {
-                            // A submitter rejected this runnable after enqueueing.
-                            // The rejection already transferred its permit.
+                            // The runnable was already rejected OR has been
+                            // physically claimed once. A buggy executor that
+                            // invokes the same callback twice must never
+                            // enter guest code or release one permit twice.
                             return;
                         }
                         // Serialize the decision to BEGIN a guest turn with
@@ -93,6 +162,12 @@ final class ActorPhysicalTurnGate {
                         synchronized (ActorPhysicalTurnGate.this) {
                             cancelledOnClose = closed;
                             accepted.claim = cancelledOnClose ? 2 : 1;
+                            // Publish physical-claim ownership BEFORE exposing
+                            // the claim to the submitter's error path. Setting
+                            // this inside the same critical section closes the
+                            // claim-before-task-wrapper scheduling window.
+                            if (!cancelledOnClose && accepted.physicalStart != null)
+                                accepted.physicalStart.set(true);
                         }
                     }
                     if (cancelledOnClose) {

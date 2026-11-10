@@ -245,28 +245,17 @@ final class CleanupAwareTaskTest {
         CountDownLatch cleanupEntered = new CountDownLatch(1);
         java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> ref =
                 new java.util.concurrent.atomic.AtomicReference<>();
+        // Untrusted actor factories must be stateless; host fixtures enter
+        // through a static probe, never through captured lambda state.
+        quotaProbe = new QuotaProbe(producer, cleanupProducer, started, cleanupEntered, ref);
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
             var actor = runtime.<String>spawnUntrusted(
                     context -> (message, turn) -> {
-                        OresFuture<Integer> future = turn.runtime().startActorTask(
-                                new OresScheduler.CleanupAwareTask<Integer>() {
-                                    private int phase;
-                                    @Override public OresScheduler.Step<Integer> resume(
-                                            OresScheduler.Resume resumed) {
-                                        assertEquals(ActorRuntime.ActorKind.UNTRUSTED,
-                                                ActorRuntime.currentActorKind());
-                                        if (phase++ == 0) {
-                                            started.countDown();
-                                            return OresScheduler.await(producer);
-                                        }
-                                        assertInstanceOf(CancellationException.class,
-                                                resumed.failure());
-                                        cleanupEntered.countDown();
-                                        return OresScheduler.await(cleanupProducer);
-                                    }
-                                });
-                        ref.set(future);
+                        QuotaProbe probe = quotaProbe;
+                        OresFuture<Integer> future =
+                                turn.runtime().startActorTask(quotaTask(probe));
+                        probe.ref().set(future);
                     });
             actor.send("run");
             assertTrue(started.await(4, TimeUnit.SECONDS));
@@ -280,8 +269,46 @@ final class CleanupAwareTaskTest {
             actor.stop();
             assertTrue(actor.awaitTermination(4, TimeUnit.SECONDS));
             assertFalse(producer.isCancelled());
+        } finally {
+            quotaProbe = null;
         }
     }
+
+    private record QuotaProbe(
+            OresFuture<Integer> producer,
+            OresFuture<Integer> cleanupProducer,
+            CountDownLatch started,
+            CountDownLatch cleanupEntered,
+            java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> ref) { }
+
+    /** Static so the untrusted factory lambda captures no test instance. */
+    private static OresScheduler.CleanupAwareTask<Integer> quotaTask(QuotaProbe probe) {
+        return new OresScheduler.CleanupAwareTask<Integer>() {
+            private int phase;
+            @Override public OresScheduler.Step<Integer> resume(
+                    OresScheduler.Resume resumed) {
+                assertEquals(ActorRuntime.ActorKind.UNTRUSTED,
+                        ActorRuntime.currentActorKind());
+                switch (phase++) {
+                    case 0:
+                        probe.started().countDown();
+                        return OresScheduler.await(probe.producer());
+                    case 1:
+                        // Injected cancellation starts the cleanup lane.
+                        assertInstanceOf(CancellationException.class, resumed.failure());
+                        probe.cleanupEntered().countDown();
+                        return OresScheduler.await(probe.cleanupProducer());
+                    default:
+                        // The cleanup's own await resumes normally.
+                        assertEquals(Integer.valueOf(4), resumed.value());
+                        assertTrue(OresScheduler.cancellationCleanupTurn());
+                        return OresScheduler.done(null);
+                }
+            }
+        };
+    }
+
+    private static volatile QuotaProbe quotaProbe;
 
     @Test void endlesslyCooperatingCleanupIsQuarantinedAfterFiniteBudget()
             throws Exception {

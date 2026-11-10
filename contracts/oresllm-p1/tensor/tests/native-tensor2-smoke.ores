@@ -1,0 +1,27 @@
+import class Vector2, Matrix2 from '../src/tensor2';
+import fnc add_vector, dot_vector, transpose, mul_matrix_vector, mul_matrix, outer_product, scale_matrix from '../src/tensor2';
+
+pub routine main(): void {
+  val Vector2 x = new Vector2(2.0, 3.0);
+  val Vector2 y = new Vector2(4.0, 5.0);
+  val Matrix2 a = new Matrix2(1.0, 2.0, 3.0, 4.0);
+  val Matrix2 b = new Matrix2(5.0, 6.0, 7.0, 8.0);
+  val Vector2 sum = add_vector(&x, &y);
+  val Vector2 product = mul_matrix_vector(&a, &x);
+  val Matrix2 mm = mul_matrix(&a, &b);
+  val Matrix2 at = transpose(&a);
+  val Matrix2 op = outer_product(&x, &y);
+  val Matrix2 scaled = scale_matrix(&a, 2.0);
+
+  if sum.x0 != 6.0 || sum.x1 != 8.0; do rt fail("vector addition"); fi
+  if dot_vector(&x, &y) != 23.0; do rt fail("vector dot"); fi
+  if product.x0 != 8.0 || product.x1 != 18.0; do rt fail("matrix vector"); fi
+  if mm.m00 != 19.0 || mm.m01 != 22.0 || mm.m10 != 43.0 || mm.m11 != 50.0; do
+    rt fail("matrix matrix");
+  fi
+  if at.m01 != 3.0 || at.m10 != 2.0; do rt fail("transpose"); fi
+  if op.m00 != 8.0 || op.m11 != 15.0; do rt fail("outer product"); fi
+  if scaled.m10 != 6.0 || scaled.m11 != 8.0; do rt fail("scale matrix"); fi
+  stdio.stdout.println("ORES-TENSOR2-NATIVE-PASS");
+  return;
+}

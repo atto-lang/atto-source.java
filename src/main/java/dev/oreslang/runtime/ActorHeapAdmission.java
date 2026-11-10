@@ -84,6 +84,29 @@ public final class ActorHeapAdmission {
     }
 
     /**
+     * Tenant admission is separate from actor memory ownership. The ordinary
+     * OresVM root process does NOT construct a dedicated GraalVM Polyglot
+     * Engine/isolate or an exec'd OS sandbox for each tenant. Never silently
+     * treat actor arenas, Contexts or Native Image build mode as such a proof.
+     *
+     * <p>The trusted mode is explicitly not a hostile-code sandbox. Physical
+     * security modes remain unavailable through this entry until an owned
+     * isolate/process supervisor can bind the tenant incarnation and teardown.
+     */
+    public static void requireSupportedTenantIsolationMode(String requestedMode) {
+        Objects.requireNonNull(requestedMode, "requestedMode");
+        switch (requestedMode.toLowerCase(Locale.ROOT).trim()) {
+            case "trusted-inprocess" -> { return; }
+            case "vm-isolate", "dedicated-graalvm-isolate", "sandboxed-process", "wasmtime" ->
+                    throw new IllegalStateException("OresVM Java tenant security isolation mode "
+                            + requestedMode + " is not implemented by the root actor host; "
+                            + "a Context or actor arena is not a separate protected tenant heap");
+            default -> throw new IllegalArgumentException(
+                    "unknown ores.runtime.tenant.isolation: " + requestedMode);
+        }
+    }
+
+    /**
      * Current JVM runtime has no source-object-native lowering. Even a Graal
      * native-image isolate's Java object heap can still collect automatically.
      * These modes fail closed before the CONTROL pool or actors are started.

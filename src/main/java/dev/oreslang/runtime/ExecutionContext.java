@@ -162,6 +162,18 @@ public final class ExecutionContext {
         return id;
     }
 
+    /** Runtime-only state-loan view; preserves the caller's logical identity. */
+    ExecutionContext actorStateView(long actorDomain, long actorOwner, long generation) {
+        AllocationDomain actor = new AllocationDomain(
+                AllocationKind.ACTOR, actorDomain, actorOwner, generation);
+        if (allocationDomain.isBound() && !allocationDomain.equals(actor)) {
+            throw new SecurityException("execution is bound to a different allocation domain");
+        }
+        ExecutionHandle handle = executionHandle.isBound()
+                ? executionHandle : new ExecutionHandle(id.execution(), 1);
+        return new ExecutionContext(id, actor, handle, parentExecution, continuation);
+    }
+
     public AllocationDomain allocationDomain() {
         return allocationDomain;
     }

@@ -23,6 +23,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final int softSpillThreshold;
     private final AtomicLong spills = new AtomicLong();
     private final AtomicInteger nextLane = new AtomicInteger();
+    private final AtomicInteger spillProbeSeed = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
@@ -53,19 +54,13 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             throw new IllegalArgumentException("invalid actor dispatch lane");
         }
         // Explicit CPU binding is strict, not a best-effort migration hint.
-        if (cpus.length != 0 || queuedByLane.get(preferred) < softSpillThreshold) {
-            return preferred;
-        }
-        int best = preferred;
-        int minimum = queuedByLane.get(preferred);
-        for (int i = 0; i < lanes.size(); i++) {
-            int queued = queuedByLane.get(i);
-            if (queued < minimum) {
-                minimum = queued;
-                best = i;
-            }
-        }
-        return best;
+        if (cpus.length != 0) return preferred;
+        int queued = queuedByLane.get(preferred);
+        if (queued < softSpillThreshold) return preferred;
+        // Only a congested soft lane probes other queues. Bound cache-line
+        // reads to 64 total; rotated sampling avoids a permanent hot prefix.
+        return SoftLaneSelector.select(preferred, queued, queuedByLane,
+                spillProbeSeed.getAndIncrement());
     }
 
     void executeOnLane(int lane, Runnable command) {

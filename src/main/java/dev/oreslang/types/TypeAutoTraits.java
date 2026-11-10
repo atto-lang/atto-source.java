@@ -75,11 +75,12 @@ public final class TypeAutoTraits {
         }
         if (type instanceof Record record) {
             Capabilities members = combine(record.members().values().stream().toList(), nested);
-            boolean immutable = record.readOnly();
-            return Optional.of(new Capabilities(
-                    members.send(),
-                    immutable && members.sync(),
-                    immutable && members.share()));
+            // readOnly is a view capability, not proof of a frozen allocation.
+            // A writable alias may still exist (for example after a readonly
+            // capability overlay). Match ThreadSafetyTraits: moving owned
+            // fields is safe, but sharing this view needs a separate backing
+            // allocation/exclusivity proof that Record does not carry.
+            return Optional.of(new Capabilities(members.send(), false, false));
         }
         if (!(type instanceof Named named)) return Optional.of(NONE);
 
@@ -162,3 +163,4 @@ public final class TypeAutoTraits {
         return new Capabilities(send, sync, share);
     }
 }
+
