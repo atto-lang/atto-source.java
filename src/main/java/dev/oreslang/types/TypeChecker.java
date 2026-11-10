@@ -881,6 +881,23 @@ public final class TypeChecker {
                             "reserved actor lifecycle/control hook '" + method.name()
                                     + "' is not a mailbox receiver contract method");
                 }
+                // Unlike public mailbox-dispatched actor APIs, receive is a
+                // runtime-owned, actor-local entry point. A module contract
+                // must never turn it into a public method or permit an
+                // arbitrary argument shape that the scheduler cannot deliver.
+                if (method.name().equals("receive")) {
+                    if (method.visibility() != Ast.Visibility.PRIVATE
+                            || method.parameters().size() != 1
+                            || !method.parameters().getFirst().type().name().equals("ActorMail")
+                            || method.parameters().getFirst().type().arguments().size() != 1
+                            || method.parameters().getFirst().type().inferArguments()
+                            || !method.returnType().name().equals("void")
+                            || !method.returnType().arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor mailbox receiver contract 'receive' must be private, "
+                                        + "accept exactly one ActorMail<T>, and return void");
+                    }
+                }
                 Set<String> declaredActors = new LinkedHashSet<>();
                 collectModuleContractActorNames(iface, declaredActors, new LinkedHashSet<>());
                 if (!declaredActors.contains(method.actorName())) {
