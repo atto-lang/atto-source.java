@@ -132,6 +132,56 @@ final class ReadonlyRecordFieldPatternGuestTest {
     }
 
     @Test
+    void symbolRecordIdentityIsNotCoercedIntoString() {
+        checkGuest("""
+                pub fnc main(): void {
+                    const row = ~record(state: #ready);
+                    const code = match<int> row over
+                        on ~(state: #done) -> 0;
+                        on ~(state: #ready) -> 42;
+                        default -> -1;
+                    end;
+                    stdio.println(code);
+                    return;
+                }
+                """, "42\n");
+    }
+
+    @Test
+    void nominalPublicFieldRequiresExplicitStructuralAndRejectsPrivate() {
+        checkGuest("""
+                define class Payload as
+                    pub val int status = 200;
+                    private val int secret = 42;
+                end
+                pub fnc main(): void {
+                    const obj = new Payload();
+                    const code = match<int> obj over
+                        on structural ~(status: 200) -> 42;
+                        default -> 0;
+                    end;
+                    stdio.println(code);
+                    return;
+                }
+                """, "42\n");
+
+        for (String arm : new String[]{
+                "on ~(status: 200) -> 42;",
+                "on structural ~(secret: 42) -> 42;"}) {
+            String source = """
+                    define class Payload as
+                        pub val int status = 200;
+                        private val int secret = 42;
+                    end
+                    fnc inspect(Payload obj): int {
+                        return match<int> obj over
+                    """ + arm + " default -> 0; end; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), arm);
+        }
+    }
+
+    @Test
     void patternAstPreservesOrdinaryAndFirstMode() {
         String base = """
                 fnc f(): int {
