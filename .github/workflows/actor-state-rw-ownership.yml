@@ -47,7 +47,7 @@ jobs:
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
             -Dtest=ActorStateRwLoansTest -DfailIfNoTests=true test
-      - name: Verify exact focused Surefire evidence (24+ real tests)
+      - name: Verify exact focused Surefire evidence (25+ real tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +62,7 @@ jobs:
           failed = int(suite.attrib.get("failures", "0"))
           errors = int(suite.attrib.get("errors", "0"))
           skipped = int(suite.attrib.get("skipped", "0"))
-          if total < 24 or failed or errors or skipped:
+          if total < 25 or failed or errors or skipped:
               raise SystemExit(f"FAIL: invalid focused JUnit receipt: tests={total} failed={failed} errors={errors} skipped={skipped}")
           print(f"RW_JUNIT_EXECUTED tests={total} failed={failed} errors={errors} skipped={skipped}")
           PY
