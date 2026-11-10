@@ -9,6 +9,7 @@ on:
       - 'tests/F32ActorHostPreflightV1Smoke.java'
       - 'tests/run-f32-actor-host-preflight-v1.sh'
       - '.github/workflows/oresllm-f32-actor-host-admission-v1.yml'
+      - 'tests/F32ActorTurnLeaseV1Smoke.java'
   workflow_dispatch:
 permissions:
   contents: read
