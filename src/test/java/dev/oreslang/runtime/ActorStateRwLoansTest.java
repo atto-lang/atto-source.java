@@ -594,4 +594,26 @@ final class ActorStateRwLoansTest {
         assertTrue(loans.acquireReadAsync(ownerExecution).isCompletedExceptionally());
     }
 
+
+    @Test
+    void throwingHostListenerDoesNotStrandRetirementOrSkipDrainReceipt() {
+        var retirementWakeups = new AtomicInteger();
+        var loans = new ActorStateRwLoans(OWNER, 2, 1,
+                retirementWakeups::incrementAndGet);
+        var held = loans.acquireWriteAsync(actor(8901, 291, 1)).join();
+        var queued = loans.acquireReadAsync(actor(8902, 292, 1));
+        var callbackRan = new AtomicBoolean();
+        queued.whenCompleteRuntime((ignored, failure) -> {
+            callbackRan.set(true);
+            throw new IllegalStateException("injected host notification failure");
+        });
+        loans.close();
+        held.close();
+        assertTrue(callbackRan.get());
+        assertTrue(queued.isCompletedExceptionally());
+        assertTrue(loans.physicallyRetired(),
+                "the Future drain receipt must survive a throwing host waiter");
+        assertEquals(1, retirementWakeups.get());
+    }
+
 }
