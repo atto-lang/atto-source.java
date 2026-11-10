@@ -176,7 +176,15 @@ end
 
 The `actor Worker;` requirement is a **static type-presence requirement**, not an actor instance, runtime capability, synthesized handler, or permission to read actor-owned memory. A private, generic, or different-module actor, or an ordinary class named `Worker`, cannot satisfy it. The actor requirement's name also cannot collide with a required field or function, including inherited names. Contract inheritance retains this requirement, and exported ABI fingerprints include it.
 
-A module contract is not a class/struct interface and cannot be implemented by a class or actor. External receiver-method definitions (`mtd name(Actor a)(...)`), `define actor A as a;`, and required receiver method hooks are separately proposed and are **not enabled by this actor-type requirement**. See [actor/module contracts v1](ACTOR_MODULE_CONTRACTS_V1.md).
+A module contract is not a class/struct interface and cannot be implemented by a class or actor. In the stacked Java implementation, the compact empty-body declaration
+`define actor A;` is a compatible spelling of an existing empty actor
+declaration. The named-binding form `define actor A as a;` is preserved in
+the AST but **rejected by type checking and ABI/export** until checked
+activation, generation fencing and external receiver lowering are available.
+No instance or `ActorRef` is implicitly constructed. Declarative
+`mtd name(Actor receiver)(...)` signatures in module contracts only
+require existing actor-owned methods; executable external method bodies
+are still a separate unimplemented stage. See [actor/module contracts v1](ACTOR_MODULE_CONTRACTS_V1.md).
 
 ## Functions and returns
 
