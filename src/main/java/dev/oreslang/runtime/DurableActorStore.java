@@ -113,6 +113,27 @@ public interface DurableActorStore {
     boolean enqueue(Address address, Inbound message);
 
     /**
+     * Actor-incarnation admission: verify the current activation fence and
+     * insert the message in one storage transaction. External callers should
+     * use enqueue(...) instead; they cannot claim ownership of an actor epoch.
+     * Unimplemented providers MUST fail closed, never silently use enqueue.
+     */
+    default boolean enqueueFenced(Address address, long epoch, Inbound message) {
+        throw new UnsupportedOperationException("fenced durable enqueue is unsupported");
+    }
+
+    /**
+     * Linearization check for an actor-private read: validate the active epoch
+     * and exact local snapshot version against the durable owner. A valid read
+     * may linearize at this check, provided the actor turn holds its own state
+     * lease until it copies the scalar result. Never fall back to local-only
+     * reads for adapters lacking this operation.
+     */
+    default void requireActive(Address address, long epoch, long stateVersion) {
+        throw new UnsupportedOperationException("durable activation read fence is unsupported");
+    }
+
+    /**
      * Consume delivery ID, write the next snapshot, and insert outbox intents
      * atomically. Events/timers will be added when their contract is pinned.
      * A stale activation MUST fail without mutating storage.
