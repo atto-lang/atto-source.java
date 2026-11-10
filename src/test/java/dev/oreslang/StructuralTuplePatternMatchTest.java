@@ -70,7 +70,7 @@ final class StructuralTuplePatternMatchTest {
                   end
 
                   fnc classify(Base value, Dog dog): int {
-                    match (value, dog) over
+                    match first (value, dog) over
                       on (structural { bar: string } shaped, Dog g) -> {
                         return 7;
                       }
@@ -93,7 +93,7 @@ final class StructuralTuplePatternMatchTest {
                           end
 
                           fnc classify(Base value): int {
-                            match value over
+                            match first value over
                               on structural { foo: string } broad -> {
                                 return 1;
                               }
@@ -168,16 +168,14 @@ final class StructuralTuplePatternMatchTest {
                 }
                 """));
 
-        IllegalArgumentException defaultArm = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        fnc bad(bool value): int {
-                          match value over
-                            default -> { return 1; }
-                          end
-                        }
-                        """));
-        assertTrue(defaultArm.getMessage().contains("no default/else keyword"));
+        // Canonical v4/v5 syntax explicitly admits a final 'default' arm.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(bool value): int {
+                  match value over
+                    default -> { return 1; }
+                  end
+                }
+                """)));
     }
 
     @Test
@@ -201,7 +199,7 @@ final class StructuralTuplePatternMatchTest {
                   end
 
                   fnc named(Base value): int {
-                    match value over
+                    match first value over
                       on structural R r -> {
                         r.foo(r.bar);
                         return 1;
@@ -211,14 +209,14 @@ final class StructuralTuplePatternMatchTest {
                   }
 
                   fnc inline(Base value): string {
-                    match value over
+                    match first value over
                       on structural { bar: string } v -> { return v.bar; }
                       on _ -> { return "missing"; }
                     end
                   }
 
                   fnc tupled(Base value, Dog dog): int {
-                    match (value, dog) over
+                    match first (value, dog) over
                       on (structural { bar: string } v, Dog g) -> { return 7; }
                       on (_, _) -> { return 0; }
                     end
