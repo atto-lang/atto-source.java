@@ -111,6 +111,12 @@ public final class SqlitePersistenceStoreTestMain {
                 Result oldReceipt=new Result("evt1",Status.DUPLICATE,1,true);
                 check(!store.verifyDurableCommit(missing,oldReceipt),
                         "missing event was accepted as durable from operation ledger alone");
+                boolean duplicateBlocked=false;
+                try { store.commit(List.of(missing)); }
+                catch(java.sql.SQLException expected) {
+                    duplicateBlocked=expected.toString().contains("INCOMPLETE_OPERATION_LEDGER");
+                }
+                check(duplicateBlocked,"missing event received a direct durable duplicate ACK");
             }
             // A byte-compatible operation record does not prove that the
             // actual event BLOB has not been rewritten after the commit.
@@ -130,6 +136,13 @@ public final class SqlitePersistenceStoreTestMain {
                         write("proof-mutated","event",1,0,Kind.EVENT,7),
                         new Result("event",Status.DUPLICATE,1,true)),
                         "rewritten event was accepted as durable proof");
+                boolean duplicateBlocked=false;
+                try { store.commit(List.of(
+                        write("proof-mutated","event",1,0,Kind.EVENT,7))); }
+                catch(java.sql.SQLException expected) {
+                    duplicateBlocked=expected.toString().contains("INCOMPLETE_OPERATION_LEDGER");
+                }
+                check(duplicateBlocked,"altered event received a direct durable duplicate ACK");
             }
             // Corrupted snapshots and events must abort fenced reactivation.
             try(var store=new SqlitePersistenceStore(file)) {
