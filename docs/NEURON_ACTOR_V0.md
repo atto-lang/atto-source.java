@@ -15,7 +15,7 @@ end
 
 ## State ownership and declaration rules
 
-- Every neuron actor has exactly **one** `state { ... }` mutable container with one or more private, explicitly typed `let Type name;` fields (initializers optional). Reject duplicate keys, unknown types at typing time, public fields, inferred fields, nested containers, and over 128 fields.
+- Every neuron actor has exactly **one** `state { ... }` mutable container with one or more private, explicitly typed `let float name;` fields. The scalar v0 type/layout validator rejects initializer expressions until checked actor activation can evaluate them. Reject duplicate keys, other dtypes, public fields, inferred fields, nested containers, and over 128 fields.
 - The protected schema is `ClassDecl.stateFields`; `ClassDecl.fields` stays empty. AST annotation expansion preserves this distinction. No implicit ordinary field, `self.state` alias, getter, or raw mutable reference is synthesized.
 - State is actor-owned. Multiple immutable read loans may coexist, but a writer needs an exclusive, fair loan; no actor/supervisor simultaneous mutable ownership, no mutable state borrowing through `ActorMail`, no unrestricted access from `forward` or `receive`.
 - STOP/cancellation, restart and hot reload must wait for physical quiescence or fence stale loans and actor generations. Supervisor may request versioned snapshots or messages; it cannot inherit a raw actor-owned pointer.
@@ -40,7 +40,7 @@ pattern; only compiler/runtime-enforced guarded access can authorize a state
 read or write. A supervisor must never receive these capabilities.
 
 `src/test/java/dev/oreslang/runtime/ActorStateReadWriteLoansTest.java`
-contains **8 host-only JUnit test cases**, including reader batching, writer
+contains **12 host-only JUnit test cases**, including reader batching, writer
 fairness, cancellation, generation restart/retirement, unpublished grants,
 callback lock discipline, contention and epoch exhaustion. These are source
 tests pending executed CI receipts, not verified pass results. The targeted
@@ -67,6 +67,32 @@ and tree before invoking Maven's `NeuronActorV0Test` and
    generation for replacement state.
 6. Only then lift `NEURON_STATE_MIR_UNSUPPORTED` and execute real positive
    and negative `.atto` inference conformance tests.
+
+## Compiler and host runtime changes on this draft
+
+- `NeuronStateLayoutV0.fromActor(ClassDecl)` produces a bounded immutable
+  float-field layout from the typed AST and rejects unsupported field types
+  or initializer side effects. `newHostState(generation, maxQueuedLoans)`
+  allocates an actor-generation-owned `ActorStateReadWriteLoans` instance.
+  This does **not** connect the instance to an actual `ActorCell` yet.
+- The runtime now retains `double[]` scalar values and initialization bits
+  inside its private arbiter. `readFloat` / `writeFloat` validate the live
+  loan, logical handler identity, generation, access mode and field name under
+  the **same monitor as scalar access**—not a racy `heldBy()` then read.
+  Reading an uninitialized slot fails; no `double[]` or state alias escapes.
+- The `self.handle_state(critical-read |s| -> ...)` and
+  `self.handle_state(critical-write |s| -> { ... })` spellings are now
+  parsed **only inside neuron actors** as internal `$neuron.critical.read`
+  / `$neuron.critical.write` AST markers. The parser rejects other critical
+  modes, extra arguments and invalid alias signatures. These are AST
+  admission markers, **not executable intrinsics or certified borrow scopes**.
+- `NEURON_STATE_MIR_UNSUPPORTED` still blocks every neuron actor before
+  normal guest emission. The actual compiler must prove borrow escape,
+  continuation, cancellation and supervisor boundaries before admission.
+
+The source fixture in `examples/neuron-scalar-v0.atto` now shows the intended
+`on_start` write and `forward` read. It is intentionally **not** marked as
+an executed guest program.
 
 ## Planned execution API (not active)
 
