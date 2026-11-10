@@ -87,8 +87,8 @@ final class PopulatedMapSuspendCancelGuestTest {
                 end
                 suspends fnc blocked_value(SharedMutex<Flag> signal): int {
                     block {
-                        val guard = signal.lock();
-                        guard.started = 1;
+                        val g = signal.lock();
+                        g.started = 1;
                     }
                     loop { rt cooperate; }
                     return 42;
@@ -108,8 +108,8 @@ final class PopulatedMapSuspendCancelGuestTest {
                     while seen == 0 {
                         rt cooperate;
                         block {
-                            val guard = signal.lock();
-                            seen = guard.started;
+                            val g = signal.lock();
+                            seen = g.started;
                         }
                     }
                     child.cancel();

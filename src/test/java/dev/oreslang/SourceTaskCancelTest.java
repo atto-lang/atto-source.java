@@ -262,15 +262,33 @@ final class SourceTaskCancelTest {
     void failingChildCancelsItsSiblingsByDefault() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
+                define class Started as
+                  pub let int value = 0;
+                end
                 pub async fnc main(): void {
+                  val started = SharedMutex.new(new Started());
                   task scope {
                     let Future<void> looping = task {
                       defer stdio.stdout.write("sibling-cancelled");
+                      block {
+                        val g = started.lock();
+                        g.value = 1;
+                      }
                       loop {
                         rt cooperate;
                       }
                       return;
                     };
+                    // Ensure the sibling has actually begun before failure:
+                    // a task cancelled before its first turn owns no defers.
+                    let mut int seen = 0;
+                    while seen == 0 {
+                      rt cooperate;
+                      block {
+                        val g = started.lock();
+                        seen = g.value;
+                      }
+                    }
                     let Future<int> failing = task {
                       rt cooperate;
                       val Array<int> missing = new Array<int>();
