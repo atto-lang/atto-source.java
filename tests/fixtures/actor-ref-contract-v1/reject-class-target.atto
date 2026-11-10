@@ -1,0 +1,6 @@
+define class Item as
+end
+
+pub fnc foo(ActorRef<Item> actor): void {
+  return;
+}
