@@ -96,6 +96,66 @@ public final class ActorPersistenceBridge {
         });
     }
 
+    /**
+     * Stage exactly one immutable domain event for this actor/slot. The caller
+     * must have finished pure decision logic and released all sealed-state
+     * loans BEFORE submitting. Multi-event atomic commands are deliberately
+     * not supported by the v1 store and must fail closed in compiler lowering.
+     */
+    private static Write event(Activation activation, String operationId,
+                               long expectedVersion, int schemaVersion, byte[] ownedBytes) {
+        Objects.requireNonNull(activation);
+        assertBoundTurn(activation);
+        if (expectedVersion == Long.MAX_VALUE)
+            throw new IllegalArgumentException("event sequence overflow");
+        return new Write(activation.stableIdentity, operationId, activation.epoch,
+                         expectedVersion, schemaVersion, Kind.EVENT, ownedBytes);
+    }
+
+    /** Submit a single owned event; this future is NOT a guest-visible receipt. */
+    public static OresFuture<Result> submitOwnedEvent(
+            Activation activation, BatchPersistenceSidecar sidecar,
+            String operationId, long expectedVersion, int schemaVersion, byte[] ownedBytes) {
+        Objects.requireNonNull(sidecar);
+        Write write = event(activation, operationId, expectedVersion, schemaVersion, ownedBytes);
+        return activation.runtime.ownCurrentActorFuture(OresFuture.from(sidecar.submit(write)));
+    }
+
+    /**
+     * Resumes only inside the original actor execution lease. Rejects a
+     * queued/volatile or version-mismatched receipt. The sidecar independently
+     * verifies a durable receipt against the provider's persisted operation
+     * ledger; these checks are an extra boundary, not provider authentication.
+     * Guest code cannot invoke the binding or the state publish operation.
+     */
+    public static void onEventCompletionInCurrentActor(
+            Activation activation, BatchPersistenceSidecar sidecar,
+            String operationId, long expectedVersion, int schemaVersion, byte[] ownedBytes,
+            BiConsumer<? super Result, ? super Throwable> continuation) {
+        Objects.requireNonNull(sidecar);
+        Objects.requireNonNull(continuation);
+        Write write = event(activation, operationId, expectedVersion, schemaVersion, ownedBytes);
+        ActorRuntime.ContinuationTarget target =
+                activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<Result> future = OresFuture.from(sidecar.submit(write));
+        activation.runtime.enqueueOnCompletion(future, target, (receipt, failure) -> {
+            assertBoundTurn(activation);
+            if (failure != null) {
+                continuation.accept(null, failure);
+                return;
+            }
+            if (receipt == null || !receipt.durable()
+                    || (receipt.status() != Status.COMMITTED && receipt.status() != Status.DUPLICATE)
+                    || receipt.version() != expectedVersion + 1L
+                    || !operationId.equals(receipt.operationId())) {
+                continuation.accept(null, new IllegalStateException(
+                        "EVENT_COMMIT_NOT_VERIFIED"));
+                return;
+            }
+            continuation.accept(receipt, null);
+        });
+    }
+
     private static void assertBoundTurn(Activation activation) {
         requireActorTurn(activation.runtime);
         if (!activation.owner.equals(ActorRuntime.currentActorId().orElse(null)))

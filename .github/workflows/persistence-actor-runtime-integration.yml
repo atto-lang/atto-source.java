@@ -37,3 +37,10 @@ jobs:
           sha256sum "$JDBC" "$SLF4J"
           CP="target/classes:target/test-classes:$(cat target/persistence-dependencies.txt):$JDBC:$SLF4J"
           java -ea -cp "$CP" dev.oreslang.runtime.persistence.ActorRuntimePersistenceIntegrationTestMain
+      - name: Execute single-event journal + lost-ACK fenced recovery host test
+        run: |
+          set -euo pipefail
+          JDBC="$HOME/.m2/repository/org/xerial/sqlite-jdbc/3.53.4.0/sqlite-jdbc-3.53.4.0.jar"
+          SLF4J="$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar"
+          CP="target/classes:target/test-classes:$(cat target/persistence-dependencies.txt):$JDBC:$SLF4J"
+          java -ea -cp "$CP" dev.oreslang.runtime.persistence.EventSourcedActorRuntimeIntegrationTestMain
