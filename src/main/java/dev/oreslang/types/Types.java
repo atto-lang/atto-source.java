@@ -235,6 +235,34 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
+    /**
+     * True when a type can carry a runtime-minted actor reference. Guard the
+     * entire shape, not just the top-level Named ActorRef, so generic wrappers
+     * cannot launder unverified capabilities into mailbox authority.
+     */
+    static boolean containsActorReference(Type type) {
+        if (type instanceof Named named) {
+            return named.name().equals("ActorRef")
+                    || named.arguments().stream().anyMatch(Types::containsActorReference);
+        }
+        if (type instanceof SelfType self) return containsActorReference(self.bound());
+        if (type instanceof Borrow borrow) return containsActorReference(borrow.target());
+        if (type instanceof ListType list) return containsActorReference(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream()
+                .anyMatch(Types::containsActorReference);
+        if (type instanceof Union union) return union.options().stream()
+                .anyMatch(Types::containsActorReference);
+        if (type instanceof Not not) return containsActorReference(not.excluded());
+        if (type instanceof Function function) {
+            return containsActorReference(function.result())
+                    || function.parameters().stream()
+                            .anyMatch(Types::containsActorReference);
+        }
+        if (type instanceof Record record) return record.members().values().stream()
+                .anyMatch(Types::containsActorReference);
+        return false;
+    }
+
     // Shared package-internal proof query for both type relations.
     static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
@@ -257,6 +285,9 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Unknown and generic compatibility cannot manufacture a mailbox
+        // capability, including through Option/List/Record/Function wrappers.
+        if (containsActorReference(to) && containsUncertainType(from)) return false;
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {
