@@ -107,7 +107,13 @@ public final class OwnershipChecker {
      * as Rust equivalence, compiled AttoLang guest, or emitted-code proof.
      */
     public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(Ast.Program program) {
-        OwnershipChecker checker = new OwnershipChecker(program);
+        return checkWithBorrowMirAuditV1(program, Map.of());
+    }
+
+    /** Must use TypeChecker-validated short aliases when invoked by OresCompiler. */
+    public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.borrowMirAudit = new BorrowMirAuditV1.Collector();
         checker.validate(program);
         checker.publishTaskAdmissions();
