@@ -114,10 +114,13 @@ public final class AtomicCommandSidecar implements AutoCloseable {
     /** Host-side close; never invoke on the actor dispatcher. */
     @Override public void close() {
         synchronized (admission) {
-            if (closed) return;
-            closed=true;
-            writer.shutdown();
+            if (!closed) {
+                closed=true;
+                writer.shutdown();
+            }
         }
+        // A second external close must still JOIN an earlier in-writer close
+        // before the owning host is permitted to close the SQLite Store.
         // A synchronous CompletableFuture dependent may execute on the writer.
         // It must never await termination of its own thread.
         if (Thread.currentThread()==writerThread) return;
