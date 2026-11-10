@@ -881,13 +881,13 @@ public final class Parser {
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
         if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
-                || modifiers.isAbstract) {
+                ) {
             throw error(actorToken,
-                    "actor class declarations accept only visibility and actor-kind modifiers");
+                    "actor class declarations accept only visibility, abstract and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        return parseActorClass(kind, modifiers.visibility, prefix, modifiers.isAbstract);
     }
 
     /** Preserve first-class syntax; executable lowering stays type-gated. */
@@ -1057,14 +1057,29 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
+        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT, false);
     }
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, false);
+    }
+
+    // This is parser/AST admission ONLY. The compiler must separately resolve
+    // the nominal parent, validate actor-kind compatibility, stateless ancestry,
+    // effect/purity constraints, overrides and runtime capability inheritance.
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility,
+            ActorPrefix prefix, boolean isAbstract) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
-        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> parents = match(EXTENDS, FROM) ? parseTypeRefList() : List.of();
+        if (parents.size() > 1) {
+            throw error(previous(), "actor inheritance requires exactly one nominal parent");
+        }
+        if (isAbstract && (prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial())) {
+            throw error(previous(), "abstract actor parents cannot declare transport/concurrency policy");
+        }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         boolean braceStyle = match(LBRACE);
@@ -1135,11 +1150,17 @@ public final class Parser {
             }
 
             if (isBindingKind(peek().type())) {
+                if (isAbstract) {
+                    throw error(peek(), "abstract actor parents must be stateless; only leaf actors own state");
+                }
                 validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                if (isAbstract) {
+                    throw error(peek(), "abstract actor parents must be stateless; no inherited state fields");
+                }
                 validateActorFieldModifiers(mods);
                 fields.add(parseFinalActorField(annotations, mods.visibility));
                 continue;
@@ -1153,7 +1174,7 @@ public final class Parser {
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
-            validateActorMethodModifiers(mods);
+            validateActorMethodModifiers(mods, isAbstract);
             if (mods.isStatic && explicitMethod) {
                 throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
             }
@@ -1218,7 +1239,7 @@ public final class Parser {
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
-            methods.add(parseMethod(annotations, mods));
+            methods.add(parseMethod(annotations, mods, isAbstract));
         }
 
         consume(terminator, braceStyle
@@ -1228,7 +1249,7 @@ public final class Parser {
             throw error(previous(), "serial actors require requestConcurrency = 1 and messageConcurrency = 1");
         }
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
+                name, visibility, isAbstract, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
     }
 
@@ -1242,10 +1263,11 @@ public final class Parser {
         }
     }
 
-    private void validateActorMethodModifiers(Modifiers modifiers) {
-        if (modifiers.generator || modifiers.nonLexical || modifiers.trapped || modifiers.isAbstract
+    private void validateActorMethodModifiers(Modifiers modifiers, boolean enclosingAbstractActor) {
+        if (modifiers.generator || modifiers.nonLexical || modifiers.trapped
+                || (modifiers.isAbstract && !enclosingAbstractActor)
                 || modifiers.shared || modifiers.untrusted) {
-            throw error(peek(), "actor methods do not accept generator, nlex, abstract, shared, or untrusted modifiers");
+            throw error(peek(), "actor methods do not accept generator, nlex, abstract outside abstract actor, shared, or untrusted modifiers");
         }
     }
 
