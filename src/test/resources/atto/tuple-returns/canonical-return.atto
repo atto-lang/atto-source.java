@@ -9,9 +9,9 @@ fnc forward(Tuple[string, string] value): Tuple[string, string] {
 }
 
 pub routine main(): void {
-  val labels: Tuple[string, string] = forward(labels());
-  stdio.stdout.write(labels[0]);
+  val result: Tuple[string, string] = forward(labels());
+  stdio.stdout.write(result[0]);
   stdio.stdout.write("|");
-  stdio.stdout.write(labels[1]);
+  stdio.stdout.write(result[1]);
   return;
 }
