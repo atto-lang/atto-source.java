@@ -62,14 +62,14 @@ public final class SqliteCommandTransactionStoreTestMain {
                 check(first.status()==Status.COMMITTED && first.durable() &&
                     first.firstVersion()==1 && first.version()==2 &&
                     first.eventCount()==2,"multi-event commit did not persist atomically");
-                check(dec(legacy.loadFenced(id,1).events().get(0).payload())==40,
+                check(dec(commands.loadVerified(id,1).events().get(0).payload())==40,
                         "first event lost");
-                check(dec(legacy.loadFenced(id,1).events().get(1).payload())==60,
+                check(dec(commands.loadVerified(id,1).events().get(1).payload())==60,
                         "second event lost");
                 Receipt second=sidecar.submit(owned).toCompletableFuture().get(15,TimeUnit.SECONDS);
                 check(second.version()==3 && second.status()==Status.COMMITTED,
                         "owned byte copy/version regression");
-                check(dec(legacy.loadFenced(id,1).events().get(2).payload())==40,
+                check(dec(commands.loadVerified(id,1).events().get(2).payload())==40,
                         "caller mutated queued event bytes");
                 Command conflicting=command(id,"deposit-100",1,0,40,61);
                 boolean conflict=false;
@@ -88,8 +88,8 @@ public final class SqliteCommandTransactionStoreTestMain {
                 check(duplicate.durable() && duplicate.status()==Status.DUPLICATE &&
                       duplicate.version()==2 && duplicate.firstVersion()==1 &&
                       dec(duplicate.resultBytes())==100,"epoch2 duplicate altered balance");
-                check(legacy.loadFenced(id,2).version()==3 &&
-                      legacy.loadFenced(id,2).events().size()==3,"duplicate appended journal");
+                check(commands.loadVerified(id,2).version()==3 &&
+                      commands.loadVerified(id,2).events().size()==3,"duplicate appended journal");
                 boolean stale=false;
                 try{commands.verify(command(id,"deposit-100",1,0,40,60));}
                 catch(SecurityException expected){stale=true;}
@@ -103,8 +103,8 @@ public final class SqliteCommandTransactionStoreTestMain {
                     Statement s=db.createStatement()) {
                     s.execute("DELETE FROM events WHERE version<=3");
                 }
-                check(legacy.loadFenced(id,2).snapshotVersion()==4 &&
-                      legacy.loadFenced(id,2).events().isEmpty(),"compaction replay mismatch");
+                check(commands.loadVerified(id,2).snapshotVersion()==4 &&
+                      commands.loadVerified(id,2).events().isEmpty(),"compaction replay mismatch");
                 check(commands.verify(retry).version()==2,
                       "logical command not retained after checkpoint compaction");
             }
@@ -122,8 +122,8 @@ public final class SqliteCommandTransactionStoreTestMain {
                 }
                 Command candidate=command(rollbackId,"abort-transaction",1,0,7,8);
                 expectSqlFailure(()->commands.commit(candidate),"INJECTED_SECOND_EVENT");
-                check(legacy.loadFenced(rollbackId,1).version()==0 &&
-                      legacy.loadFenced(rollbackId,1).events().isEmpty(),
+                check(commands.loadVerified(rollbackId,1).version()==0 &&
+                      commands.loadVerified(rollbackId,1).events().isEmpty(),
                       "rolled-back transaction published partial journal");
                 check(commands.verify(candidate)==null,
                       "failed transaction left durable command result");
@@ -139,6 +139,7 @@ public final class SqliteCommandTransactionStoreTestMain {
                         "WHERE actor='account-rollback' AND version=1");
                 }
                 expectSqlFailure(()->commands.verify(candidate),"CORRUPT_COMMAND_EVENTS");
+                expectSqlFailure(()->commands.loadVerified(rollbackId,1),"CORRUPT_COMMAND_EVENTS");
             }
             System.out.println("PASS host SQLite atomic multi-event / epoch retry / compaction / trigger rollback");
         } finally {
