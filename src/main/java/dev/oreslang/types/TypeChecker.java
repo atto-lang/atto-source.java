@@ -4477,16 +4477,18 @@ public final class TypeChecker {
                         "DynamicStruct has been removed; use infer struct{...}, "
                                 + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
-            if (created.type().name().equals("ActorRef")) {
-                // Only spawn/admitted runtime primitives may mint actor handles.
-                // The generic "new unresolved nominal" fallback would otherwise
-                // type a fabricated capability as ActorRef<Actor>.
-                throw new IllegalArgumentException(
-                        "ActorRef capabilities cannot be constructed with new; "
-                                + "obtain a runtime-minted reference from spawn or an authorized actor resolver");
-            }
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return resolve(created.type(), generics, self);
+            if (klass == null) {
+                Type constructed = resolve(created.type(), generics, self);
+                // Resolve *before* admitting a non-class construction, since a
+                // transparent alias may hide an ActorRef or container of refs.
+                if (containsActorReference(constructed)) {
+                    throw new IllegalArgumentException(
+                            "ActorRef capabilities cannot be constructed with new; "
+                                    + "obtain a runtime-minted reference from spawn or an authorized actor resolver");
+                }
+                return constructed;
+            }
             rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
@@ -10246,6 +10248,7 @@ public final class TypeChecker {
                 .anyMatch(TypeChecker::containsActorReference);
         if (type instanceof Union union) return union.options().stream()
                 .anyMatch(TypeChecker::containsActorReference);
+        if (type instanceof Types.Not not) return containsActorReference(not.excluded());
         if (type instanceof Function function) {
             return containsActorReference(function.result())
                     || function.parameters().stream()
