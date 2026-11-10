@@ -2909,6 +2909,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Read-only outputs emitted by actor-local self.send(...). */
         public ActorOutputStream<Object> outputs() {
+            requireActorReferenceIdentity(this, actors.get(id), "observe output stream");
             ActorOutputStream<Object> stream = outputStream;
             if (stream == null) {
                 throw new IllegalStateException(
