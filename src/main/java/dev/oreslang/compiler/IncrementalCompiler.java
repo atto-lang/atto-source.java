@@ -302,7 +302,7 @@ public final class IncrementalCompiler {
                 for (Ast.ModuleDecl module : target.modules()) {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.InterfaceDecl iface
-                                && iface.moduleContract()
+                                && iface.moduleContract() && !iface.namespaceContract()
                                 && iface.visibility() == Ast.Visibility.PUBLIC
                                 && iface.name().equals(sourceName)) {
                             if (match != null) {
@@ -502,7 +502,8 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.namespaceContract() ? "namespace-contract "
+                    : iface.moduleContract() ? "contract " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
