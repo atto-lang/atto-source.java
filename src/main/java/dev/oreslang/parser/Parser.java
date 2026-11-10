@@ -3926,7 +3926,13 @@ public final class Parser {
 
         List<Ast.MatchArm> arms = new ArrayList<>();
         boolean seenDefault = false;
+        boolean seenUnconditionalWildcard = false;
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            // 'on _' is a compatibility spelling for an unguarded fallback.
+            // It must not make later arms (including 'default') unreachable.
+            if (canonicalOver && seenUnconditionalWildcard) {
+                throw error(peek(), "unguarded wildcard match arm must be last");
+            }
             boolean defaultArm = false;
             if (canonicalOver) {
                 if (match(DEFAULT)) {
@@ -3959,6 +3965,9 @@ public final class Parser {
                 } finally {
                     matchGuardStartToken = previousGuardStart;
                 }
+            }
+            if (canonicalOver && pattern instanceof Ast.WildcardPattern && guard == null) {
+                seenUnconditionalWildcard = true;
             }
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
@@ -4030,8 +4039,12 @@ public final class Parser {
         boolean braced = match(LBRACE);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
         boolean seenDefault = false;
+        boolean seenUnconditionalWildcard = false;
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
+            if (seenUnconditionalWildcard) {
+                throw error(peek(), "unguarded wildcard match arm must be last");
+            }
             boolean defaultArm = match(DEFAULT);
             if (defaultArm) {
                 if (seenDefault) throw error(previous(), "duplicate default match arm");
@@ -4055,6 +4068,10 @@ public final class Parser {
                 } finally {
                     matchGuardStartToken = previousGuardStart;
                 }
+            }
+
+            if (pattern instanceof Ast.WildcardPattern && guard == null) {
+                seenUnconditionalWildcard = true;
             }
 
             if (check(FAT_ARROW)) {
