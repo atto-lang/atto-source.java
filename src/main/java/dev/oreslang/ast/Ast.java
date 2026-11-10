@@ -1178,6 +1178,11 @@ public final class Ast {
     /** Untyped nonempty Map entries: only a direct typed binding may resolve it. */
     public record ContextualMapLiteralExpr(List<MapLiteralEntry> entries) implements Expr {
         public ContextualMapLiteralExpr {
+            java.util.Objects.requireNonNull(entries, "Map literal entries");
+            // Cap hostile/direct AST builders before copying their full list.
+            if (entries.size() > MAX_TILDE_MAP_LITERAL_ENTRIES) {
+                throw new IllegalArgumentException("typed Map literal exceeds maximum key count");
+            }
             entries = List.copyOf(entries);
             if (entries.isEmpty()) {
                 throw new IllegalArgumentException("empty map must use ContextualEmptyMapExpr");
@@ -1201,6 +1206,10 @@ public final class Ast {
             implements Expr {
         public TypedMapLiteralExpr {
             java.util.Objects.requireNonNull(aggregateType, "Map literal type");
+            java.util.Objects.requireNonNull(entries, "Map literal entries");
+            if (entries.size() > MAX_TILDE_MAP_LITERAL_ENTRIES) {
+                throw new IllegalArgumentException("typed Map literal exceeds maximum key count");
+            }
             entries = List.copyOf(entries);
             if (!aggregateType.name().equals("Map") || aggregateType.inferArguments()
                     || aggregateType.arguments().size() != 2 || entries.isEmpty()) {
