@@ -3562,6 +3562,7 @@ public final class ActorRuntime implements AutoCloseable {
                 VirtualActorActivationRegistry.Identity identity, long generation) {
             requireSupervisor("check virtual actor generation");
             requireCallerRuntimeAffinity("check virtual actor generation");
+            if (groupClosed.get() || closed.get()) return false;
             return virtualActorFences.isCurrent(supervisor.id(), id, identity, generation);
         }
 
