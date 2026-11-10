@@ -1,0 +1,10 @@
+// ACCEPT: exact empty-body actor ClassDecl, with no implicit runtime binding.
+define contract CartApi as
+  actor Cart;
+end
+
+define module carts conforms CartApi as
+  pub define actor Cart;
+end
+
+pub fnc main(): int { return 42; }
