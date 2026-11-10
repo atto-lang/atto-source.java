@@ -12,6 +12,94 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class ScalarFrameStorageTest {
     @Test
+    void laterSourceTaskCannotAcquireACompletedExecutionsStack() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ScalarFrameStorage> previous = new AtomicReference<>();
+            AtomicReference<ScalarFrameStorage.Frame> previousFrame = new AtomicReference<>();
+            AtomicReference<ExecutionContext> previousExecution = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> first = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> second = new AtomicReference<>();
+            var firstAdmitted = new java.util.concurrent.CountDownLatch(1);
+            var secondAdmitted = new java.util.concurrent.CountDownLatch(1);
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
+                if (message.equals("first")) {
+                    first.set(runtime.startActorTask(resume -> {
+                        var storage = new ScalarFrameStorage();
+                        var frame = storage.enter(1, 1);
+                        frame.putLocal(0, ScalarFrameStorage.Scalar.ofLong(41));
+                        previous.set(storage);
+                        previousFrame.set(frame);
+                        previousExecution.set(OresScheduler.currentExecutionContext());
+                        // The scheduler retires the completed context's frames.
+                        return OresScheduler.done(1);
+                    }));
+                    firstAdmitted.countDown();
+                } else if (message.equals("second")) {
+                    second.set(runtime.startActorTask(resume -> {
+                        assertNotSame(previousExecution.get(), OresScheduler.currentExecutionContext());
+                        assertThrows(SecurityException.class, () -> previousFrame.get().local(0));
+                        assertThrows(SecurityException.class, () -> previous.get().enter(1, 1));
+                        assertThrows(SecurityException.class, () -> previous.get().close());
+                        assertFalse(ActorRuntime.currentActorFrameArena().isPoisoned());
+                        try (var storage = new ScalarFrameStorage()) {
+                            var own = storage.enter(1, 1);
+                            own.putLocal(0, ScalarFrameStorage.Scalar.ofLong(42));
+                            assertEquals(42, own.local(0).asLong());
+                            storage.leave(own);
+                        }
+                        return OresScheduler.done(2);
+                    }));
+                    secondAdmitted.countDown();
+                } else turn.self().stop();
+            });
+            actor.send("first");
+            assertTrue(firstAdmitted.await(3, TimeUnit.SECONDS));
+            assertEquals(1, first.get().get(3, TimeUnit.SECONDS));
+            actor.send("second");
+            assertTrue(secondAdmitted.await(3, TimeUnit.SECONDS));
+            assertEquals(2, second.get().get(3, TimeUnit.SECONDS));
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "owner failure: " + actor.failure());
+        }
+    }
+
+    @Test
+    void foreignCarrierCannotReadGrowOrCloseAnActorsExecutionStack() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+            var actor = runtime.<String>spawnSharedTrusted(factory -> (message, turn) -> {
+                try (ScalarFrameStorage storage = new ScalarFrameStorage()) {
+                    var frame = storage.enter(1, 1);
+                    frame.putLocal(0, ScalarFrameStorage.Scalar.ofLong(42));
+                    Thread outsider = new Thread(() -> {
+                        try {
+                            assertThrows(SecurityException.class, () -> frame.local(0));
+                            assertThrows(SecurityException.class, () -> frame.putLocal(0,
+                                    ScalarFrameStorage.Scalar.ofLong(99)));
+                            assertThrows(SecurityException.class, () -> storage.enter(1, 1));
+                            assertThrows(SecurityException.class, storage::close);
+                        } catch (Throwable failure) { observed.set(failure); }
+                    });
+                    outsider.start();
+                    outsider.join();
+                    assertNull(observed.get(), () -> "foreign stack authority: " + observed.get());
+                    assertEquals(42, frame.local(0).asLong());
+                    assertFalse(ActorRuntime.currentActorFrameArena().isPoisoned());
+                    storage.leave(frame);
+                }
+                turn.self().stop();
+            });
+            actor.send("execute");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "owner failure: " + actor.failure());
+            assertNull(observed.get());
+        }
+    }
+
+    @Test
     void overflowingFrameLayoutCannotWrapPastTheSlotLimit() {
         try (ScalarFrameStorage storage = new ScalarFrameStorage()) {
             assertThrows(IllegalArgumentException.class,

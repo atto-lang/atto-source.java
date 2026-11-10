@@ -1,5 +1,27 @@
 # Actor frame integration on current main
 
+## Execution-scope hardening follow-up
+
+`ScalarFrameStorage` now validates its exact logical scheduler/invocation context
+and authenticated physical actor segment before frame access, allocation, or
+cleanup. The previous implementation kept a context value but did not compare
+it against the current caller; an adversarial carrier could read a live actor's
+scalar local. That regression failed before the guard and passes after it.
+Foreign read/write/growth/close attempts are rejected before mutating or
+poisoning the owner. A second source-task regression rejects a completed
+execution's retained storage while preserving the new task's own stack.
+
+The combined current matrix passes **110 Java tests**, with no failures, errors
+or skips: 71 frame tests and 39 boundary tests. These are separate from Spin's
+110 HTTP checks. Earlier counts below describe the initial integration.
+
+Logical stacks belong to execution contexts. This scalar interpreter is
+synchronous, so its access lease is restricted to its authenticated physical
+segment. That is not a permanent thread-affinity rule for logical stacks:
+supported source-task suspension preserves the execution context and obtains
+a new authenticated turn on resume. General scalar continuation spill/rebind
+remains unimplemented and must not reuse a retained synchronous frame object.
+
 This branch reconciles the actor scalar-frame stack through PR #2640
 (`2febca5b8abec8897906c42a4e4733320616bf5a`) with current main
 (`6d8eb70048eafc9a84c5aebe9c1bb06104f16e76`). Both histories remain intact.

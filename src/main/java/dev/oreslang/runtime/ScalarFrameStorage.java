@@ -107,11 +107,18 @@ public final class ScalarFrameStorage implements AutoCloseable {
             checkTop(this);
             return readBoundedInt(this, 8, maxOperands, "operand height");
         }
-        public int localsCount() { return locals; }
+        public int localsCount() { checkTop(this); return locals; }
     }
 
     private final ActorFrameArena arena;
     private final ExecutionContext execution;
+    // This scalar machine is synchronous. Its physical turn lease cannot be
+    // reused as a continuation ticket; future suspension must explicitly bind
+    // the same logical stack to a newly authenticated execution segment.
+    private final Thread carrier = Thread.currentThread();
+    private final Object physicalTurn = ActorRuntime.currentMutexExecutionSegment();
+    private final ExecutionContext scheduledExecution = OresScheduler.currentExecutionContext();
+    private final ExecutionContext invocationExecution = GuestCallDepthGuard.currentInvocationExecutionContext();
     private final ArrayDeque<Frame> frames = new ArrayDeque<>();
     private int peakFrames;
     private boolean closed;
@@ -144,6 +151,7 @@ public final class ScalarFrameStorage implements AutoCloseable {
     }
 
     public Frame enter(int localSlots, int operandSlots) {
+        requireExecutionScope();
         if (closed) throw new IllegalStateException("closed scalar frame storage");
         if (localSlots < 0 || operandSlots < 0
                 || localSlots > MAX_SLOTS || operandSlots > MAX_SLOTS - localSlots) {
@@ -176,12 +184,25 @@ public final class ScalarFrameStorage implements AutoCloseable {
     public boolean actorOwned() { return arena != null; }
 
     private void checkTop(Frame frame) {
+        requireExecutionScope();
         Objects.requireNonNull(frame);
         if (closed || frame.closed || frames.peekLast() != frame) {
             // A host callback must not suppress a scalar frame authority
             // violation and silently resume the next actor mailbox turn.
             if (arena != null) arena.poisonFromGuestGuard();
             throw new IllegalStateException("stale or out-of-order scalar frame lease");
+        }
+    }
+
+    private void requireExecutionScope() {
+        // Reject foreign/stale callers before they can touch frame bytes,
+        // change admission state, close the stack or poison its rightful owner.
+        if (Thread.currentThread() != carrier
+                || ActorRuntime.currentMutexExecutionSegment() != physicalTurn
+                || ActorRuntime.currentActorFrameArena() != arena
+                || OresScheduler.currentExecutionContext() != scheduledExecution
+                || GuestCallDepthGuard.currentInvocationExecutionContext() != invocationExecution) {
+            throw new SecurityException("scalar stack accessed outside its owning execution turn");
         }
     }
 
@@ -229,6 +250,7 @@ public final class ScalarFrameStorage implements AutoCloseable {
     }
 
     @Override public void close() {
+        requireExecutionScope();
         if (closed) return;
         try {
             while (!frames.isEmpty()) leave(frames.peekLast());
