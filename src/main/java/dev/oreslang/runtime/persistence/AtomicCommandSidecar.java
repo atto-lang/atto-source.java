@@ -1,6 +1,8 @@
 package dev.oreslang.runtime.persistence;
 
 import java.util.Objects;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
@@ -27,6 +29,7 @@ public final class AtomicCommandSidecar implements AutoCloseable {
     private final int maxOutstanding;
     private final long maxOutstandingBytes;
     private final Object admission = new Object();
+    private final Set<CompletableFuture<Receipt>> unresolved=new HashSet<>();
     private int outstanding;
     private long outstandingBytes;
     private boolean closed;
@@ -63,6 +66,7 @@ public final class AtomicCommandSidecar implements AutoCloseable {
                 throw new RejectedExecutionException("SIDECAR_BACKPRESSURE");
             outstanding++;
             outstandingBytes+=charge;
+            unresolved.add(answer);
             try {
                 writer.execute(() -> {
                     try {
@@ -84,12 +88,14 @@ public final class AtomicCommandSidecar implements AutoCloseable {
                         answer.completeExceptionally(error);
                     } finally {
                         synchronized (admission) {
+                            unresolved.remove(answer);
                             outstanding--;
                             outstandingBytes-=charge;
                         }
                     }
                 });
             } catch (RuntimeException rejected) {
+                unresolved.remove(answer);
                 outstanding--;
                 outstandingBytes-=charge;
                 throw rejected;
@@ -110,11 +116,20 @@ public final class AtomicCommandSidecar implements AutoCloseable {
             while (true) {
                 try {
                     if (writer.awaitTermination(30,TimeUnit.SECONDS)) break;
-                    // Cannot promise an exact outcome if a durable commit is stalled.
+                    // All accepted but unsettled operations have unknown outcome.
+                    // Never strand a future when the bounded worker cannot stop.
+                    synchronized (admission) {
+                        for (CompletableFuture<Receipt> future:unresolved)
+                            future.completeExceptionally(new IllegalStateException("OUTCOME_UNKNOWN"));
+                    }
                     writer.shutdownNow();
                     break;
                 } catch (InterruptedException e) {
                     interrupted=true;
+                    synchronized (admission) {
+                        for (CompletableFuture<Receipt> future:unresolved)
+                            future.completeExceptionally(new IllegalStateException("OUTCOME_UNKNOWN"));
+                    }
                     writer.shutdownNow();
                     break;
                 }
