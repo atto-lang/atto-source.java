@@ -1,0 +1,121 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * First real source-defined three-actor guest routing gate on the supported
+ * ActorRef/mailbox/outputs APIs. Main explicitly bridges each hop.
+ *
+ * This is deliberately NOT an implementation or proof of source 'pipe'
+ * lowering, ActorStream typed port authority, supervisor restart, or native AOT.
+ * Only the three actor receive() functions produce graph values.
+ */
+final class SourceActorGraphGuestRoutingTest {
+    private static final String SOURCE = """
+            define actor SourceStage implements StreamOperator<int, int> as
+              let int count;
+              on_start(): void {
+                self.count = 0;
+                return;
+              }
+              receive(ActorMail<int> mail): void {
+                if mail.value < 0; do
+                  self.count = self.count - mail.value;
+                  self.send(self.count);
+                  self.end();
+                else
+                  self.count = self.count + mail.value;
+                  self.send(self.count);
+                fi
+                return;
+              }
+            end
+
+            define actor TransformStage implements StreamOperator<int, int> as
+              receive(ActorMail<int> mail): void {
+                if mail.value < 0; do
+                  self.send(mail.value - 1);
+                  self.end();
+                else
+                  self.send(mail.value * 2);
+                fi
+                return;
+              }
+            end
+
+            define actor SinkStage implements StreamOperator<int, int> as
+              receive(ActorMail<int> mail): void {
+                self.send(mail.value + 3);
+                self.end();
+                return;
+              }
+            end
+
+            pub async routine main(): void {
+              val source = spawn SourceStage();
+              val transform = spawn TransformStage();
+              val sink = spawn SinkStage();
+              await source.get_ready();
+              await transform.get_ready();
+              await sink.get_ready();
+
+              source.send(5);
+              val stage1 = await source.outputs.next();
+              transform.send(stage1.value.unwrap().value);
+
+              val stage2 = await transform.outputs.next();
+              sink.send(stage2.value.unwrap().value);
+
+              val stage3 = await sink.outputs.next();
+              transform.send(0 - stage3.value.unwrap().value);
+
+              val stage4 = await transform.outputs.next();
+              source.send(stage4.value.unwrap().value);
+
+              val result = await source.outputs.next();
+              stdio.stdout.write(result.value.unwrap().value);
+              await source.get_done();
+              await transform.get_done();
+              await sink.get_done();
+              return;
+            }
+            """;
+
+    @Test
+    void threeRealActorsForwardAndReplyThroughExplicitCoordinator() throws Exception {
+        // Explicitly check nominal, actor-bound message ports as well as
+        // interpreter evaluation. No source-level 'pipe' is used.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(SOURCE)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, SOURCE, "actor-graph-three-stage.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .buildLiteral());
+        }
+        assertEquals("19", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void operatorSyntaxCannotBePromotedFromExplicitMailboxRouting() {
+        String unsupported = SOURCE.replace(
+                "val source = spawn SourceStage();",
+                "val bogus_graph = spawn SourceStage() pipe spawn TransformStage();"
+                + " val source = spawn SourceStage();");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(unsupported)));
+        assertTrue(failure.getMessage().contains("typed pipe ports are compatible"),
+                failure::getMessage);
+    }
+}
