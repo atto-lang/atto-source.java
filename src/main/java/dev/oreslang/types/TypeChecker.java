@@ -179,6 +179,7 @@ public final class TypeChecker {
                 if (declaration instanceof Ast.ClassDecl klass) {
                     if (klass.actorConcurrency().role() == Ast.ActorRole.NEURON) {
                         checkNeuronV0Contract(klass);
+                        dev.oreslang.compiler.NeuronStateLayoutV0.fromActor(klass);
                         throw new IllegalArgumentException(
                                 "NEURON_STATE_MIR_UNSUPPORTED: neuron actor '" + klass.name()
                                 + "' has protected mutable state but critical read/write "
