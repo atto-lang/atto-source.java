@@ -177,6 +177,9 @@ public final class TypeChecker {
                                     + "fenced activation, scheduler and CONTROL MIR lowering");
                 }
                 if (declaration instanceof Ast.GpuActorDecl actor) {
+                    // Describe checked signature types for diagnostics, but do
+                    // not promote opaque bodies to executable device MIR.
+                    dev.oreslang.compiler.GpuActorSignatureHirV0.describe(actor);
                     throw new IllegalArgumentException(
                             "GPU_ACTOR_MIR_UNSUPPORTED: '" + actor.name()
                                     + "' has a distinct sealed GPU actor AST but requires "
