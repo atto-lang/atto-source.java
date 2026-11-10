@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -75,6 +76,11 @@ final class SingletonCheckOnlyTest {
                 () -> TypeChecker.checkTypes(program));
         assertTrue(failure.getMessage().contains("ORES-SINGLETON-UNSUPPORTED"),
                 failure.getMessage());
+
+        IllegalArgumentException ownershipFailure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+        assertTrue(ownershipFailure.getMessage().contains("ORES-SINGLETON-UNSUPPORTED"),
+                ownershipFailure.getMessage());
     }
 
     @Test
