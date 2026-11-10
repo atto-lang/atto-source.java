@@ -72,7 +72,8 @@ final class NeuronActorV0Test {
                 "define neuron isoactor X as end",
                 "define http neuron actor X as end",
                 "define neuron tcp actor X as end",
-                "define actor X as state { let float weight; } end"
+                "define actor X as state { let float weight; } end",
+                "define neuron actor X as pub forward(float x): float { return x; } state { let float weight; } end"
         };
         for (String bad : rejected) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(bad), bad);
@@ -96,6 +97,28 @@ final class NeuronActorV0Test {
                     () -> TypeChecker.check(Parser.parse(bad)), bad);
             assertTrue(failure.getMessage().contains(neg[2]), failure::getMessage);
         }
+    }
+
+    @Test void rawAstProducersCannotBypassProtectedStateInvariants() {
+        Ast.ClassDecl neuron = firstActor(BASE);
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                neuron.name(), neuron.visibility(), neuron.isAbstract(), neuron.actorKind(),
+                neuron.genericParameters(), neuron.parents(), neuron.interfaces(),
+                neuron.fields(), neuron.constructor(), neuron.methods(),
+                neuron.actorConcurrency(), java.util.List.of()));
+        Ast.FieldDecl exposed = new Ast.FieldDecl("weight", Ast.Visibility.PUBLIC,
+                Ast.BindingKind.LET, Ast.TypeRef.simple("float"), (Ast.Expr) null);
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                neuron.name(), neuron.visibility(), neuron.isAbstract(), neuron.actorKind(),
+                neuron.genericParameters(), neuron.parents(), neuron.interfaces(),
+                neuron.fields(), neuron.constructor(), neuron.methods(),
+                neuron.actorConcurrency(), java.util.List.of(exposed)));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                neuron.name(), neuron.visibility(), neuron.isAbstract(), neuron.actorKind(),
+                neuron.genericParameters(), neuron.parents(), neuron.interfaces(),
+                neuron.fields(), neuron.constructor(), neuron.methods(),
+                neuron.actorConcurrency(),
+                java.util.List.of(neuron.stateFields().getFirst(), neuron.stateFields().getFirst())));
     }
 
     @Test void existingOrdinaryActorAndContextualIdentifierStillParse() {
