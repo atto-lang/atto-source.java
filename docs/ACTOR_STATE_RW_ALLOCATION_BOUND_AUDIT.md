@@ -42,6 +42,9 @@ first-caller ownership assignment, not a unique-owner proof.
   These are host-notification receipts, **not** guest compiler proofs.
 - A publication callback failure cannot bypass the retirement wakeup check
   after a physical loan's `close()`: use a `try/finally` boundary.
+- Reserve the remaining monotonic grant-epoch range for already-queued
+  requests, rejecting new acquisitions near `Long.MAX_VALUE`. An overflow
+  must not dequeue and strand a pending Future after it was admitted.
 - Expose an **observation-only**, generation/region-bound
   `noOutstandingLoanFor(execution)` predicate for tests and scheduler
   diagnostics. It is not a guest capability, a replacement for checked
@@ -66,10 +69,13 @@ first-caller ownership assignment, not a unique-owner proof.
     observation as a surrogate execution permission.
 12. A throwing host runtime subscriber cannot suppress the queued Future's
     physical notification-drain receipt or actor retirement notification.
+13. A near-exhausted `long` epoch ledger rejects additional queued requests
+    before they can strand a FIFO head at grant time; the final already-queued
+    request must still receive epoch `Long.MAX_VALUE` without wrapping.
 
 The 12 original `ActorStateRwLoansTest` cases were updated to construct
 their arbiter with a predefined actor allocation. The resulting file has
-**24 authored JUnit cases, not yet executed** on the exact Java head.
+**25 authored JUnit cases, not yet executed** on the exact Java head.
 
 ## Remaining proof obligations and stop conditions
 
@@ -104,7 +110,7 @@ their arbiter with a predefined actor allocation. The resulting file has
   The dedicated `.github/workflows/actor-state-rw-ownership.yml` checks out
   the immutable pull-request head, asserts its SHA and Git tree, runs
   `-Dtest=ActorStateRwLoansTest -DfailIfNoTests=true`, requires a real
-  Surefire XML receipt with >=24 tests and zero failures/errors/skips, and
+  Surefire XML receipt with >=25 tests and zero failures/errors/skips, and
   uploads its report for independent review. An absent runner / `steps=null`
   remains **NOT_EXECUTED**, regardless of workflow conclusion.
 - Java compiled guest / Native Image: **NOT_EXECUTED**.
