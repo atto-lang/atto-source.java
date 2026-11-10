@@ -8,6 +8,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -195,6 +198,29 @@ final class StandaloneActorDeclarationAdmissionTest {
                 end
                 """));
         assertTrue(error.getMessage().contains("duplicate"));
+    }
+
+    @Test
+    void portableAttoFixtureCorpusUsesActualParserAndChecker() throws IOException {
+        Path fixtures = Path.of("contracts", "standalone-actor-v1");
+        assertDoesNotThrow(() -> check(Files.readString(
+                fixtures.resolve("accept_compact_actor.atto"))));
+        Map<String, String> checkedFailures = Map.of(
+                "reject_unlowered_named_binding.atto", "not executable yet",
+                "reject_unlowered_private_binding.atto", "not executable yet",
+                "reject_missing_public_actor.atto", "missing required public actor");
+        for (Map.Entry<String, String> entry : checkedFailures.entrySet()) {
+            String source = Files.readString(fixtures.resolve(entry.getKey()));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> check(source), entry.getKey());
+            assertTrue(error.getMessage().contains(entry.getValue()),
+                    () -> entry.getKey() + ": " + error.getMessage());
+        }
+        String unsupported = Files.readString(
+                fixtures.resolve("reject_generic_named_binding.atto"));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(unsupported));
+        assertTrue(error.getMessage().contains("does not yet support generics"));
     }
 
     @Test
