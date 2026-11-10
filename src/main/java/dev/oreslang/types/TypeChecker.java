@@ -4765,19 +4765,18 @@ public final class TypeChecker {
             }
             Type keyType = resolve(keyRef, generics, self);
             Type valueType = resolve(valueRef, generics, self);
-            java.util.Set<Object> seenKeys = new java.util.HashSet<>();
+            // A guest expression may compute either side, but the resolved
+            // *values* must remain in the sealed scalar key/value domains.
+            // This pass does not grant permission to keep borrowed containers.
+            // The ownership checker proves that independently.
+            java.util.Set<Object> literalKeys = new java.util.HashSet<>();
             for (Ast.MapEntryExpr entry : populated.entries()) {
-                if (!(entry.key() instanceof Ast.LiteralExpr key)
-                        || !(entry.value() instanceof Ast.LiteralExpr)) {
-                    throw new IllegalArgumentException(
-                            "populated Map initially admits only scalar literal keys/values; "
-                                    + "dynamic expressions require an effects/ownership proof");
-                }
-                requireAssignable(typeOf(entry.key(), env, generics, self),
-                        keyType, "populated Map key");
-                requireAssignable(typeOf(entry.value(), env, generics, self),
-                        valueType, "populated Map value");
-                if (!seenKeys.add(key.value())) {
+                Type actualKey = typeOf(entry.key(), env, generics, self);
+                requireAssignable(actualKey, keyType, "populated Map key");
+                Type actualValue = typeOf(entry.value(), env, generics, self);
+                requireAssignable(actualValue, valueType, "populated Map value");
+                if (entry.key() instanceof Ast.LiteralExpr literalKey
+                        && !literalKeys.add(literalKey.value())) {
                     throw new IllegalArgumentException(
                             "duplicate logical key in populated Map literal");
                 }

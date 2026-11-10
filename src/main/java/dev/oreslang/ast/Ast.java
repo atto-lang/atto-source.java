@@ -1180,7 +1180,10 @@ public final class Ast {
      * An explicitly typed or direct-binding-context typed guest Map literal.
      * An absent witness is a parser-only candidate and MUST fail type checking,
      * ownership checking and guest execution; codegen never infers dynamic types.
-     * The initial executable admission permits only scalar literal entries.
+     * Executable admission is independent in TypeChecker and OwnershipChecker.
+     * Entries must resolve to copyable non-borrowed scalars in the exact
+     * witness domains. Their evaluation can perform user-visible effects;
+     * construction publishes no partial Map, but effects are not rolled back.
      */
     public record MapLiteralExpr(TypeRef mapType, List<MapEntryExpr> entries) implements Expr {
         public MapLiteralExpr {

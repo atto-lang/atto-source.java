@@ -2198,6 +2198,11 @@ public final class OresEvalRootNode extends RootNode {
                 return tuple.elements().stream().anyMatch(
                         item -> expressionContainsPotentialSuspension(item, seen));
             }
+            if (expr instanceof Ast.MapLiteralExpr map) {
+                return map.entries().stream().anyMatch(
+                        entry -> expressionContainsPotentialSuspension(entry.key(), seen)
+                                || expressionContainsPotentialSuspension(entry.value(), seen));
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 return object.fields().stream().anyMatch(
                         field -> expressionContainsPotentialSuspension(field.value(), seen));
@@ -4561,6 +4566,34 @@ public final class OresEvalRootNode extends RootNode {
                                                     ? List.copyOf(values)
                                                     : null,
                                             failure));
+                    return;
+                }
+
+                if (expr instanceof Ast.MapLiteralExpr map) {
+                    // Flatten into the existing exactly-once source task
+                    // evaluator: key[0], value[0], key[1], value[1], ...
+                    // An error or suspension never publishes a partial Map.
+                    ArrayList<Ast.Expr> expressions = new ArrayList<>(map.entries().size() * 2);
+                    for (Ast.MapEntryExpr entry : map.entries()) {
+                        expressions.add(entry.key());
+                        expressions.add(entry.value());
+                    }
+                    evalSuspendableArguments(
+                            task, expressions, env,
+                            (t, values, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                Object built;
+                                try {
+                                    built = buildPopulatedMap(map, values, env);
+                                } catch (RuntimeException | Error invalid) {
+                                    continuation.accept(t, null, invalid);
+                                    return;
+                                }
+                                continuation.accept(t, built, null);
+                            });
                     return;
                 }
 
@@ -7400,6 +7433,45 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        /**
+         * Atomically publish a newly constructed guest Map after every input
+         * expression has finished. A user callable's external side effects are
+         * NOT rolled back; only this Map's storage mutation is transactional.
+         */
+        private Object buildPopulatedMap(
+                Ast.MapLiteralExpr populated, List<?> evaluated, Env env) {
+            Ast.TypeRef witness = populated.mapType();
+            if (witness == null || !witness.name().equals("Map")
+                    || witness.inferArguments() || witness.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "untyped populated Map cannot reach guest runtime");
+            }
+            if (evaluated.size() != populated.entries().size() * 2) {
+                throw new IllegalArgumentException(
+                        "populated Map evaluation arity mismatch");
+            }
+            // Reuse the exact scalar-domain constructor already admitted for
+            // typed empty Maps. The instance cannot escape during evaluation.
+            Object fresh = eval(new Ast.TypedEmptyAggregateExpr(witness), env);
+            if (!(fresh instanceof OresKeyedMap<?, ?>)) {
+                throw new IllegalStateException("typed Map did not construct guest storage");
+            }
+            LinkedHashMap<Object, Object> prepared = new LinkedHashMap<>();
+            for (int i = 0; i < evaluated.size(); i += 2) {
+                Object key = Objects.requireNonNull(evaluated.get(i), "Map key");
+                Object value = Objects.requireNonNull(evaluated.get(i + 1), "Map value");
+                if (prepared.putIfAbsent(key, value) != null) {
+                    throw new IllegalArgumentException("duplicate populated Map key");
+                }
+            }
+            // OresKeyedMap.putAll verifies all entries, quotas and domains
+            // before committing. Only after that may the Map escape.
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            OresKeyedMap<Object, Object> checked = (OresKeyedMap) fresh;
+            checked.putAll(prepared);
+            return checked;
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
@@ -7849,38 +7921,12 @@ public final class OresEvalRootNode extends RootNode {
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");
             }
             if (expr instanceof Ast.MapLiteralExpr populated) {
-                Ast.TypeRef witness = populated.mapType();
-                if (witness == null || !witness.name().equals("Map")
-                        || witness.inferArguments() || witness.arguments().size() != 2) {
-                    throw new IllegalArgumentException(
-                            "untyped populated Map cannot reach guest runtime");
-                }
-                // Reuse the exact scalar-domain constructor already admitted
-                // for typed empty Maps. No host Map or dynamic field escape.
-                Object fresh = eval(new Ast.TypedEmptyAggregateExpr(witness), env);
-                if (!(fresh instanceof OresKeyedMap<?, ?>)) {
-                    throw new IllegalStateException("typed Map did not construct guest storage");
-                }
-                LinkedHashMap<Object, Object> prepared = new LinkedHashMap<>();
+                ArrayList<Object> values = new ArrayList<>(populated.entries().size() * 2);
                 for (Ast.MapEntryExpr entry : populated.entries()) {
-                    if (!(entry.key() instanceof Ast.LiteralExpr key)
-                            || !(entry.value() instanceof Ast.LiteralExpr value)) {
-                        throw new IllegalArgumentException(
-                                "only scalar literal populated Map entries can execute");
-                    }
-                    Object rawKey = key.value();
-                    Object rawValue = value.value();
-                    if (prepared.putIfAbsent(rawKey, rawValue) != null) {
-                        throw new IllegalArgumentException("duplicate populated Map key");
-                    }
+                    values.add(eval(entry.key(), env));
+                    values.add(eval(entry.value(), env));
                 }
-                // The fresh map is unpublished. OresKeyedMap.putAll preflights
-                // key identity, byte quota and every value before committing.
-                @SuppressWarnings({"rawtypes", "unchecked"})
-                OresKeyedMap<Object, Object> checked =
-                        (OresKeyedMap) fresh;
-                checked.putAll(prepared);
-                return checked;
+                return buildPopulatedMap(populated, values, env);
             }
             if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
                 // Defensive runtime check: only canonical, fully concrete

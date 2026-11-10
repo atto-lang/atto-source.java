@@ -1575,31 +1575,29 @@ public final class OwnershipChecker {
             if (!admittedKey || !admittedValue) {
                 throw error("unproved populated Map key/value ownership domain " + witness);
             }
-            java.util.Set<Object> seenKeys = new java.util.HashSet<>();
+            java.util.Set<Object> literalKeys = new java.util.HashSet<>();
+            // Check in actual guest evaluation order. A throwing expression may
+            // have already performed effects, but no partially built Map can
+            // escape, and a borrowed/moved resource cannot enter the Map.
             for (Ast.MapEntryExpr entry : populated.entries()) {
-                if (!(entry.key() instanceof Ast.LiteralExpr literalKey)
-                        || !(entry.value() instanceof Ast.LiteralExpr literalValue)) {
-                    throw error("populated Map requires scalar literal-only ownership admission");
+                ValueInfo keyInfo = checkExpr(entry.key(), scope, true);
+                if (keyInfo.kind != ValueKind.COPY
+                        || keyInfo.borrowSource != null
+                        || isBorrowValue(keyInfo)
+                        || containsMutexGuardType(keyInfo.type)) {
+                    throw error("populated Map key must be a copyable owned scalar");
                 }
-                Object keyValue = literalKey.value();
-                Object valueValue = literalValue.value();
-                if (!(keyValue instanceof String || keyValue instanceof dev.oreslang.runtime.OresSymbol)
-                        || (key.name().equals("Symbol") !=
-                                (keyValue instanceof dev.oreslang.runtime.OresSymbol))) {
-                    throw error("populated Map key does not match its sealed domain");
+                ValueInfo valueInfo = checkExpr(entry.value(), scope, true);
+                if (valueInfo.kind != ValueKind.COPY
+                        || valueInfo.borrowSource != null
+                        || isBorrowValue(valueInfo)
+                        || containsMutexGuardType(valueInfo.type)) {
+                    throw error("populated Map value must be a copyable owned scalar");
                 }
-                boolean validValue = switch (value.name()) {
-                    case "int" -> valueValue instanceof Long;
-                    case "bool", "Bool" -> valueValue instanceof Boolean;
-                    case "string", "String" -> valueValue instanceof String;
-                    case "Symbol" -> valueValue instanceof dev.oreslang.runtime.OresSymbol;
-                    default -> false;
-                };
-                if (!validValue || !seenKeys.add(keyValue)) {
-                    throw error("populated Map has invalid or duplicate scalar entry");
+                if (entry.key() instanceof Ast.LiteralExpr literalKey
+                        && !literalKeys.add(literalKey.value())) {
+                    throw error("duplicate logical key in populated Map");
                 }
-                checkExpr(entry.key(), scope, true);
-                checkExpr(entry.value(), scope, true);
             }
             // Entries are immutable copyable scalars, but Map storage is
             // identity-bearing, mutable and never implicitly copyable.
