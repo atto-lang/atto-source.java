@@ -107,6 +107,29 @@ public final class SqlitePersistenceStoreTestMain {
                     rejected=expected.getMessage().contains("INCOMPLETE_ACTOR_JOURNAL");
                 }
                 check(rejected,"missing committed event did not block actor restoration");
+                Write missing=write("tampered","evt1",1,0,Kind.EVENT,70);
+                Result oldReceipt=new Result("evt1",Status.DUPLICATE,1,true);
+                check(!store.verifyDurableCommit(missing,oldReceipt),
+                        "missing event was accepted as durable from operation ledger alone");
+            }
+            // A byte-compatible operation record does not prove that the
+            // actual event BLOB has not been rewritten after the commit.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","proof-mutated",1);
+                check(store.commit(List.of(write("proof-mutated","event",1,0,
+                        Kind.EVENT,7))).get(0).durable(),"proof mutation fixture");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "UPDATE events SET payload=x'63' WHERE actor='proof-mutated' " +
+                    "AND version=1")==1,"event rewrite fixture");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                check(!store.verifyDurableCommit(
+                        write("proof-mutated","event",1,0,Kind.EVENT,7),
+                        new Result("event",Status.DUPLICATE,1,true)),
+                        "rewritten event was accepted as durable proof");
             }
             // Corrupted snapshots and events must abort fenced reactivation.
             try(var store=new SqlitePersistenceStore(file)) {
