@@ -5210,7 +5210,7 @@ public final class TypeChecker {
             Type contextual = contextualCallableMemberType(member, fn, env, generics, self);
             if (contextual != null) return contextual;
         }
-        if (expr instanceof Ast.ListExpr list) {
+        if (expr instanceof Ast.ListExpr list && !list.explicitArrayConstructor()) {
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
