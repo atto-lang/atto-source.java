@@ -186,7 +186,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
         if (!validStateExecution(execution) ||
                 !boundAllocation.equals(execution.allocationDomain())) return false;
         synchronized (monitor) {
-            return !reserved.contains(authority(execution));
+            // An empty loan ledger on a stopped actor is NOT a suspension
+            // permit. The generation is revoked once close() begins.
+            return !closed && !reserved.contains(authority(execution));
         }
     }
 
