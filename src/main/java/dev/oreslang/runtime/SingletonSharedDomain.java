@@ -76,6 +76,40 @@ public final class SingletonSharedDomain {
     }
 
     private final Map<Key, CompletableFuture<Object>> values = new ConcurrentHashMap<>();
+    private final int maxSnapshots;
+
+    public SingletonSharedDomain() { this(4096); }
+
+    /** Small bounded budgets also make hostile admission testable. */
+    SingletonSharedDomain(int maxSnapshots) {
+        if (maxSnapshots < 1 || maxSnapshots > 65536) {
+            throw new IllegalArgumentException("invalid domain singleton quota");
+        }
+        this.maxSnapshots = maxSnapshots;
+    }
+
+    /** A borrower may cancel a queued request but may not forge its completion. */
+    private static final class AdmissionFuture<T> extends CompletableFuture<T> {
+        private SecurityException forged() {
+            return new SecurityException("runtime-owned future cannot be completed by caller");
+        }
+        @Override public boolean complete(T value) { throw forged(); }
+        @Override public boolean completeExceptionally(Throwable error) { throw forged(); }
+        @Override public void obtrudeValue(T value) { throw forged(); }
+        @Override public void obtrudeException(Throwable error) { throw forged(); }
+        @Override public CompletableFuture<T> completeAsync(
+                Supplier<? extends T> supplier) { throw forged(); }
+        @Override public CompletableFuture<T> completeAsync(
+                Supplier<? extends T> supplier, java.util.concurrent.Executor executor) {
+            throw forged();
+        }
+        @Override public CompletableFuture<T> completeOnTimeout(
+                T value, long timeout, java.util.concurrent.TimeUnit unit) { throw forged(); }
+        @Override public CompletableFuture<T> orTimeout(
+                long timeout, java.util.concurrent.TimeUnit unit) { throw forged(); }
+        boolean grantFromRuntime(T value) { return super.complete(value); }
+        boolean failFromRuntime(Throwable error) { return super.completeExceptionally(error); }
+    }
     private final ThreadLocal<Set<Key>> activeInitializers =
             ThreadLocal.withInitial(HashSet::new);
     private final Map<Turn, Principal> principals = new ConcurrentHashMap<>();
@@ -90,15 +124,28 @@ public final class SingletonSharedDomain {
     public CompletableFuture<Object> snapshotOnce(Key key, Supplier<?> initialize) {
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(initialize, "initialize");
-        CompletableFuture<Object> created = new CompletableFuture<>();
-        CompletableFuture<Object> existing = values.putIfAbsent(key, created);
+        CompletableFuture<Object> existing;
+        CompletableFuture<Object> created = null;
+        synchronized (values) {
+            existing = values.get(key);
+            if (existing == null) {
+                if (values.size() >= maxSnapshots) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("singleton identity quota exceeded"));
+                }
+                created = new CompletableFuture<>();
+                values.put(key, created);
+            }
+        }
         if (existing != null) {
             if (activeInitializers.get().contains(key)) {
                 existing.completeExceptionally(
                         new IllegalStateException("singleton initializer cycle"));
             }
-            return existing;
+            // Never leak the registry's writable completion receipt.
+            return existing.copy();
         }
+        final CompletableFuture<Object> published = created;
         Set<Key> stack = activeInitializers.get();
         stack.add(key);
         try {
@@ -106,14 +153,14 @@ public final class SingletonSharedDomain {
             if (produced instanceof java.util.concurrent.CompletionStage<?>) {
                 throw new IllegalStateException("async singleton initializer is not supported");
             }
-            created.complete(freeze(produced));
+            published.complete(freeze(produced));
         } catch (Throwable error) {
-            created.completeExceptionally(error);
+            published.completeExceptionally(error);
         } finally {
             stack.remove(key);
             if (stack.isEmpty()) activeInitializers.remove();
         }
-        return created;
+        return published.copy();
     }
 
     /** Trusted runtime entry: must be unreachable from guest Java interop. */
@@ -205,8 +252,9 @@ public final class SingletonSharedDomain {
                 grant.consumed = true;
                 reserved.add(borrower);
                 if (immediate) {
-                    return CompletableFuture.completedFuture(
-                            newLoan(borrower, grant.access));
+                    AdmissionFuture<Lease> ready = new AdmissionFuture<>();
+                    ready.grantFromRuntime(newLoan(borrower, grant.access));
+                    return ready;
                 }
                 queued = new Request(borrower, grant.access);
                 pending.addLast(queued);
@@ -264,7 +312,7 @@ public final class SingletonSharedDomain {
                 while (!pending.isEmpty()) {
                     Request item = pending.removeFirst();
                     reserved.remove(item.principal);
-                    addCompletion(completions, () -> item.answer.completeExceptionally(
+                    addCompletion(completions, () -> item.answer.failFromRuntime(
                             new IllegalStateException("singleton region STOP")));
                 }
             }
@@ -311,7 +359,7 @@ public final class SingletonSharedDomain {
                 pending.removeFirst();
                 Lease loan = newLoan(item.principal, item.access);
                 addCompletion(actions, () -> {
-                    if (!item.answer.complete(loan)) loan.release(item.principal);
+                    if (!item.answer.grantFromRuntime(loan)) loan.release(item.principal);
                 });
                 if (item.access == Access.WRITE) return;
             }
@@ -337,7 +385,7 @@ public final class SingletonSharedDomain {
         private final class Request {
             final Principal principal;
             final Access access;
-            final CompletableFuture<Lease> answer = new CompletableFuture<>();
+            final AdmissionFuture<Lease> answer = new AdmissionFuture<>();
             Request(Principal principal, Access access) {
                 this.principal = principal;
                 this.access = access;
