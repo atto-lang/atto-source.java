@@ -1,0 +1,7 @@
+define interface CartReader as
+  fnc get_count(): int;
+end
+
+pub fnc foo(ActorRef<CartReader> actor): void {
+  return;
+}
