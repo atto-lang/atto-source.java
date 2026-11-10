@@ -1,0 +1,91 @@
+name: AttoLang ActorRef exact-head compiler guest and runtime security
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/Types.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/ActorRefParameterContractTest.java'
+      - 'src/test/java/dev/oreslang/ActorMailboxRefSecurityTest.java'
+      - 'src/test/java/dev/oreslang/types/ActorRefCapabilityAssignabilityTest.java'
+      - 'tests/fixtures/actor-ref-contract-v1/**'
+      - '.github/workflows/actorref-contract-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actorref-exact-head:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable actorref PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Bind evidence to immutable source tree and fixture blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "ACTORREF_SOURCE_HEAD=$EXPECTED_HEAD"
+          echo "ACTORREF_SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+          for f in tests/fixtures/actor-ref-contract-v1/*.atto; do
+            test -s "$f"
+            printf 'ACTORREF_FIXTURE_BLOB=%s %s\n' "$(git hash-object "$f")" "$f"
+          done
+      - name: Install GraalVM Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute actual parser/typechecker, actor guest and runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=ActorRefParameterContractTest,ActorRefCapabilityAssignabilityTest,ActorMailboxRefSecurityTest,ActorMailTypeContractTest,SourceActorSpawnExecutionTest \
+            test
+      - name: Require nonempty unskipped JUnit receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+            dev.oreslang.ActorRefParameterContractTest \
+            dev.oreslang.types.ActorRefCapabilityAssignabilityTest \
+            dev.oreslang.ActorMailboxRefSecurityTest \
+            dev.oreslang.ActorMailTypeContractTest \
+            dev.oreslang.SourceActorSpawnExecutionTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -q '<testcase ' "$report"
+            if grep -Eq '(<failure|<error|<skipped)' "$report"; then
+              echo "::error::Non-passing or skipped tests in $suite"
+              exit 1
+            fi
+            printf 'ACTORREF_JUNIT_EXECUTED=%s report=%s\n' "$suite" "$report"
+          done
+          echo "ACTORREF_GUEST_AND_HOST_TESTS=EXECUTED"
+      - name: Preserve exact-head JUnit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: actorref-exact-head-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
