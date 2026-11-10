@@ -71,7 +71,8 @@ public final class ExportInterfaceCollector {
                 } else if (decl instanceof Ast.InterfaceDecl iface
                         && iface.visibility() == Ast.Visibility.PUBLIC) {
                     StringBuilder sig = new StringBuilder();
-                    flags(sig, iface.moduleContract(), iface.namespaceContract());
+                    flags(sig, iface.moduleContract(), iface.namespaceContract(),
+                            iface.actorContract());
                     strings(sig, iface.genericParameters());
                     types(sig, iface.parents());
                     List<String> members = new ArrayList<>();
