@@ -1081,7 +1081,9 @@ public final class Parser {
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
+        List<Ast.FieldDecl> stateFields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean seenState = false;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
@@ -1090,12 +1092,37 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            // A typed state schema is not a legacy actor field/method.
-            // Reject it with an explicit admission error until the AST,
-            // checker, lifetime rules and runtime-owned loan are integrated.
+            // Retain the protected neuron state separately; never flatten it into
+            // ordinary actor fields while critical state-loan MIR is missing.
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
-                throw error(peek(), "actor state schema requires compiler-sealed "
-                        + "state ownership and handle_state lowering; not yet enabled");
+                if (prefix.role() != Ast.ActorRole.NEURON)
+                    throw error(peek(), "actor state schema requires compiler-sealed "
+                            + "state ownership and handle_state lowering; not yet enabled");
+                if (seenState) throw error(peek(), "duplicate neuron state container");
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async || mods.suspends
+                        || mods.generator || mods.structural || mods.nonLexical || mods.trapped
+                        || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted)
+                    throw error(peek(), "neuron state cannot carry modifiers or annotations");
+                seenState = true;
+                advance(); // contextual 'state'
+                consume(LBRACE, "expected '{' after neuron state");
+                java.util.HashSet<String> names = new java.util.HashSet<>();
+                while (!check(RBRACE) && !check(EOF)) {
+                    if (!check(LET))
+                        throw error(peek(), "neuron state fields must use 'let Type name;'");
+                    Ast.FieldDecl field = parseField(List.of(), Ast.Visibility.PRIVATE);
+                    if (field.bindingKind() != Ast.BindingKind.LET || field.type() == null)
+                        throw error(peek(), "neuron state requires explicitly typed mutable fields");
+                    if (!names.add(field.name()))
+                        throw error(previous(), "duplicate neuron state field '" + field.name() + "'");
+                    stateFields.add(field);
+                    if (stateFields.size() > 128)
+                        throw error(previous(), "neuron state exceeds 128 fields");
+                }
+                consume(RBRACE, "expected '}' after neuron state");
+                if (stateFields.isEmpty())
+                    throw error(previous(), "neuron state container cannot be empty");
+                continue;
             }
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
@@ -1145,11 +1172,15 @@ public final class Parser {
             }
 
             if (isBindingKind(peek().type())) {
+                if (prefix.role() == Ast.ActorRole.NEURON)
+                    throw error(peek(), "neuron mutable fields must be inside state { ... }");
                 validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                if (prefix.role() == Ast.ActorRole.NEURON)
+                    throw error(peek(), "neuron fields must be inside state { ... }");
                 validateActorFieldModifiers(mods);
                 fields.add(parseFinalActorField(annotations, mods.visibility));
                 continue;
@@ -1237,10 +1268,12 @@ public final class Parser {
         if (prefix.serial() && (requestConcurrency != 1 || messageConcurrency != 1)) {
             throw error(previous(), "serial actors require requestConcurrency = 1 and messageConcurrency = 1");
         }
+        if (prefix.role() == Ast.ActorRole.NEURON && !seenState)
+            throw error(previous(), "neuron actor requires exactly one state { ... } container");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency,
-                        messageConcurrency, prefix.role()));
+                        messageConcurrency, prefix.role()), stateFields);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
