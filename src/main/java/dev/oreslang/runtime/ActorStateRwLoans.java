@@ -89,7 +89,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
 
     private boolean physicallyRetiredLocked() {
         return closed && writer == null && readers.isEmpty()
-                && pending.isEmpty() && completions.isEmpty() && !publishing;
+                && reserved.isEmpty() && pending.isEmpty()
+                && completions.isEmpty() && !publishing;
     }
 
     private void maybeWakeRetirement() {
@@ -384,8 +385,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 reserved.remove(authority);
                 promoteLocked();
             }
-            publish();
-            maybeWakeRetirement();
+            // Publication can invoke callbacks that fail. Their failures
+            // must not suppress the terminal physical-retirement notification.
+            try {
+                publish();
+            } finally {
+                maybeWakeRetirement();
+            }
         }
     }
 
