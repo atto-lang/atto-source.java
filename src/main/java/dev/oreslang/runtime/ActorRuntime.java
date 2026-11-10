@@ -4704,6 +4704,17 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            // An opt-in supervised actor cannot safely publish a new child
+            // without reserving that child's CONTROL ownership first. Deny
+            // BEFORE reserveActorSlot, ActorCell construction, memory slice
+            // allocation, or output stream registration to avoid rollback leaks.
+            // No host can bind an already-executing parent to supervision, so
+            // its escrow membership cannot appear midway through this turn.
+            if (parent != null
+                    && supervisorEscrowBindings.containsKey(parent.ref.id())) {
+                throw new IllegalStateException(
+                        "supervised actor nested spawn requires atomic CONTROL child registration");
+            }
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -4739,15 +4750,6 @@ public final class ActorRuntime implements AutoCloseable {
                                             + parent.ref.id());
                         }
                         requireSupervisorEscrowAdmission(parent.ref);
-                        // Until supervision lineage can be atomically registered
-                        // with the runtime-owned terminal escrow BEFORE actor
-                        // publication, reject nested guest spawn. Otherwise a
-                        // child can be published outside its supervisor's ledger
-                        // and escape subtree fencing after a parent crash.
-                        if (supervisorEscrowBindings.containsKey(parent.ref.id())) {
-                            throw new IllegalStateException(
-                                    "supervised actor nested spawn requires atomic CONTROL child registration");
-                        }
                         // A nested spawn inherits its parent's structured
                         // lifecycle group. The spawn lineage is not a new
                         // supervisor or a new group. Event-bus membership
