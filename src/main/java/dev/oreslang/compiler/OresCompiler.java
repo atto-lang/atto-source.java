@@ -34,6 +34,17 @@ public final class OresCompiler {
         return SingletonCheckOnly.check(Parser.parseSingletonsCheckOnly(source));
     }
 
+    /**
+     * Opt-in source compiler bridge for deeply immutable singleton literals.
+     * The checked code-unit identity must come from trusted module resolution.
+     * This does NOT enable ordinary guest singleton execution, mutable state,
+     * or implicit cross-isolate sharing. Normal parseAndTypeCheck stays closed.
+     */
+    public static SingletonSnapshotCompilerV1.Compiled compileSingletonSnapshotOnly(
+            String source, String checkedCodeUnitId) {
+        return SingletonSnapshotCompilerV1.compile(source, checkedCodeUnitId);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
