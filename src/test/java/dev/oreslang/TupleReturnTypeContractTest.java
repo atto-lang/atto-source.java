@@ -116,6 +116,18 @@ final class TupleReturnTypeContractTest {
     }
 
     @Test
+    void explicitlyConstructedArrayCannotMasqueradeAsTupleBinding() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val tuple: Tuple[string, string] = ~array("left", "right");
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("initializer"), error::getMessage);
+    }
+
+    @Test
     void nonVoidTupleFunctionRequiresActualReturnOnEveryPath() {
         IllegalArgumentException bare = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
