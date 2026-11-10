@@ -1067,6 +1067,33 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
+        // A bodyless actor type is exactly the existing empty-body actor,
+        // sharing its nominal type, scheduler metadata and default limits.
+        // No runtime singleton or actor reference is synthesized by ';'.
+        if (match(SEMICOLON)) {
+            return new Ast.ClassDecl(name, visibility, false, actorKind,
+                    generics, parents, interfaces, List.of(), null, List.of(),
+                    Ast.ActorConcurrency.serial(prefix.transport()));
+        }
+        // Reserve the requested standalone named-binding form without
+        // silently discarding the binding. TypeChecker and ABI passes must
+        // fail closed until explicit binding/activation and receiver lowering.
+        if (check(AS) && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == SEMICOLON) {
+            advance(); // as
+            String binding = consume(IDENT, "expected standalone actor binding").lexeme();
+            consume(SEMICOLON, "standalone actor binding must end with ';'");
+            if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty()
+                    || prefix.transport() != Ast.ActorTransport.GENERIC) {
+                throw error(previous(),
+                        "standalone named actor binding does not yet support generics, inheritance or transport");
+            }
+            return new Ast.ClassDecl(name, visibility, false, actorKind,
+                    generics, parents, interfaces, List.of(), null, List.of(),
+                    Ast.ActorConcurrency.serial(prefix.transport()), binding);
+        }
+
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
