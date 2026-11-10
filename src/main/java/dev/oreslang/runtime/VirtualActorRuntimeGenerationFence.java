@@ -32,6 +32,7 @@ final class VirtualActorRuntimeGenerationFence {
         final ActorRuntime.SupervisorId supervisor;
         ActorRuntime.ActorGroupId lastGroup;
         long generation;
+        long lastBoundGeneration;
         Long pending;
         ActorRuntime.ActorId physical;
 
@@ -140,6 +141,7 @@ final class VirtualActorRuntimeGenerationFence {
                 throw new IllegalStateException("physical worker already bound to virtual actor");
             byActor.put(physical, identity);
             slot.physical = physical;
+            slot.lastBoundGeneration = generation;
             slot.pending = null;
         }
     }
@@ -158,9 +160,13 @@ final class VirtualActorRuntimeGenerationFence {
         validate(identity);
         synchronized (monitor) {
             Slot slot = slots.get(identity);
+            // A reservation or aborted initializer has no physical receipt.
+            // Only a generation that actually bound a worker may authorize a
+            // terminal policy decision, even after that worker has retired.
             return slot != null && slot.supervisor.equals(supervisor) &&
-                    group.equals(slot.lastGroup) && generation > 0 &&
-                    generation == slot.generation;
+                    group.equals(slot.lastGroup) && slot.pending == null &&
+                    generation > 0 && generation == slot.generation &&
+                    generation == slot.lastBoundGeneration;
         }
     }
 
