@@ -130,12 +130,13 @@ final class VirtualActorDirectoryInspectionTest {
     }
 
     @Test
-    void discardMustNotErasePassivatedGenerationHistory() {
+    void discardMustNotEraseAbortedGenerationHistory() {
         try (var registry = new VirtualActorActivationRegistry("tenant-a", 1, 2)) {
             var logical = registry.resolve("Cart", "history");
             var first = registry.activate(logical);
-            registry.publish(first);
-            registry.deactivate(first);
+            registry.abort(first);
+            // The failed initializer burned generation 1 but never published.
+            // This used to look "unactivated" and allowed loss of that history.
             assertThrows(IllegalStateException.class,
                     () -> registry.discardUnactivated(logical));
             assertEquals(1, registry.inspect(logical).latestIncarnation());
