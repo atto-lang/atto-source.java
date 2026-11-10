@@ -14,7 +14,8 @@ import java.util.Objects;
  * evidence report while the production OwnershipChecker still checks them.
  */
 public final class BorrowMirAuditV1 {
-    public static final String CONTRACT_VERSION = "atto-borrow-mir-v1";
+    public static final String CONTRACT_VERSION = "atto-borrow-mir-v1-java-shadow";
+    public static final String CANONICAL_TARGET = "atto-borrow-mir-v1";
     public static final String MODEL_ONLY = "SHADOW_MODEL_ONLY";
     public static final String UNSUPPORTED = "NOT_PROVEN";
     private static final int MAX_FUNCTIONS = 128;
@@ -23,11 +24,11 @@ public final class BorrowMirAuditV1 {
 
     private BorrowMirAuditV1() { }
 
-    public record Instruction(long instructionId, long sourceNodeId, String operation,
+    public record Instruction(long instructionId, long compilerLocalEventOrdinal, String operation,
                               int ownerId, boolean isCopy, boolean isSend) {
         public Instruction {
             Objects.requireNonNull(operation, "operation");
-            if (instructionId <= 0 || sourceNodeId <= 0 || ownerId < 0) {
+            if (instructionId <= 0 || compilerLocalEventOrdinal <= 0 || ownerId < 0) {
                 throw new IllegalArgumentException("invalid borrow MIR event identity");
             }
         }
@@ -81,7 +82,7 @@ public final class BorrowMirAuditV1 {
             currentName = name;
             unsupportedReason = straightLine ? null : "nonlinear, async or effectful function profile";
             if (functions.size() >= MAX_FUNCTIONS) {
-                unsupported("function inventory budget exceeded");
+                throw new IllegalArgumentException("borrow MIR function budget exceeded");
             }
         }
 
@@ -142,7 +143,7 @@ public final class BorrowMirAuditV1 {
                 return;
             }
             long id = currentEvents.size() + 1L;
-            // This is an event ordinal, not an authenticated source AST NodeId.
+            // This event ordinal is NOT an authenticated source AST NodeId.
             currentEvents.add(new Instruction(id, id, operation, root, copy, send));
         }
 
