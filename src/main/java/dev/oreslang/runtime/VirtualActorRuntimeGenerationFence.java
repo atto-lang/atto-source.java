@@ -31,6 +31,7 @@ final class VirtualActorRuntimeGenerationFence {
     private static final class Slot {
         final ActorRuntime.SupervisorId supervisor;
         ActorRuntime.ActorGroupId lastGroup;
+        boolean lastGroupClosed;
         long generation;
         long lastBoundGeneration;
         long lastRetiredGeneration;
@@ -113,6 +114,10 @@ final class VirtualActorRuntimeGenerationFence {
             }
             if (!slot.supervisor.equals(supervisor))
                 throw new SecurityException("virtual actor belongs to another supervisor");
+            if (slot.lastGroup != null && !slot.lastGroup.equals(group) &&
+                    !slot.lastGroupClosed)
+                throw new IllegalStateException(
+                        "virtual actor group ownership transfer requires prior group closure");
             if (slot.physical != null)
                 throw new IllegalStateException("prior virtual actor has not physically retired");
             if (slot.pending != null)
@@ -121,6 +126,7 @@ final class VirtualActorRuntimeGenerationFence {
                 throw new IllegalStateException("stale or reused virtual actor generation");
             slot.generation = nextGeneration; // Burn immediately, even if init aborts.
             slot.lastGroup = group;
+            slot.lastGroupClosed = false;
             slot.pending = nextGeneration;
         }
     }
@@ -243,13 +249,19 @@ final class VirtualActorRuntimeGenerationFence {
         }
     }
 
-    /** Closing a group burns its unbound reservations without erasing history. */
+    /**
+     * Close fences a group as a logical activation owner. Burn its pending
+     * generations, preserve prior receipts and allow the SAME supervisor
+     * to rehome only after physical cleanup has also completed.
+     */
     void abortPendingForGroup(ActorRuntime.ActorGroupId group) {
         Objects.requireNonNull(group, "group");
         synchronized (monitor) {
             for (Slot slot : slots.values()) {
-                if (group.equals(slot.lastGroup) && slot.pending != null)
-                    slot.pending = null;
+                if (group.equals(slot.lastGroup)) {
+                    slot.lastGroupClosed = true;
+                    if (slot.pending != null) slot.pending = null;
+                }
             }
         }
     }
