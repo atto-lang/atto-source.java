@@ -175,21 +175,29 @@ function assertSourceFreeCoverage(contents) {
   const pushPaths = sourceFreeTriggerPaths(contents, 'push');
   assert.deepEqual(pushPaths, prPaths, 'push must cover every PR policy change');
   assert.equal(new Set(prPaths).size, prPaths.length, 'duplicate policy path');
-  for (const file of [
-    '.github/CODEOWNERS',
-    '.github/private-ci-approved-repositories.txt',
-    '.github/private-ci-carrier-contracts.json',
-    '.github/workflows/private-ci-mirror-preflight.yml',
-    '.github/workflows/source-free-private-ci-gates.yml',
+  // Exact allowlisting detects deletions, exclusions, globs and unexpected
+  // sources that would make a security-critical change skip the required gate.
+  assert.deepEqual(prPaths, [
+    'scripts/check-private-ci-destination.sh',
+    'scripts/ci_private_mirror_preflight.py',
+    'tests/test_ci_private_mirror_preflight.py',
+    'scripts/test-private-ci-destination.sh',
+    'scripts/test-private-ci-codeowners-contract.sh',
     'scripts/run-in-private-ci-destination.sh',
     'scripts/publish-private-ci-source.py',
     'scripts/publish-private-ci-source-v3.py',
+    'scripts/test-publish-private-ci-source.py',
+    'scripts/test-publish-private-ci-source-v3.py',
+    '.github/private-ci-approved-repositories.txt',
+    '.github/private-ci-carrier-contracts.json',
+    '.github/CODEOWNERS',
+    '.github/workflows/private-ci-mirror-preflight.yml',
+    '.github/workflows/source-free-private-ci-gates.yml',
+    'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md',
     'tools/verify-exact-source-tree.sh',
     'tools/test-verify-exact-source-tree.sh',
     'tests/private-ci-v3-codeowners.test.mjs',
-  ]) {
-    assert.ok(prPaths.includes(file), 'policy change can skip gate: ' + file);
-  }
+  ], 'every security control must trigger the source-free PR and push gates');
   assert.match(contents, /^permissions:\n  contents: read$/mu,
     'gate must not receive write permissions');
   assert.ok(contents.includes('node --test tests/private-ci-v3-codeowners.test.mjs'),
@@ -208,6 +216,10 @@ test('source-free workflow mutation attempts cannot silently drop gates', () => 
   for (const broken of [
     yaml.replace('  push:\n    paths:\n', '  no_push:\n    paths:\n'),
     yaml.replace("      - '.github/workflows/source-free-private-ci-gates.yml'\n", ''),
+    yaml.replace("      - 'scripts/ci_private_mirror_preflight.py'\n", ''),
+    yaml.replace("      - 'scripts/test-publish-private-ci-source-v3.py'\n", ''),
+    yaml.replace("      - 'tests/private-ci-v3-codeowners.test.mjs'\n",
+      "      - 'tests/private-ci-v3-codeowners.test.mjs'\n      - '!tests/private-ci-v3-codeowners.test.mjs'\n"),
     yaml.replace('bash tools/test-verify-exact-source-tree.sh', 'echo skipped'),
     yaml.replace('node --test tests/private-ci-v3-codeowners.test.mjs', 'echo skipped'),
     yaml.replace('  contents: read\n', '  contents: write\n'),
