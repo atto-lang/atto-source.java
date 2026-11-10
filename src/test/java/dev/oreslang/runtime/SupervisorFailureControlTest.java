@@ -272,4 +272,103 @@ final class SupervisorFailureControlTest {
         }
     }
 
+    @Test
+    void concurrentVirtualIdentityBindAndStopCannotStrandAnActivation() throws Exception {
+        try (ExecutorService pool = Executors.newFixedThreadPool(2);
+             ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var behavior = (ActorRuntime.BehaviorFactory<String>)
+                    factory -> (message, context) -> { };
+            for (int i = 0; i < 12; i++) {
+                final String key = "bind-stop-" + i;
+                var worker = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), behavior);
+                worker.getReady().get(5, TimeUnit.SECONDS);
+                CountDownLatch release = new CountDownLatch(1);
+
+                var binding = pool.submit(() -> {
+                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                    try {
+                        group.bindVirtualActorIdentity(
+                                worker, "tenant-a", "7:defaultCart", key, 1L);
+                        return true;
+                    } catch (IllegalStateException | SecurityException stoppedFirst) {
+                        return false;
+                    }
+                });
+                var stopping = pool.submit(() -> {
+                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                    worker.stop();
+                    return null;
+                });
+                release.countDown();
+                stopping.get(5, TimeUnit.SECONDS);
+                binding.get(5, TimeUnit.SECONDS);
+                worker.getDone().get(5, TimeUnit.SECONDS);
+
+                // Whether the bind or STOP won, teardown must leave no
+                // stale virtual worker ownership preventing the next generation.
+                var replacement = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), behavior);
+                replacement.getReady().get(5, TimeUnit.SECONDS);
+                group.bindVirtualActorIdentity(
+                        replacement, "tenant-a", "7:defaultCart", key, 2L);
+                var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                        "tenant-a", "7:defaultCart", key);
+                assertTrue(group.isCurrentVirtualActorGeneration(identity, 2L));
+                replacement.stop();
+                replacement.getDone().get(5, TimeUnit.SECONDS);
+            }
+            group.close();
+        }
+    }
+
+    @Test
+    void generationReservationFencesOldTerminalReceiptEvenIfReplacementAborts()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                    "tenant-a", "7:defaultCart", "fenced-receipt");
+            var first = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), factory -> (message, context) -> {
+                        throw new IllegalStateException("private guest detail");
+                    });
+            first.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(
+                    first, identity.domain(), identity.declaration(), identity.key(), 10L);
+            first.send("fail");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> first.getDone().get(5, TimeUnit.SECONDS));
+
+            var oldReceipt = group.pendingSupervisorFailures().getFirst();
+            assertEquals(10L, oldReceipt.notice().virtualActor().orElseThrow()
+                    .activationGeneration());
+            assertTrue(group.isCurrentVirtualActorGeneration(identity, 10L));
+
+            group.reserveVirtualActorGeneration(identity, 11L);
+            assertFalse(group.isCurrentVirtualActorGeneration(identity, 10L));
+            group.abortVirtualActorGeneration(identity, 11L);
+            assertFalse(group.isCurrentVirtualActorGeneration(identity, 10L));
+
+            // Failed initialization burned generation 11: generation 10
+            // cannot regain authority, and the next worker must use >11.
+            var second = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), factory -> (message, context) -> { });
+            second.getReady().get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class,
+                    () -> group.bindVirtualActorIdentity(
+                            second, identity.domain(), identity.declaration(), identity.key(), 11L));
+            group.bindVirtualActorIdentity(
+                    second, identity.domain(), identity.declaration(), identity.key(), 12L);
+            assertTrue(group.isCurrentVirtualActorGeneration(identity, 12L));
+            assertFalse(group.isCurrentVirtualActorGeneration(identity, 10L));
+            assertEquals(10L, oldReceipt.notice().virtualActor().orElseThrow()
+                    .activationGeneration());
+            second.stop();
+            second.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
 }
