@@ -77,6 +77,16 @@ public final class SqliteCommandTransactionStoreTestMain {
                         "first event lost");
                 check(dec(commands.loadVerified(id,1).events().get(1).payload())==60,
                         "second event lost");
+                // Legacy snapshots/events must NEVER reuse the same logical
+                // operation ID under this actor/slot after a command commit.
+                Result collidingLegacy=legacy.commit(List.of(new Write(
+                        id,"deposit-100",1,2,1,Kind.EVENT,enc(999)))).get(0);
+                check(collidingLegacy.status()==Status.OP_ID_CONFLICT &&
+                        !collidingLegacy.durable(),
+                        "legacy write reused durable command operation ID");
+                check(commands.loadVerified(id,1).version()==2,
+                        "legacy/command collision mutated journal");
+
                 Receipt second=sidecar.submit(owned).toCompletableFuture().get(15,TimeUnit.SECONDS);
                 check(second.version()==3 && second.status()==Status.COMMITTED,
                         "owned byte copy/version regression");
