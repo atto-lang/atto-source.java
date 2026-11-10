@@ -190,6 +190,7 @@ public final class ProtectedScalarMirV1 {
         private static String expectedKind(String word) {
             return switch (word) {
                 case "return" -> "RETURN";
+                case "self" -> "SELF";
                 case "(" -> "LPAREN";
                 case ")" -> "RPAREN";
                 case "{" -> "LBRACE";
@@ -236,6 +237,14 @@ public final class ProtectedScalarMirV1 {
             throw invalid("protected-method token provenance or budget exceeded");
         Cursor c = new Cursor(tokens, kinds);
         if (kind == Kind.STATE_CONTAINER) c.need("return");
+        // The compiler intrinsic may be spelled handle_state(...) or
+        // self.handle_state(...). Neither spelling permits a user-defined
+        // handle_state method or arbitrary member lookup.
+        if (c.index < c.tokens.size()
+                && c.tokens.get(c.index).equals("self")) {
+            c.need("self");
+            c.need(".");
+        }
         c.need("handle_state");
         c.need("(");
         c.need("critical");
