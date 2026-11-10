@@ -121,6 +121,79 @@ final class NeuronActorV0Test {
                 java.util.List.of(neuron.stateFields().getFirst(), neuron.stateFields().getFirst())));
     }
 
+    @Test void protectedReadWriteScopesRemainSealedAstAndCannotExecuteYet() {
+        String protectedSource = """
+                define neuron actor LinearNeuron as
+                  state {
+                    let float weight;
+                    let float bias;
+                  }
+
+                  on_start(): void {
+                    self.handle_state(critical-write |s| -> {
+                      s.weight = 2.0;
+                      s.bias = 1.0;
+                    });
+                  }
+
+                  pub forward(float input): float {
+                    return self.handle_state(
+                      critical-read |s| -> s.weight * input + s.bias
+                    );
+                  }
+
+                  receive(ActorMail<float> mail): void {
+                    self.send(self.forward(mail.value));
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        Ast.ClassDecl actor = firstActor(protectedSource);
+        assertTrue(actor.fields().isEmpty());
+        assertEquals(2, actor.stateFields().size());
+        Ast.MethodDecl start = actor.methods().stream()
+                .filter(method -> method.name().equals("on_start")).findFirst().orElseThrow();
+        Ast.ExprStmt initialization = (Ast.ExprStmt) start.body().getFirst();
+        Ast.CallExpr initCall = (Ast.CallExpr) initialization.expression();
+        Ast.RuntimeCallExpr write = (Ast.RuntimeCallExpr) initCall.arguments().getFirst();
+        assertEquals("$neuron.critical.write", write.operation());
+        Ast.LambdaExpr writeLambda = (Ast.LambdaExpr) write.arguments().getFirst();
+        assertEquals("s", writeLambda.parameters().getFirst().name());
+        assertEquals(2, writeLambda.blockBody().size());
+
+        Ast.MethodDecl forward = actor.methods().stream()
+                .filter(method -> method.name().equals("forward")).findFirst().orElseThrow();
+        Ast.ReturnStmt returnValue = (Ast.ReturnStmt) forward.body().getFirst();
+        Ast.CallExpr readCall = (Ast.CallExpr) returnValue.value();
+        Ast.RuntimeCallExpr read = (Ast.RuntimeCallExpr) readCall.arguments().getFirst();
+        assertEquals("$neuron.critical.read", read.operation());
+        Ast.LambdaExpr readLambda = (Ast.LambdaExpr) read.arguments().getFirst();
+        assertEquals("s", readLambda.parameters().getFirst().name());
+        assertNotNull(readLambda.expressionBody());
+
+        IllegalArgumentException blocked = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(protectedSource)));
+        assertTrue(blocked.getMessage().contains("NEURON_STATE_MIR_UNSUPPORTED"),
+                blocked::getMessage);
+    }
+
+    @Test void criticalLoanSyntaxRejectsAmbiguousOrForgedModes() {
+        String schema = "define neuron actor X as state { let float weight; } ";
+        String[] invalid = {
+                "pub forward(float x): float { return self.handle_state(critical-take |s| -> x); }",
+                "pub forward(float x): float { return self.handle_state(critical-read |s| -> x, 1); }",
+                "pub forward(float x): float { return self.handle_state(critical-read || -> x); }",
+                "pub forward(float x): float { return self.handle_state(critical-write |s: int| -> x); }",
+                "pub forward(float x): float { return self.handle_state(critical-read |mut s| -> x); }"
+        };
+        for (String member : invalid) {
+            String source = schema + member + " end";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
     @Test void existingOrdinaryActorAndContextualIdentifierStillParse() {
         Ast.ClassDecl ordinary = firstActor("""
                 define actor Ordinary as
