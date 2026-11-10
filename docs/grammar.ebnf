@@ -404,8 +404,18 @@ lambda_body     = block | type_ref block | expression ;
    per-arm '-> Type' result typing in match/switch/select. *)
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
-                | "(" expression "," expression { "," expression } ")" ;
-array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
+                | "(" expression "," expression { "," expression } ")"
+                | tilde_tuple_literal ;
+array_literal   = "arr" "[" [ expression { "," expression } ] "]"
+                | tilde_array_literal ;
+tilde_tuple_literal = "~" "tuple" "(" [ argument_list ] ")" ;
+tilde_array_literal = "~" "array" "(" [ argument_list ] ")" ;
+(* The '~' sigil is adjacent to the following kind token. The '(' may be
+   separated by spaces. The two tilde literals lower to the same AST nodes
+   as tuple(...) and arr[...]. A spaced '~ tuple(...)' remains an ordinary
+   unary '~' applied to a call; likewise a spaced '<' is not a generic tilde
+   witness. Explicit '~kind<T>(...)' and other tilde constructor families
+   remain fail-closed until their typed runtime/compiler contracts exist. *)
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 record_literal  = "record"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
