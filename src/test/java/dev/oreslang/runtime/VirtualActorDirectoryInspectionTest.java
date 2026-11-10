@@ -148,6 +148,34 @@ final class VirtualActorDirectoryInspectionTest {
     }
 
     @Test
+    void rawLookupIdentitiesMustBeBoundedAndCanonicalBeforeMapAccess() {
+        try (var registry = new VirtualActorActivationRegistry("tenant-a", 1, 2)) {
+            var longKey = new VirtualActorActivationRegistry.Identity(
+                    "tenant-a", "Cart", "x".repeat(4096));
+            var decomposed = new VirtualActorActivationRegistry.Identity(
+                    "tenant-a", "Cart", "cafe\u0301");
+            var invalidDeclaration = new VirtualActorActivationRegistry.Identity(
+                    "tenant-a", "Bad\nActor", "42");
+            assertThrows(IllegalArgumentException.class,
+                    () -> registry.inspectIdentity(longKey));
+            assertThrows(IllegalArgumentException.class,
+                    () -> registry.inspectIdentity(decomposed));
+            assertThrows(IllegalArgumentException.class,
+                    () -> registry.inspectIdentity(invalidDeclaration));
+            assertThrows(IllegalArgumentException.class,
+                    () -> registry.listPage(1, 0, longKey));
+            assertTrue(registry.inspectIdentity(
+                    new VirtualActorActivationRegistry.Identity("other-tenant", "Cart", "42"))
+                    .isEmpty());
+
+            // Invalid inspection did not allocate the sole logical identity slot.
+            var logical = registry.resolve("Cart", "42");
+            assertEquals(logical.identity(),
+                    registry.inspectIdentity(logical.identity()).orElseThrow().identity());
+        }
+    }
+
+    @Test
     void versionOneAddressMatchesTheCrossBackendCanonicalVector() {
         var identity = new VirtualActorActivationRegistry.Identity(
                 "tenant-a", "7:defaultCart", "42");
