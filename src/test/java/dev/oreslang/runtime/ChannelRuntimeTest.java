@@ -428,6 +428,72 @@ final class ChannelRuntimeTest {
         assertTrue(channel.tryRead().isEmpty());
     }
 
+
+    @Test
+    void canonicalSelectableAsyncPriorityConsumesExactlyOneWinningEvent() {
+        ChannelRuntime.Channel<Integer> left = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> right = new ChannelRuntime.Channel<>(1);
+        assertTrue(left.tryWrite(11));
+        assertTrue(right.tryWrite(22));
+
+        ChannelRuntime.SelectResult winner = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(
+                        ChannelRuntime.selectableRead(left.output()),
+                        ChannelRuntime.selectableRead(right)))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY)
+                .join();
+        assertEquals(0, winner.index());
+        assertEquals(11, winner.value());
+        assertTrue(left.tryRead().isEmpty(), "winning event consumed only once");
+        assertEquals(22, right.tryRead().orElseThrow(),
+                "async arbitration must preserve the losing event");
+    }
+
+    @Test
+    void canonicalSelectableAsyncWaitsForNextEventWithoutEagerConsumption() {
+        ChannelRuntime.Channel<String> left = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<String> right = new ChannelRuntime.Channel<>(1);
+
+        ChannelRuntime.SelectSet set = ChannelRuntime.SelectSet.fromSelectables(
+                List.of(ChannelRuntime.selectableRead(left),
+                        ChannelRuntime.selectableRead(right.output())));
+        OresFuture<ChannelRuntime.SelectResult> pending =
+                set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(pending.isDone(), "descriptor construction cannot consume or complete");
+        assertTrue(right.tryWrite("ready"));
+        ChannelRuntime.SelectResult winner = pending.join();
+        assertEquals(1, winner.index());
+        assertEquals("ready", winner.value());
+        assertTrue(left.tryRead().isEmpty(), "loser remains unmodified");
+        assertTrue(right.tryRead().isEmpty(), "winner consumes once");
+    }
+
+    @Test
+    void cancellingCanonicalSelectableAsyncPreservesLaterNextEvent() {
+        ChannelRuntime.Channel<String> source = new ChannelRuntime.Channel<>(1);
+        OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(ChannelRuntime.selectableRead(source.output())))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(selected.isDone());
+        assertTrue(selected.cancel(false));
+        assertThrows(CancellationException.class, selected::join);
+
+        assertTrue(source.tryWrite("retained"));
+        assertEquals("retained", source.tryRead().orElseThrow(),
+                "cancelled selectable must detach its waiter without stealing data");
+    }
+
+    @Test
+    void canonicalSelectableAcceptsFutureNextEventWithoutReadOrWrite() {
+        OresFuture<Integer> completion = new OresFuture<>();
+        OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(() -> ChannelRuntime.await(completion)))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(selected.isDone());
+        assertTrue(completion.complete(73));
+        assertEquals(73, selected.join().value());
+    }
+
     @Test
     void publicSelectDescriptorsExposeOnlyDirectionalCapabilities() throws Exception {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
