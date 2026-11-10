@@ -33,6 +33,7 @@ final class VirtualActorRuntimeGenerationFence {
         ActorRuntime.ActorGroupId lastGroup;
         long generation;
         long lastBoundGeneration;
+        ActorRuntime.ActorId lastBoundActor;
         Long pending;
         ActorRuntime.ActorId physical;
 
@@ -142,6 +143,7 @@ final class VirtualActorRuntimeGenerationFence {
             byActor.put(physical, identity);
             slot.physical = physical;
             slot.lastBoundGeneration = generation;
+            slot.lastBoundActor = physical;
             slot.pending = null;
         }
     }
@@ -167,6 +169,30 @@ final class VirtualActorRuntimeGenerationFence {
                     group.equals(slot.lastGroup) && slot.pending == null &&
                     generation > 0 && generation == slot.generation &&
                     generation == slot.lastBoundGeneration;
+        }
+    }
+
+    /**
+     * Exact terminal CONTROL receipt authorization for a real physical actor.
+     * A matching logical generation alone cannot authorize another actor's
+     * notice. This must be rechecked at the policy side effect.
+     */
+    boolean isCurrentTerminal(ActorRuntime.SupervisorId supervisor,
+                              ActorRuntime.ActorGroupId group,
+                              VirtualActorActivationRegistry.Identity identity,
+                              long generation,
+                              ActorRuntime.ActorId physical) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(group, "group");
+        Objects.requireNonNull(physical, "physical");
+        validate(identity);
+        synchronized (monitor) {
+            Slot slot = slots.get(identity);
+            return slot != null && slot.supervisor.equals(supervisor) &&
+                    group.equals(slot.lastGroup) && slot.pending == null &&
+                    generation > 0 && generation == slot.generation &&
+                    generation == slot.lastBoundGeneration &&
+                    physical.equals(slot.lastBoundActor);
         }
     }
 
