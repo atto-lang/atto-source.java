@@ -1,0 +1,319 @@
+package dev.oreslang.runtime;
+
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Host/runtime-only fair reader-writer state loans for one actor generation.
+ *
+ * The actor is the sole owner of its state. Logical handlers receive temporary
+ * read or write capabilities, not raw ownership. These capabilities are NOT
+ * exposed to guest code and do not authorize state access on their own:
+ * compiler-generated handle_state MIR must verify the live loan on every use.
+ *
+ * No guest continuations, Future settlement or callbacks run under monitor.
+ * Closing retires this generation and fences every outstanding loan, but leaves
+ * active loans allocated until physical holder cleanup releases them.
+ */
+public final class ActorStateReadWriteLoans implements AutoCloseable {
+    private final Object monitor = new Object();
+    private final long generation;
+    private final int maxPending;
+    private final ArrayDeque<Pending> pending = new ArrayDeque<>();
+    private final ArrayDeque<Runnable> notifications = new ArrayDeque<>();
+    private final Set<Object> identities =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<Loan> active =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+    private int activeReaders;
+    private WriteLoan writer;
+    private long nextEpoch;
+    private boolean retired;
+    private boolean publishing;
+
+    public ActorStateReadWriteLoans(long generation, int maxPending) {
+        if (generation < 1) throw new IllegalArgumentException("generation must be positive");
+        if (maxPending < 0) throw new IllegalArgumentException("negative pending capacity");
+        this.generation = generation;
+        this.maxPending = maxPending;
+    }
+
+    public long generation() { return generation; }
+    public int activeReaderCount() {
+        synchronized (monitor) { return activeReaders; }
+    }
+    public boolean writerActive() {
+        synchronized (monitor) { return writer != null; }
+    }
+    public int pendingCount() {
+        synchronized (monitor) { return pending.size(); }
+    }
+    public int activeCount() {
+        synchronized (monitor) { return active.size(); }
+    }
+
+    /**
+     * Logical handler identity must be unique per in-flight turn. A handler
+     * cannot reacquire either mode until its previous loan is closed.
+     */
+    public OresFuture<ReadLoan> acquireReadAsync(Object handler, long expectedGeneration) {
+        Objects.requireNonNull(handler, "handler");
+        synchronized (monitor) {
+            String error = admissionError(handler, expectedGeneration);
+            if (error != null) return OresFuture.failed(new IllegalStateException(error));
+            if (writer == null && pending.isEmpty()) {
+                try {
+                    return OresFuture.completed(grantReaderLocked(handler));
+                } catch (IllegalStateException failure) {
+                    identities.remove(handler);
+                    return OresFuture.failed(failure);
+                }
+            }
+            if (pending.size() == maxPending) {
+                identities.remove(handler);
+                return OresFuture.failed(new IllegalStateException("state loan queue full"));
+            }
+            ReadPending request = new ReadPending(handler);
+            pending.addLast(request);
+            return request.future;
+        }
+    }
+
+    public OresFuture<WriteLoan> acquireWriteAsync(Object handler, long expectedGeneration) {
+        Objects.requireNonNull(handler, "handler");
+        synchronized (monitor) {
+            String error = admissionError(handler, expectedGeneration);
+            if (error != null) return OresFuture.failed(new IllegalStateException(error));
+            if (writer == null && activeReaders == 0 && pending.isEmpty()) {
+                try {
+                    return OresFuture.completed(grantWriterLocked(handler));
+                } catch (IllegalStateException failure) {
+                    identities.remove(handler);
+                    return OresFuture.failed(failure);
+                }
+            }
+            if (pending.size() == maxPending) {
+                identities.remove(handler);
+                return OresFuture.failed(new IllegalStateException("state loan queue full"));
+            }
+            WritePending request = new WritePending(handler);
+            pending.addLast(request);
+            return request.future;
+        }
+    }
+
+    private String admissionError(Object handler, long expectedGeneration) {
+        if (retired) return "actor state generation retired";
+        if (expectedGeneration != generation) return "stale actor state generation";
+        if (!identities.add(handler)) return "handler already holds or awaits a state loan";
+        return null;
+    }
+
+    private long allocateEpochLocked() {
+        if (nextEpoch == Long.MAX_VALUE)
+            throw new IllegalStateException("actor state loan epochs exhausted");
+        return ++nextEpoch;
+    }
+
+    private ReadLoan grantReaderLocked(Object handler) {
+        ReadLoan loan = new ReadLoan(handler, allocateEpochLocked());
+        active.add(loan);
+        activeReaders++;
+        return loan;
+    }
+
+    private WriteLoan grantWriterLocked(Object handler) {
+        if (writer != null || activeReaders != 0)
+            throw new IllegalStateException("exclusive state loan overlaps active loan");
+        WriteLoan loan = new WriteLoan(handler, allocateEpochLocked());
+        active.add(loan);
+        writer = loan;
+        return loan;
+    }
+
+    private void cancelQueued(Pending request) {
+        synchronized (monitor) {
+            if (pending.remove(request)) identities.remove(request.handler);
+        }
+    }
+
+    /**
+     * Strict FIFO between modes; consecutive readers at the head may share,
+     * but new readers cannot pass a waiting writer (writer starvation fence).
+     */
+    private void promoteLocked() {
+        if (retired || writer != null) return;
+        while (!pending.isEmpty()) {
+            if (nextEpoch == Long.MAX_VALUE) {
+                while (!pending.isEmpty()) {
+                    Pending failed = pending.removeFirst();
+                    identities.remove(failed.handler);
+                    notifications.addLast(() -> failed.fail(
+                            new IllegalStateException("actor state loan epochs exhausted")));
+                }
+                return;
+            }
+            Pending next = pending.peekFirst();
+            if (next.cancelled()) {
+                pending.removeFirst();
+                identities.remove(next.handler);
+                continue;
+            }
+            if (next instanceof WritePending && activeReaders != 0) return;
+            pending.removeFirst();
+            Loan loan = next instanceof ReadPending
+                    ? grantReaderLocked(next.handler)
+                    : grantWriterLocked(next.handler);
+            notifications.addLast(() -> publishGrant(next, loan));
+            if (loan instanceof WriteLoan) return;
+        }
+    }
+
+    /**
+     * Closing the generation can race grant publication; a retired grant
+     * never settles successfully. A close just after settlement is fenced by
+     * heldBy(), and the logical handler still owes a finally/cleanup close.
+     */
+    private void publishGrant(Pending request, Loan loan) {
+        boolean invalid;
+        synchronized (monitor) {
+            invalid = retired;
+        }
+        if (invalid) {
+            try {
+                request.fail(new IllegalStateException(
+                        "actor state generation retired before grant publication"));
+            } finally {
+                loan.close();
+            }
+        } else if (!request.complete(loan)) {
+            // Cancellation won after reservation; never leak the reservation.
+            loan.close();
+        }
+    }
+
+    private void publish() {
+        synchronized (monitor) {
+            if (publishing) return;
+            publishing = true;
+        }
+        Throwable firstFailure = null;
+        for (;;) {
+            Runnable notification;
+            synchronized (monitor) {
+                notification = notifications.pollFirst();
+                if (notification == null) {
+                    publishing = false;
+                    break;
+                }
+            }
+            try {
+                notification.run();
+            } catch (Throwable failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure != null) {
+            if (firstFailure instanceof Error fatal) throw fatal;
+            if (firstFailure instanceof RuntimeException failure) throw failure;
+            throw new IllegalStateException("state loan notification failed", firstFailure);
+        }
+    }
+
+    private abstract class Pending {
+        final Object handler;
+        Pending(Object handler) { this.handler = handler; }
+        abstract boolean cancelled();
+        abstract boolean complete(Loan loan);
+        abstract void fail(Throwable failure);
+    }
+
+    private final class ReadPending extends Pending {
+        final OresFuture<ReadLoan> future;
+        ReadPending(Object handler) {
+            super(handler);
+            future = new OresFuture<>(() -> cancelQueued(this));
+        }
+        @Override boolean cancelled() { return future.isCancelled(); }
+        @Override boolean complete(Loan loan) {
+            return future.completeFromRuntime((ReadLoan) loan);
+        }
+        @Override void fail(Throwable failure) { future.failFromRuntime(failure); }
+    }
+
+    private final class WritePending extends Pending {
+        final OresFuture<WriteLoan> future;
+        WritePending(Object handler) {
+            super(handler);
+            future = new OresFuture<>(() -> cancelQueued(this));
+        }
+        @Override boolean cancelled() { return future.isCancelled(); }
+        @Override boolean complete(Loan loan) {
+            return future.completeFromRuntime((WriteLoan) loan);
+        }
+        @Override void fail(Throwable failure) { future.failFromRuntime(failure); }
+    }
+
+    public abstract class Loan implements AutoCloseable {
+        private final Object handler;
+        private final long epoch;
+        private boolean released;
+        Loan(Object handler, long epoch) {
+            this.handler = handler;
+            this.epoch = epoch;
+        }
+        public long epoch() { return epoch; }
+        public long generation() { return generation; }
+        /** Observational only; compiled critical scope must validate at use time. */
+        public boolean heldBy(Object identity, long expectedGeneration) {
+            synchronized (monitor) {
+                return !retired && !released && generation == expectedGeneration
+                        && handler == identity && active.contains(this);
+            }
+        }
+        @Override public final void close() {
+            synchronized (monitor) {
+                if (released) return;
+                released = true;
+                if (!active.remove(this))
+                    throw new IllegalStateException("actor state loan ledger corrupted");
+                identities.remove(handler);
+                if (this instanceof ReadLoan) {
+                    activeReaders--;
+                } else {
+                    if (writer != this)
+                        throw new IllegalStateException("actor state writer ledger corrupted");
+                    writer = null;
+                }
+                promoteLocked();
+            }
+            publish();
+        }
+    }
+
+    public final class ReadLoan extends Loan {
+        private ReadLoan(Object handler, long epoch) { super(handler, epoch); }
+    }
+    public final class WriteLoan extends Loan {
+        private WriteLoan(Object handler, long epoch) { super(handler, epoch); }
+    }
+
+    @Override public void close() {
+        ArrayDeque<Pending> abandoned;
+        synchronized (monitor) {
+            if (retired) return;
+            retired = true;
+            abandoned = new ArrayDeque<>(pending);
+            pending.clear();
+            for (Pending next : abandoned) identities.remove(next.handler);
+        }
+        // Active loans survive until physical cleanup; heldBy() fences them now.
+        for (Pending next : abandoned) {
+            next.fail(new IllegalStateException("actor state generation retired"));
+        }
+    }
+}
