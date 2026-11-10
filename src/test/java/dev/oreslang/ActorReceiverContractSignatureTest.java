@@ -179,6 +179,44 @@ final class ActorReceiverContractSignatureTest {
     }
 
     @Test
+    void runtimeOnlyTeardownCannotMasqueradeAsMailboxContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract CartApi as
+                  actor Cart;
+                  pub mtd tear_down(Cart cart)(): void;
+                end
+                """));
+        assertTrue(error.getMessage().contains("reserved actor lifecycle/control hook"));
+    }
+
+    @Test
+    void compilerOwnedStateLoanCannotBeRequiredAsUserMethod() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract CartApi as
+                  actor Cart;
+                  pub mtd handle_state(Cart cart)(): void;
+                end
+                """));
+        assertTrue(error.getMessage().contains("reserved actor lifecycle/control hook"));
+    }
+
+    @Test
+    void actorReceiverMethodCannotBeImplementedByFreeModuleFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract CartApi as
+                  actor Cart;
+                  pub mtd count(Cart cart)(): int;
+                end
+                define module carts conforms CartApi as
+                  pub define actor Cart as
+                  end
+                  pub fnc count(): int { return 1; }
+                end
+                """));
+        assertTrue(error.getMessage().contains("missing required receiver method"));
+    }
+
+    @Test
     void publicReceiverContractsHaveDistinctExportFingerprints() {
         var header = new ExportInterfaceCodec.Header("", "test-compiler", "test-abi", "safe");
         var a = ExportInterfaceCollector.collect(Parser.parse("""
