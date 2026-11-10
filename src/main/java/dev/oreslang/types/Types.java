@@ -255,8 +255,10 @@ public final class Types {
         if (type instanceof Not not) return containsActorReference(not.excluded());
         if (type instanceof Function function) {
             return containsActorReference(function.result())
-                    || function.parameters().stream()
-                            .anyMatch(Types::containsActorReference);
+                    || function.parameters().stream().anyMatch(Types::containsActorReference)
+                    || function.effects().throwsTypes().stream().anyMatch(Types::containsActorReference)
+                    || function.effects().raisesTypes().stream().anyMatch(Types::containsActorReference)
+                    || function.effects().panicsTypes().stream().anyMatch(Types::containsActorReference);
         }
         if (type instanceof Record record) return record.members().values().stream()
                 .anyMatch(Types::containsActorReference);
