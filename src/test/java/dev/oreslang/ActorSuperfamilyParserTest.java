@@ -90,7 +90,7 @@ final class ActorSuperfamilyParserTest {
     @Test
     void noTransportPolicyCanAppearOnAbstractActorFamily() {
         var error = assertThrows(RuntimeException.class, () -> parseOne("""
-                define http abstract actor Bad as
+                define abstract http actor Bad as
                 end
                 """));
         assertTrue(error.getMessage().contains("abstract actor"), error.getMessage());
