@@ -3,11 +3,44 @@ on:
   pull_request:
     paths:
       - 'scripts/check-private-ci-destination.sh'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
       - 'scripts/test-private-ci-destination.sh'
+      - 'scripts/test-private-ci-codeowners-contract.sh'
       - 'scripts/run-in-private-ci-destination.sh'
-      - 'scripts/publish-private-ci-source*.py'
+      - 'scripts/publish-private-ci-source.py'
+      - 'scripts/publish-private-ci-source-v3.py'
+      - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/test-publish-private-ci-source-v3.py'
       - '.github/private-ci-approved-repositories.txt'
+      - '.github/private-ci-carrier-contracts.json'
+      - '.github/CODEOWNERS'
+      - '.github/workflows/private-ci-mirror-preflight.yml'
       - '.github/workflows/source-free-private-ci-gates.yml'
+      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+      - 'tools/verify-exact-source-tree.sh'
+      - 'tools/test-verify-exact-source-tree.sh'
+      - 'tests/private-ci-v3-codeowners.test.mjs'
+  push:
+    paths:
+      - 'scripts/check-private-ci-destination.sh'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
+      - 'scripts/test-private-ci-destination.sh'
+      - 'scripts/test-private-ci-codeowners-contract.sh'
+      - 'scripts/run-in-private-ci-destination.sh'
+      - 'scripts/publish-private-ci-source.py'
+      - 'scripts/publish-private-ci-source-v3.py'
+      - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/test-publish-private-ci-source-v3.py'
+      - '.github/private-ci-approved-repositories.txt'
+      - '.github/private-ci-carrier-contracts.json'
+      - '.github/CODEOWNERS'
+      - '.github/workflows/private-ci-mirror-preflight.yml'
+      - '.github/workflows/source-free-private-ci-gates.yml'
+      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+      - 'tools/verify-exact-source-tree.sh'
+      - 'tools/test-verify-exact-source-tree.sh'
       - 'tests/private-ci-v3-codeowners.test.mjs'
   workflow_dispatch:
 permissions:
@@ -49,5 +82,7 @@ jobs:
         run: bash scripts/test-private-ci-destination.sh
       - name: Verify source-free publisher regression fixtures
         run: |
+          node --test tests/private-ci-v3-codeowners.test.mjs
+          bash tools/test-verify-exact-source-tree.sh
           python3 scripts/test-publish-private-ci-source.py
           python3 scripts/test-publish-private-ci-source-v3.py

@@ -153,3 +153,63 @@ test('source-free deny-all workflow uses exact head and strict policy bytes', ()
     'never treat indented pseudo-comments as signed policy comments');
   assert.ok(policyGate.includes('DENIED: noncanonical private-source destination policy bytes'));
 });
+
+
+/**
+ * Both the PR and push gates must run when protected source-export policy,
+ * test plans, exact-tree enforcement, or the workflows themselves change.
+ * This is a source-free trigger contract, NOT proof of runner admission.
+ */
+function sourceFreeTriggerPaths(contents, event) {
+  const section = contents.match(new RegExp(
+    '^  ' + event + ':\\n    paths:\\n((?:      - \x27[^\x27\\n]+\x27\\n)+)', 'mu'));
+  assert.ok(section, 'missing ' + event + ' security gate paths');
+  return section[1].split('\n').filter(Boolean).map(line => {
+    const match = line.match(/^      - '([^']+)'$/u);
+    assert.ok(match, 'malformed ' + event + ' path filter');
+    return match[1];
+  });
+}
+function assertSourceFreeCoverage(contents) {
+  const prPaths = sourceFreeTriggerPaths(contents, 'pull_request');
+  const pushPaths = sourceFreeTriggerPaths(contents, 'push');
+  assert.deepEqual(pushPaths, prPaths, 'push must cover every PR policy change');
+  assert.equal(new Set(prPaths).size, prPaths.length, 'duplicate policy path');
+  for (const file of [
+    '.github/CODEOWNERS',
+    '.github/private-ci-approved-repositories.txt',
+    '.github/private-ci-carrier-contracts.json',
+    '.github/workflows/private-ci-mirror-preflight.yml',
+    '.github/workflows/source-free-private-ci-gates.yml',
+    'scripts/run-in-private-ci-destination.sh',
+    'scripts/publish-private-ci-source.py',
+    'scripts/publish-private-ci-source-v3.py',
+    'tools/verify-exact-source-tree.sh',
+    'tools/test-verify-exact-source-tree.sh',
+    'tests/private-ci-v3-codeowners.test.mjs',
+  ]) {
+    assert.ok(prPaths.includes(file), 'policy change can skip gate: ' + file);
+  }
+  assert.match(contents, /^permissions:\n  contents: read$/mu,
+    'gate must not receive write permissions');
+  assert.ok(contents.includes('node --test tests/private-ci-v3-codeowners.test.mjs'),
+    'gate must execute policy-negative tests');
+  assert.ok(contents.includes('bash tools/test-verify-exact-source-tree.sh'),
+    'gate must execute source-free full-tree mismatch tests');
+}
+test('source-free CI gate defends PR and push on all protected inputs', () => {
+  const yaml = readFileSync(path.join(ROOT,
+    '.github/workflows/source-free-private-ci-gates.yml'), 'utf8');
+  assertSourceFreeCoverage(yaml);
+});
+test('source-free workflow mutation attempts cannot silently drop gates', () => {
+  const yaml = readFileSync(path.join(ROOT,
+    '.github/workflows/source-free-private-ci-gates.yml'), 'utf8');
+  for (const broken of [
+    yaml.replace('  push:\n    paths:\n', '  no_push:\n    paths:\n'),
+    yaml.replace("      - '.github/workflows/source-free-private-ci-gates.yml'\n", ''),
+    yaml.replace('bash tools/test-verify-exact-source-tree.sh', 'echo skipped'),
+    yaml.replace('node --test tests/private-ci-v3-codeowners.test.mjs', 'echo skipped'),
+    yaml.replace('  contents: read\n', '  contents: write\n'),
+  ]) assert.throws(() => assertSourceFreeCoverage(broken));
+});
