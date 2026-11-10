@@ -153,3 +153,32 @@ fail closed for unknown provider outcomes.
 Private-source transfer to a different GitHub organization remains
 **not approved** by the source-owned security policy. No cross-org source
 mirror, source-main mutation or merge is authorized by this draft.
+
+
+### 2026-11-10 P0 snapshot-integrity follow-up
+
+`SqliteCommandTransactionStore.verify` and
+`SqliteCommandTransactionStore.loadVerified` now require a retained
+checkpoint to match the original durable `ops` snapshot record **by
+version, schema and exact payload**. A command index surviving journal
+compaction is insufficient if the checkpoint BLOB is missing or altered.
+The actual Java SQLite fixture now injects both modified snapshot bytes
+and deletion of the original snapshot operation; both are expected
+fail-closed recovery/duplicate-receipt tests. A strict source test PASS
+has **not yet** been recorded.
+
+Conformance [#668](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/668)
+now independently verifies matching persisted snapshot and operation
+checksums and legacy event payload hashes, including explicit
+`UNVERIFIED_*` rejection for pre-upgrade rows without proof. Node and
+Java do **not** share a physical database layout and are not being
+claimed byte-for-byte database compatible.
+
+A separately authored, **source-free** Node 22 SQLite runner
+[run #42919657770](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42919657770)
+successfully executed a 3-check SIGKILL/WAL canary and four independent
+snapshot-integrity scenarios with no checkout or private source
+transfer. Those results verify only synthetic SQLite behavior and
+alternate-runner admission, **not** the exact Java source or compiled
+AttoLang guest. Private source export remains disabled pending
+independent destination-specific approval.
