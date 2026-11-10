@@ -99,17 +99,12 @@ public final class Parser {
             if (token.type() == QUANTUM) {
                 throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
             }
-            // Reserved GPU actor declaration: fail closed before ordinary actor
-            // desugaring could erase the execution-domain distinction. This
-            // remains unsupported until typed GPU actor state, mailbox effects,
-            // device admission and physical lowering are proven.
-            if (token.type() == GPU
+            // GPU actor heads are declarations, NOT CPU-executable GPU
+            // expressions. Preserve a distinct, non-executable protected AST
+            // so no ordinary actor lowering can erase the GPU execution domain.
+            boolean gpuActorHead = token.type() == GPU
                     && i + 1 < tokens.size()
-                    && tokens.get(i + 1).type() == ACTOR) {
-                throw error(token, "gpu actor declarations require checked GPU actor "
-                        + "state ownership, mailbox scheduling and device lowering; "
-                        + "not yet enabled; no implicit CPU fallback");
-            }
+                    && tokens.get(i + 1).type() == ACTOR;
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
                         i + 2 < tokens.size()
@@ -120,7 +115,7 @@ public final class Parser {
                         i > 0 && tokens.get(i - 1).type() == NB
                                 && i + 1 < tokens.size()
                                 && tokens.get(i + 1).type() == LBRACE;
-                if (!canonicalTask && !legacyNbTask) {
+                if (!canonicalTask && !legacyNbTask && !gpuActorHead) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
                             + " { ... }' is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
@@ -907,7 +902,8 @@ public final class Parser {
         return (isContextualIdentifier("state")
                     && tokens.get(current + 1).lexeme().equals("container"))
                 || (isContextualIdentifier("virtual")
-                    && tokens.get(current + 1).type() == ACTOR);
+                    && tokens.get(current + 1).type() == ACTOR)
+                || (check(GPU) && tokens.get(current + 1).type() == ACTOR);
     }
 
     private Ast.Decl parseProtectedDeclaration(
@@ -915,8 +911,12 @@ public final class Parser {
         validateOnlyVisibilityModifiers(modifiers, "protected declarations");
         rejectCallableStructuralAnnotation(annotations, "protected declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "protected declarations");
-        boolean virtualActor = isContextualIdentifier("virtual");
-        if (virtualActor) {
+        boolean gpuActor = check(GPU);
+        boolean virtualActor = !gpuActor && isContextualIdentifier("virtual");
+        if (gpuActor) {
+            consume(GPU, "expected gpu");
+            consume(ACTOR, "expected actor after gpu");
+        } else if (virtualActor) {
             consumeContextualIdentifier("virtual", "expected virtual");
             consume(ACTOR, "expected actor after virtual");
         } else {
@@ -990,6 +990,8 @@ public final class Parser {
                 throw error(previous(), "protected method budget exceeded (64)");
         }
         consume(END, "expected 'end' after protected declaration");
+        if (gpuActor)
+            return new Ast.GpuActorDecl(name, modifiers.visibility, fields, methods);
         if (virtualActor)
             return new Ast.VirtualActorDecl(name, modifiers.visibility, fields, methods);
         return new Ast.StateContainerDecl(name, modifiers.visibility, fields, methods);
