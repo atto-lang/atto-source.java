@@ -28,6 +28,17 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
+    void zeroAndSingletonTupleFormsRemainDistinctFromGroupingAndArray() {
+        Ast.TupleExpr emptyTuple = assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple()"));
+        assertEquals(0, emptyTuple.elements().size());
+        Ast.TupleExpr singleton = assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple(42)"));
+        assertEquals(1, singleton.elements().size());
+        assertInstanceOf(Ast.LiteralExpr.class, initializer("(42)"));
+        assertInstanceOf(Ast.ListExpr.class, initializer("~array(42)"));
+        assertNotEquals(initializer("~tuple(42)"), initializer("~array(42)"));
+    }
+
+    @Test
     void compilerAndOwnershipCheckMixedOldAndNewLiterals() {
         String program = """
                 pub routine main(): void {
