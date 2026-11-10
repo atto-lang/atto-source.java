@@ -1,0 +1,10 @@
+define actor Cart as
+  run_foo(): void {
+    foo(self);
+    return;
+  }
+end
+
+pub fnc foo(ActorRef<Cart> cart): void {
+  return;
+}
