@@ -236,6 +236,70 @@ final class ModuleActorContractRequirementTest {
         assertTrue(error.getMessage().contains("missing required public actor"));
     }
 
+
+    @Test
+    void actorFromAnotherModuleCannotSatisfyLocalModuleRequirement() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
+                define contract ActorApi as
+                  actor Cart;
+                end
+                define module other_mod as
+                  pub define actor Cart as
+                  end
+                end
+                define module cart_mod conforms ActorApi as
+                end
+                """));
+        assertTrue(error.getMessage().contains("missing required public actor"));
+    }
+
+    @Test
+    void standaloneActorBindingIsNotYetAccepted() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module cart_mod as
+                  pub define actor Cart as cart;
+                end
+                """));
+    }
+
+    @Test
+    void externalReceiverMethodDoesNotAccidentallyBecomeFreeFunction() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module cart_mod as
+                  pub define actor Cart as
+                  end
+                  define pub mtd receive(Cart a)(): void { return; }
+                end
+                """));
+    }
+
+    @Test
+    void changingActorRequirementInvalidatesImportedContractConsumer() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> original = new LinkedHashMap<>();
+        original.put("actor_api.atto", """
+                pub define contract ActorApi as
+                  actor Cart;
+                end
+                """);
+        original.put("consumer.atto", """
+                import * as api from "./actor_api.atto";
+                pub routine main(): void { return; }
+                """);
+        compiler.compile(original);
+
+        Map<String, String> changed = new LinkedHashMap<>(original);
+        changed.put("actor_api.atto", """
+                pub define contract ActorApi as
+                  actor Worker;
+                end
+                """);
+        var rebuilt = compiler.compile(changed);
+        assertTrue(rebuilt.rebuilt("actor_api.atto"));
+        assertTrue(rebuilt.rebuilt("consumer.atto"),
+                "changing a public actor obligation must invalidate imported contract ABI");
+    }
+
     @Test
     void changingRequiredActorChangesExportedContractAbi() {
         var header = new ExportInterfaceCodec.Header("", "test-compiler", "test-abi", "safe");
