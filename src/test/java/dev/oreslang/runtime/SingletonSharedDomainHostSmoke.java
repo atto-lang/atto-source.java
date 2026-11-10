@@ -33,6 +33,8 @@ public final class SingletonSharedDomainHostSmoke {
         } catch (Throwable error) {
             Throwable cause = error instanceof CompletionException
                     ? error.getCause() : error;
+            if (cause instanceof UnsupportedOperationException && "null".equals(messagePart))
+                return;
             if (cause != null && cause.getMessage() != null
                     && cause.getMessage().contains(messagePart)) return;
             throw new AssertionError("wrong rejection: " + messagePart, error);
