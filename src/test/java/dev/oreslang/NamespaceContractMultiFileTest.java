@@ -177,8 +177,8 @@ final class NamespaceContractMultiFileTest {
         changed.put("shop/cart.atto", ACTOR.replace("pub define actor Cart;",
                 "pub define actor Cart as\n  pub ping(): int { return 1; }\nend"));
         var rebuilt = compiler.compile(changed);
-        assertTrue(rebuilt.rebuilt().contains("shop/contracts.atto"));
-        assertTrue(rebuilt.rebuilt().contains("shop/tick.atto"));
+        assertTrue(rebuilt.rebuilt("shop/contracts.atto"));
+        assertTrue(rebuilt.rebuilt("shop/tick.atto"));
     }
 
     @Test
