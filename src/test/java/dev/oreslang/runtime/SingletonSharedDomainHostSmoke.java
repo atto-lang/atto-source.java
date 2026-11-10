@@ -65,8 +65,8 @@ public final class SingletonSharedDomainHostSmoke {
         var snapshot = (Map<?, ?>) a;
         check(((List<?>) snapshot.get("nested")).get(0).equals(1),
                 "snapshot detached from original mutable data");
-        rejects(() -> ((Map<String, Object>) snapshot).put("unsafe", 1), "null");
-        rejects(() -> ((List<Integer>) snapshot.get("nested")).set(0, 99), "null");
+        rejects(() -> snapshot.clear(), "null");
+        rejects(() -> ((List<?>) snapshot.get("nested")).clear(), "null");
         var otherDomain = new SingletonSharedDomain();
         check(otherDomain.snapshotOnce(key, () -> Map.of("nested", List.of(1))).join() != a,
                 "tenants have independent snapshot objects");
