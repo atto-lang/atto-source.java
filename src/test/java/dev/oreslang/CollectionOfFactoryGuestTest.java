@@ -248,6 +248,16 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void tildeConstructorHeadRetainsOrdinaryUnaryAndMapParsing() {
+        assertInstanceOf(Ast.UnaryExpr.class, firstFactoryInitializer(
+                program("const flags = 7; const x = ~flags;")));
+        assertInstanceOf(Ast.UnaryExpr.class, firstFactoryInitializer(
+                program("const x = ~ array(1, 2);")));
+        assertInstanceOf(Ast.MapLiteralExpr.class, firstFactoryInitializer(
+                program("const m = ~map<string,int>(\"key\" => 1);")));
+    }
+
+    @Test
     void spreadsCannotPiggybackOnTupleAndArrayFactories() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(program("const t = Tuple.of(...source);")));
