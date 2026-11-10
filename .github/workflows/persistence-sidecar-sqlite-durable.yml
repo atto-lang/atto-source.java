@@ -14,6 +14,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact source PR head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -30,7 +40,10 @@ jobs:
           javac -Xlint:all -Werror -d target/persistence-test \
             src/main/java/dev/oreslang/runtime/persistence/BatchPersistenceSidecar.java \
             src/main/java/dev/oreslang/runtime/persistence/SqlitePersistenceStore.java \
-            src/test/java/dev/oreslang/runtime/persistence/SqlitePersistenceStoreTestMain.java
+            src/main/java/dev/oreslang/runtime/persistence/SqliteCommandTransactionStore.java \
+            src/main/java/dev/oreslang/runtime/persistence/AtomicCommandSidecar.java \
+            src/test/java/dev/oreslang/runtime/persistence/SqlitePersistenceStoreTestMain.java \
+            src/test/java/dev/oreslang/runtime/persistence/SqliteCommandTransactionStoreTestMain.java
       - name: Run 1000 actor commits, journal restore, epochs, abrupt halt
         run: |
           set -euo pipefail
@@ -39,3 +52,5 @@ jobs:
           sha256sum "$JDBC" "$SLF4J"
           java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
             dev.oreslang.runtime.persistence.SqlitePersistenceStoreTestMain
+          java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
+            dev.oreslang.runtime.persistence.SqliteCommandTransactionStoreTestMain
