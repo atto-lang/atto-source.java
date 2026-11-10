@@ -113,9 +113,26 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         }
     }
 
-    /** Host admission guard: must be rechecked at the mailbox commit point. */
+    /** Preliminary check only; not a commit or authorization to enqueue. */
     boolean mayAdmitFromRuntime(long id, long generation) {
         return ledger.mayAdmit(id, generation);
+    }
+
+    /** Logical DATA admission linearizes against the ancestor-failure fence
+     * inside one escrow monitor. Must occur at the final mailbox commit path. */
+    SupervisorFailureEscrowV1.DataAdmission beginDataAdmissionFromRuntime(
+            long id, long generation) {
+        return ledger.beginDataAdmission(id, generation);
+    }
+
+    /** This is the only way to release a successful or rolled-back permit. */
+    void finishDataAdmissionFromRuntime(
+            SupervisorFailureEscrowV1.DataAdmission permit, boolean committed) {
+        ledger.finishDataAdmission(permit, committed);
+    }
+
+    int dataInFlightInSubtree(long id) {
+        return ledger.dataInFlightInSubtree(id);
     }
 
     SupervisorFailureEscrowV1.Delivery deliver(long id) {
