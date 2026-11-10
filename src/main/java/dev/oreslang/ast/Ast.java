@@ -61,7 +61,7 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, PersistentActorDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -116,6 +116,22 @@ public final class Ast {
                                    List<ProtectedMethod> methods) implements Decl {
         public VirtualActorDecl {
             java.util.Objects.requireNonNull(name, "virtual actor name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+    /**
+     * Durable actor declaration with one sealed mutable state container.
+     * Parsed only: the type checker must reject before executable lowering
+     * until persistence capabilities and critical state loans are wired in.
+     */
+    public record PersistentActorDecl(String name, Visibility visibility,
+                                      List<ProtectedStateField> stateFields,
+                                      List<ProtectedMethod> methods) implements Decl {
+        public PersistentActorDecl {
+            java.util.Objects.requireNonNull(name, "persistent actor name");
             java.util.Objects.requireNonNull(visibility, "visibility");
             stateFields = List.copyOf(stateFields);
             methods = List.copyOf(methods);
