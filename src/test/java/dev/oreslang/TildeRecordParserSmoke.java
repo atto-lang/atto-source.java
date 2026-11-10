@@ -113,7 +113,6 @@ public final class TildeRecordParserSmoke {
         for (String wrong : List.of(
                 "~()",
                 "~map(\"ready\" => true)",
-                "~map<String,bool>(\"ready\" => true)",
                 "~(\"ready\" => true)",
                 "~(ready => true)",
                 "~record(\"ready\" => true)",
@@ -207,7 +206,14 @@ public final class TildeRecordParserSmoke {
         var mapWitnessMember = initializer("~<Map<string,int>>().size");
         check(mapWitnessMember instanceof Ast.MemberExpr,
                 "generic typed-empty map .size parses as member access");
-        rejects("~map<string,int>(\"hello\" => 42)");
+        var populatedMap = initializer("~map<string,int>(\"hello\" => 42)");
+        check(populatedMap instanceof Ast.MapLiteralExpr,
+                "explicit populated typed Map must retain ordered pairs");
+        check(((Ast.MapLiteralExpr) populatedMap).entries().size() == 1,
+                "typed populated map retains its ordered entry");
+        var duplicateMap = initializer("~map<string,int>(\"hello\" => 1, \"hello\" => 2)");
+        check(((Ast.MapLiteralExpr) duplicateMap).entries().size() == 2,
+                "parser must not erase duplicate keys before type-checking");
         rejects("~map<string,int,int>()");
         rejects("~(foo: 1, foo: 2)");
 
