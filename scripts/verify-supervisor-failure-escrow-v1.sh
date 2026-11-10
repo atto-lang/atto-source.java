@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source_path='src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java'
 test_path='src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowV1Standalone.java'
-source_blob='ae70ed809b3c8c4760ed954fce5009cdb4d8057d'
+source_blob='59a7cf70132b58516b81a5192b0cb078025825f0'
 test_blob='22980520c28abc36d2600f37d9af0f1076c1c02c'
 [[ "$(git hash-object "$source_path")" == "$source_blob" ]] || { echo 'SOURCE_BLOB_MISMATCH' >&2; exit 2; }
 [[ "$(git hash-object "$test_path")" == "$test_blob" ]] || { echo 'TEST_BLOB_MISMATCH' >&2; exit 2; }
