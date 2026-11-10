@@ -3557,13 +3557,29 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        /** Revalidate this generation immediately before a host CONTROL side effect. */
+        /** A generation watermark check; not sufficient to trust a terminal notice. */
         public boolean isCurrentVirtualActorGeneration(
                 VirtualActorActivationRegistry.Identity identity, long generation) {
             requireSupervisor("check virtual actor generation");
             requireCallerRuntimeAffinity("check virtual actor generation");
             if (groupClosed.get() || closed.get()) return false;
             return virtualActorFences.isCurrent(supervisor.id(), id, identity, generation);
+        }
+
+        /**
+         * For terminal CONTROL decisions, validate the exact physical ActorId
+         * as well as the logical identity and burned generation watermark.
+         * Recheck at the policy side effect, not at receipt capture.
+         */
+        public boolean isCurrentVirtualActorTerminal(
+                VirtualActorActivationRegistry.Identity identity,
+                long generation,
+                ActorId physical) {
+            requireSupervisor("check virtual actor terminal identity");
+            requireCallerRuntimeAffinity("check virtual actor terminal identity");
+            if (groupClosed.get() || closed.get()) return false;
+            return virtualActorFences.isCurrentTerminal(
+                    supervisor.id(), id, identity, generation, physical);
         }
 
         public Optional<ActorId> creatorId() {
