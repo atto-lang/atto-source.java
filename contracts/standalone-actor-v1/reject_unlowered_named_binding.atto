@@ -1,0 +1,4 @@
+// REJECT (type checker): standalone actor binding not executable yet.
+define module carts as
+  pub define actor Cart as cart;
+end
