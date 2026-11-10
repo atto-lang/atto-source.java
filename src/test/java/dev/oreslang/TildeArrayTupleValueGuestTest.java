@@ -88,6 +88,29 @@ final class TildeArrayTupleValueGuestTest {
     }
 
     @Test
+    void sigilRequiresAdjacencyAndDoesNotStealExistingUnaryCalls() {
+        Ast.UnaryExpr spacedArray = assertInstanceOf(
+                Ast.UnaryExpr.class, initializer("~ array(1, 2)"));
+        assertEquals("~", spacedArray.operator());
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, spacedArray.operand());
+        assertEquals("array", assertInstanceOf(Ast.NameExpr.class, call.callee()).name());
+
+        Ast.UnaryExpr spacedTuple = assertInstanceOf(
+                Ast.UnaryExpr.class, initializer("~ tuple(1, 2)"));
+        assertEquals("~", spacedTuple.operator());
+        assertInstanceOf(Ast.CallExpr.class, spacedTuple.operand());
+
+        // Whitespace before '<' must remain comparison syntax.
+        Ast.BinaryExpr comparison = assertInstanceOf(
+                Ast.BinaryExpr.class, initializer("~array < 4"));
+        assertEquals("<", comparison.operator());
+        assertInstanceOf(Ast.UnaryExpr.class, comparison.left());
+
+        assertInstanceOf(Ast.ListExpr.class, initializer("~array (1, 2)"));
+        assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple (1, 2)"));
+    }
+
+    @Test
     void preexistingUnaryTildeIsStillAnIndependentExpression() {
         Ast.UnaryExpr unary = assertInstanceOf(Ast.UnaryExpr.class, initializer("~1"));
         assertEquals("~", unary.operator());
