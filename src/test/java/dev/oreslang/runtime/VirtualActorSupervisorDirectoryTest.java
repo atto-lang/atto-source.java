@@ -467,6 +467,65 @@ final class VirtualActorSupervisorDirectoryTest {
     }
 
     @Test
+    void previousFailureCannotMaskNewReservedActivationInSupervisorInspection() throws Exception {
+        try (ExecutorService pool = Executors.newSingleThreadExecutor();
+             var runtime = runtime(pooled(pool))) {
+            var supervisor = runtime.createSupervisor();
+            try (var group = runtime.createActorGroup(supervisor);
+                 var directory = new VirtualActorSupervisorDirectory(
+                         runtime, supervisor, TENANT, 8, 4)) {
+                ActorRuntime.BehaviorFactory<String> failing = factory ->
+                        (message, context) -> { throw new IllegalStateException("secret"); };
+                var actor = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), failing);
+                actor.getReady().get(5, TimeUnit.SECONDS);
+                var logical = directory.resolve("Cart", "restarting-after-failure");
+                long originalGeneration = directory.bindActivation(logical, actor);
+                actor.send("fail");
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> actor.done().get(5, TimeUnit.SECONDS));
+
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(
+                        session, TimeUnit.SECONDS.toNanos(5));
+                VirtualActorSupervisorDirectory.Snapshot previous = null;
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (System.nanoTime() < deadline) {
+                    previous = directory.requestInspect(grant, session, logical.identity(),
+                            TimeUnit.SECONDS.toNanos(2)).toCompletableFuture()
+                            .get(3, TimeUnit.SECONDS).orElseThrow();
+                    if (previous.lifecycle() == VirtualActorSupervisorDirectory.Lifecycle.FAILED)
+                        break;
+                }
+                assertNotNull(previous);
+                assertEquals(VirtualActorSupervisorDirectory.Lifecycle.FAILED,
+                        previous.lifecycle());
+                assertEquals(originalGeneration, previous.activationGeneration());
+
+                // Reserve the next generation without publishing a physical
+                // worker. The former terminal failure remains historical
+                // metadata, never the current generation's lifecycle.
+                var plan = directory.prepareActivation(logical, "state");
+                try {
+                    var current = directory.requestInspect(grant, session, logical.identity(),
+                            TimeUnit.SECONDS.toNanos(2)).toCompletableFuture()
+                            .get(3, TimeUnit.SECONDS).orElseThrow();
+                    assertEquals(VirtualActorSupervisorDirectory.Lifecycle.ACTIVATING,
+                            current.lifecycle());
+                    assertEquals(plan.descriptor().logicalGeneration(),
+                            current.activationGeneration());
+                    assertTrue(current.activationGeneration() > originalGeneration);
+                    assertEquals("java.lang.IllegalStateException",
+                            current.lastTerminalFailureClass().orElseThrow());
+                } finally {
+                    directory.abortActivation(plan);
+                }
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+
+    @Test
     void actorTurnCannotAcquireSupervisorVirtualActorDirectory() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var supervisor = runtime.createSupervisor();
