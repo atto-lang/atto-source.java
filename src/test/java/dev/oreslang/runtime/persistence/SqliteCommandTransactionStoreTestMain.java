@@ -118,6 +118,24 @@ public final class SqliteCommandTransactionStoreTestMain {
                       commands.loadVerified(id,2).events().isEmpty(),"compaction replay mismatch");
                 check(commands.verify(retry).version()==2,
                       "logical command not retained after checkpoint compaction");
+                // A durable command index is NOT sufficient if the checkpoint
+                // bytes were replaced after the archived events were pruned.
+                try(Connection db=DriverManager.getConnection("jdbc:sqlite:"+file);
+                    Statement s=db.createStatement()) {
+                    s.execute("UPDATE state SET snapshot=x'00000000000003E7' " +
+                              "WHERE actor='account-42' AND slot='ledger'");
+                }
+                expectSqlFailure(()->commands.loadVerified(id,2),
+                                 "CORRUPT_SNAPSHOT_PROOF");
+                expectSqlFailure(()->commands.verify(retry),
+                                 "CORRUPT_SNAPSHOT_PROOF");
+                try(Connection db=DriverManager.getConnection("jdbc:sqlite:"+file);
+                    Statement s=db.createStatement()) {
+                    s.execute("DELETE FROM ops WHERE actor='account-42' " +
+                              "AND slot='ledger' AND kind=1 AND version=4");
+                }
+                expectSqlFailure(()->commands.loadVerified(id,2),
+                                 "UNVERIFIED_SNAPSHOT");
             }
             // A fresh account: abort the SECOND event; no partial journal/head
             // or durable command record is allowed to survive.
