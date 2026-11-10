@@ -1,0 +1,11 @@
+define actor Cart as
+end
+
+pub fnc needs_cart(ActorRef<Cart> cart): void {
+  return;
+}
+
+pub fnc smuggle<T>(T unknown_value): void {
+  needs_cart(unknown_value);
+  return;
+}
