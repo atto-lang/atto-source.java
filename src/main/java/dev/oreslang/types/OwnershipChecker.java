@@ -52,6 +52,8 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    /** Opt-in in-pass trace; never permits guest code emission. */
+    private BorrowMirAuditV1.Collector borrowMirAudit;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -96,6 +98,20 @@ public final class OwnershipChecker {
         checker.validate(program);
         checker.publishTaskAdmissions();
         return program;
+    }
+
+    /**
+     * Opt-in, compiler-originated straight-line shadow ownership trace.
+     * The ordinary OwnershipChecker still validates the complete program.
+     * Unsupported constructs yield NOT_PROVEN; never treat this output
+     * as Rust equivalence, compiled AttoLang guest, or emitted-code proof.
+     */
+    public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(Ast.Program program) {
+        OwnershipChecker checker = new OwnershipChecker(program);
+        checker.borrowMirAudit = new BorrowMirAuditV1.Collector();
+        checker.validate(program);
+        checker.publishTaskAdmissions();
+        return checker.borrowMirAudit.finishReport();
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -214,8 +230,17 @@ public final class OwnershipChecker {
 
     private void checkFunction(Ast.FunctionDecl fn) {
         Scope scope = new Scope(null, fn.nonLexical());
+        if (borrowMirAudit != null) {
+            borrowMirAudit.beginFunction(fn.name(),
+                    !fn.async() && !fn.suspends() && !fn.generator()
+                    && !fn.nonLexical() && !fn.trapped() && fn.effects().isEmpty());
+        }
         for (Ast.Param param : fn.parameters()) {
-            scope.define(param.name(), stateForParam(param));
+            VarState value = stateForParam(param);
+            scope.define(param.name(), value);
+            if (borrowMirAudit != null) {
+                borrowMirAudit.parameter(value, value.kind == ValueKind.COPY);
+            }
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
@@ -225,6 +250,9 @@ public final class OwnershipChecker {
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
             scope.close();
+            if (borrowMirAudit != null) {
+                borrowMirAudit.finishFunction();
+            }
         }
     }
 
@@ -412,6 +440,10 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (borrowMirAudit != null
+                && !(stmt instanceof Ast.ReturnStmt ret && ret.value() instanceof Ast.NameExpr)) {
+            borrowMirAudit.unsupported("statement outside the linear parameter-return profile");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -505,6 +537,9 @@ public final class OwnershipChecker {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
                 validateReturnedBorrow(ret.value(), returned);
+            }
+            if (borrowMirAudit != null) {
+                borrowMirAudit.returned();
             }
             return;
         }
@@ -1063,6 +1098,13 @@ public final class OwnershipChecker {
                 move(state, name.name());
                 transferredBorrowLease = state.borrowLease;
                 state.borrowLease = false;
+            }
+            if (borrowMirAudit != null && consuming) {
+                if (state.kind == ValueKind.COPY) {
+                    borrowMirAudit.readCopyParameter(ownershipRoot(state));
+                } else {
+                    borrowMirAudit.unsupported("affine consumption or borrowed return not modeled");
+                }
             }
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
         }
