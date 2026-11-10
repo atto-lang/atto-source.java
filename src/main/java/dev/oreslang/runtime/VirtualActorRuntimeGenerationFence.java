@@ -33,6 +33,7 @@ final class VirtualActorRuntimeGenerationFence {
         ActorRuntime.ActorGroupId lastGroup;
         long generation;
         long lastBoundGeneration;
+        long lastRetiredGeneration;
         ActorRuntime.ActorId lastBoundActor;
         Long pending;
         ActorRuntime.ActorId physical;
@@ -194,7 +195,9 @@ final class VirtualActorRuntimeGenerationFence {
     /**
      * Exact terminal CONTROL receipt authorization for a real physical actor.
      * A matching logical generation alone cannot authorize another actor's
-     * notice. This must be rechecked at the policy side effect.
+     * notice. This must be rechecked at the policy side effect. A live or
+     * still-cleaning-up physical worker has not generated an authoritative
+     * terminal notice, even if its identity and generation are known.
      */
     boolean isCurrentTerminal(ActorRuntime.SupervisorId supervisor,
                               ActorRuntime.ActorGroupId group,
@@ -211,6 +214,7 @@ final class VirtualActorRuntimeGenerationFence {
                     group.equals(slot.lastGroup) && slot.pending == null &&
                     generation > 0 && generation == slot.generation &&
                     generation == slot.lastBoundGeneration &&
+                    generation == slot.lastRetiredGeneration &&
                     physical.equals(slot.lastBoundActor);
         }
     }
@@ -233,6 +237,9 @@ final class VirtualActorRuntimeGenerationFence {
                 throw new IllegalStateException("virtual actor retirement authority mismatch");
             byActor.remove(physical);
             slot.physical = null;
+            // Only the exact runtime finalization path may mark the physical
+            // generation retired, after the ActorGroup and ActorCell cleanup.
+            slot.lastRetiredGeneration = slot.lastBoundGeneration;
         }
     }
 
