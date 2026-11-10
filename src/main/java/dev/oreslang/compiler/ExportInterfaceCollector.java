@@ -39,6 +39,12 @@ public final class ExportInterfaceCollector {
             entries.add(new ExportInterfaceCodec.Entry(
                     owner, ExportInterfaceCodec.Kind.MODULE, owner, info.toString()));
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.ClassDecl klass && klass.standaloneBinding() != null) {
+                    throw new IllegalArgumentException(
+                            "standalone actor binding '" + klass.name() + " as "
+                                    + klass.standaloneBinding()
+                                    + "' cannot be exported before checked actor dispatch lowering");
+                }
                 if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
                     StringBuilder sig = new StringBuilder();
                     field(sig, fn.kind().name());
