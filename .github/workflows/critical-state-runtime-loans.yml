@@ -2,6 +2,12 @@ name: Authenticated sealed state loan guest + lifetime gate
 on:
   pull_request:
     paths:
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/ActorCritical*Test.java'
+      - 'src/test/resources/parity/actor-critical-modes/**'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java'
       - 'src/main/java/dev/oreslang/runtime/ExecutionContext.java'
@@ -33,8 +39,12 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test -z "$(git status --porcelain)"
-          test "$(git ls-files 'src/test/resources/parity/actor-critical-modes/*.ores' | wc -l)" -eq 9
+          test "$(git ls-files 'src/test/resources/parity/actor-critical-modes/*.atto' | wc -l)" -eq 9
           for file in \
+            src/main/java/dev/oreslang/ast/Ast.java \
+            src/main/java/dev/oreslang/parser/Parser.java \
+            src/main/java/dev/oreslang/types/OwnershipChecker.java \
+            src/main/java/dev/oreslang/types/TypeChecker.java \
             src/main/java/dev/oreslang/runtime/ActorRuntime.java \
             src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java \
             src/main/java/dev/oreslang/runtime/ExecutionContext.java \

@@ -1,0 +1,21 @@
+fnc even_count(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return odd_count(n - 1);
+  fi
+}
+
+fnc odd_count(int n): int {
+  if n == 0; do
+    return 1;
+  else
+    return even_count(n - 1);
+  fi
+}
+
+pub suspends routine main(): void {
+  val int answer = even_count(100000);
+  stdio.stdout.write(answer);
+  return;
+}

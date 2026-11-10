@@ -1,0 +1,14 @@
+fnc local_count(int n): int {
+  const int one = 1;
+  if n == 0; do
+    return one;
+  else
+    return one + local_count(n - 1);
+  fi
+}
+
+pub suspends routine main(): void {
+  val int answer = local_count(8);
+  stdio.stdout.write(answer);
+  return;
+}

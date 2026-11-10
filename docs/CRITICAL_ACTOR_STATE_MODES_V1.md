@@ -1,5 +1,10 @@
 # Canonical sealed actor state-loan modes — source compiler candidate
 
+Historical draft: the current integration uses canonical `critical-read` and
+`critical-write`; brackets remain migration syntax. See
+[current execution-frame integration](SEALED_STATE_FRAMES_CURRENT_MAIN_20261110.md)
+for executed evidence, authenticated logical-context ownership and open gates.
+
 **Syntax decision:** use **`critical[read]`** and **`critical[write]`**
 as explicit modifiers of a lexical `self.handle_state` callback.
 

@@ -4836,8 +4836,8 @@ public final class Parser {
                 List<Ast.Expr> args;
                 if (expr instanceof Ast.MemberExpr member
                         && member.member().equals("handle_state")
-                        && (isAdjacentCompoundKeyword("critical", "read")
-                            || isAdjacentCompoundKeyword("critical", "write")
+                        && ((current + 2 < tokens.size()
+                                && isAdjacentCompoundKeyword("critical", tokens.get(current + 2).lexeme()))
                             || (isContextualIdentifier("critical") && checkNext(LBRACKET)))) {
                     // Canonical compound keywords match the language spec.
                     // The old bracket form remains a migration spelling;

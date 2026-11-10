@@ -1,0 +1,20 @@
+import fnc tail_count from './actor_frame_helpers.atto';
+
+define actor FrameWorker as
+  receive(ActorMail<String> mail): void {
+    val int result = tail_count(100000, 0);
+    self.send(result);
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn FrameWorker();
+  await worker.get_ready();
+  worker.send("execute");
+  val response = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(response.value);
+  await worker.get_done();
+  return;
+}

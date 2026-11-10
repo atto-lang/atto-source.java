@@ -23,10 +23,10 @@ final class SealedActorStateSourceSpoofingTest {
     void reservedSchemaMarkerCannotBeSuppliedOnOrdinaryClass() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        class Forged {
+                        define class Forged as
                           @__actor_state_schema
                           let int revision = 0;
-                        }
+                        end
                         """));
         assertTrue(error.getMessage().contains("reserved for compiler-generated actor state schemas"),
                 error.getMessage());
@@ -47,10 +47,22 @@ final class SealedActorStateSourceSpoofingTest {
     @Test
     void compilerSchemaSyntaxRemainsAvailableForTheRealParser() {
         assertDoesNotThrow(() -> Parser.parse("""
-                define isolated actor Genuine as
+                define actor Genuine as
                   state { revision: int = 0; }
                   receive(ActorMail<String> mail): void { return; }
                 end
                 """));
+    }
+
+    @Test
+    void sealedSchemaDoesNotEnableUnimplementedIsolatedActorLowering() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define isolated actor Genuine as
+                          state { revision: int = 0; }
+                          receive(ActorMail<String> mail): void { return; }
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("compiler-owned arena isolation"), error.getMessage());
     }
 }

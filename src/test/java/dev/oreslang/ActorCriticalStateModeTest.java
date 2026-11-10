@@ -18,6 +18,28 @@ import static org.junit.jupiter.api.Assertions.*;
  * Read-mode is immutable; read concurrency is not established by these tests.
  */
 final class ActorCriticalStateModeTest {
+    @Test
+    void movingAnOuterOwnerInsideImmediateStateScopeStillConsumesIt() {
+        String source = actor("""
+                    val values = [1];
+                    self.handle_state(critical-write |s| -> {
+                      val consumed = values;
+                    });
+                    stdio.println(values);
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(error.getMessage().contains("moved value 'values'"), error.getMessage());
+    }
+
+    @Test
+    void spacedOrUnicodeDashDoesNotBecomeACriticalKeyword() {
+        for (String mode : java.util.List.of("critical - read", "critical\u2013read", "critical\u2212write")) {
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                    actor("self.handle_state(" + mode + " |s| -> { val x = s.revision; });")));
+        }
+    }
+
     private static final String PREFIX = """
             define actor Counter as
               state { revision: int = 0; }

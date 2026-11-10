@@ -1,10 +1,10 @@
-// Cross-backend critical state-loan conformance case: reject_unknown_mode
+// Cross-backend critical state-loan conformance case: reject_await_in_write
 // Must be compiled by a real Oreslang backend, not a Node simulator.
 define actor Probe as
   state { revision: int = 0; }
   receive(ActorMail<String> mail): void {
-    self.handle_state(critical[upgrade] |s| -> {
-      val revision = s.revision;
+    self.handle_state(critical-write |s| -> {
+      await self.get_done();
     });
     self.end();
     return;

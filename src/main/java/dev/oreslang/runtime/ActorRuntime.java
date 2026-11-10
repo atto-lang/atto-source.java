@@ -63,6 +63,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** Unique frame allocation domain across independent ActorRuntime instances. */
+    private static final AtomicLong NEXT_ACTOR_FRAME_DOMAIN = new AtomicLong(1);
     /** Bound suspended producer registrations so backpressure cannot become an unbounded waiter queue. */
     private static final int MAX_PENDING_ASYNC_SENDS = 256;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
@@ -94,7 +96,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            ActorGuestStack guestStack,
+            ActorFrameArena frameArena) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -211,6 +215,18 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /** Runtime-only identity-bound budget; never exposed to guest source. */
+    static ActorGuestStack currentActorGuestStack() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.guestStack();
+    }
+
+    /** Host/compiler bridge only: never expose a raw frame capability to guest source. */
+    static ActorFrameArena currentActorFrameArena() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.frameArena();
+    }
+
     /**
      * Only the runtime may mint a state permit. An ExecutionContext supplied
      * by guest/host code is never sufficient to gain sealed actor state access.
@@ -236,7 +252,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (currentActorRuntime() != ActorRuntime.this
                     || currentActor.get() != owner
                     || currentMutexExecutionSegment() != physicalTurn
-                    || OresScheduler.currentExecutionContext() != logicalExecution
+                    || currentStateLogicalExecution() != logicalExecution
                     || owner.stopped.get()
                     || currentStatePermit.get() != this
                     || !loan.heldBy(execution)
@@ -250,7 +266,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (currentActorRuntime() != ActorRuntime.this
                     || currentActor.get() != owner
                     || currentMutexExecutionSegment() != physicalTurn
-                    || OresScheduler.currentExecutionContext() != logicalExecution
+                    || currentStateLogicalExecution() != logicalExecution
                     || currentStatePermit.get() != this) {
                 throw new SecurityException("foreign carrier cannot release an actor state loan");
             }
@@ -332,16 +348,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (currentStatePermit.get() != null) {
             throw new IllegalStateException("nested actor critical state loan is forbidden");
         }
-        ExecutionContext logicalExecution = OresScheduler.currentExecutionContext();
+        ExecutionContext logicalExecution = currentStateLogicalExecution();
         if (logicalExecution == null) {
             throw new SecurityException("state loan requires authenticated source execution context");
         }
-        if (stateRuntimeDomain <= 0 || cell.ref.generation() <= 0) {
-            throw new IllegalStateException("actor state execution identity exhausted");
-        }
-        long incarnation = cell.ref.generation();
+        ExecutionContext.AllocationDomain allocation = cell.frameArena.allocationDomain();
         ExecutionContext execution = logicalExecution.actorStateView(
-                stateRuntimeDomain, incarnation, incarnation);
+                allocation.domain(), allocation.owner(), allocation.generation());
         OresFuture<ActorStateRwLoans.StateLoan> future = write
                 ? cell.stateRegion.acquireWriteAsync(execution)
                 : cell.stateRegion.acquireReadAsync(execution);
@@ -371,6 +384,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() && !cell.finalized) cell.finalizeStopLocked();
             cell.lifecycleLock.notifyAll();
         }
+    }
+
+    private static ExecutionContext currentStateLogicalExecution() {
+        ExecutionContext invocation = GuestCallDepthGuard.currentInvocationExecutionContext();
+        return invocation != null ? invocation : OresScheduler.currentExecutionContext();
     }
 
     /**
@@ -671,10 +689,6 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private static final AtomicLong NEXT_STATE_RUNTIME_DOMAIN = new AtomicLong(1);
-    /** Runtime-minted positive state-domain ID; never derived from actor UUID hashes. */
-    private final long stateRuntimeDomain = NEXT_STATE_RUNTIME_DOMAIN.getAndIncrement();
-    /** Unique across all actors and all loans in this runtime. */
     /** Lexical critical ownership never nests on one carrier, even via untyped host calls. */
     private final ThreadLocal<StatePermit> currentStatePermit = new ThreadLocal<>();
     private final UUID runtimeInstanceId = UUID.randomUUID();
@@ -2474,6 +2488,25 @@ public final class ActorRuntime implements AutoCloseable {
      * is serialized with ordinary actor messages and uses no second concurrency
      * identity or carrier pool.
      */
+    /**
+     * Trusted runtime hook for actor-owned source task resource retirement.
+     * The callback executes after physical SourceTask quiescence, before its
+     * actor frame is zeroized. It may revoke host/FFI loans but MUST NOT run
+     * guest continuations, block a carrier, or synthesize completion receipts.
+     * Untrusted task lifetimes use their separately bounded quota path.
+     */
+    <T> OresFuture<T> startActorTaskWithQuiescence(
+            OresScheduler.Task<T> task, Runnable onQuiescent) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onQuiescent, "onQuiescent");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "trusted actor source task retirement requires an active actor turn");
+        }
+        return cell.sourceScheduler().start(task, onQuiescent);
+    }
+
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
         ActorCell<?> cell = currentActor.get();
@@ -8498,6 +8531,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** Unique per actor incarnation; independent of scheduler carrier. */
+        private final ActorGuestStack guestStack = new ActorGuestStack();
+        /** Bounded actor-owned managed frame bytes, separate from carrier stack. */
+        private final ActorFrameArena frameArena;
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -8668,6 +8705,16 @@ public final class ActorRuntime implements AutoCloseable {
             this.ref = ref;
             this.stateRegion = new ActorStateRwLoans(0,
                     () -> onActorStateRegionRetired(ref.id()));
+            long frameDomainId = NEXT_ACTOR_FRAME_DOMAIN.getAndIncrement();
+            if (frameDomainId <= 0) {
+                throw new IllegalStateException("actor frame allocation domain exhausted");
+            }
+            this.frameArena = new ActorFrameArena(
+                    new ExecutionContext.AllocationDomain(
+                            ExecutionContext.AllocationKind.ACTOR,
+                            frameDomainId, ref.generation(), ref.generation()),
+                    ActorFrameArena.DEFAULT_MAX_FRAMES,
+                    ActorFrameArena.DEFAULT_MAX_BYTES);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -9015,7 +9062,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "ores-actor-" + ref.id(),
                         1,
                         mailboxExecutor,
-                        Runnable::run);
+                        Runnable::run,
+                        frameArena);
                 return sourceScheduler;
             }
         }
@@ -9217,6 +9265,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             finalized = true;
+            // All physical turns and source tasks are proven quiescent above.
+            // No stale continuation may read an actor's reclaimed frame bytes.
+            frameArena.retireQuiesced();
             sourceScheduler = null;
             sourceTaskMailbox.close();
             try { drainMailboxReservations(); }
@@ -9609,7 +9660,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    guestStack, frameArena));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
@@ -9694,6 +9746,17 @@ public final class ActorRuntime implements AutoCloseable {
                     } else {
                         ref.readyFuture.completeFromRuntime(null);
                     }
+                }
+
+                // A host behavior must not suppress a guest stack-budget
+                // failure and silently dispatch the next mailbox message.
+                if (guestStack.isPoisoned()) {
+                    throw new GuestCallDepthExceededException(
+                            GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
+                }
+                if (frameArena.isPoisoned()) {
+                    throw new ActorFrameArena.BudgetExceeded(
+                            "actor-owned frame byte quota exhausted");
                 }
 
                 int processed = 0;
@@ -9787,6 +9850,16 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
+                    }
+                    // Even if a trusted host callback swallowed a guest
+                    // failure, terminate this actor before any next turn.
+                    if (guestStack.isPoisoned()) {
+                        throw new GuestCallDepthExceededException(
+                                GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
+                    }
+                    if (frameArena.isPoisoned()) {
+                        throw new ActorFrameArena.BudgetExceeded(
+                                "actor-owned frame byte quota exhausted");
                     }
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.

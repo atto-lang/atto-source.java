@@ -27,7 +27,7 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           test -z "$(git status --porcelain)"
-          test "$(git ls-files 'src/test/resources/parity/actor-critical-modes/*.ores' | wc -l)" -eq 9
+          test "$(git ls-files 'src/test/resources/parity/actor-critical-modes/*.atto' | wc -l)" -eq 9
           for file in \
             src/main/java/dev/oreslang/ast/Ast.java \
             src/main/java/dev/oreslang/parser/Parser.java \

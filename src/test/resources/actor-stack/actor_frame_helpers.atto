@@ -1,0 +1,23 @@
+pub fnc depth_sum(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return 1 + depth_sum(n - 1);
+  fi
+}
+
+pub fnc tail_count(int n, int acc): int {
+  if n == 0; do
+    return acc;
+  else
+    return tail_count(n - 1, acc + 1);
+  fi
+}
+
+pub fnc blow_stack(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return 1 + blow_stack(n - 1);
+  fi
+}

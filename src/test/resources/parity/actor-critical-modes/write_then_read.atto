@@ -4,10 +4,10 @@ define actor Probe as
   state { revision: int = 0; }
   receive(ActorMail<String> mail): void {
     let String outcome = "critical-read-failed";
-    self.handle_state(critical[write] |s| -> {
+    self.handle_state(critical-write |s| -> {
       s.revision = 1;
     });
-    self.handle_state(critical[read] |s| -> {
+    self.handle_state(critical-read |s| -> {
       if s.revision == 1; do
         outcome = "critical-modes-ok";
       fi

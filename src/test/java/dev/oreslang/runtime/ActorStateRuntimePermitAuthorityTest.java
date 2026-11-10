@@ -18,6 +18,30 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorStateRuntimePermitAuthorityTest {
 
     @Test
+    void stateLoanViewKeepsTheExecutionAndStackIdentity() {
+        ExecutionContext caller = ExecutionContext.actor(19, 23, 31, 37, 41, 43, 47);
+        ExecutionContext first = caller.actorStateView(31, 37, 41);
+        ExecutionContext second = caller.actorStateView(31, 37, 41);
+        assertSame(caller.id(), first.id());
+        assertSame(caller.id(), second.id());
+        assertEquals(first.executionHandle(), second.executionHandle());
+        assertEquals(caller.allocationDomain(), first.allocationDomain());
+        assertEquals(43, first.parentExecution());
+        assertEquals(47, first.continuation());
+        assertThrows(SecurityException.class, () -> caller.actorStateView(31, 99, 41));
+    }
+
+    @Test
+    void unboundTaskViewAttachesActorAllocationWithoutMintingAnExecution() {
+        ExecutionContext caller = ExecutionContext.task(53, 59);
+        ExecutionContext view = caller.actorStateView(61, 67, 71);
+        assertSame(caller.id(), view.id());
+        assertEquals(ExecutionContext.AllocationKind.NONE, caller.allocationDomain().kind());
+        assertEquals(ExecutionContext.AllocationKind.ACTOR, view.allocationDomain().kind());
+        assertEquals(59, view.executionHandle().slot());
+    }
+
+    @Test
     void supervisorCannotForgeActorStatePermit() {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             assertThrows(SecurityException.class,
