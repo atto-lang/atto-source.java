@@ -110,6 +110,43 @@ final class VirtualActorDirectoryInspectionTest {
         }
     }
     @Test
+    void discardedLogicalReferenceCannotActivateOrInspectAHiddenSlot() {
+        try (var registry = new VirtualActorActivationRegistry("tenant-a", 1, 2)) {
+            var discarded = registry.resolve("Cart", "discarded");
+            registry.discardUnactivated(discarded);
+            assertTrue(registry.inspectIdentity(discarded.identity()).isEmpty());
+            assertThrows(IllegalStateException.class, () -> registry.activate(discarded));
+            assertThrows(IllegalStateException.class, () -> registry.inspect(discarded));
+            assertThrows(IllegalStateException.class, () -> registry.outstanding(discarded));
+
+            // Discarding a candidate must release its identity capacity, but
+            // cannot leave behind a usable orphan activation authority.
+            var replacement = registry.resolve("Cart", "current");
+            var activation = registry.activate(replacement);
+            registry.publish(activation);
+            assertTrue(activation.active());
+            registry.deactivate(activation);
+        }
+    }
+
+    @Test
+    void discardMustNotErasePassivatedGenerationHistory() {
+        try (var registry = new VirtualActorActivationRegistry("tenant-a", 1, 2)) {
+            var logical = registry.resolve("Cart", "history");
+            var first = registry.activate(logical);
+            registry.publish(first);
+            registry.deactivate(first);
+            assertThrows(IllegalStateException.class,
+                    () -> registry.discardUnactivated(logical));
+            assertEquals(1, registry.inspect(logical).latestIncarnation());
+            var replacement = registry.activate(logical);
+            assertEquals(2, replacement.incarnation());
+            registry.publish(replacement);
+            registry.deactivate(replacement);
+        }
+    }
+
+    @Test
     void versionOneAddressMatchesTheCrossBackendCanonicalVector() {
         var identity = new VirtualActorActivationRegistry.Identity(
                 "tenant-a", "7:defaultCart", "42");
