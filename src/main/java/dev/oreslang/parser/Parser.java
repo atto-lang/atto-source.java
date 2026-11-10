@@ -4865,7 +4865,7 @@ public final class Parser {
         Ast.LambdaExpr scope = parsePipeLambda(false);
         if (scope.parameters().size() != 1
                 || scope.parameters().getFirst().name().equals("_")
-                || !scope.parameters().getFirst().type().inferArguments()
+                || !scope.parameters().getFirst().type().equals(Ast.TypeRef.inferred())
                 || scope.parameters().getFirst().mutable()) {
             throw error(previous(), "neuron critical loan requires one inferred, "
                     + "non-mut binding |s| for the state view");
