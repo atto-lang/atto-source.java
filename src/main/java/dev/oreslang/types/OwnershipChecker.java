@@ -238,8 +238,11 @@ public final class OwnershipChecker {
         Scope scope = new Scope(null, fn.nonLexical());
         if (borrowMirAudit != null) {
             borrowMirAudit.beginFunction(fn.name(),
-                    !fn.async() && !fn.suspends() && !fn.generator()
-                    && !fn.nonLexical() && !fn.trapped() && fn.effects().isEmpty());
+                    fn.kind() == Ast.CallableKind.FNC
+                    && fn.actorKind() == Ast.ActorKind.NONE
+                    && !fn.async() && !fn.suspends() && !fn.generator()
+                    && !fn.structural() && !fn.nonLexical()
+                    && !fn.trapped() && fn.effects().isEmpty());
         }
         for (Ast.Param param : fn.parameters()) {
             VarState value = stateForParam(param);
@@ -537,6 +540,10 @@ public final class OwnershipChecker {
                     if (isActorConfinedBorrow(owner)) {
                         throw error("actor self cannot escape its mailbox turn as a returned borrow");
                     }
+                }
+                if (borrowMirAudit != null && ret.value() instanceof Ast.NameExpr named
+                        && scope.lookup(named.name()) == null) {
+                    borrowMirAudit.unsupported("return refers to an untracked global or module");
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
                 if (containsMutexGuardType(returned.type)) {
