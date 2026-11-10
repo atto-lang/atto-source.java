@@ -105,6 +105,17 @@ final class TupleReturnTypeContractTest {
     }
 
     @Test
+    void explicitlyConstructedArrayCannotMasqueradeAsTupleReturn() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc make(): Tuple[string, string] {
+                          return ~array("left", "right");
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("return value"), error::getMessage);
+    }
+
+    @Test
     void nonVoidTupleFunctionRequiresActualReturnOnEveryPath() {
         IllegalArgumentException bare = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
