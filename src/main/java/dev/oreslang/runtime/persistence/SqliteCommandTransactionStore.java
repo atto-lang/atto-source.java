@@ -2,8 +2,6 @@ package dev.oreslang.runtime.persistence;
 
 import dev.oreslang.runtime.persistence.BatchPersistenceSidecar.Identity;
 import dev.oreslang.runtime.persistence.BatchPersistenceSidecar.Status;
-import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -122,14 +120,17 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
     private static byte[] eventHash(int schema, List<byte[]> events) {
-        // Length-framed stream, no ambiguous concatenation of event contents.
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        bytes.writeBytes(ByteBuffer.allocate(8).putInt(schema).putInt(events.size()).array());
-        for (byte[] event : events) {
-            bytes.writeBytes(ByteBuffer.allocate(4).putInt(event.length).array());
-            bytes.writeBytes(event);
+        // Cross-backend v1 canonical digest, shared with the Node conformance
+        // oracle: sha256(UTF8(JSON([schema,[base64(event), ...]]))).
+        // Base64 alphabet cannot introduce JSON escaping ambiguities.
+        StringBuilder bytes=new StringBuilder().append('[').append(schema).append(",[");
+        for (int i=0;i<events.size();i++) {
+            if(i>0)bytes.append(',');
+            bytes.append('"').append(java.util.Base64.getEncoder()
+                    .encodeToString(events.get(i))).append('"');
         }
-        return hash(bytes.toByteArray());
+        bytes.append("]]");
+        return hash(bytes.toString().getBytes(StandardCharsets.UTF_8));
     }
     private void execute(String sql) throws SQLException {
         try (Statement s=db.createStatement()) { s.execute(sql); }
