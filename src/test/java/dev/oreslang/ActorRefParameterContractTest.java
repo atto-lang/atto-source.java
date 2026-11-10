@@ -86,6 +86,16 @@ final class ActorRefParameterContractTest {
     }
 
     @Test
+    void builtInActorReferenceNameCannotBeShadowed() throws Exception {
+        expectRejected("reject-ref-shadow-class.atto",
+                "ActorRef is a reserved nominal built-in");
+        expectRejected("reject-ref-shadow-interface.atto",
+                "ActorRef is a reserved nominal built-in");
+        expectRejected("reject-ref-shadow-alias.atto",
+                "ActorRef is a reserved nominal built-in");
+    }
+
+    @Test
     void actorReferencesCannotInvokeActorLocalMethods() throws Exception {
         expectRejected("reject-direct-actor-method.atto",
                 "unknown ActorRef callable member");
