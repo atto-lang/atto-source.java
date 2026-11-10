@@ -5400,13 +5400,51 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException(
                                 "cannot suspend on an implicit Future while holding a live MutexGuard");
                     }
+                    // A synchronous suspends callable is an *owned implicit
+                    // source-task invocation*, unlike an explicitly returned
+                    // Future that may belong to another owner. The caller
+                    // must keep its callee alive until completion, and a
+                    // cancellation of the caller must request cancellation
+                    // of this callee AND await physical cleanup before
+                    // publishing the parent's cancellation outcome.
+                    //
+                    // Register the frame only after the pending-Future/guard
+                    // admission gates. The scheduler's authenticated cleanup
+                    // dispatch, not a guest catch block, owns unwinding.
+                    SourceCleanupFrame ownedCallee = task.registerSourceCleanup(
+                            (owner, finished) -> {
+                                try {
+                                    future.cancel(false);
+                                    if (future.isDone()) {
+                                        Throwable settledFailure = null;
+                                        try {
+                                            future.join();
+                                        } catch (RuntimeException | Error error) {
+                                            settledFailure = error;
+                                        }
+                                        finished.accept(owner,
+                                                settledFailure instanceof Error fatal
+                                                        ? SourceFlow.throwing(fatal)
+                                                        : SourceFlow.normal());
+                                        return;
+                                    }
+                                    owner.suspend(
+                                            future,
+                                            (resumed, ignored, failure) ->
+                                                    finished.accept(resumed,
+                                                            failure instanceof Error fatal
+                                                                    ? SourceFlow.throwing(fatal)
+                                                                    : SourceFlow.normal()));
+                                } catch (RuntimeException | Error failure) {
+                                    finished.accept(owner, SourceFlow.throwing(failure));
+                                }
+                            });
                     task.suspend(
                             future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
+                            (t, value, failure) -> {
+                                t.disarmSourceCleanup(ownedCallee);
+                                continuation.accept(t, value, failure);
+                            });
                 } else {
                     continuation.accept(
                             task,
