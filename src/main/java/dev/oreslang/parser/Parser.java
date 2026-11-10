@@ -896,6 +896,8 @@ public final class Parser {
         return (isContextualIdentifier("state")
                     && tokens.get(current + 1).lexeme().equals("container"))
                 || (isContextualIdentifier("virtual")
+                    && tokens.get(current + 1).type() == ACTOR)
+                || (isContextualIdentifier("persistent")
                     && tokens.get(current + 1).type() == ACTOR);
     }
 
@@ -905,9 +907,11 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "protected declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "protected declarations");
         boolean virtualActor = isContextualIdentifier("virtual");
-        if (virtualActor) {
-            consumeContextualIdentifier("virtual", "expected virtual");
-            consume(ACTOR, "expected actor after virtual");
+        boolean persistentActor = isContextualIdentifier("persistent");
+        if (virtualActor || persistentActor) {
+            consumeContextualIdentifier(
+                    persistentActor ? "persistent" : "virtual", "expected actor modifier");
+            consume(ACTOR, "expected actor after persistent/virtual");
         } else {
             consumeContextualIdentifier("state", "expected state");
             consumeContextualIdentifier("container", "expected container after state");
@@ -981,6 +985,8 @@ public final class Parser {
         consume(END, "expected 'end' after protected declaration");
         if (virtualActor)
             return new Ast.VirtualActorDecl(name, modifiers.visibility, fields, methods);
+        if (persistentActor)
+            return new Ast.PersistentActorDecl(name, modifiers.visibility, fields, methods);
         return new Ast.StateContainerDecl(name, modifiers.visibility, fields, methods);
     }
 
