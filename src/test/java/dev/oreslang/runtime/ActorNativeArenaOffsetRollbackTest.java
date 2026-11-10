@@ -33,7 +33,7 @@ final class ActorNativeArenaOffsetRollbackTest {
             throws Exception {
         AtomicLong charged = new AtomicLong();
         AtomicLong invocations = new AtomicLong();
-        ActorNativeArena.NativeAllocator denied = bytes -> {
+        ActorNativeArena.NativeAdmissionProbe denied = bytes -> {
             invocations.incrementAndGet();
             throw new OutOfMemoryError("injected native admission failure");
         };
@@ -54,13 +54,13 @@ final class ActorNativeArenaOffsetRollbackTest {
     }
 
     @Test
-    void nullNativeAllocationAlsoRollsBackReservedSlabOffset()
+    void runtimeFaultAlsoRollsBackReservedSlabOffset()
             throws Exception {
         AtomicLong charged = new AtomicLong();
         try (var arena = new ActorNativeArena(128, () -> {}, tracked(charged),
-                bytes -> null)) {
+                bytes -> { throw new IllegalStateException("injected runtime admission fault"); })) {
             for (int i = 0; i < 32; i++) {
-                assertThrows(OutOfMemoryError.class,
+                assertThrows(IllegalStateException.class,
                         () -> arena.fields(List.of("value"), null));
                 assertEquals(0L, privateLong(arena, "nextActorOffset"));
                 assertEquals(0L, charged.get());
