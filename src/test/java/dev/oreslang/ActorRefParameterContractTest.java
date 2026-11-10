@@ -53,6 +53,8 @@ final class ActorRefParameterContractTest {
         expectRejected("reject-primitive-target.atto", "ActorRef target");
         expectRejected("reject-class-target.atto", "ActorRef target");
         expectRejected("reject-interface-target.atto", "ActorRef target");
+        expectRejected("reject-unbound-generic-target.atto",
+                "fully resolved nominal actor type arguments");
     }
 
     @Test
