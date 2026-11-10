@@ -36,7 +36,7 @@ New JUnit test class `SupervisorFailureEscrowRuntimeIntegrationTest` covers:
 
 The test also exercises a throwing host decision action before ACK; escrow must remain pending.
 
-The existing dependency-free standalone Java test still passes **554 assertions**, including 8 rounds × 64 simultaneous failure notices on JDK21 with `javac -Xlint:all -Werror`. This **is host-only evidence**, not the new JUnit suite.
+The existing dependency-free standalone Java test still passes **557 assertions**, including 8 rounds × 64 simultaneous failure notices, plus clean STOP/late-failure forgery rejection on JDK21 with `javac -Xlint:all -Werror`. This **is host-only evidence**, not the new JUnit suite.
 
 The new `scripts/verify-supervisor-escrow-runtime-bridge-v1.sh` pins the actual `ActorRuntime.java`, bridge, ledger and JUnit-test Git blobs and requires JDK25 Maven to run 3 non-skipped JUnit methods, emitting a Surefire XML report. The source-org Actions queue has repeatedly produced **steps=null**; until a stepful exact-head job succeeds, record **JUnit NOT_EXECUTED**.
 
