@@ -1191,6 +1191,13 @@ public final class Ast {
             if (entries.isEmpty()) {
                 throw new IllegalArgumentException("populated Map literal requires entries");
             }
+            // Reject oversized declarations *before* evaluating even one
+            // effectful key/value. The AST is immutable; runtime putAll still
+            // independently enforces the same key and wire-byte quotas.
+            if (entries.size() > dev.oreslang.runtime.OresKeyedMap.MAX_ENTRIES) {
+                throw new IllegalArgumentException(
+                        "populated Map literal exceeds maximum key count");
+            }
             if (mapType != null && (mapType.inferArguments()
                     || !mapType.name().equals("Map")
                     || mapType.arguments().size() != 2)) {
