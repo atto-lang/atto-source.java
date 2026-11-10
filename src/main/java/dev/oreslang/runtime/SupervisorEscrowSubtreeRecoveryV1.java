@@ -30,7 +30,7 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     }
 
     enum RestartBlocker {
-        READY, CONTROL_FAILED, UNKNOWN_NODE, STILL_ALIVE, PENDING_FAILURE,
+        READY, CONTROL_FAILED, UNKNOWN_NODE, ALREADY_REPLACED, STILL_ALIVE, PENDING_FAILURE,
         CHILD_STILL_RUNNING, PHYSICAL_RELEASE_UNVERIFIED, PARENT_UNAVAILABLE
     }
 
@@ -197,6 +197,9 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         var states = bridge.snapshot();
         var root = states.get(nodeId);
         if (root == null || nodeId == 1) return RestartBlocker.UNKNOWN_NODE;
+        synchronized (lock) {
+            if (successorIds.containsKey(nodeId)) return RestartBlocker.ALREADY_REPLACED;
+        }
         if (root.alive()) return RestartBlocker.STILL_ALIVE;
         if (root.parentId() != 1) {
             long currentParent;
@@ -228,7 +231,13 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
             throw new IllegalStateException("subtree is not safely reclaimed");
         var old = bridge.snapshot().get(nodeId);
         var permit = new RestartPermit(nodeId, old.generation(), old.parentId());
-        synchronized (lock) { issued.add(permit); }
+        synchronized (lock) {
+            if (successorIds.containsKey(nodeId) ||
+                    issued.stream().anyMatch(p -> p.oldNodeId == nodeId)) {
+                throw new IllegalStateException("restart already reserved or committed");
+            }
+            issued.add(permit);
+        }
         return permit;
     }
 
