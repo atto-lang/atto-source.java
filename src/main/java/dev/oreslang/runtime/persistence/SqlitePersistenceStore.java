@@ -328,9 +328,35 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 }
             }
         }
+        if(snapshotVersion>0) {
+            // The snapshot state row alone is not a trustworthy checkpoint.
+            // Its exact schema/BLOB must match the original durable operation.
+            boolean matched=false;
+            try(PreparedStatement q=db.prepareStatement(
+                    "SELECT schema,length(payload),substr(payload,1,1048577) " +
+                    "FROM ops WHERE tenant=? AND actor=? AND slot=? AND kind=1 AND version=?")) {
+                bindKey(q,id);q.setLong(4,snapshotVersion);
+                try(ResultSet r=q.executeQuery()){
+                    if(r.next()) {
+                        long size=r.getLong(2);
+                        byte[] original=r.getBytes(3);
+                        matched=r.getInt(1)==snapshotSchema &&
+                                size==snapshot.length && original!=null &&
+                                Arrays.equals(original,snapshot) && !r.next();
+                    }
+                }
+            }
+            if(!matched)throw new SQLException("UNVERIFIED_ACTOR_SNAPSHOT");
+        }
         List<Event> events=new ArrayList<>();
-        try(PreparedStatement q=db.prepareStatement("SELECT version,schema,length(payload),substr(payload,1,1048577) "
-            + "FROM events WHERE tenant=? AND actor=? AND slot=? AND version>? ORDER BY version ASC")){
+        try(PreparedStatement q=db.prepareStatement(
+            "SELECT e.version,e.schema,length(e.payload),substr(e.payload,1,1048577)," +
+            "o.schema,length(o.payload),substr(o.payload,1,1048577) " +
+            "FROM events e LEFT JOIN ops o ON " +
+            "o.tenant=e.tenant AND o.actor=e.actor AND o.slot=e.slot " +
+            "AND o.version=e.version AND o.kind=2 " +
+            "WHERE e.tenant=? AND e.actor=? AND e.slot=? AND e.version>? " +
+            "ORDER BY e.version ASC")){
             bindKey(q,id);q.setLong(4,snapshotVersion);
             try(ResultSet r=q.executeQuery()){
                 long expected=snapshotVersion;
@@ -347,6 +373,11 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     if(payload==null)throw new SQLException("NULL_ACTOR_EVENT");
                     if(payload.length>1048576 || payload.length>16777216L-replayBytes)
                         throw new SQLException("ACTOR_EVENT_REPLAY_BYTES_LIMIT");
+                    long opSize=r.getLong(6);
+                    byte[] opPayload=r.getBytes(7);
+                    if(r.getInt(5)!=eventSchema || opSize!=eventLength ||
+                       opPayload==null || !Arrays.equals(opPayload,payload))
+                        throw new SQLException("UNVERIFIED_ACTOR_EVENT");
                     replayBytes+=payload.length;
                     events.add(new Event(next,eventSchema,payload));
                     if(events.size()>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
