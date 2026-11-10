@@ -555,7 +555,30 @@ public final class Ast {
         public int arity() { return parameters.size(); }
     }
 
-    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl, InterfaceActorDecl { }
+    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl,
+            InterfaceActorDecl, InterfaceActorMethodDecl { }
+
+    /**
+     * A required mailbox-dispatched receiver method on a nominal actor.
+     * This is compile-time metadata only. It is NOT an executable extension
+     * method or a source of ActorContext/state-loan capabilities.
+     */
+    public record InterfaceActorMethodDecl(
+            String actorName,
+            String name,
+            Visibility visibility,
+            List<Param> parameters,
+            TypeRef returnType) implements InterfaceMember {
+        public InterfaceActorMethodDecl {
+            if (actorName == null || actorName.isBlank()
+                    || name == null || name.isBlank()) {
+                throw new IllegalArgumentException("contract receiver method requires actor and method names");
+            }
+            java.util.Objects.requireNonNull(visibility, "required receiver visibility");
+            java.util.Objects.requireNonNull(returnType, "required receiver return type");
+            parameters = List.copyOf(parameters);
+        }
+    }
 
     /** A nominal actor type that a conforming module must publicly declare. */
     public record InterfaceActorDecl(String name) implements InterfaceMember {
