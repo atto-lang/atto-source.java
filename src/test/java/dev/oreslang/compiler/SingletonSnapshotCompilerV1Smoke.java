@@ -77,7 +77,13 @@ public final class SingletonSnapshotCompilerV1Smoke {
         require(((Map<?, ?>) first).get("answer").equals(42L), "numeric parsed literal");
         require(((Map<?, ?>) first).get("ready").equals(true), "boolean parsed literal");
         require(((Map<?, ?>) first).get("label").equals("ok"), "string parsed literal");
-        reject(() -> ((Map<?, ?>) first).clear(), nullSafe("immutable"));
+        checks++;
+        try {
+            ((Map<?, ?>) first).clear();
+            throw new AssertionError("immutable singleton field escaped writable");
+        } catch (UnsupportedOperationException expected) {
+            // Runtime returned a defensively frozen immutable snapshot.
+        }
         var alternate = SingletonSnapshotCompilerV1.compile(SOURCE, "pkg/other.atto");
         var keyOther = alternate.publishAsync(domain).keySet().iterator().next();
         require(!key.equals(keyOther), "distinct compiler-resolved code unit key");
@@ -96,8 +102,6 @@ public final class SingletonSnapshotCompilerV1Smoke {
         reject(() -> domain.snapshotOnce(key, () -> Map.of("answer", 999)).join(),
                 "singleton declaration schema mismatch");
     }
-
-    private static String nullSafe(String unused) { return ""; }
 
     private static void adversarialCompilerAdmission() {
         reject(() -> Parser.parse(SOURCE), "ORES-SINGLETON-UNSUPPORTED");
