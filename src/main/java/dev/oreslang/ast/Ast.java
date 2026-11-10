@@ -1130,7 +1130,7 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr, ContextualEmptyMapExpr { }
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1167,6 +1167,34 @@ public final class Ast {
      *  witness. Never typecheck or execute this node as a dynamic map.
      */
     public record ContextualEmptyMapExpr() implements Expr { }
+
+    /** Source-order key/value expressions; no implicit host Map or record projection. */
+    public record MapEntryExpr(Expr key, Expr value) {
+        public MapEntryExpr {
+            java.util.Objects.requireNonNull(key, "Map literal key");
+            java.util.Objects.requireNonNull(value, "Map literal value");
+        }
+    }
+
+    /**
+     * An explicitly typed or direct-binding-context typed guest Map literal.
+     * An absent witness is a parser-only candidate and MUST fail type checking,
+     * ownership checking and guest execution; codegen never infers dynamic types.
+     * The initial executable admission permits only scalar literal entries.
+     */
+    public record MapLiteralExpr(TypeRef mapType, List<MapEntryExpr> entries) implements Expr {
+        public MapLiteralExpr {
+            entries = List.copyOf(entries);
+            if (entries.isEmpty()) {
+                throw new IllegalArgumentException("populated Map literal requires entries");
+            }
+            if (mapType != null && (mapType.inferArguments()
+                    || !mapType.name().equals("Map")
+                    || mapType.arguments().size() != 2)) {
+                throw new IllegalArgumentException("Map literal requires concrete Map<K,V> witness");
+            }
+        }
+    }
 
     public record TypedEmptyAggregateExpr(TypeRef aggregateType) implements Expr {
         public TypedEmptyAggregateExpr {

@@ -7848,6 +7848,40 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");
             }
+            if (expr instanceof Ast.MapLiteralExpr populated) {
+                Ast.TypeRef witness = populated.mapType();
+                if (witness == null || !witness.name().equals("Map")
+                        || witness.inferArguments() || witness.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "untyped populated Map cannot reach guest runtime");
+                }
+                // Reuse the exact scalar-domain constructor already admitted
+                // for typed empty Maps. No host Map or dynamic field escape.
+                Object fresh = eval(new Ast.TypedEmptyAggregateExpr(witness), env);
+                if (!(fresh instanceof OresKeyedMap<?, ?>)) {
+                    throw new IllegalStateException("typed Map did not construct guest storage");
+                }
+                LinkedHashMap<Object, Object> prepared = new LinkedHashMap<>();
+                for (Ast.MapEntryExpr entry : populated.entries()) {
+                    if (!(entry.key() instanceof Ast.LiteralExpr key)
+                            || !(entry.value() instanceof Ast.LiteralExpr value)) {
+                        throw new IllegalArgumentException(
+                                "only scalar literal populated Map entries can execute");
+                    }
+                    Object rawKey = key.value();
+                    Object rawValue = value.value();
+                    if (prepared.putIfAbsent(rawKey, rawValue) != null) {
+                        throw new IllegalArgumentException("duplicate populated Map key");
+                    }
+                }
+                // The fresh map is unpublished. OresKeyedMap.putAll preflights
+                // key identity, byte quota and every value before committing.
+                @SuppressWarnings({"rawtypes", "unchecked"})
+                OresKeyedMap<Object, Object> checked =
+                        (OresKeyedMap) fresh;
+                checked.putAll(prepared);
+                return checked;
+            }
             if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
                 // Defensive runtime check: only canonical, fully concrete
                 // aggregate shapes previously admitted by type+ownership

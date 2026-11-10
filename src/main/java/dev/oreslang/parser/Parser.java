@@ -3406,6 +3406,15 @@ public final class Parser {
      */
     private Ast.Expr resolveDirectContextualEmptyMap(
             Ast.TypeRef declaredType, Ast.Expr initializer) {
+        if (initializer instanceof Ast.MapLiteralExpr literal && literal.mapType() == null) {
+            if (declaredType == null || !declaredType.name().equals("Map")
+                    || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
+                throw error(previous(),
+                        "populated Map literal requires a directly declared Map<K,V> binding "
+                                + "or explicit ~map<K,V>(...)");
+            }
+            return new Ast.MapLiteralExpr(declaredType, literal.entries());
+        }
         if (!(initializer instanceof Ast.ContextualEmptyMapExpr)) return initializer;
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
@@ -4645,10 +4654,10 @@ public final class Parser {
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
                 if (match(LPAREN)) {
-                    consume(RPAREN, "nonempty tilde map literals require typed Map<K,V> "
-                            + "entry admission and transactional ownership proofs; "
-                            + "only explicit empty map construction is enabled");
-                    return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
+                    if (match(RPAREN)) {
+                        return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
+                    }
+                    return parsePostfixSuffix(parseTildeMapEntries(null));
                 }
                 consume(LT, "expected explicit <K,V> or () after ~map");
                 Ast.TypeRef keyType = parseTypeRef();
@@ -4656,10 +4665,12 @@ public final class Parser {
                 Ast.TypeRef valueType = parseTypeRef();
                 consume(GT, "~map<K,V>() requires exactly two type arguments");
                 consume(LPAREN, "expected '(' after ~map<K,V>");
-                consume(RPAREN, "nonempty ~map<K,V>(...) is pending transactional map "
-                        + "entry insertion and ownership proofs");
-                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(
-                        new Ast.TypeRef("Map", List.of(keyType, valueType), false)));
+                Ast.TypeRef mapType = new Ast.TypeRef(
+                        "Map", List.of(keyType, valueType), false);
+                if (match(RPAREN)) {
+                    return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(mapType));
+                }
+                return parsePostfixSuffix(parseTildeMapEntries(mapType));
             }
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
@@ -4676,13 +4687,13 @@ public final class Parser {
                         return parsePostfixSuffix(parseTildeRecordLiteral(false));
                     }
                     if (separator == FAT_ARROW) {
-                        throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                        return parsePostfixSuffix(parseTildeMapLiteral(null));
                     }
                 }
                 if (tildeHasTopLevelMapSeparator()) {
                     // Catch evaluated/computed key expressions, e.g. ~(f() => v),
                     // rather than letting them fall through unary parsing.
-                    throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                    return parsePostfixSuffix(parseTildeMapLiteral(null));
                 }
             }
             return new Ast.UnaryExpr("~", parseUnary());
@@ -5208,6 +5219,34 @@ public final class Parser {
             }
         }
         return false;
+    }
+
+    /**
+     * Map entries preserve source order. No spread, computed-effect, borrow or
+     * dynamic key is ever admitted by the scalar-only type/ownership gates.
+     */
+    private Ast.MapLiteralExpr parseTildeMapLiteral(Ast.TypeRef witness) {
+        consume(LPAREN, "expected '(' after tilde Map prefix");
+        return parseTildeMapEntries(witness);
+    }
+
+    /** The opening '(' is already consumed. */
+    private Ast.MapLiteralExpr parseTildeMapEntries(Ast.TypeRef witness) {
+        List<Ast.MapEntryExpr> entries = new ArrayList<>();
+        while (!check(RPAREN) && !check(EOF)) {
+            if (check(ELLIPSIS)) {
+                throw error(peek(),
+                        "populated Map spread requires separately verified ownership/rollback");
+            }
+            Ast.Expr key = parseExpression();
+            consume(FAT_ARROW, "Map literal entries must use 'key => value'");
+            Ast.Expr value = parseExpression();
+            entries.add(new Ast.MapEntryExpr(key, value));
+            if (!match(COMMA)) break;
+            if (check(RPAREN)) break;
+        }
+        consume(RPAREN, "expected ')' after populated Map entries");
+        return new Ast.MapLiteralExpr(witness, entries);
     }
 
     /**

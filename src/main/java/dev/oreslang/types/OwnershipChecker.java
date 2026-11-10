@@ -1558,6 +1558,53 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw error("unresolved ~map() cannot pass ownership admission");
         }
+        if (expr instanceof Ast.MapLiteralExpr populated) {
+            Ast.TypeRef witness = populated.mapType();
+            if (witness == null || witness.inferArguments()
+                    || !witness.name().equals("Map")
+                    || witness.arguments().size() != 2) {
+                throw error("unproved populated Map<K,V> witness");
+            }
+            Ast.TypeRef key = witness.arguments().get(0);
+            Ast.TypeRef value = witness.arguments().get(1);
+            boolean admittedKey = !key.inferArguments() && key.arguments().isEmpty()
+                    && java.util.Set.of("string", "String", "Symbol").contains(key.name());
+            boolean admittedValue = !value.inferArguments() && value.arguments().isEmpty()
+                    && java.util.Set.of("int", "bool", "Bool", "string", "String", "Symbol")
+                            .contains(value.name());
+            if (!admittedKey || !admittedValue) {
+                throw error("unproved populated Map key/value ownership domain " + witness);
+            }
+            java.util.Set<Object> seenKeys = new java.util.HashSet<>();
+            for (Ast.MapEntryExpr entry : populated.entries()) {
+                if (!(entry.key() instanceof Ast.LiteralExpr literalKey)
+                        || !(entry.value() instanceof Ast.LiteralExpr literalValue)) {
+                    throw error("populated Map requires scalar literal-only ownership admission");
+                }
+                Object keyValue = literalKey.value();
+                Object valueValue = literalValue.value();
+                if (!(keyValue instanceof String || keyValue instanceof dev.oreslang.runtime.OresSymbol)
+                        || (key.name().equals("Symbol") !=
+                                (keyValue instanceof dev.oreslang.runtime.OresSymbol))) {
+                    throw error("populated Map key does not match its sealed domain");
+                }
+                boolean validValue = switch (value.name()) {
+                    case "int" -> valueValue instanceof Long;
+                    case "bool", "Bool" -> valueValue instanceof Boolean;
+                    case "string", "String" -> valueValue instanceof String;
+                    case "Symbol" -> valueValue instanceof dev.oreslang.runtime.OresSymbol;
+                    default -> false;
+                };
+                if (!validValue || !seenKeys.add(keyValue)) {
+                    throw error("populated Map has invalid or duplicate scalar entry");
+                }
+                checkExpr(entry.key(), scope, true);
+                checkExpr(entry.value(), scope, true);
+            }
+            // Entries are immutable copyable scalars, but Map storage is
+            // identity-bearing, mutable and never implicitly copyable.
+            return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // Mirror the concrete-only TypeChecker admission. This also
             // prevents callers supplying an unchecked AST from eliding

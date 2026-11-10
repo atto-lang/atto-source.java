@@ -4744,6 +4744,52 @@ public final class TypeChecker {
                     "~map() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");
         }
+        if (expr instanceof Ast.MapLiteralExpr populated) {
+            Ast.TypeRef witness = populated.mapType();
+            if (witness == null || witness.inferArguments()
+                    || !witness.name().equals("Map")
+                    || witness.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "populated Map literal needs a concrete Map<K,V> witness");
+            }
+            if (findClass("Map") != null) {
+                throw new IllegalArgumentException(
+                        "populated Map literal requires canonical built-in Map<K,V>");
+            }
+            Ast.TypeRef keyRef = witness.arguments().get(0);
+            Ast.TypeRef valueRef = witness.arguments().get(1);
+            if (!isAdmittedEmptyMapScalarKey(keyRef)
+                    || !isAdmittedEmptyMapScalarValue(valueRef)) {
+                throw new IllegalArgumentException(
+                        "populated Map has unverified key/value domain " + witness);
+            }
+            Type keyType = resolve(keyRef, generics, self);
+            Type valueType = resolve(valueRef, generics, self);
+            java.util.Set<Object> seenKeys = new java.util.HashSet<>();
+            for (Ast.MapEntryExpr entry : populated.entries()) {
+                if (!(entry.key() instanceof Ast.LiteralExpr key)
+                        || !(entry.value() instanceof Ast.LiteralExpr)) {
+                    throw new IllegalArgumentException(
+                            "populated Map initially admits only scalar literal keys/values; "
+                                    + "dynamic expressions require an effects/ownership proof");
+                }
+                requireAssignable(typeOf(entry.key(), env, generics, self),
+                        keyType, "populated Map key");
+                requireAssignable(typeOf(entry.value(), env, generics, self),
+                        valueType, "populated Map value");
+                if (!seenKeys.add(key.value())) {
+                    throw new IllegalArgumentException(
+                            "duplicate logical key in populated Map literal");
+                }
+            }
+            Type resolvedMap = resolve(witness, generics, self);
+            if (!(resolvedMap instanceof Named named)
+                    || !named.name().equals("Map") || named.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "populated Map must resolve to built-in Map<K,V>");
+            }
+            return resolvedMap;
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // First proven slice: syntactically concrete, zero-field readonly
             // records and zero-arity tuples. Both use the canonical existing
