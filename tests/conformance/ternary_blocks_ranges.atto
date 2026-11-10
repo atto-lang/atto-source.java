@@ -1,0 +1,38 @@
+// AttoLang guest conformance: expression-valued blocks and checked integer ranges.
+pub routine main(): void {
+  for id in 1..4 {
+    stdio.stdout.write(id);
+  }
+  stdio.stdout.write("|");
+
+  for const id in 1..=3 {
+    stdio.stdout.write(id);
+  }
+  stdio.stdout.write("|");
+
+  val result: int = true ? {
+    val base = 40;
+    base + 2
+  } : {
+    0
+  };
+  stdio.stdout.write(result);
+  stdio.stdout.write("|");
+
+  val selected: int = false ? {
+    stdio.stdout.write("UNSELECTED");
+    0
+  } : {
+    val factor = 6;
+    factor * 7
+  };
+  stdio.stdout.write(selected);
+  stdio.stdout.write("|");
+
+  val scoped: int = {
+    val x = 20;
+    val y = 22;
+    x + y
+  };
+  stdio.stdout.write(scoped);
+}
