@@ -1,0 +1,7 @@
+// One header claims the whole explicit source-set namespace.
+namespace shop conforms ShopApi;
+
+define contract ShopApi for namespace as
+  actor Cart;
+  fnc tick(int amount): int;
+end
