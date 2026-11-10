@@ -42,29 +42,37 @@ public final class OwnershipChecker {
     public interface BorrowShadowSinkV0 {
         void record(BorrowShadowEventV0 event);
     }
-    private BorrowShadowSinkV0 borrowShadowSink;
+    private static final int MAX_BORROW_SHADOW_EVENTS_V0 = 65_536;
+    private List<BorrowShadowEventV0> stagedBorrowShadowEvents;
 
     private void shadowEvent(String kind, VarState owner) {
-        BorrowShadowSinkV0 sink = borrowShadowSink;
-        if (sink == null) return; // no allocation on the normal compiler path
+        List<BorrowShadowEventV0> events = stagedBorrowShadowEvents;
+        if (events == null) return; // normal compiler path has no trace allocation
+        if (events.size() >= MAX_BORROW_SHADOW_EVENTS_V0) {
+            throw new IllegalStateException("borrow shadow event budget exceeded");
+        }
         VarState root = owner == null ? null : ownershipRoot(owner);
-        sink.record(new BorrowShadowEventV0(kind,
+        events.add(new BorrowShadowEventV0(kind,
                 root == null ? "" : root.debugName,
                 root == null ? 0 : root.immutableBorrows,
                 root != null && root.mutableBorrowed));
     }
 
     /**
-     * An opt-in tracing variant of the existing production checker, not
-     * independent verification. The same check traversal emits the events.
-     * If the sink throws, no Task admission is published.
+     * Records accepted operations in the existing compiler pass, but
+     * publishes them only after validation of the entire program succeeds.
+     * These are partial diagnostic observations, never proof of typed-MIR parity.
+     * Sink failures stop before Task capability admissions are published.
      */
     public static Ast.Program checkWithBorrowShadowV0(
             Ast.Program program, BorrowShadowSinkV0 sink) {
         java.util.Objects.requireNonNull(sink, "borrow shadow sink");
         OwnershipChecker checker = new OwnershipChecker(program);
-        checker.borrowShadowSink = sink;
+        checker.stagedBorrowShadowEvents = new ArrayList<>();
         checker.validate(program);
+        for (BorrowShadowEventV0 event : checker.stagedBorrowShadowEvents) {
+            sink.record(event);
+        }
         checker.publishTaskAdmissions();
         return program;
     }
