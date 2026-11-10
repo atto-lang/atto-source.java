@@ -258,8 +258,8 @@ public final class SingletonSharedDomain {
             synchronized (monitor) {
                 if (ownerToken != owner) throw new SecurityException("foreign STOP");
                 if (closed) return;
-                closed = true;
                 if (epoch == Long.MAX_VALUE) throw new IllegalStateException("epoch exhausted");
+                closed = true;
                 epoch++;
                 while (!pending.isEmpty()) {
                     Request item = pending.removeFirst();
@@ -272,7 +272,10 @@ public final class SingletonSharedDomain {
         }
 
         private boolean canGrant(Access access) {
-            return writer == null && (access == Access.READ ? readers < 1024 : readers == 0);
+            // Logical release must not admit a successor while the old
+            // guest write callback is still physically on a carrier.
+            return callbacksInFlight == 0 && writer == null
+                    && (access == Access.READ ? readers < 1024 : readers == 0);
         }
 
         private Lease newLoan(Principal borrower, Access access) {
@@ -402,7 +405,14 @@ public final class SingletonSharedDomain {
                             state = safe;
                         }
                     } finally {
-                        synchronized (monitor) { callbacksInFlight--; }
+                        ArrayList<Runnable> actions = new ArrayList<>();
+                        synchronized (monitor) {
+                            callbacksInFlight--;
+                            // A callback may have released its own loan. Only
+                            // after it physically unwinds may queued work enter.
+                            promote(actions);
+                        }
+                        runCompletions(actions);
                     }
                 } finally { writing.set(false); }
             }
