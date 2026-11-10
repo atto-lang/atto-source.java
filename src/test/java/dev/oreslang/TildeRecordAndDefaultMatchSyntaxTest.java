@@ -97,9 +97,11 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
 
     @Test
     void mapLiteralsAndAmbiguousSyntaxFailClosed() {
+        // Scalar, explicitly typed Map entries are now a dedicated typed AST.
+        assertInstanceOf(Ast.MapLiteralExpr.class,
+                initializer("~map<String,bool>(\"ready\" => true)"));
         for (String source : List.of(
                 "~()", "~map(\"ready\" => true)",
-                "~map<String,bool>(\"ready\" => true)",
                 "~(\"ready\" => true)",
                 "~(ready => true)",
                 "~record(\"ready\" => true)",

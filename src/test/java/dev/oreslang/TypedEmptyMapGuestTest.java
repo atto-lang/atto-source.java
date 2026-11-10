@@ -108,12 +108,12 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
-    void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
-        for (String file : new String[]{
-                "empty-map-nonempty-reject.atto",
-                "empty-map-bad-arity.atto"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(fixture(file)), file);
-        }
+    void untypedOrMalformedMapConstructionCannotBypassAdmission() {
+        // Historic negative fixture: an explicitly typed, scalar populated Map
+        // is now admitted, but an incomplete Map<K,V> witness still fails.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                fixture("empty-map-nonempty-reject.atto")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("empty-map-bad-arity.atto")));
     }
 }
