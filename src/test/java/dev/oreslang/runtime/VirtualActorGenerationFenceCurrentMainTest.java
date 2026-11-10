@@ -37,14 +37,14 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
-            group.reserveVirtualActorGeneration(ID, 1L);
+            assertEquals(1L, group.reserveNextVirtualActorGeneration(ID));
             assertFalse(group.isCurrentVirtualActorGeneration(ID, 1L),
                     "unbound reservation must not authorize a terminal receipt");
             group.abortVirtualActorGeneration(ID, 1L);
             assertFalse(group.isCurrentVirtualActorGeneration(ID, 1L));
             assertThrows(IllegalStateException.class,
                     () -> group.reserveVirtualActorGeneration(ID, 1L));
-            group.reserveVirtualActorGeneration(ID, 2L);
+            assertEquals(2L, group.reserveNextVirtualActorGeneration(ID));
             assertFalse(group.isCurrentVirtualActorGeneration(ID, 1L));
             assertFalse(group.isCurrentVirtualActorGeneration(ID, 2L),
                     "failed initializer has no terminal authority");
