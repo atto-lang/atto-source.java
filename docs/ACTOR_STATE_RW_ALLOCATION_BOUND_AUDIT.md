@@ -62,10 +62,14 @@ first-caller ownership assignment, not a unique-owner proof.
    after the cancellation hook removed it from the pending queue.
 10. Extremely large pending queue budgets (8,193 / MAX_VALUE) reject; zero
     pending capacity remains valid for no-wait configurations.
+11. Revoked STOP actors cannot receive a positive "no outstanding loan"
+    observation as a surrogate execution permission.
+12. A throwing host runtime subscriber cannot suppress the queued Future's
+    physical notification-drain receipt or actor retirement notification.
 
 The 12 original `ActorStateRwLoansTest` cases were updated to construct
 their arbiter with a predefined actor allocation. The resulting file has
-**22 authored JUnit cases, not yet executed** on the exact Java head.
+**24 authored JUnit cases, not yet executed** on the exact Java head.
 
 ## Remaining proof obligations and stop conditions
 
@@ -97,9 +101,31 @@ their arbiter with a predefined actor allocation. The resulting file has
 ## Evidence classifications
 
 - Java/Graal JUnit for this head: **NOT_EXECUTED** until nonzero job steps.
+  The dedicated `.github/workflows/actor-state-rw-ownership.yml` checks out
+  the immutable pull-request head, asserts its SHA and Git tree, runs
+  `-Dtest=ActorStateRwLoansTest -DfailIfNoTests=true`, requires a real
+  Surefire XML receipt with >=24 tests and zero failures/errors/skips, and
+  uploads its report for independent review. An absent runner / `steps=null`
+  remains **NOT_EXECUTED**, regardless of workflow conclusion.
 - Java compiled guest / Native Image: **NOT_EXECUTED**.
 - Local Node `actor-supervisor-region-v1` oracle (separate PR #656):
   44/44 locally executed. This is **source-free** and does not certify the
   Java runtime changes.
 - No production lock, exact-head compiler parity or merge authorization
   is claimed. Keep the PR draft.
+
+
+## Actual safety guarantee and limits
+
+`noOutstandingLoanFor()` now also returns false once the arbiter is closed:
+even an empty ledger must not appear to authorize resuming a revoked actor.
+This is **observational only**; it does not replace authenticated scheduler
+admission or bind access to protected memory. The active cancellation/STOP
+callback ledger applies to `Pending` futures; full actor runtime guest-turn
+quiescence must be tracked separately, and no raw supervisor pointer is granted.
+
+**Security authorization:** never mirror this private production Java source
+to another organization solely because it has available Actions minutes.
+An approved destination repository ID, exact source head/tree, and reviewed
+provenance authorization are prerequisites under open incidents #22/#77;
+source-free checks may run independently but cannot certify Java guest code.
