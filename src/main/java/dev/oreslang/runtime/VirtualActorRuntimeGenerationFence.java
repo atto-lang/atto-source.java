@@ -75,6 +75,25 @@ final class VirtualActorRuntimeGenerationFence {
         validatePart(identity.key(), "key", 256);
     }
 
+    /** Mint the next runtime-local generation under the same authority lock. */
+    long reserveNext(ActorRuntime.SupervisorId supervisor,
+                     ActorRuntime.ActorGroupId group,
+                     VirtualActorActivationRegistry.Identity identity) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(group, "group");
+        validate(identity);
+        synchronized (monitor) {
+            Slot slot = slots.get(identity);
+            if (slot != null && slot.generation == Long.MAX_VALUE)
+                throw new IllegalStateException("virtual actor generation exhausted");
+            long next = slot == null ? 1L : slot.generation + 1L;
+            // Reentrant monitor: no second reservation can interleave between
+            // the watermark read and its monotonic, owner-checked publication.
+            reserve(supervisor, group, identity, next);
+            return next;
+        }
+    }
+
     void reserve(ActorRuntime.SupervisorId supervisor,
                  ActorRuntime.ActorGroupId group,
                  VirtualActorActivationRegistry.Identity identity,
