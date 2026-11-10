@@ -9970,6 +9970,30 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
+            if (pattern instanceof Ast.RecordPattern recordPattern) {
+                // Never project host Map, class/actor fields or mutable runtime
+                // capabilities by shape. Only guest record and concrete struct
+                // representations admitted by static checker are observable.
+                for (Ast.RecordFieldPattern field : recordPattern.fields()) {
+                    Object fieldValue;
+                    if (value instanceof ReadonlyRecordValue record) {
+                        if (!record.containsKey(field.name())) return false;
+                        fieldValue = record.get(field.name());
+                    } else if (value instanceof MutableStructValue struct) {
+                        if (!recordPattern.structural()
+                                || !struct.containsKey(field.name())) return false;
+                        fieldValue = struct.get(field.name());
+                    } else {
+                        return false;
+                    }
+                    if (fieldValue == UNINITIALIZED_FIELD) {
+                        throw new IllegalStateException(
+                                "record pattern observed an uninitialized field");
+                    }
+                    if (!patternMatches(field.value(), fieldValue, bindings)) return false;
+                }
+                return true;
+            }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
                 if (!(value instanceof List<?> tuple)
                         || tuple.size() != tuplePattern.elements().size()) return false;

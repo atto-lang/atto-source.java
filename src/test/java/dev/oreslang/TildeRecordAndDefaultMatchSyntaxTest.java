@@ -127,6 +127,35 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
+    void readonlyStructuralFieldPatternsAreCheckedBeforeRuntime() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub fnc main(): int {
+                    const p = infer struct{status: 200, value: 42};
+                    return match p over
+                        on structural ~(status: 200, value: v) -> v
+                        default -> 0
+                    end;
+                }
+                """));
+
+        for (String source : List.of(
+                "on ~(status: 200, value: v) -> v",
+                "on structural ~(secret: 42) -> 42",
+                "on structural ~(status: 200, status: 201) -> 42")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck("""
+                            pub fnc main(): int {
+                                const p = infer struct{status: 200, value: 42};
+                                return match p over
+                            """ + source + """
+                                    default -> 0
+                                end;
+                            }
+                            """), source);
+        }
+    }
+
+    @Test
     void matchDefaultIsWildcardOnlyAndMustBeFinal() {
         Ast.FunctionDecl f = function("""
                 fnc f(int x): int {

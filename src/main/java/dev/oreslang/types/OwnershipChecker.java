@@ -3524,6 +3524,28 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordPattern fields) {
+            if (subjectType == null || !subjectType.isClosedAggregateType()) {
+                throw error("record field pattern requires a closed checked value");
+            }
+            java.util.Map<String, Ast.TypeRef> members = subjectType.aggregateMembers();
+            for (Ast.RecordFieldPattern field : fields.fields()) {
+                Ast.TypeRef type = members.get(field.name());
+                if (type == null || type.inferArguments()
+                        || !type.arguments().isEmpty()
+                        || !java.util.Set.of(
+                                "int", "bool", "Bool", "string", "String", "Symbol")
+                                .contains(type.name())
+                        || kindOfType(type) != ValueKind.COPY) {
+                    throw error("record field pattern cannot capture a borrowed, "
+                            + "hidden or move-only value: " + field.name());
+                }
+                // A copied scalar has independent ownership, not a loan to the
+                // matched struct or to any actor memory slice.
+                definePatternAliases(field.value(), type, null, destination);
+            }
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuple) {
             List<Ast.TypeRef> elementTypes =
                     subjectType != null && subjectType.isTupleType()

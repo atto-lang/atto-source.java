@@ -6861,6 +6861,40 @@ public final class TypeChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordPattern fields) {
+            if (!(subject instanceof Record record)
+                    || record.kind() == AggregateKind.CONTRACT
+                    || record.kind() == AggregateKind.STRUCT && !fields.structural()) {
+                throw new IllegalArgumentException(
+                        "record field pattern requires a checked readonly record or explicit "
+                                + "'structural' projection of a concrete struct; "
+                                + "nominal classes and actor state remain sealed");
+            }
+            for (Ast.RecordFieldPattern field : fields.fields()) {
+                Type fieldType = record.members().get(field.name());
+                if (fieldType == null) {
+                    throw new IllegalArgumentException(
+                            "record pattern field '" + field.name()
+                                    + "' is not statically visible");
+                }
+                // Copyable scalar-only field projection prevents a match from
+                // moving resources, manufacturing a loan, or reading sealed state.
+                boolean safeScalar = fieldType == Primitive.INT
+                        || fieldType == Primitive.BOOL
+                        || fieldType == Primitive.STRING
+                        || fieldType instanceof StringLiteral
+                        || fieldType instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+                if (!safeScalar) {
+                    throw new IllegalArgumentException(
+                            "record pattern field '" + field.name()
+                                    + "' is not a proven copyable scalar");
+                }
+                checkPattern(field.value(), fieldType, bindings, generics, self);
+            }
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuplePattern) {
             if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
@@ -7123,6 +7157,22 @@ public final class TypeChecker {
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
+        if (left instanceof Ast.RecordPattern a && right instanceof Ast.RecordPattern b
+                && subject instanceof Record record) {
+            // A single provably disjoint shared field is sufficient to prove
+            // these two record patterns cannot both match the same value.
+            for (Ast.RecordFieldPattern x : a.fields()) {
+                for (Ast.RecordFieldPattern y : b.fields()) {
+                    if (!x.name().equals(y.name())) continue;
+                    Type fieldType = record.members().get(x.name());
+                    if (fieldType != null && patternsProvablyDisjoint(
+                            x.value(), y.value(), fieldType, generics, self)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
             // Do not certify 1 and 1.0 as disjoint: runtime equality
             // intentionally permits equal values across numeric types.

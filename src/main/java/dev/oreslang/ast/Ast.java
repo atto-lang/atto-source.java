@@ -893,7 +893,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -908,6 +908,37 @@ public final class Ast {
      * whose public shape is matched without requiring nominal implementation.
      */
     public record StructuralPattern(TypeRef target, String binding) implements Pattern { }
+
+    /** A readonly named-field pattern on an already checked record/struct value. */
+    public record RecordFieldPattern(String name, Pattern value) {
+        public RecordFieldPattern {
+            java.util.Objects.requireNonNull(name, "record pattern field name");
+            java.util.Objects.requireNonNull(value, "record pattern field pattern");
+            if (name.isBlank()) throw new IllegalArgumentException("empty record pattern field");
+        }
+    }
+
+    /**
+     * Literal-shaped matching, not dynamic reflection. Only statically known
+     * record/struct scalar fields are admitted in v1. 'structural' is required
+     * for a concrete struct shape and never opens actor or private class state.
+     */
+    public record RecordPattern(boolean structural, List<RecordFieldPattern> fields)
+            implements Pattern {
+        public RecordPattern {
+            fields = List.copyOf(fields);
+            if (fields.isEmpty() || fields.size() > 64) {
+                throw new IllegalArgumentException("record patterns require 1..64 fields");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (RecordFieldPattern field : fields) {
+                if (!seen.add(field.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate statically named record pattern field " + field.name());
+                }
+            }
+        }
+    }
 
     /** Fixed-arity recursive tuple pattern. Lists deliberately do not participate. */
     public record TuplePattern(List<Pattern> elements) implements Pattern {

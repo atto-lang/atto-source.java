@@ -4205,6 +4205,37 @@ public final class Parser {
         return false;
     }
 
+    /**
+     * Field patterns never allocate, inspect host dictionaries, or convert a
+     * nominal object into a record. Static type/ownership proof is mandatory
+     * before the existing pattern dispatcher evaluates any field.
+     */
+    private Ast.RecordPattern parseTildeRecordPattern(boolean structural) {
+        consume(LPAREN, "record field patterns require '~(field: Pattern, ...)'");
+        java.util.List<Ast.RecordFieldPattern> fields = new java.util.ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        if (check(RPAREN)) {
+            throw error(peek(), "empty record field pattern does not constrain a value");
+        }
+        do {
+            if (check(ELLIPSIS)) {
+                throw error(peek(), "record pattern spread requires separate ownership proof");
+            }
+            String name = consumeStaticObjectKeyName("expected static record pattern field");
+            if (!names.add(name)) {
+                throw error(previous(), "duplicate record field pattern '" + name + "'");
+            }
+            consume(COLON, "record patterns use ':', never computed map '=>'");
+            fields.add(new Ast.RecordFieldPattern(name, parsePattern()));
+            if (fields.size() > 64) {
+                throw error(previous(), "record field pattern exceeds 64 fields");
+            }
+            if (!match(COMMA)) break;
+        } while (!check(RPAREN));
+        consume(RPAREN, "expected ')' to close record field pattern");
+        return new Ast.RecordPattern(structural, fields);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
@@ -4214,11 +4245,24 @@ public final class Parser {
             return new Ast.TypePattern(negative, binding);
         }
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
+            if (match(TILDE)) {
+                if (isContextualIdentifier("record") && checkNext(LPAREN)) {
+                    advance(); // explicit ~record field-pattern head
+                }
+                return parseTildeRecordPattern(true);
+            }
             Ast.TypeRef target = parseTypeRef();
             String binding = check(IDENT) && !peek().lexeme().equals("_")
                     ? advance().lexeme()
                     : null;
             return new Ast.StructuralPattern(target, binding);
+        }
+
+        if (match(TILDE)) {
+            if (isContextualIdentifier("record") && checkNext(LPAREN)) {
+                advance();
+            }
+            return parseTildeRecordPattern(false);
         }
 
         if (match(IS)) {
