@@ -216,7 +216,7 @@ public final class TaskScope implements AutoCloseable {
         return done;
     }
 
-    /** Child logical-lease release failures, fixed before scope retirement. */
+    /** Child lease and compiler-owned quiescence-hook failures, fixed before scope retirement. */
     public OresFuture<List<Throwable>> cleanupFailures() {
         return cleanupFailures;
     }
