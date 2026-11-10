@@ -195,6 +195,98 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
     /**
+     * Trusted, read-only reconciliation of an EVENT committed by any prior
+     * activation of the SAME logical actor. The current provider epoch must
+     * be authorized; this never reactivates a previous writer or returns a
+     * guest-constructible durable receipt. Event bytes are compared with the
+     * stored operation AND the retained journal row under one read snapshot.
+     *
+     * This verifies event identity, NOT original command payload identity or
+     * an application's original reply (durable inbox is still required).
+     */
+    public record VerifiedCommittedEvent(long version, int schemaVersion, byte[] payload) {
+        public VerifiedCommittedEvent {
+            if (version < 1 || schemaVersion < 1)
+                throw new IllegalArgumentException("invalid committed event");
+            payload = Objects.requireNonNull(payload, "payload").clone();
+        }
+        @Override public byte[] payload() { return payload.clone(); }
+    }
+
+    public synchronized Optional<VerifiedCommittedEvent> resolveCommittedEventFenced(
+            Identity id, long currentEpoch, String operationId,
+            int schemaVersion, byte[] exactEventBytes) throws SQLException {
+        checkOpen();
+        Objects.requireNonNull(id, "identity");
+        checkId(id.tenant());
+        checkId(id.actor());
+        checkId(id.state());
+        checkId(operationId);
+        Objects.requireNonNull(exactEventBytes, "event bytes");
+        if (currentEpoch <= 0 || schemaVersion <= 0
+                || exactEventBytes.length > 1048576)
+            throw new IllegalArgumentException("invalid fenced event resolution input");
+        byte[] expectedPayload = exactEventBytes.clone();
+
+        execute("BEGIN");
+        try {
+            if (epoch(id) != currentEpoch) throw new SecurityException("STALE_EPOCH");
+            Optional<VerifiedCommittedEvent> result = Optional.empty();
+            try (PreparedStatement q = db.prepareStatement(
+                    "SELECT epoch,expected,kind,schema,length(payload),"
+                    + "substr(payload,1,1048577),version FROM ops "
+                    + "WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+                bindKey(q,id);
+                q.setString(4,operationId);
+                try (ResultSet op = q.executeQuery()) {
+                    if (op.next()) {
+                        long originalEpoch = op.getLong(1);
+                        long originalExpected = op.getLong(2);
+                        int kind = op.getInt(3);
+                        int originalSchema = op.getInt(4);
+                        long payloadLength = op.getLong(5);
+                        byte[] saved = op.getBytes(6);
+                        long committedVersion = op.getLong(7);
+                        if (originalEpoch <= 0 || originalEpoch > currentEpoch
+                                || originalExpected < 0
+                                || originalExpected >= Long.MAX_VALUE
+                                || originalExpected + 1L != committedVersion
+                                || committedVersion < 1 || committedVersion > version(id)
+                                || kind != 2 || originalSchema != schemaVersion
+                                || payloadLength != expectedPayload.length
+                                || saved == null || !Arrays.equals(saved,expectedPayload)) {
+                            throw new SecurityException("OP_ID_CONFLICT");
+                        }
+                        // Fail closed if a corrupt/pruned journal cannot be
+                        // checked independently against the operation ledger.
+                        try (PreparedStatement eventQuery = db.prepareStatement(
+                                "SELECT schema,length(payload),substr(payload,1,1048577)"
+                                + " FROM events WHERE tenant=? AND actor=? AND slot=? AND version=?")) {
+                            bindKey(eventQuery,id);
+                            eventQuery.setLong(4,committedVersion);
+                            try (ResultSet event = eventQuery.executeQuery()) {
+                                if (!event.next() || event.getInt(1) != schemaVersion
+                                        || event.getLong(2) != expectedPayload.length
+                                        || !Arrays.equals(event.getBytes(3),expectedPayload))
+                                    throw new SecurityException("OPERATION_EVENT_UNAVAILABLE");
+                            }
+                        }
+                        result = Optional.of(new VerifiedCommittedEvent(
+                                committedVersion,schemaVersion,saved));
+                    }
+                }
+            }
+            commitTransaction();
+            return result;
+        } catch (Exception failure) {
+            rollback();
+            if (failure instanceof SQLException sql) throw sql;
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            throw new SQLException("event lookup outcome unknown", failure);
+        }
+    }
+
+    /**
      * Activation-scoped restore. Fence lookup and all recovered data reads
      * share one SQLite read snapshot, so another connection cannot change the
      * epoch between the authorization check and subsequent state queries.

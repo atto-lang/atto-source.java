@@ -58,3 +58,27 @@ and actual fixture exit 0. Zero-step Actions failures cannot be passes.
 4. Compile and run actual `.atto` `EventSourcedActor`, with compiler-sealed
    state, pure reducer, asynchronous continuation and supervisor recovery.
 5. Independently execute Java and LLVM plus .NET/Wasm/Forge parity.
+
+## Cross-epoch event proof (second slice)
+
+The trusted SQLite provider now exposes
+`resolveCommittedEventFenced(identity, currentEpoch, operationId, schemaVersion,
+exactEventBytes)`. It opens one read transaction, checks the provider-owned
+current actor epoch, verifies the persisted historical event-operation ledger
+and the retained journal row, and returns read-only proven EVENT bytes/version.
+A missing event, wrong schema/payload, changed actor, stale epoch or corrupt
+ledger is rejected or resolves absent. Unlike a fresh write retry, this method
+does not try to acquire a stale writer epoch or append again.
+
+**Important:** this is event identity reconciliation, not command identity.
+The database's original operation record does not contain the original
+command request payload/digest or its success reply. Therefore a caller CANNOT
+infer that the current request represents the original command solely because
+it provides an identical event. Do not turn a VerifiedCommittedEvent into
+a successful guest command response until a durable inbox/command fingerprint
+and original-response record are added and authenticated in the same provider
+transaction. A missing event due to compaction intentionally fails closed.
+
+`CommittedEventResolutionTestMain` is a host-only JDBC test and has a
+dedicated exact-head workflow step. It remains unexecuted until CI runs
+nonzero steps successfully.
