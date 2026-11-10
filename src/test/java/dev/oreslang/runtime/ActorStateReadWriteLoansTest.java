@@ -48,6 +48,41 @@ final class ActorStateReadWriteLoansTest {
         }
     }
 
+    @Test void adjacentQueuedReadersBatchButDoNotCrossLaterWriter() {
+        try (var loans = new ActorStateReadWriteLoans(7, 4)) {
+            var initial = loans.acquireWriteAsync(new Object(), 7).join();
+            Object a = new Object(), b = new Object();
+            Object nextWriterId = new Object(), afterWriterId = new Object();
+            var firstRead = loans.acquireReadAsync(a, 7);
+            var secondRead = loans.acquireReadAsync(b, 7);
+            var nextWrite = loans.acquireWriteAsync(nextWriterId, 7);
+            var afterWrite = loans.acquireReadAsync(afterWriterId, 7);
+
+            initial.close();
+            var first = firstRead.join();
+            var second = secondRead.join();
+            assertEquals(2, loans.activeReaderCount(),
+                    "consecutive head-of-queue readers may coexist");
+            assertFalse(nextWrite.isDone(), "queued writer waits for all readers");
+            assertFalse(afterWrite.isDone(), "reader behind writer cannot overtake");
+
+            assertTrue(loans.acquireWriteAsync(a, 7).isCompletedExceptionally(),
+                    "a reader cannot upgrade without first closing its loan");
+            first.close();
+            assertFalse(nextWrite.isDone());
+            second.close();
+            var writer = nextWrite.join();
+            assertTrue(loans.writerActive());
+            assertFalse(afterWrite.isDone());
+            writer.close();
+            var last = afterWrite.join();
+            assertTrue(last.heldBy(afterWriterId, 7));
+            last.close();
+            assertEquals(0, loans.activeCount());
+            assertEquals(0, loans.pendingCount());
+        }
+    }
+
     @Test void writerExcludesReaderAndCancelledWaiterDoesNotLeakIdentity() {
         try (var loans = new ActorStateReadWriteLoans(8, 2)) {
             Object owner = new Object(), cancelledOwner = new Object();
