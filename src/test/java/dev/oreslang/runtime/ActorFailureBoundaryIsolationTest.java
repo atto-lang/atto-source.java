@@ -116,4 +116,63 @@ final class ActorFailureBoundaryIsolationTest {
                         new Exception("panic"), context),
                 "PANIC requires supervisor CONTROL, not a local recovery envelope");
     }
+
+    @Test
+    void generationAndContinuationFenceStaleRecoveryCapabilities() {
+        // The same actor slot and execution id are not sufficient after
+        // restart, and a suspended continuation is not a portable credential.
+        ExecutionContext owner = actor(21, 109, 1);
+        ExecutionContext restarted = actor(21, 109, 2);
+        ExecutionContext newContinuation =
+                ExecutionContext.actor(19, 21, 7, 109, 1, 0, 9);
+        AtomicInteger visited = new AtomicInteger();
+        var ownerRecovery = RecoveryHandlerChain.<Integer>builder(owner, IMAGE)
+                .onRaise((e, cursor) -> {
+                    visited.incrementAndGet();
+                    cursor.resolve(101);
+                }).freeze();
+        var restartedRecovery = RecoveryHandlerChain.<Integer>builder(restarted, IMAGE)
+                .onRaise((e, cursor) -> {
+                    visited.incrementAndGet();
+                    cursor.resolve(202);
+                }).freeze();
+        var continuationRecovery =
+                RecoveryHandlerChain.<Integer>builder(newContinuation, IMAGE)
+                .onRaise((e, cursor) -> {
+                    visited.incrementAndGet();
+                    cursor.resolve(303);
+                }).freeze();
+
+        GuestFailure pending = issue(
+                RecoveryHandlerChain.FailureKind.RAISE, new Exception("pending"), owner);
+        assertSame(pending, assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                restartedRecovery.dispatch(pending)).pendingFailure());
+        assertSame(pending, assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                continuationRecovery.dispatch(pending)).pendingFailure());
+        assertEquals(0, visited.get(), "neither foreign generation nor continuation can recover");
+        assertEquals(new RecoveryHandlerChain.Recovered<>(101),
+                ownerRecovery.dispatch(pending));
+        assertEquals(1, visited.get());
+        assertThrows(IllegalStateException.class, () -> ownerRecovery.dispatch(pending),
+                "resolved failure must not be replayed through its former owner");
+    }
+
+    @Test
+    void fatalExceptionFromRaiseCallbackCannotBeReclassifiedAsRecovery() {
+        ExecutionContext owner = actor(22, 110, 1);
+        AtomicInteger callbacks = new AtomicInteger();
+        var recovery = RecoveryHandlerChain.<Integer>builder(owner, IMAGE)
+                .onRaise((e, cursor) -> {
+                    callbacks.incrementAndGet();
+                    // Deliberately construct/throw this marker: this does NOT
+                    // overflow a real JVM carrier stack.
+                    throw new StackOverflowError("synthetic callback fatal");
+                }).freeze();
+        GuestFailure pending = issue(
+                RecoveryHandlerChain.FailureKind.RAISE, new Exception("pending"), owner);
+        assertThrows(StackOverflowError.class, () -> recovery.dispatch(pending));
+        assertEquals(1, callbacks.get());
+        assertThrows(IllegalStateException.class, () -> recovery.dispatch(pending),
+                "fatal callback must revoke the original recovery capability");
+    }
 }
