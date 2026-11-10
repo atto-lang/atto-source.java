@@ -87,8 +87,8 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime foreignRuntime = new ActorRuntime()) {
             var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
-            var foreign = foreignRuntime.spawnPrivate(
-                    ignored -> (String msg, ActorRuntime.ActorTurnContext turn) -> { });
+            ActorRuntime.ActorRef<String> foreign = foreignRuntime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
             assertThrows(SecurityException.class, () -> bridge.attach(foreign, null));
 
             ActorRuntime.ActorRef<String> activated = runtime.spawnPrivate(
