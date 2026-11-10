@@ -7,6 +7,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -308,6 +311,26 @@ final class ModuleActorContractRequirementTest {
         assertTrue(rebuilt.rebuilt("actor_api.atto"));
         assertTrue(rebuilt.rebuilt("consumer.atto"),
                 "changing a public actor obligation must invalidate imported contract ABI");
+    }
+
+    @Test
+    void portableActorContractCorpusUsesRealParserAndTypeChecker() throws IOException {
+        Path corpus = Path.of("contracts", "actor-module-v1");
+        String accepted = Files.readString(corpus.resolve("accept_public_actor.atto"));
+        assertDoesNotThrow(() -> check(accepted));
+
+        Map<String, String> rejected = Map.of(
+                "reject_private_actor.atto", "missing required public actor",
+                "reject_class_impostor.atto", "missing required public actor",
+                "reject_generic_actor.atto", "cannot satisfy non-generic",
+                "reject_inherited_name_collision.atto", "conflicts with a required field or callable");
+        for (Map.Entry<String, String> fixture : rejected.entrySet()) {
+            String source = Files.readString(corpus.resolve(fixture.getKey()));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> check(source), fixture.getKey());
+            assertTrue(error.getMessage().contains(fixture.getValue()),
+                    () -> fixture.getKey() + ": " + error.getMessage());
+        }
     }
 
     @Test
