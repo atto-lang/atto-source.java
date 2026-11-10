@@ -871,7 +871,7 @@ public final class Parser {
         return new ActorPrefix(transport, serial);
     }
 
-    private Ast.ClassDecl parseDefinedActorClass(
+    private Ast.Decl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
             List<Ast.Annotation> annotations,
@@ -1056,16 +1056,34 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
-    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+    private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
 
-    private Ast.ClassDecl parseActorClass(
+    private Ast.Decl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // Standalone actor declaration: retain the receiver-binding name in
+        // its own AST node. Never synthesize an empty class, dispatch table,
+        // or executable actor when receiver lowering has not been certified.
+        if (check(AS) && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == SEMICOLON) {
+            if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty()
+                    || actorKind != Ast.ActorKind.SHARED
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(peek(), "standalone actor declarations currently require a plain "
+                        + "non-generic actor without transport or inheritance modifiers");
+            }
+            advance(); // as
+            String receiverName = consume(IDENT, "expected standalone actor receiver binding").lexeme();
+            consume(SEMICOLON, "standalone actor declaration requires ';'");
+            return new Ast.StandaloneActorDecl(name, receiverName, visibility, actorKind);
+        }
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
