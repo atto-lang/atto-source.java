@@ -23,9 +23,14 @@ end
 
 - `actor Worker;` is a nominal type-presence requirement. It creates no
   instance, mailbox, method, state loan, or runtime capability.
-- A matching `pub` actor declaration in the **conforming module** is
-  required. A private actor, similarly named class, or missing declaration
-  is a compile-time conformance error.
+- A matching `pub` **non-generic** actor declaration in the **conforming
+  module** is required. A private actor, similarly named class, a generic
+  `Worker<T>` actor, an actor in a different module, or a missing declaration
+  is a compile-time conformance error. Generic actor requirements need a
+  separate explicit type-parameter contract before being accepted.
+- Required actor names may not collide with required fields/functions,
+  including inherited requirements, or reuse a contract generic parameter.
+  The module's runtime value namespace is not allowed to become ambiguous.
 - The requirement participates in inherited module contracts, incremental
   export signatures, and the exported interface fingerprint.
 - Duplicate actor requirements in a contract are rejected.
