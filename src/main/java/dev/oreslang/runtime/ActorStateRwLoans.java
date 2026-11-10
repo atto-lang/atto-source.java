@@ -136,6 +136,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 return OresFuture.failed(new IllegalArgumentException(
                         "actor state RW loans belong to a different actor allocation incarnation"));
             }
+            // Each queued request may need an eventual distinct grant epoch.
+            // Reserve arithmetic capacity before accepting it so rollover
+            // cannot strand a removed FIFO head in promoteLocked().
+            if (nextEpoch >= Long.MAX_VALUE - pending.size()) {
+                return OresFuture.failed(new IllegalStateException(
+                        "actor state RW loan epochs exhausted"));
+            }
             if (!reserved.add(authority)) {
                 return OresFuture.failed(new IllegalStateException(
                         "logical execution already holds or awaits a state RW loan"));
