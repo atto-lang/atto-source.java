@@ -2,8 +2,12 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -398,6 +402,67 @@ final class ActorStateRwLoansTest {
                     ExecutionContext.actorBound(7, 8301, 231, 1, 9, 3, 12, 0, 0)));
             assertFalse(loans.noOutstandingLoanFor(ExecutionContext.task(7, 8301)));
         }
+    }
+
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void publisherDrainingAfterLastLoanReleaseDeliversRetirementOnce() throws Exception {
+        var wakeups = new AtomicInteger();
+        var loans = new ActorStateRwLoans(OWNER, 4, 1, wakeups::incrementAndGet);
+        var active = loans.acquireReadAsync(actor(8401, 241, 1)).join();
+        var enteredPublication = new CountDownLatch(1);
+        var allowPublicationToDrain = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+
+        // Deterministically interleave an already-publishing completion and
+        // final actor-loan closure. No guest code uses reflection.
+        var monitorField = ActorStateRwLoans.class.getDeclaredField("monitor");
+        monitorField.setAccessible(true);
+        var queueField = ActorStateRwLoans.class.getDeclaredField("completions");
+        queueField.setAccessible(true);
+        var publisherMethod = ActorStateRwLoans.class.getDeclaredMethod("publish");
+        publisherMethod.setAccessible(true);
+
+        var monitor = monitorField.get(loans);
+        synchronized (monitor) {
+            var completions = (ArrayDeque<Runnable>) queueField.get(loans);
+            completions.addLast(() -> {
+                enteredPublication.countDown();
+                try {
+                    if (!allowPublicationToDrain.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("publisher did not receive release signal");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("publisher interrupted", e);
+                }
+            });
+        }
+        var publisher = Thread.ofPlatform().start(() -> {
+            try {
+                publisherMethod.invoke(loans);
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        });
+        try {
+            assertTrue(enteredPublication.await(5, TimeUnit.SECONDS),
+                    "test publisher must enter its active callback");
+            loans.close();
+            active.close();
+            assertFalse(loans.physicallyRetired(),
+                    "physical retirement waits for in-flight publisher");
+            assertEquals(0, wakeups.get());
+        } finally {
+            allowPublicationToDrain.countDown();
+            publisher.join(5000);
+        }
+        assertFalse(publisher.isAlive());
+        assertNull(failure.get(), "publisher must not throw");
+        assertTrue(loans.physicallyRetired());
+        assertEquals(1, wakeups.get(),
+                "publisher drains to zero and must notify exactly once");
     }
 
 }
