@@ -1,0 +1,2 @@
+// REJECT (parser): generic named actor binding not supported.
+define actor Cart<T> as cart;
