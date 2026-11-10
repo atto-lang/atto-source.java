@@ -1,0 +1,4 @@
+// EXPECT: unrequired actor
+define contract CartApi as
+  pub mtd count(Cart cart)(): int;
+end
