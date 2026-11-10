@@ -159,6 +159,10 @@ public final class TypeChecker {
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SingletonDecl) {
+                    throw new IllegalArgumentException(
+                            "ORES-SINGLETON-UNSUPPORTED: semantic check-only AST is not runtime-lowered");
+                }
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
                     throw new IllegalArgumentException(
                             "checked exceptional effect on function '" + fn.name()
