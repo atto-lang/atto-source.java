@@ -49,3 +49,40 @@ Added `src/test/java/dev/oreslang/runtime/persistence/ActorRuntimePersistenceInt
 The bridge now binds an immutable **activation capability** to the actual current runtime actor ID, a trusted stable `(tenant,actor,state)` identity and activation epoch. Guest call sites can pass state bytes and operation ID only through that owned binding; they cannot supply an arbitrary `BatchPersistenceSidecar.Write` to this bridge. The trusted VM/supervisor must authenticate the tenant/epoch and install the provider fence *before* minting a binding. The host bridge is NOT a real standalone sandbox, and guest Java interop must remain denied absent explicit permissions.
 
 The test is intentionally run only under full Java/Truffle dependency compilation. Workflow `.github/workflows/persistence-actor-runtime-integration.yml` builds the project, obtains pinned JDBC dependency, and runs the exact `ActorRuntime` program. **Test NOT_EXECUTED:** source-org GitHub Actions fails before step 1, Maven tooling/third-party dependencies are unavailable in the local sandbox. This is not an Oreslang `.ores` guest compiler test; genuine guest source lowering into this bridge remains a P0 blocker.
+
+
+## Event-journal bridge hardening (November 10, 2026)
+
+A trusted, actor-incarnation-bound `ActorPersistenceBridge` now offers
+`submitOwnedEvent` and `onEventCompletionInCurrentActor` in addition to
+snapshot calls. Both issue `Kind.EVENT` writes containing copied serialized
+event bytes through the same bounded async sidecar and actor continuation lane.
+The bridge never exposes a raw `Write`, host `Store`, tenant grant or
+activation epoch to guest code.
+
+`ActorRuntimeEventJournalIntegrationTestMain` is a **host ActorRuntime**
+scenario using true actor-private memory, the real SQLite journal, verified
+commit-before-publication, stop/recreate with a fresh actor heap, ordered replay,
+durable op-ID deduplication and provider-side stale-epoch denial. The existing
+actor-runtime workflow now invokes both the snapshot integration main and
+event-journal integration main after full Maven test compilation and loading
+pinned JDBC dependencies.
+
+**Verification status: NOT_EXECUTED** for this exact new branch. The Java event
+fixture is neither a compiled `.ores` guest nor a process-kill test; it cannot
+certify source-guest event sourcing or GraalVM Native Image support. The shared
+conformance host-reference SIGKILL fixture lives in
+`reference/persistence-sidecar/bank-account-crash.test.mjs` in the conformance
+hardening branch. Those host tests must also run before claiming their passes.
+
+**Next language/compiler work (P0):**
+1. Specify an `EventSourcedActor<State,Command,Event>` type and introduce
+   typed `#event_sourced` metadata via existing actor parser/typechecker.
+2. Lower compiled actor-owned immutable event bytes to the trusted
+   `ActorPersistenceBridge` without an exposed epoch or raw host provider.
+3. Prove negative source tests for sealed state, critical-loan escape, impure
+   reducers, nonserializable payloads and await/select across mutable loans.
+4. Run a **real** compiled guest actor through journal commit, restart, replay
+   and SIGKILL-before/after-commit receipts, with exact-head stepful provenance.
+5. Extend the same source fixtures to LLVM, .NET Native AOT, Wasm and Forge;
+   treat Cranelift separately from Forge.
