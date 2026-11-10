@@ -232,6 +232,22 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void tildeTupleAndArrayImmediatePostfixMatchesNamedFactoryGuest() {
+        String source = program("""
+                stdio.println(~array(11, 23)[1]);
+                stdio.println(Array.of(11, 23)[1]);
+                stdio.println(~tuple(31, true)[0]);
+                stdio.println(Tuple.of(31, true)[0]);
+                """);
+        assertInstanceOf(Ast.IndexExpr.class, firstFactoryInitializer(
+                program("const n = ~array(11, 23)[1];")));
+        assertInstanceOf(Ast.IndexExpr.class, firstFactoryInitializer(
+                program("const n = ~tuple(31, true)[0];")));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("23\\n23\\n31\\n31\\n", guestStdout(source));
+    }
+
+    @Test
     void spreadsCannotPiggybackOnTupleAndArrayFactories() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(program("const t = Tuple.of(...source);")));
