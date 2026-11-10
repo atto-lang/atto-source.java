@@ -11,8 +11,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Frontend stage-1 tests for PR #254 syntax.
  *
- * Map literals and tilde record-field patterns deliberately fail closed until
- * their typed AST, borrow admission and runtime codegen are implemented.
+ * Untyped and effectful Map literals and structural record-field patterns
+ * remain fail-closed; literal-only typed maps are a separate reviewed slice.
  * Parser/AST tests are not backend AOT or guest-execution evidence.
  */
 final class TildeRecordAndDefaultMatchSyntaxTest {
@@ -99,7 +99,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     void mapLiteralsAndAmbiguousSyntaxFailClosed() {
         for (String source : List.of(
                 "~()", "~map(\"ready\" => true)",
-                "~map<String,bool>(\"ready\" => true)",
+                "~map<String,bool>(ready => true)",
                 "~(\"ready\" => true)",
                 "~(ready => true)",
                 "~record(\"ready\" => true)",
@@ -108,6 +108,15 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                 "~record(foo: 1, \"x\" => true)")) {
             assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
         }
+    }
+
+    @Test
+    void explicitPopulatedTypedMapRetainsTypeAndEntryOrder() {
+        Ast.TypedMapLiteralExpr map = assertInstanceOf(Ast.TypedMapLiteralExpr.class,
+                initializer("~map<string,int>(\"a\" => 1, \"b\" => 2)"));
+        assertEquals("Map", map.aggregateType().name());
+        assertEquals(2, map.entries().size());
+        assertEquals("a", ((Ast.LiteralExpr) map.entries().getFirst().key()).value());
     }
 
     @Test

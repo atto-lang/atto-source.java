@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Guest admission for the explicitly typed, empty-only Map slice. */
+/** Guest admission for explicit typed empty Maps and fail-closed unproved Map constructs. */
 final class TypedEmptyMapGuestTest {
     private static String fixture(String file) {
         try (InputStream input = TypedEmptyMapGuestTest.class.getResourceAsStream(
@@ -108,7 +108,7 @@ final class TypedEmptyMapGuestTest {
     }
 
     @Test
-    void untypedAndNonemptyMapConstructionCannotBypassAdmission() {
+    void untypedAndComputedMapConstructionCannotBypassAdmission() {
         for (String file : new String[]{
                 "empty-map-nonempty-reject.atto",
                 "empty-map-bad-arity.atto"}) {

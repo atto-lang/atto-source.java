@@ -4083,6 +4083,17 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named mapReceiver
+                    && mapReceiver.name().equals("Map")
+                    && mapReceiver.arguments().size() == 2
+                    && !member.member().equals("size")) {
+                // This guest Map is intentionally size-only until the
+                // ownership-checked get/put/take API is available. Do not
+                // permit Unknown-typed method fallthrough to the evaluator.
+                throw new IllegalArgumentException(
+                        "guest Map member '" + member.member()
+                                + "' is not admitted before typed ownership lowering");
+            }
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
             // identity. A first-class method value would bypass both direct

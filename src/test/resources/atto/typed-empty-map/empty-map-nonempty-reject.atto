@@ -1,4 +1,5 @@
 fnc read(): void {
-    const bad = ~map<string, int>("a" => 1);
+    // Dynamic keys require an effect/ownership contract; literal-only typed maps are separate.
+    const bad = ~map<string, int>(computed_key => 1);
     return;
 }
