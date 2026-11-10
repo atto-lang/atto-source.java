@@ -6669,14 +6669,13 @@ public final class TypeChecker {
 
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
-            if (!matched.ordered() && arm.pattern() instanceof Ast.RecordFieldPattern fieldPattern) {
+            if (!matched.ordered()) {
                 for (int j = 0; j < i; j++) {
-                    if (arms.get(j).pattern() instanceof Ast.RecordFieldPattern prior
-                            && !recordFieldPatternsProvablyDisjoint(prior, fieldPattern)) {
-                        throw new IllegalArgumentException(
-                                "ordinary match has overlapping/unproved record field patterns; "
-                                + "use 'match first' for intentional priority");
-                    }
+                    Ast.MatchArm previous = arms.get(j);
+                    requireProvableMatchSeparation(
+                            previous.pattern(), previous.guard(),
+                            arm.pattern(), arm.guard(),
+                            subject, generics, self, i + 1);
                 }
             }
             if (arm.guard() != null) {
@@ -6720,14 +6719,13 @@ public final class TypeChecker {
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchValueArm arm = arms.get(i);
 
-            if (!ordered && arm.pattern() instanceof Ast.RecordFieldPattern fieldPattern) {
+            if (!ordered) {
                 for (int j = 0; j < i; j++) {
-                    if (arms.get(j).pattern() instanceof Ast.RecordFieldPattern prior
-                            && !recordFieldPatternsProvablyDisjoint(prior, fieldPattern)) {
-                        throw new IllegalArgumentException(
-                                "ordinary match has overlapping/unproved record field patterns; "
-                                + "use 'match first' for intentional priority");
-                    }
+                    Ast.MatchValueArm previous = arms.get(j);
+                    requireProvableMatchSeparation(
+                            previous.pattern(), previous.guard(),
+                            arm.pattern(), arm.guard(),
+                            subject, generics, self, i + 1);
                 }
             }
 
@@ -7151,30 +7149,130 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Ordinary match has unordered/proof-checked semantics: only an explicit
+     * final unguarded fallback is exempt from pairwise disjointness. A default
+     * never converts intersecting explicit patterns into priority dispatch.
+     *
+     * Fail closed when overlap cannot be ruled out, even for combinations of
+     * different pattern kinds and guarded arms. No new runtime ordering or
+     * host type reflection is introduced by this proof gate.
+     */
+    private void requireProvableMatchSeparation(
+            Ast.Pattern previous, Ast.Expr previousGuard,
+            Ast.Pattern current, Ast.Expr currentGuard,
+            Type subject, Set<String> generics, Type self, int armNumber) {
+        if (currentGuard == null
+                && (current instanceof Ast.WildcardPattern
+                    || current instanceof Ast.BindingPattern)) {
+            // The final fallback is intentionally reachable only for values
+            // not matched by earlier arms. Reachability/terminal placement is
+            // checked separately, including guarded wildcard compatibility.
+            return;
+        }
+        if (patternsProvablyDisjoint(previous, current, subject, generics, self)) return;
+        if (previousGuard != null && currentGuard != null
+                && scalarGuardBinderSame(previous, current, previousGuard, currentGuard)
+                && guardsProvablyDisjoint(previousGuard, currentGuard)) return;
+        throw new IllegalArgumentException(
+                "ordinary match has overlapping/unproved explicit patterns at arm "
+                        + armNumber + "; use 'match first' for intentional priority");
+    }
+
+    /** Only compare guards reading the same immutable arm-local subject alias. */
+    private boolean scalarGuardBinderSame(
+            Ast.Pattern previous, Ast.Pattern current,
+            Ast.Expr previousGuard, Ast.Expr currentGuard) {
+        GuardRange a = guardRange(previousGuard);
+        GuardRange b = guardRange(currentGuard);
+        return a != null && b != null && a.variable().equals(b.variable())
+                && patternBindsMatchSubject(previous, a.variable())
+                && patternBindsMatchSubject(current, b.variable());
+    }
+
+    private boolean patternBindsMatchSubject(Ast.Pattern pattern, String variable) {
+        return (pattern instanceof Ast.BindingPattern binding && binding.name().equals(variable))
+                || (pattern instanceof Ast.TypePattern typed
+                    && typed.binding() != null && typed.binding().equals(variable));
+    }
+
     private boolean patternsProvablyDisjoint(
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
-            // Do not certify 1 and 1.0 as disjoint: runtime equality
-            // intentionally permits equal values across numeric types.
+            // Runtime numeric comparison equates some int/float values.
             return !literalPatternRuntimeEquals(a.value(), b.value());
+        }
+        if (left instanceof Ast.RecordFieldPattern a && right instanceof Ast.RecordFieldPattern b) {
+            return recordFieldPatternsProvablyDisjoint(a, b);
+        }
+        if (left instanceof Ast.TuplePattern a && right instanceof Ast.TuplePattern b) {
+            if (a.elements().size() != b.elements().size()) return false;
+            Tuple subjectTuple = subject instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE
+                    && tuple.elements().size() == a.elements().size() ? tuple : null;
+            for (int i = 0; i < a.elements().size(); i++) {
+                Type element = subjectTuple == null ? Unknown.INSTANCE : subjectTuple.elements().get(i);
+                if (patternsProvablyDisjoint(
+                        a.elements().get(i), b.elements().get(i), element, generics, self)) return true;
+            }
+            return false;
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
-                if ((a.constructor().equals("Some") && b.constructor().equals("None"))
+                return (a.constructor().equals("Some") && b.constructor().equals("None"))
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
-                        || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                        || (a.constructor().equals("Err") && b.constructor().equals("Ok"));
+            }
+            if (a.arguments().size() != b.arguments().size()) return false;
+            for (int i = 0; i < a.arguments().size(); i++) {
+                if (patternsProvablyDisjoint(
+                        a.arguments().get(i), b.arguments().get(i),
+                        Unknown.INSTANCE, generics, self)) return true;
             }
             return false;
         }
         if (left instanceof Ast.TypePattern a && right instanceof Ast.TypePattern b) {
+            boolean ac = a.type().isComplement(), bc = b.type().isComplement();
+            if (ac && bc) return false;
+            if (ac && !bc) {
+                Type excluded = deref(resolve(a.type().complementedType(), generics, self));
+                Type selected = deref(resolve(b.type(), generics, self));
+                return runtimeValueTypeCovered(selected, excluded, 0);
+            }
+            if (bc && !ac) {
+                Type excluded = deref(resolve(b.type().complementedType(), generics, self));
+                Type selected = deref(resolve(a.type(), generics, self));
+                return runtimeValueTypeCovered(selected, excluded, 0);
+            }
             Type at = deref(resolve(a.type(), generics, self));
             Type bt = deref(resolve(b.type(), generics, self));
             return !typesMayOverlap(at, bt);
         }
+        if (left instanceof Ast.TypePattern typed && right instanceof Ast.LiteralPattern literal) {
+            return typeAndLiteralProvablyDisjoint(typed, literal, generics, self);
+        }
+        if (right instanceof Ast.TypePattern typed && left instanceof Ast.LiteralPattern literal) {
+            return typeAndLiteralProvablyDisjoint(typed, literal, generics, self);
+        }
+        // Structural width/nominal openness, or mixed pattern families,
+        // have no sufficiently strong intersection proof yet. Never infer
+        // disjointness merely from different AST node types or syntax.
         return false;
+    }
+
+    private boolean typeAndLiteralProvablyDisjoint(
+            Ast.TypePattern typed, Ast.LiteralPattern literal,
+            Set<String> generics, Type self) {
+        Type literalType = typeOf(
+                new Ast.LiteralExpr(literal.value()), new Env(null), generics, self);
+        if (typed.type().isComplement()) {
+            Type excluded = deref(resolve(typed.type().complementedType(), generics, self));
+            return runtimeValueTypeCovered(literalType, excluded, 0);
+        }
+        Type required = deref(resolve(typed.type(), generics, self));
+        return !typesMayOverlap(literalType, required);
     }
 
     private boolean guardsProvablyDisjoint(Ast.Expr left, Ast.Expr right) {
@@ -7192,6 +7290,9 @@ public final class TypeChecker {
                 || !(binary.right() instanceof Ast.LiteralExpr literal)
                 || !(literal.value() instanceof Number number)) return null;
         double v = number.doubleValue();
+        // A double bound would round a large i64 and could certify two
+        // mathematically overlapping integer ranges as disjoint.
+        if (!Double.isFinite(v) || Math.abs(v) > 9007199254740991d) return null;
         return switch (binary.operator()) {
             case "<" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, false);
             case "<=" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, true);
