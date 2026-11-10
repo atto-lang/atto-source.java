@@ -181,6 +181,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isExternalActorMethodHead()) {
+                    rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -433,6 +437,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isExternalActorMethodHead()) {
+                return parseExternalActorMethod(annotations, modifiers);
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -634,6 +641,52 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /** Contextual mtd only counts as a source receiver declaration in a define head. */
+    private boolean isExternalActorMethodHead() {
+        return isContextualIdentifier("mtd")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == LPAREN;
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
+        rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
+        rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
+        consumeContextualIdentifier("mtd", "expected external receiver method declaration");
+        String name = consumeCallableName("expected external actor method name");
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+                "on_recover").contains(name)) {
+            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
+        }
+        consume(LPAREN, "external receiver method requires '(Actor receiver)'");
+        Ast.TypeRef receiverType = parseTypeRef();
+        if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
+                || receiverType.isBorrow()) {
+            throw error(previous(), "external receiver must be a non-generic nominal actor");
+        }
+        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        consume(RPAREN, "expected ')' after external actor receiver");
+        consume(LPAREN, "expected '(' before external receiver method parameters");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after external receiver method parameters");
+        if (parameters.stream().anyMatch(p -> p.structural()
+                || p.name().equals(receiverName))) {
+            throw error(previous(), "external receiver methods cannot use structural parameters "
+                    + "or shadow the receiver binding");
+        }
+        Ast.TypeRef returns = match(FAT_ARROW, COLON)
+                ? parseTypeRef() : Ast.TypeRef.simple("void");
+        if (!parseCheckedEffects().isEmpty()) {
+            throw error(previous(), "external receiver effects require checked actor-effect lowering");
+        }
+        List<Ast.Stmt> body = parseBlock();
+        return new Ast.ExternalActorMethodDecl(
+                receiverType.name(), receiverName, name,
+                modifiers.visibility, parameters, returns, body);
     }
 
     private Ast.ClassDecl parseClass(
