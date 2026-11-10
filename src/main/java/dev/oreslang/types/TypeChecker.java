@@ -4483,7 +4483,7 @@ public final class TypeChecker {
                 Type constructed = resolve(created.type(), generics, self);
                 // Resolve *before* admitting a non-class construction, since a
                 // transparent alias may hide an ActorRef or container of refs.
-                if (containsActorReference(constructed)) {
+                if (Types.containsActorReference(constructed)) {
                     throw new IllegalArgumentException(
                             "ActorRef capabilities cannot be constructed with new; "
                                     + "obtain a runtime-minted reference from spawn or an authorized actor resolver");
@@ -10236,35 +10236,11 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
-    /** No unknown/generic value may gain an ActorRef capability by coercion. */
-    private static boolean containsActorReference(Type type) {
-        if (type instanceof Named named) {
-            return named.name().equals("ActorRef")
-                    || named.arguments().stream().anyMatch(TypeChecker::containsActorReference);
-        }
-        if (type instanceof SelfType self) return containsActorReference(self.bound());
-        if (type instanceof Borrow borrow) return containsActorReference(borrow.target());
-        if (type instanceof ListType list) return containsActorReference(list.element());
-        if (type instanceof Tuple tuple) return tuple.elements().stream()
-                .anyMatch(TypeChecker::containsActorReference);
-        if (type instanceof Union union) return union.options().stream()
-                .anyMatch(TypeChecker::containsActorReference);
-        if (type instanceof Types.Not not) return containsActorReference(not.excluded());
-        if (type instanceof Function function) {
-            return containsActorReference(function.result())
-                    || function.parameters().stream()
-                            .anyMatch(TypeChecker::containsActorReference);
-        }
-        if (type instanceof Record record) return record.members().values().stream()
-                .anyMatch(TypeChecker::containsActorReference);
-        return false;
-    }
-
     private boolean assignable(Type actual, Type expected) {
         // Unknown/generic compatibility is intentionally permissive for ordinary
         // data, but it is not evidence that a value carries a minted actor
         // capability. This also covers Option<ActorRef<T>>, records and returns.
-        if (containsActorReference(expected)
+        if (Types.containsActorReference(expected)
                 && Types.containsUncertainType(actual)) {
             return false;
         }
