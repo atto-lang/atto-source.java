@@ -2870,9 +2870,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
-            if (cell != null && cell.ref == this && !cell.stopped.get()) {
-                cell.schedule();
-            }
+            requireActorReferenceIdentity(this, cell, "observe readiness");
+            if (cell != null && !cell.stopped.get()) cell.schedule();
             return readyFuture;
         }
 
@@ -2899,6 +2898,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Exceptional termination is reported as a failed Future.
          */
         public OresFuture<Void> done() {
+            requireActorReferenceIdentity(this, actors.get(id), "observe completion");
             return doneFuture;
         }
 
@@ -2997,6 +2997,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(id);
+            requireActorReferenceIdentity(this, cell, "inspect parent");
             return cell == null || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
@@ -3004,6 +3005,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public List<ActorId> childIds() {
             ActorCell<?> cell = actors.get(id);
+            requireActorReferenceIdentity(this, cell, "inspect children");
             if (cell == null) return List.of();
             return cell.children.stream().map(child -> child.ref.id()).toList();
         }
