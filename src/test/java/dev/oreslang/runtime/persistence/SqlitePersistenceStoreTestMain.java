@@ -143,6 +143,33 @@ public final class SqlitePersistenceStoreTestMain {
                     duplicateBlocked=expected.toString().contains("INCOMPLETE_OPERATION_LEDGER");
                 }
                 check(duplicateBlocked,"altered event received a direct durable duplicate ACK");
+                boolean replayDenied=false;
+                try { store.loadFenced(new Identity("tenant-a","proof-mutated","main"),1); }
+                catch(java.sql.SQLException expected) {
+                    replayDenied=expected.toString().contains("UNVERIFIED_ACTOR_EVENT");
+                }
+                check(replayDenied,"same-size rewritten event replayed without operation proof");
+            }
+            // A correct-size altered snapshot is also forbidden. Length and
+            // stream contiguity alone are not a sufficient recovery witness.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","proof-snapshot",1);
+                check(store.commit(List.of(write("proof-snapshot","checkpoint",1,0,
+                        Kind.SNAPSHOT,21))).get(0).durable(),"snapshot proof fixture");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "UPDATE state SET snapshot=x'2A' WHERE actor='proof-snapshot'")==1,
+                    "snapshot rewrite fixture");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                boolean replayDenied=false;
+                try { store.loadFenced(new Identity("tenant-a","proof-snapshot","main"),1); }
+                catch(java.sql.SQLException expected) {
+                    replayDenied=expected.toString().contains("UNVERIFIED_ACTOR_SNAPSHOT");
+                }
+                check(replayDenied,"same-size rewritten snapshot replayed without operation proof");
             }
             // Corrupted snapshots and events must abort fenced reactivation.
             try(var store=new SqlitePersistenceStore(file)) {
