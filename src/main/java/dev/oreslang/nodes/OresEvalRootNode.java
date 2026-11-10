@@ -76,6 +76,15 @@ public final class OresEvalRootNode extends RootNode {
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
         this.program = Objects.requireNonNull(program, "checked Oreslang program");
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SingletonDecl) {
+                    throw new IllegalArgumentException(
+                            "ORES-SINGLETON-UNSUPPORTED: check-only singleton AST "
+                                    + "cannot be installed into an executable guest root");
+                }
+            }
+        }
         this.codeUnitId = codeUnitId;
         this.taskAdmissionEpoch =
                 Ast.CheckedTaskCaptures.requireProgramEpoch(program);
