@@ -13,7 +13,7 @@ verify_blob() {
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 6934a266090a16361154a7fa24859d99c46a6470
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 55f4feb55c4892c43612dbcfffe1127666299750
 verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java 0760e04d1ccc57828317aebe9416324e08185b34
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java 57c2316e517edca27e6d1d442efbdde2366c29ca
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java 18463efa99db15d3ff4b0ec650214add03747375
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java ee0c4d9b48fc7664e6985e84e07e2f77a6cec818
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 79c8bf1ec6245ff1f45de04accfc6d8832a7a1e5
 
