@@ -2924,6 +2924,7 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
+            requireActorReferenceIdentity(this, cell, "await termination");
             if (cell == null) return true;
             cell.awaitFinalized(unit.toNanos(timeout));
             return cell.finalized();
