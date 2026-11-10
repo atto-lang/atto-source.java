@@ -62,6 +62,28 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             try(ResultSet r=q.executeQuery()) {return r.next()?r.getLong(1):0;}
         }
     }
+    /**
+     * Enforce ONE operation-id namespace across legacy and atomic command
+     * entry points. The command table may not exist in an old single-event
+     * database, but once created its IDs cannot be reused by legacy writes.
+     * Called with BEGIN IMMEDIATE already held by commit().
+     */
+    private boolean logicalCommandIdExists(Identity id, String operationId) throws SQLException {
+        try (PreparedStatement schema=db.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='command_commits'")) {
+            try (ResultSet found=schema.executeQuery()) {
+                if (!found.next()) return false;
+            }
+        }
+        try (PreparedStatement query=db.prepareStatement(
+                "SELECT 1 FROM command_commits " +
+                "WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+            bindKey(query,id);
+            query.setString(4,operationId);
+            try (ResultSet existing=query.executeQuery()) { return existing.next(); }
+        }
+    }
+
     private long version(Identity id) throws SQLException {
         try(PreparedStatement q=db.prepareStatement("SELECT version FROM state WHERE tenant=? AND actor=? AND slot=?")) {
             bindKey(q,id); try(ResultSet r=q.executeQuery()){return r.next()?r.getLong(1):0;}
@@ -96,6 +118,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     throw new IllegalArgumentException("invalid persistence version/payload");
                 if(epoch(id)!=w.epoch()) {
                     out.add(new Result(w.operationId(),Status.STALE_EPOCH,-1,false));continue;
+                }
+                if (logicalCommandIdExists(id,w.operationId())) {
+                    out.add(new Result(w.operationId(),Status.OP_ID_CONFLICT,-1,false));continue;
                 }
                 try(PreparedStatement q=db.prepareStatement("SELECT epoch,expected,kind,schema,payload,version FROM ops WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
                     bindKey(q,id);q.setString(4,w.operationId());
@@ -166,7 +191,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         execute("BEGIN");
         try {
             boolean valid = false;
-            if (epoch(id) == write.epoch()) {
+            if (epoch(id) == write.epoch() &&
+                    !logicalCommandIdExists(id,write.operationId())) {
                 try (PreparedStatement q=db.prepareStatement(
                         "SELECT epoch,expected,kind,schema,payload,version FROM ops "
                         + "WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
