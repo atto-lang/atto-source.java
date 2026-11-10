@@ -217,6 +217,51 @@ final class VirtualActorSupervisorDirectoryTest {
         }
     }
     @Test
+    void unauthorizedInspectionCannotProbeIdentityAddressOrPageCursorValidation() {
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = new VirtualActorSupervisorDirectory(
+                    runtime, supervisor, TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "42");
+                Object allowed = new Object();
+                Object denied = new Object();
+                var grant = directory.issueInspectionGrant(
+                        allowed, TimeUnit.SECONDS.toNanos(4));
+                var foreign = new VirtualActorActivationRegistry.Identity(
+                        "other-tenant", "7:defaultCart", "42");
+                long timeout = TimeUnit.SECONDS.toNanos(1);
+
+                // An unauthenticated caller must never learn whether an ID,
+                // address or pagination cursor is valid from its exception type.
+                for (VirtualActorActivationRegistry.Identity target :
+                        java.util.List.of(logical.identity(), foreign)) {
+                    var failure = assertThrows(SecurityException.class,
+                            () -> directory.requestInspect(grant, denied, target, timeout));
+                    assertEquals("virtual actor inspection denied", failure.getMessage());
+                }
+                var refFailure = assertThrows(SecurityException.class,
+                        () -> directory.requestInspect(grant, denied, logical, timeout));
+                assertEquals("virtual actor inspection denied", refFailure.getMessage());
+                var addressFailure = assertThrows(SecurityException.class,
+                        () -> directory.requestInspectAddress(
+                                grant, denied, "not-an-address", timeout));
+                assertEquals("virtual actor inspection denied", addressFailure.getMessage());
+                var pageFailure = assertThrows(SecurityException.class,
+                        () -> directory.requestList(grant, denied, 0, -1, foreign, timeout));
+                assertEquals("virtual actor inspection denied", pageFailure.getMessage());
+
+                // An authorized caller still gets explicit validation errors.
+                assertThrows(IllegalArgumentException.class,
+                        () -> directory.requestInspectAddress(
+                                grant, allowed, "not-an-address", timeout));
+                assertThrows(IllegalArgumentException.class,
+                        () -> directory.requestList(grant, allowed, 0, -1, null, timeout));
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+
+    @Test
     void supervisorOwnershipIsUniqueAcrossDirectoriesAndFailedClaimDoesNotLeakQuota() {
         try (var runtime = new ActorRuntime()) {
             var firstSupervisor = runtime.createSupervisor();
