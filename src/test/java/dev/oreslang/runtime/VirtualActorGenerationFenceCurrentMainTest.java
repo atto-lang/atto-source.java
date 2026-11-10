@@ -67,6 +67,9 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             first.reserveVirtualActorGeneration(ID, 1L);
             assertThrows(SecurityException.class,
                     () -> foreign.reserveVirtualActorGeneration(ID, 2L));
+            assertThrows(IllegalStateException.class,
+                    () -> next.reserveVirtualActorGeneration(ID, 2L),
+                    "same supervisor must not steal a live group's logical ownership");
             first.close(); // Burns, never erases, its pending generation.
             next.reserveVirtualActorGeneration(ID, 2L);
             assertFalse(first.isCurrentVirtualActorGeneration(ID, 1L));
@@ -81,6 +84,37 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             next.close();
             assertFalse(next.isCurrentVirtualActorGeneration(ID, 2L));
             foreign.close();
+        }
+    }
+
+    @Test
+    void passivatedActorStillBelongsToOpenGroupUntilExplicitClose()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            var oldGroup = runtime.createActorGroup(supervisor);
+            var newGroup = runtime.createActorGroup(supervisor);
+            var old = worker(oldGroup);
+            oldGroup.reserveVirtualActorGeneration(ID, 1L);
+            oldGroup.bindVirtualActorIdentity(old, ID, 1L);
+            old.stop();
+            old.getDone().get(5, TimeUnit.SECONDS);
+
+            assertThrows(IllegalStateException.class,
+                    () -> newGroup.reserveNextVirtualActorGeneration(ID),
+                    "physical retirement alone does not transfer group ownership");
+            assertTrue(oldGroup.isCurrentVirtualActorTerminal(ID, 1L, old.id()));
+            oldGroup.close();
+            assertFalse(oldGroup.isCurrentVirtualActorTerminal(ID, 1L, old.id()));
+
+            assertEquals(2L, newGroup.reserveNextVirtualActorGeneration(ID));
+            var replacement = worker(newGroup);
+            newGroup.bindVirtualActorIdentity(replacement, ID, 2L);
+            assertFalse(newGroup.isCurrentVirtualActorTerminal(ID, 2L, replacement.id()));
+            replacement.stop();
+            replacement.getDone().get(5, TimeUnit.SECONDS);
+            assertTrue(newGroup.isCurrentVirtualActorTerminal(ID, 2L, replacement.id()));
+            newGroup.close();
         }
     }
 
