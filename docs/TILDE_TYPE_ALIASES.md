@@ -87,3 +87,33 @@ formatters must not replace bracket shapes with lossy generic `<...>` arguments.
 
 See the shared draft constructor/empty contracts in
 [`oreslang-common-source#254`](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/254).
+
+## Canonical tuple return types (2026-11-10)
+
+Use **`Tuple[T1, T2, ...]`** in new declarations, including public function
+return types, parameters, binding annotations and nested types. The angle-bracket
+spelling `Tuple<T1,T2>` remains an additive compatibility form when it does not
+resolve to a lexically declared nominal `Tuple`; it is not the formatter's
+canonical spelling. The tilde constructor is a **value** expression,
+`~tuple(v1, v2)`, not a function return-type syntax.
+
+```atto
+pub fnc labels(): Tuple[string, string] {
+  return ~tuple("left", "right");
+}
+```
+
+Return checking uses the existing fixed positional tuple kind: each slot's type
+and arity must match; a non-void function must return on every path. Explicit
+`~array(v1, v2)` remains an array value even in a tuple-expected return
+context, and must not be implicitly converted. The older ambiguous `[...]`
+literal retains its existing contextual tuple compatibility until a separate
+migration contract is approved. A user-declared `Tuple` class or alias cannot
+hijack an explicitly bracketed intrinsic shape.
+
+A dedicated `TupleReturnTypeContractTest` and the real
+`src/test/resources/atto/tuple-returns/canonical-return.atto` fixture provide
+positive compiled guest and negative return-type cases. **These checks are
+authored, not executed**, until JUnit and Truffle guest execution run at the
+exact source head, with nonzero runner steps. The original tuple drafts remain
+separately gated for native and five-backend parity.
