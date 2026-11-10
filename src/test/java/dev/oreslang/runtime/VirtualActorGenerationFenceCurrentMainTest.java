@@ -38,14 +38,18 @@ final class VirtualActorGenerationFenceCurrentMainTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             group.reserveVirtualActorGeneration(ID, 1L);
-            assertTrue(group.isCurrentVirtualActorGeneration(ID, 1L));
+            assertFalse(group.isCurrentVirtualActorGeneration(ID, 1L),
+                    "unbound reservation must not authorize a terminal receipt");
             group.abortVirtualActorGeneration(ID, 1L);
+            assertFalse(group.isCurrentVirtualActorGeneration(ID, 1L));
             assertThrows(IllegalStateException.class,
                     () -> group.reserveVirtualActorGeneration(ID, 1L));
             group.reserveVirtualActorGeneration(ID, 2L);
             assertFalse(group.isCurrentVirtualActorGeneration(ID, 1L));
-            assertTrue(group.isCurrentVirtualActorGeneration(ID, 2L));
+            assertFalse(group.isCurrentVirtualActorGeneration(ID, 2L),
+                    "failed initializer has no terminal authority");
             group.abortVirtualActorGeneration(ID, 2L);
+            assertFalse(group.isCurrentVirtualActorGeneration(ID, 2L));
             assertThrows(IllegalStateException.class,
                     () -> group.reserveVirtualActorGeneration(ID, 2L));
             group.close();
@@ -66,11 +70,16 @@ final class VirtualActorGenerationFenceCurrentMainTest {
             first.close(); // Burns, never erases, its pending generation.
             next.reserveVirtualActorGeneration(ID, 2L);
             assertFalse(first.isCurrentVirtualActorGeneration(ID, 1L));
+            assertFalse(next.isCurrentVirtualActorGeneration(ID, 2L));
+            var replacement = worker(next);
+            next.bindVirtualActorIdentity(replacement, ID, 2L);
             assertTrue(next.isCurrentVirtualActorGeneration(ID, 2L));
-            next.abortVirtualActorGeneration(ID, 2L);
+            replacement.stop();
+            replacement.getDone().get(5, TimeUnit.SECONDS);
             assertThrows(SecurityException.class,
                     () -> foreign.reserveVirtualActorGeneration(ID, 3L));
             next.close();
+            assertFalse(next.isCurrentVirtualActorGeneration(ID, 2L));
             foreign.close();
         }
     }
