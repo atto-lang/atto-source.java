@@ -568,6 +568,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    /** Exactly one runtime-local generation authority for host virtual bindings. */
+    private final VirtualActorRuntimeGenerationFence virtualActorFences;
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
     private static final int MAX_SUPERVISOR_DEPTH = 64;
@@ -693,6 +695,7 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.virtualActorFences = new VirtualActorRuntimeGenerationFence(dispatcherConfig.maxActors());
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         this.physicalStopDispatcher = physicalStopDispatcher;
@@ -3493,6 +3496,75 @@ public final class ActorRuntime implements AutoCloseable {
             return supervisor.id();
         }
 
+        /**
+         * Host-only reservation. A logical reference is not a live actor:
+         * reservation burns N even if initialization aborts. The matching
+         * bind must occur before exposing the physical actor to guest code.
+         */
+        public void reserveVirtualActorGeneration(
+                VirtualActorActivationRegistry.Identity identity, long generation) {
+            requireSupervisor("reserve virtual actor generation");
+            requireCallerRuntimeAffinity("reserve virtual actor generation");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor owner group");
+                virtualActorFences.reserve(supervisor.id(), id, identity, generation);
+            }
+        }
+
+        public void abortVirtualActorGeneration(
+                VirtualActorActivationRegistry.Identity identity, long generation) {
+            requireSupervisor("abort virtual actor generation");
+            requireCallerRuntimeAffinity("abort virtual actor generation");
+            synchronized (authorityLock) {
+                virtualActorFences.abort(supervisor.id(), id, identity, generation);
+            }
+        }
+
+        /**
+         * Bind a real managed worker to one reserved generation. The cell
+         * lifecycle lock fences STOP and physical finalization; the group
+         * authority lock fences releaseWorker and close. In this path,
+         * lifecycleLock -> authorityLock matches termination ordering.
+         */
+        public void bindVirtualActorIdentity(
+                ActorRef<?> worker,
+                VirtualActorActivationRegistry.Identity identity,
+                long generation) {
+            requireSupervisor("bind virtual actor identity");
+            requireCallerRuntimeAffinity("bind virtual actor identity");
+            Objects.requireNonNull(worker, "worker");
+            if (!worker.ownedBy(ActorRuntime.this))
+                throw new IllegalArgumentException("foreign virtual actor worker");
+            ActorCell<?> cell = actors.get(worker.id());
+            if (cell == null || cell.ref != worker)
+                throw new IllegalStateException("unknown virtual actor worker");
+            synchronized (cell.lifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    if (actors.get(worker.id()) != cell || cell.stopped.get()
+                            || cell.finalized || cell.forceKillFenced
+                            || stoppingWorkers.contains(worker.id())
+                            || managedWorkers.get(worker.id()) != worker
+                            || !id.equals(cell.managedByGroup.get())
+                            || !worker.isAlive()) {
+                        throw new IllegalStateException(
+                                "virtual worker is not live under this exact ActorGroup");
+                    }
+                    virtualActorFences.bind(supervisor.id(), id, identity, generation, worker.id());
+                }
+            }
+        }
+
+        /** Revalidate this generation immediately before a host CONTROL side effect. */
+        public boolean isCurrentVirtualActorGeneration(
+                VirtualActorActivationRegistry.Identity identity, long generation) {
+            requireSupervisor("check virtual actor generation");
+            requireCallerRuntimeAffinity("check virtual actor generation");
+            return virtualActorFences.isCurrent(supervisor.id(), id, identity, generation);
+        }
+
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
             return Optional.ofNullable(creator);
@@ -3626,6 +3698,9 @@ public final class ActorRuntime implements AutoCloseable {
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
                 if (!managedWorkers.containsKey(worker.id())) return false;
+                if (virtualActorFences.bound(worker.id()))
+                    throw new IllegalStateException(
+                            "cannot transfer a worker while it owns a virtual actor activation");
                 ActorCell<?> cell = actors.get(worker.id());
                 if (cell == null || cell.stopped.get()) {
                     throw new IllegalStateException("cannot transfer a stopped worker");
@@ -4110,6 +4185,9 @@ public final class ActorRuntime implements AutoCloseable {
             List<Runnable> infrastructureClosures;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
+                // Pending generations are burned; live bindings remain
+                // quarantined until the final physical retirement gate.
+                virtualActorFences.abortPendingForGroup(id);
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
@@ -5948,6 +6026,13 @@ public final class ActorRuntime implements AutoCloseable {
                 actorCount.incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
+        }
+        if (deregistrationFailure == null) {
+            // The last writer of a physical activation is this exact
+            // ActorRuntime retirement path, never a queued terminal callback.
+            // A failed group cleanup leaves its slot quarantined.
+            if (!actors.containsKey(cell.ref.id()))
+                virtualActorFences.retire(cell.ref.id());
         }
         if (deregistrationFailure != null) {
             if (deregistrationFailure instanceof RuntimeException runtime) throw runtime;
