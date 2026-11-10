@@ -59,7 +59,14 @@ actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
 actor_body      = "{" { actor_member } "}"
-                | { actor_member } "end" ;
+                | { actor_member } "end"
+                | ";"                             (* empty-body actor; real ClassDecl *)
+                | "as" IDENT ";" ;                (* named binder parsed, not executable *)
+(* An empty-body actor with ';' lowers to the same nominal actor class as
+   an empty end-delimited body. 'define actor A as a;' retains 'a' in the
+   AST, but static compilation/export must reject it until actor activation,
+   receiver-method lowering and generation-fenced mailbox authority are proven.
+   A named binder is NOT an implicit ActorRef or singleton instance. *)
 actor_member    = field_decl
                 | final_actor_field_decl
                 | actor_method_decl
