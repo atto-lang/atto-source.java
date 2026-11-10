@@ -1,0 +1,57 @@
+name: Actor native offset rollback fault-injection (HOST ONLY)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorNativeArena.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorNativeArenaOffsetRollbackTest.java'
+      - '.github/workflows/actor-native-offset-rollback.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offset-rollback-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify source SHA, tree and changed file blobs
+        shell: bash
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain)"
+          git rev-parse 'HEAD^{tree}'
+          for path in src/main/java/dev/oreslang/runtime/ActorNativeArena.java src/test/java/dev/oreslang/runtime/ActorNativeArenaOffsetRollbackTest.java; do
+            test "$(git hash-object "$path")" = "$(git rev-parse "HEAD:$path")"
+          done
+      - name: Install JDK 25 for Java 21 source compatibility
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Execute injected native-admission OOM and offset rollback JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -Dtest=ActorNativeArenaOffsetRollbackTest test
+          test -s target/surefire-reports/TEST-dev.oreslang.runtime.ActorNativeArenaOffsetRollbackTest.xml
+      - name: Verify all intended tests actually ran; mark host-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import xml.etree.ElementTree as E
+          root = E.parse('target/surefire-reports/TEST-dev.oreslang.runtime.ActorNativeArenaOffsetRollbackTest.xml').getroot()
+          actual = tuple(int(root.attrib.get(k,'-1')) for k in ('tests','failures','errors','skipped'))
+          if actual != (3,0,0,0):
+              raise SystemExit(f'not all three injected rollback JUnit tests executed: {actual}')
+          print('PASS Java actor native offset rollback 3/3 JUnit tests (HOST ONLY)')
+          print('NOT_EXECUTED_AS_ATTO_COMPILED_GUEST')
+          PY
