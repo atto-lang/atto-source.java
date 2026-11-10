@@ -62,6 +62,17 @@ public final class SqliteCommandTransactionStoreTestMain {
                 check(first.status()==Status.COMMITTED && first.durable() &&
                     first.firstVersion()==1 && first.version()==2 &&
                     first.eventCount()==2,"multi-event commit did not persist atomically");
+                // Golden cross-backend digest: JSON([schema,[base64(event)...]]).
+                try(Connection proofDb=DriverManager.getConnection("jdbc:sqlite:"+file);
+                    java.sql.PreparedStatement proof=proofDb.prepareStatement(
+                        "SELECT hex(events_hash) FROM command_commits WHERE actor=? AND op=?")) {
+                    proof.setString(1,id.actor());proof.setString(2,"deposit-100");
+                    try(java.sql.ResultSet row=proof.executeQuery()) {
+                        check(row.next() && row.getString(1).equals(
+                          "AFF1AFCBDFC3F0C041700EA55A650ECAB604D16F0AB240C46B505429656A6D16"),
+                          "command event digest does not match canonical cross-backend vector");
+                    }
+                }
                 check(dec(commands.loadVerified(id,1).events().get(0).payload())==40,
                         "first event lost");
                 check(dec(commands.loadVerified(id,1).events().get(1).payload())==60,
