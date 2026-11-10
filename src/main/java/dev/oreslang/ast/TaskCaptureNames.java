@@ -252,6 +252,18 @@ public final class TaskCaptureNames {
             for (Ast.Expr item : s.elements()) visitExpr(item, locals, names);
         } else if (expr instanceof Ast.TupleExpr s) {
             for (Ast.Expr item : s.elements()) visitExpr(item, locals, names);
+        } else if (expr instanceof Ast.MapLiteralExpr s) {
+            // Independent runtime free-name consistency check. The
+            // ownership pass separately binds COPY/MOVE and Send authority.
+            // Visiting both sides prevents a Map hiding parent actor self,
+            // local owners or loans from the task launch snapshot.
+            for (Ast.MapEntryExpr entry : s.entries()) {
+                visitExpr(entry.key(), locals, names);
+                visitExpr(entry.value(), locals, names);
+            }
+        } else if (expr instanceof Ast.ContextualEmptyMapExpr
+                || expr instanceof Ast.TypedEmptyAggregateExpr) {
+            // Neither form references lexical values.
         } else if (expr instanceof Ast.ObjectExpr s) {
             for (Ast.ObjectField field : s.fields()) visitExpr(field.value(), locals, names);
         } else if (expr instanceof Ast.LambdaExpr s) {
