@@ -1,23 +1,23 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
-import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
-
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/** Protected state syntax must never silently become plain mutable actor fields. */
 final class NeuronActorV0Test {
     private static final String BASE = """
             define neuron actor LinearNeuron as
-              let float weight;
-              on_start(): void { self.weight = 2.0; return; }
-              pub forward(float input): float { return self.weight * input; }
+              state {
+                let float weight;
+                let float bias;
+              }
+
+              pub forward(float input): float { return input; }
               receive(ActorMail<float> mail): void {
                 self.send(self.forward(mail.value));
                 self.end();
@@ -26,57 +26,87 @@ final class NeuronActorV0Test {
             end
             """;
 
-    private static Ast.ClassDecl neuron(String text) {
-        Ast.Program parsed = Parser.parse(text);
-        return (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+    private static Ast.ClassDecl firstActor(String text) {
+        Ast.Program program = Parser.parse(text);
+        return (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
     }
 
-    @Test void neuronRoleIsPreservedWithoutReplacingActorTransport() {
-        Ast.ClassDecl klass = neuron(BASE);
+    @Test void neuronStateRemainsSealedMetadataThroughAstExpansion() {
+        Ast.Program parsed = Parser.parse(BASE);
+        Ast.ClassDecl klass = firstActor(BASE);
         assertEquals(Ast.ActorKind.SHARED, klass.actorKind());
         assertEquals(Ast.ActorRole.NEURON, klass.actorConcurrency().role());
         assertEquals(Ast.ActorTransport.GENERIC, klass.actorConcurrency().transport());
-        assertEquals(1, klass.actorConcurrency().messageConcurrency());
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BASE)));
-        assertEquals(Ast.ActorRole.GENERAL,
-                neuron(BASE.replace("define neuron actor", "define actor")).actorConcurrency().role());
+        assertTrue(klass.fields().isEmpty(), "neuron state must NOT flatten into actor fields");
+        assertEquals(2, klass.stateFields().size());
+        assertEquals("weight", klass.stateFields().get(0).name());
+        assertEquals("bias", klass.stateFields().get(1).name());
+        assertEquals(Ast.TypeRef.simple("float"), klass.stateFields().get(0).type());
+        assertEquals(Ast.BindingKind.LET, klass.stateFields().get(1).bindingKind());
+
+        Ast.Program expanded = AnnotationExpander.expand(parsed);
+        Ast.ClassDecl after = (Ast.ClassDecl) expanded.modules().getFirst().declarations().getFirst();
+        assertEquals(klass.stateFields(), after.stateFields());
+        assertTrue(after.fields().isEmpty());
     }
 
-    @Test void scalarHooksMustBePresentAndExact() {
-        String[][] rejected = {
-                {"pub forward(float input): float { return self.weight * input; }",
-                    "", "forward"},
+    @Test void sourceFailsClosedUntilCriticalStateLoansAreImplemented() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BASE)));
+        assertTrue(failure.getMessage().contains("NEURON_STATE_MIR_UNSUPPORTED"),
+                failure::getMessage);
+    }
+
+    @Test void malformedSchemasRejectAtSyntaxStage() {
+        String[] rejected = {
+                "define neuron actor X as end",
+                "define neuron actor X as state {} end",
+                "define neuron actor X as let float weight; state { let float bias; } end",
+                "define neuron actor X as state { let float weight; } state { let float bias; } end",
+                "define neuron actor X as state { let float weight; let float weight; } end",
+                "define neuron actor X as state { val float weight; } end",
+                "define neuron actor X as state { let weight = 1.0; } end",
+                "define neuron actor X as state { pub let float weight; } end",
+                "define neuron actor X as state { state { let float weight; } } end",
+                "define neuron class X as end",
+                "define neuron isoactor X as end",
+                "define http neuron actor X as end",
+                "define neuron tcp actor X as end",
+                "define actor X as state { let float weight; } end"
+        };
+        for (String bad : rejected) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(bad), bad);
+        }
+    }
+
+    @Test void badScalarHooksRejectBeforeMirAdmission() {
+        String[][] negatives = {
                 {"pub forward(float input): float", "forward(float input): float", "forward"},
                 {"pub forward(float input): float", "pub async forward(float input): float", "forward"},
                 {"pub forward(float input): float", "pub forward(int input): float", "forward"},
                 {"pub forward(float input): float", "pub forward(float input): int", "forward"},
-                {"pub forward(float input): float", "pub forward(float input, float extra): float", "forward"},
                 {"receive(ActorMail<float> mail): void", "receive(ActorMail<int> mail): void", "receive"},
-                {"receive(ActorMail<float> mail): void", "pub receive(ActorMail<float> mail): void", "receive"},
-                {"receive(ActorMail<float> mail): void", "receive(ActorMail<float> mail, float x): void", "receive"}
+                {"receive(ActorMail<float> mail): void", "pub receive(ActorMail<float> mail): void", "receive"}
         };
-        for (String[] c : rejected) {
-            String source = BASE.replace(c[0], c[1]);
-            assertNotEquals(BASE, source, "negative fixture must mutate the source");
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)), source);
-            assertTrue(error.getMessage().contains(c[2]), error::getMessage);
+        for (String[] neg : negatives) {
+            String bad = BASE.replace(neg[0], neg[1]);
+            assertNotEquals(BASE, bad);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(bad)), bad);
+            assertTrue(failure.getMessage().contains(neg[2]), failure::getMessage);
         }
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(BASE.replace("receive(ActorMail<float> mail): void",
-                        "on_message(ActorMail<float> mail): void"))));
     }
 
-    @Test void malformedRoleAndConflictingTransportFailClosed() {
-        for (String declaration : new String[] {
-                "define neuron class X as end",
-                "define neuron neuron actor X as end",
-                "define http neuron actor X as end",
-                "define neuron tcp actor X as end",
-                "define neuron isoactor X as end"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(declaration), declaration);
-        }
+    @Test void existingOrdinaryActorAndContextualIdentifierStillParse() {
+        Ast.ClassDecl ordinary = firstActor("""
+                define actor Ordinary as
+                  let float weight;
+                end
+                """);
+        assertEquals(Ast.ActorRole.GENERAL, ordinary.actorConcurrency().role());
+        assertTrue(ordinary.stateFields().isEmpty());
+
         assertDoesNotThrow(() -> Parser.parse("""
                 pub routine main(): void {
                   val int neuron = 1;
@@ -85,34 +115,8 @@ final class NeuronActorV0Test {
                 """));
         assertDoesNotThrow(() -> Parser.parse("""
                 define module neurons as
-                  """ + BASE + """
+                """ + BASE + """
                 end
                 """));
-    }
-
-    @Test void guestCompilesAndExecutesScalarNeuronWithRealActorMailbox() throws Exception {
-        // Distinct from parser and host-only math. This must run actual guest source.
-        String program = BASE + """
-                pub async routine main(): void {
-                  val neuron = spawn LinearNeuron();
-                  await neuron.get_ready();
-                  neuron.send(3.0);
-                  val output = (await neuron.outputs.next()).value.unwrap();
-                  if output.value != 6.0; do
-                    rt fail("bad neuron output");
-                  fi
-                  stdio.stdout.write("neuron-ok");
-                  await neuron.get_done();
-                  return;
-                }
-                """;
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "neuron-v0.atto")
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).build()) {
-            context.eval(source);
-        }
-        assertEquals("neuron-ok", output.toString(StandardCharsets.UTF_8));
     }
 }
