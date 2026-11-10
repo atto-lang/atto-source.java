@@ -211,6 +211,51 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     }
                 }
             }
+            // A matching op row alone is not proof that the durable journal
+            // still contains the original immutable event. Verify the actual
+            // event payload, or the active snapshot barrier, in this SAME
+            // fenced SQLite read transaction before authorizing publication.
+            if (valid && write.kind() == Kind.EVENT) {
+                try (PreparedStatement q=db.prepareStatement(
+                        "SELECT schema,length(payload),substr(payload,1,1048577) " +
+                        "FROM events WHERE tenant=? AND actor=? AND slot=? AND version=?")) {
+                    bindKey(q,id);
+                    q.setLong(4,receipt.version());
+                    try (ResultSet row=q.executeQuery()) {
+                        if (!row.next()) valid=false;
+                        else {
+                            int schema=row.getInt(1);
+                            long length=row.getLong(2);
+                            byte[] stored=row.getBytes(3);
+                            valid=schema==write.schemaVersion() &&
+                                    length==write.ownedPayload().length &&
+                                    stored!=null &&
+                                    Arrays.equals(stored,write.ownedPayload());
+                        }
+                    }
+                }
+            } else if (valid && write.kind() == Kind.SNAPSHOT) {
+                try (PreparedStatement q=db.prepareStatement(
+                        "SELECT snapshot_version,snapshot_schema,length(snapshot)," +
+                        "substr(snapshot,1,1048577) FROM state " +
+                        "WHERE tenant=? AND actor=? AND slot=?")) {
+                    bindKey(q,id);
+                    try (ResultSet row=q.executeQuery()) {
+                        if (!row.next()) valid=false;
+                        else {
+                            long snapshotVersion=row.getLong(1);
+                            int schema=row.getInt(2);
+                            long length=row.getLong(3);
+                            byte[] stored=row.getBytes(4);
+                            valid=snapshotVersion==receipt.version() &&
+                                    schema==write.schemaVersion() &&
+                                    length==write.ownedPayload().length &&
+                                    stored!=null &&
+                                    Arrays.equals(stored,write.ownedPayload());
+                        }
+                    }
+                }
+            }
             commitTransaction();
             return valid;
         } catch (Exception error) {
