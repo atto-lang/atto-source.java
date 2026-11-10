@@ -107,21 +107,36 @@ final class ArrayIntGetCopyLanguageTest {
                 rejected::toString);
     }
 
-    @Test
-    void copyWhileRootMutablyBorrowedIsRejectedEvenForMiss() {
+    private static void assertExclusiveLoanBlocksCheckedCopy(String index) {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
+                () -> TypeChecker.check(Parser.parse(("""
                         pub fnc main(): void {
                           let mut Array<int> values = new Array<int>();
                           values.add(42);
                           val borrow mut Array<int> exclusive = rt mut borrow values;
-                          val missed = values.get_copy(-1);
+                          val missed = values.get_copy(%s);
                           stdio.stdout.write(exclusive.size);
                           return;
                         }
-                        """)));
-        assertTrue(rejected.getMessage().toLowerCase().contains("borrow"),
+                        """).formatted(index))));
+        // A parser error mentioning "borrow" (or a generic unsupported
+        // feature) must NOT be mistaken for an ownership proof. This exact
+        // diagnostic comes from the live-owner check in OwnershipChecker,
+        // BEFORE an invalid get_copy index could produce None.
+        assertTrue(rejected.getMessage().contains(
+                "cannot read 'values' while it is mutably borrowed"),
                 rejected::toString);
+    }
+
+    @Test
+    void copyWhileRootMutablyBorrowedIsRejectedEvenForMiss() {
+        assertExclusiveLoanBlocksCheckedCopy("-1");
+    }
+
+    @Test
+    void hugePositiveAndMinimumNegativeCopyMissesCannotBypassExclusiveLoan() {
+        assertExclusiveLoanBlocksCheckedCopy("9223372036854775807");
+        assertExclusiveLoanBlocksCheckedCopy("-9223372036854775808");
     }
 
     @Test
