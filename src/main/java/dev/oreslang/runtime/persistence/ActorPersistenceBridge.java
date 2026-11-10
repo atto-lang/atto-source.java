@@ -66,6 +66,47 @@ public final class ActorPersistenceBridge {
                          expectedVersion, schemaVersion, Kind.SNAPSHOT, ownedBytes);
     }
 
+    /** Persist one immutable domain event, not a mutable actor-state snapshot.
+     * The caller must have finished every critical loan before async admission.
+     * Replay and deterministic reducers belong to the compiler-owned actor
+     * protocol; this trusted host bridge only transfers owned bytes.
+     */
+    private static Write event(Activation activation, String operationId,
+                               long expectedVersion, int schemaVersion, byte[] ownedBytes) {
+        Objects.requireNonNull(activation);
+        assertBoundTurn(activation);
+        return new Write(activation.stableIdentity, operationId, activation.epoch,
+                         expectedVersion, schemaVersion, Kind.EVENT, ownedBytes);
+    }
+
+    /** Future is owned by the invoking actor; storage runs off its carrier. */
+    public static OresFuture<Result> submitOwnedEvent(
+            Activation activation, BatchPersistenceSidecar sidecar,
+            String operationId, long expectedVersion, int schemaVersion, byte[] ownedBytes) {
+        Objects.requireNonNull(sidecar);
+        Write write = event(activation, operationId, expectedVersion,
+                            schemaVersion, ownedBytes);
+        return activation.runtime.ownCurrentActorFuture(OresFuture.from(sidecar.submit(write)));
+    }
+
+    /** Event commit callback is always enqueued onto this actor's continuation lane. */
+    public static void onEventCompletionInCurrentActor(
+            Activation activation, BatchPersistenceSidecar sidecar,
+            String operationId, long expectedVersion, int schemaVersion, byte[] ownedBytes,
+            BiConsumer<? super Result, ? super Throwable> continuation) {
+        Objects.requireNonNull(sidecar);
+        Objects.requireNonNull(continuation);
+        Write write = event(activation, operationId, expectedVersion,
+                            schemaVersion, ownedBytes);
+        ActorRuntime.ContinuationTarget target =
+            activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<Result> future = OresFuture.from(sidecar.submit(write));
+        activation.runtime.enqueueOnCompletion(future, target, (receipt, failure) -> {
+            assertBoundTurn(activation);
+            continuation.accept(receipt, failure);
+        });
+    }
+
     public static OresFuture<Result> submitOwnedSnapshot(
             Activation activation, BatchPersistenceSidecar sidecar,
             String operationId, long expectedVersion, int schemaVersion, byte[] ownedBytes) {
