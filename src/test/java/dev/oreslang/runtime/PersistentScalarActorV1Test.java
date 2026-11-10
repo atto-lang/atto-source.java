@@ -102,12 +102,62 @@ final class PersistentScalarActorV1Test {
                         () -> staleActor.increment("stale-1", 99));
                 assertThrows(IllegalStateException.class, staleActor::get_count);
             }
-            // Stale admission stays pending. A fresh activation must process it
-            // before any new message; it was never durably acknowledged.
+            // A stale actor is forbidden from enqueuing new work. Recovered
+            // state must remain unchanged and no forged pending delivery may
+            // appear under the newer activation.
             try (var recovered = PersistentScalarActorV1.open(plan, current, ID)) {
-                assertEquals(99L, recovered.get_count());
-                assertEquals(1L, recovered.state_version());
+                assertEquals(0L, recovered.get_count());
+                assertEquals(0L, recovered.state_version());
+                assertEquals(1L, recovered.increment("legitimate", 1).orElseThrow());
             }
+        }
+    }
+
+    @Test
+    void fencingRevokesReadsAndVersionQueriesBeforeAnotherCommand() throws Exception {
+        var plan = compile();
+        Path db = temp.resolve("revoked-reads.db");
+        try (var left = SqliteDurableActorStore.open(db);
+             var right = SqliteDurableActorStore.open(db)) {
+            left.bootstrap(ID, plan.initial_snapshot());
+            var old = PersistentScalarActorV1.open(plan, left, ID);
+            assertEquals(5L, old.increment("first", 5).orElseThrow());
+            var next = PersistentScalarActorV1.open(plan, right, ID);
+            assertEquals(5L, next.get_count());
+            assertThrows(IllegalStateException.class, old::get_count);
+            assertThrows(IllegalStateException.class, old::state_version);
+            assertThrows(IllegalStateException.class,
+                    () -> old.increment("late", 88));
+            assertEquals(5L, next.get_count());
+            next.close();
+            var activation = right.activate(ID);
+            assertTrue(activation.inbox().isEmpty(), "revoked writer must not enqueue");
+            assertEquals(1L, activation.snapshot().stateVersion());
+        }
+    }
+
+    @Test
+    void concurrentFencedAdmissionRejectedWithoutMutatingCurrentInbox() throws Exception {
+        var plan = compile();
+        Path db = temp.resolve("fence-inbox.db");
+        try (var older = SqliteDurableActorStore.open(db);
+             var newer = SqliteDurableActorStore.open(db)) {
+            older.bootstrap(ID, plan.initial_snapshot());
+            long oldEpoch = older.activate(ID).epoch();
+            long nextEpoch = newer.activate(ID).epoch();
+            assertThrows(IllegalStateException.class,
+                    () -> older.enqueueFenced(ID, oldEpoch,
+                            new DurableActorStore.Inbound("late", plan.encode(77))));
+            assertThrows(IllegalStateException.class,
+                    () -> older.requireActive(ID, oldEpoch, 0));
+            newer.requireActive(ID, nextEpoch, 0);
+            assertTrue(newer.enqueueFenced(ID, nextEpoch,
+                    new DurableActorStore.Inbound("valid", plan.encode(3))));
+            assertFalse(newer.enqueueFenced(ID, nextEpoch,
+                    new DurableActorStore.Inbound("valid", plan.encode(3))));
+            assertEquals(List.of("valid"),
+                    newer.activate(ID).inbox().stream().map(
+                            DurableActorStore.Inbound::deliveryId).toList());
         }
     }
 
