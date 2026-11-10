@@ -1,0 +1,2 @@
+namespace other;
+pub define actor Cart;
