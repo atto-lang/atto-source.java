@@ -40,9 +40,9 @@ final class ActorRefCapabilityAssignabilityTest {
 
     @Test
     void readonlyRecordsAndFunctionResultsCannotForgeActorRefs() {
-        Record expected = new Record(
+        Types.Record expected = new Types.Record(
                 Map.of("cart", CART_REF), true, AggregateKind.RECORD);
-        Record uncertain = new Record(
+        Types.Record uncertain = new Types.Record(
                 Map.of("cart", Unknown.INSTANCE), true, AggregateKind.RECORD);
         assertFalse(Types.isAssignable(uncertain, expected));
         assertTrue(Types.isAssignable(expected, expected));
