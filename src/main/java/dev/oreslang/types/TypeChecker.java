@@ -641,6 +641,19 @@ public final class TypeChecker {
         }
 
         for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceActorDecl actorRequirement) {
+                boolean present = module.declarations().stream().anyMatch(decl ->
+                        decl instanceof Ast.ClassDecl actor
+                                && actor.name().equals(actorRequirement.name())
+                                && actor.visibility() == Ast.Visibility.PUBLIC
+                                && actor.actorKind() != Ast.ActorKind.NONE);
+                if (!present) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' is missing required public actor '"
+                                    + contract.name() + "." + actorRequirement.name() + "'");
+                }
+                continue;
+            }
             if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
@@ -760,6 +773,14 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
+            } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                if (!iface.moduleContract()) {
+                    throw new IllegalArgumentException("nominal interfaces cannot require actor declarations");
+                }
+                if (!memberKeys.add("actor:" + actor.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate contract actor requirement '" + iface.name() + "." + actor.name() + "'");
+                }
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
