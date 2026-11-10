@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,6 +23,9 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
     private final SupervisorFailureEscrowV1 ledger = new SupervisorFailureEscrowV1();
     private final Map<ActorRuntime.ActorId, Long> ids = new ConcurrentHashMap<>();
     private final AtomicLong nextId = new AtomicLong(2L);
+    private final Object decisionLock = new Object();
+    private final Set<SupervisorFailureEscrowV1.Delivery> inFlightDecisions =
+            Collections.newSetFromMap(new IdentityHashMap<>());
 
     SupervisorFailureEscrowRuntimeBridgeV1(ActorRuntime runtime) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -83,13 +89,32 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
     }
 
     /**
-     * Control-only provisional ACK API. The caller must have durably committed
-     * its policy first; a subsequent milestone must bind this to the existing
-     * SupervisorProcess decision commit fence before guest use is allowed.
+     * Host-only single-flight decision/ACK boundary. The sink is executed
+     * OUTSIDE escrow and runtime locks, and a failed sink never ACKs. The
+     * delivery is generation-revalidated after the sink returns.
+     *
+     * This does NOT make an external effect exactly once: a controller may
+     * crash after an effect but before ACK. The downstream decision sink
+     * MUST be idempotent or journaled by the production SupervisorProcess.
      */
-    boolean acknowledgeCommitted(SupervisorFailureEscrowV1.Delivery receipt) {
-        runtime.requireSupervisorShutdownAuthority("acknowledge committed supervisor CONTROL");
-        return ledger.acknowledge(receipt);
+    boolean commitAndAcknowledge(
+            SupervisorFailureEscrowV1.Delivery receipt, Runnable commitAction) {
+        runtime.requireSupervisorShutdownAuthority("commit supervisor CONTROL decision");
+        Objects.requireNonNull(receipt, "receipt");
+        Objects.requireNonNull(commitAction, "commitAction");
+        synchronized (decisionLock) {
+            if (!ledger.currentDelivery(receipt) || !inFlightDecisions.add(receipt)) {
+                return false;
+            }
+        }
+        try {
+            commitAction.run();
+            return ledger.acknowledge(receipt);
+        } finally {
+            synchronized (decisionLock) {
+                inFlightDecisions.remove(receipt);
+            }
+        }
     }
 
     int pendingCount() {
