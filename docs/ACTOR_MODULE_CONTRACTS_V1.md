@@ -245,3 +245,26 @@ A panic is never interceptable by its actor.
 This changes **static conformance only**. It does not expose lifecycle hooks,
 introduce external executable receiver bodies, or establish any guest-run or
 NativeAOT test result. The nine added JUnit cases have not been executed.
+
+## Stage 5 (draft): standalone actor syntax has a preserved AST, not a runtime actor
+
+```atto
+define module workers as
+  pub define actor Worker as worker;
+end
+```
+
+The parser retains the nominal `Worker` type, local `worker` binding,
+visibility and generic-actor kind in an explicit `StandaloneActorDecl`. This
+**does not desugar to an empty `ClassDecl`** because doing so would silently
+lose the receiver binding and could make a dormant syntax executable without
+an actor execution permit. Current admission is restricted to a plain
+nongeneric actor without transport or inheritance modifiers. The checker
+fails closed with `STANDALONE_ACTOR_LOWERING_UNSUPPORTED` until source actor
+state, supervisor/control semantics and generation-fenced mailbox dispatch
+are implemented.
+
+Existing `define actor Worker as ... end` remains executable through its
+original `ClassDecl` AST and is unaffected. Parser acceptance is **not**
+compiler/typecheck/guest execution acceptance, and the seven new JUnit tests
+have not been executed. External `define mtd` bodies remain unsupported.
