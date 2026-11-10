@@ -1938,9 +1938,16 @@ public final class TypeChecker {
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module/namespace contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
-            if (iface.actorContract() && klass.actorKind() == Ast.ActorKind.NONE) {
-                throw new IllegalArgumentException(
-                        "actor contract '" + iface.name() + "' can only be implemented by actors");
+            if (iface.actorContract()) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name() + "' can only be implemented by actors");
+                }
+                if (!klass.genericParameters().isEmpty() || !interfaceRef.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name()
+                                    + "' requires a non-generic nominal actor witness in v1");
+                }
             }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
