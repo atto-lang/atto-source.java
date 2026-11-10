@@ -2070,6 +2070,16 @@ public final class OresEvalRootNode extends RootNode {
                         && selected.mode() == Ast.WaitMode.BLOCKING) {
                 return true;
             }
+            if (expr instanceof Ast.RangeExpr range) {
+                return expressionContainsPotentialSuspension(range.start(), seen)
+                        || expressionContainsPotentialSuspension(range.end(), seen);
+            }
+            if (expr instanceof Ast.BlockValueExpr block) {
+                for (Ast.Stmt statement : block.prefixStatements()) {
+                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                }
+                return expressionContainsPotentialSuspension(block.value(), seen);
+            }
             if (expr instanceof Ast.MatchExpr matched) {
                 // Value matches are expressions, but canonical arms may own
                 // lexical statement blocks. Scan every statement so an await
@@ -3999,6 +4009,40 @@ public final class OresEvalRootNode extends RootNode {
                 downstream.accept(resumedTask, value, failure);
             };
             try {
+                if (expr instanceof Ast.BlockValueExpr block) {
+                    runBlock(task, block.loweringBody(), env, (t, flow) -> {
+                        if (flow.kind() == SourceFlowKind.RETURN) {
+                            continuation.accept(t, flow.value(), null);
+                        } else if (flow.kind() == SourceFlowKind.THROW) {
+                            continuation.accept(t, null, flow.failure());
+                        } else {
+                            continuation.accept(t, null, new IllegalStateException(
+                                    "value block exited without producing its result"));
+                        }
+                    });
+                    return;
+                }
+                if (expr instanceof Ast.RangeExpr range) {
+                    evalSuspendableExpr(task, range.start(), env, (t, start, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(t, null, failure);
+                            return;
+                        }
+                        evalSuspendableExpr(t, range.end(), env, (completed, end, endFailure) -> {
+                            if (endFailure != null) {
+                                continuation.accept(completed, null, endFailure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(completed,
+                                        signedRange(start, end, range.inclusive()), null);
+                            } catch (RuntimeException | Error invalid) {
+                                continuation.accept(completed, null, invalid);
+                            }
+                        });
+                    });
+                    return;
+                }
                 if (expr instanceof Ast.MatchExpr matched) {
                     // Evaluate the subject once on the SourceTask. In
                     // particular, an awaited subject must not be replayed
@@ -7401,6 +7445,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.RangeExpr range) {
+                return signedRange(eval(range.start(), env), eval(range.end(), env),
+                        range.inclusive());
+            }
+            if (expr instanceof Ast.BlockValueExpr block) {
+                try {
+                    executeBlock(block.loweringBody(), env, true);
+                } catch (ReturnSignal result) {
+                    return result.value;
+                } catch (TailCallSignal escaped) {
+                    throw new IllegalStateException(
+                            "value block result escaped as a callable tail call", escaped);
+                } catch (BreakSignal | ContinueSignal escaped) {
+                    throw new IllegalStateException(
+                            "value block cannot break or continue an enclosing loop", escaped);
+                }
+                throw new IllegalStateException("value block completed without a result");
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
@@ -9714,7 +9776,45 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(result.values());
         }
 
+        private static SignedIntegerRange signedRange(Object start, Object end, boolean inclusive) {
+            if (!(start instanceof Long first) || !(end instanceof Long last)) {
+                throw new IllegalArgumentException("range endpoints must be signed int values");
+            }
+            return new SignedIntegerRange(first, last, inclusive);
+        }
+
+        /** A constant-space, overflow-safe signed integer iterator. */
+        private record SignedIntegerRange(long start, long end, boolean inclusive)
+                implements Iterable<Long> {
+            @Override
+            public java.util.Iterator<Long> iterator() {
+                return new java.util.Iterator<>() {
+                    private long next = start;
+                    private boolean finished = inclusive ? start > end : start >= end;
+
+                    @Override
+                    public boolean hasNext() {
+                        return !finished;
+                    }
+
+                    @Override
+                    public Long next() {
+                        if (finished) throw new java.util.NoSuchElementException();
+                        long current = next;
+                        if (current == end || current == Long.MAX_VALUE) {
+                            finished = true;
+                        } else {
+                            next = current + 1;
+                            finished = inclusive ? next > end : next >= end;
+                        }
+                        return current;
+                    }
+                };
+            }
+        }
+
         private Iterable<?> iterableValues(Object value, Env env) {
+            if (value instanceof SignedIntegerRange range) return range;
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
