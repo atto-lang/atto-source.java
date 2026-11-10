@@ -485,12 +485,14 @@ final class ChannelRuntimeTest {
 
     @Test
     void canonicalSelectableAcceptsFutureNextEventWithoutReadOrWrite() {
-        OresFuture<Integer> completion = new OresFuture<>();
+        java.util.concurrent.CompletableFuture<Integer> hostCompletion =
+                new java.util.concurrent.CompletableFuture<>();
+        OresFuture<Integer> completion = OresFuture.from(hostCompletion);
         OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet
                 .fromSelectables(List.of(() -> ChannelRuntime.await(completion)))
                 .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
         assertFalse(selected.isDone());
-        assertTrue(completion.complete(73));
+        assertTrue(hostCompletion.complete(73));
         assertEquals(73, selected.join().value());
     }
 
