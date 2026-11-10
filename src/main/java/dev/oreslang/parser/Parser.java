@@ -72,7 +72,19 @@ public final class Parser {
      * The normal parser and runtime entry points continue to fail closed.
      */
     public static Ast.Program parseSingletonsCheckOnly(String source) {
-        return new Parser(new Lexer(source).scan(), true).parseProgram();
+        // The normal parser interns Symbol process literals while building the
+        // AST. A subsequently rejected check-only singleton must not consume
+        // permanent domain Symbol capacity. Scan all tokens before parsing.
+        List<Token> scanned = new Lexer(source).scan();
+        for (Token token : scanned) {
+            if (token.type() == SYMBOL_LITERAL) {
+                throw new IllegalArgumentException(
+                        "ORES-SINGLETON-CHECKONLY: Symbol literals cannot be "
+                                + "interned during singleton check-only admission at "
+                                + token.line() + ":" + token.column());
+            }
+        }
+        return new Parser(scanned, true).parseProgram();
     }
 
     /**
