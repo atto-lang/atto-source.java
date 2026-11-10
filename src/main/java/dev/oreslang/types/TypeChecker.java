@@ -177,6 +177,13 @@ public final class TypeChecker {
                                     + "fenced activation, scheduler and CONTROL MIR lowering");
                 }
                 if (declaration instanceof Ast.ClassDecl klass) {
+                    if (klass.actorConcurrency().role() == Ast.ActorRole.NEURON) {
+                        checkNeuronV0Contract(klass);
+                        throw new IllegalArgumentException(
+                                "NEURON_STATE_MIR_UNSUPPORTED: neuron actor '" + klass.name()
+                                + "' has protected mutable state but critical read/write "
+                                + "state-loan lowering and generation fencing do not exist yet");
+                    }
                     rejectUnloweredCheckedClassEffects(klass);
                 }
                 if (declaration instanceof Ast.InterfaceDecl iface) {
