@@ -81,6 +81,52 @@ shadowing. This does **not** certify that all identity-bearing actor-local value
 are unescapable; supervisor CONTROL, `self` borrowing, source-level actor
 interfaces, and RPC dispatch need separate compiler/runtime verification.
 
+## P0/P1 hardening, November 10
+
+**Java host/runtime implementation (this branch):** `ActorRuntime.ActorMailboxRef<M>`
+is a communication-only wrapper obtained via `ActorRef<M>.messageRef()`.
+It deliberately exports message send, nonblocking send, drain, readiness and
+completion observation, plus immutable identity metadata. It exports no
+`stop`, `cancel`, `kill`, `forceCancel`, `gracefulStop`, raw
+`ActorRef` or supervisor CONTROL acquisition. It is a **host capability
+substrate**, not a guest-language `ActorRef<P>` RPC implementation.
+`ActorRef` retains its legacy lifecycle API for compatibility; full
+source-level authority attenuation is **not complete**.
+
+**Runtime identity hardening:** existing actor IDs alone are insufficient to
+grant authority. On any live slot, stale or host-fabricated references fail
+identity validation before send, sendAsync, drain, stop, cancel, graceful
+stop, CONTROL handle acquisition, readiness, completion, parent/child
+inspection and blocking termination observation. Actor reference identity is
+checked against the actual runtime-owned ActorCell reference, even if the
+caller supplies the same ID, kind and generation. An absent/finalized actor
+keeps its established terminal-operation behavior rather than gaining
+authority over future incarnations. Message-view operations delegate to
+the same checked actor runtime; no second independent mailbox/scheduler
+is created.
+
+**Host security tests:** `ActorMailboxRefSecurityTest` proves the narrow
+method surface and the real mail-delivery path, and uses privileged Java
+reflection to construct a same-ID/same-generation fake handle to assert
+rejection. Reflection is a deliberately adversarial **host-only model**;
+the guest does not gain reflection rights. It is not a native AOT or
+compiler-backed AttoLang receipt.
+
+**Dedicated CI:** `.github/workflows/actorref-contract-exact-head.yml`
+checks the PR SHA, Git tree, clean worktree and each fixture blob, runs
+`ActorRefParameterContractTest`,
+`types.ActorRefCapabilityAssignabilityTest`,
+`ActorMailboxRefSecurityTest`, `ActorMailTypeContractTest`, and
+`SourceActorSpawnExecutionTest` under GraalVM JDK 25, then requires
+nonempty, unskipped Surefire case results for every selected suite.
+A workflow definition alone is **NOT EXECUTED**. Source-org checks with
+`steps=[]` remain runner-admission failures.
+
+**Still pending:** a guest-exported restricted reference type, static actor
+interface proof, segregated CALL/REPLY and supervisor CONTROL, virtual
+activation identities, five-backend guest parity, and independent review.
+Do not promote this draft until exact-head guest tests execute.
+
 ## Proposed method protocol (not yet admitted)
 
 ```atto
