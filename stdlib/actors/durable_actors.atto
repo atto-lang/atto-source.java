@@ -1,0 +1,83 @@
+// Proposed AttoLang stdlib actor families: no new actor keyword.
+// Status: source-level superclass contract. Actor-class inheritance,
+// compiler-generated calls and privileged persistence bridge are pending
+// actual compiler/runtime admission; do not present this as guest execution.
+//
+// Abstract actor parents are STATELESS. Only concrete descendants may
+// declare the one sealed state schema. These parent methods cannot access
+// another actor's state or forge CONTROL/persistence receipts.
+define module durable_actors as
+  pub define abstract actor DurableActor<Command> as
+    // Library-level preflight for already-authenticated command envelopes.
+    // Trusted ingress must separately bind tenant, ActorId and generation.
+    validate_command(String operation_id, int expected_version,
+                     int durable_version): Result<bool, String> {
+      if operation_id == ""; do
+        return Err("operation_id is required");
+      fi
+      if expected_version < 0 || durable_version < 0 ||
+         expected_version != durable_version; do
+        return Err("durable version conflict");
+      fi
+      return Ok(true);
+    }
+  end
+
+  // One logical writer and one pending journal append per named state slot.
+  // Compiler/runtime generate: stage owned immutable events -> release loan
+  // -> async sidecar append/CAS -> verify receipt -> pure replay/reduce ->
+  // atomic state publication -> durable reply/outbox dispatch.
+  pub define abstract actor EventSourcedActor<State, Command, Event>
+      from DurableActor<Command> as
+    // Pure application hooks; a concrete actor must implement both.
+    // No I/O, await, select, actor sends, mutable shared state or time.
+    pure decide(State state, Command command): Result<Array<Event>, String>;
+    pure apply_event(State state, Event event): State;
+
+    validate_event_batch(int event_count): Result<bool, String> {
+      if event_count < 1 || event_count > 256; do
+        return Err("durable event batch must contain 1..256 events");
+      fi
+      return Ok(true);
+    }
+  end
+
+  // Full-state snapshots instead of event journals. Snapshot receipt still
+  // must be provider-confirmed before acknowledging a durable write.
+  pub define abstract actor SnapshotActor<State, Command>
+      from DurableActor<Command> as
+    pure decide_snapshot(State state, Command command): Result<State, String>;
+
+    validate_snapshot_size(int payload_bytes): Result<bool, String> {
+      if payload_bytes < 1 || payload_bytes > 1048576; do
+        return Err("snapshot exceeds the default 1MiB admission bound");
+      fi
+      return Ok(true);
+    }
+  end
+
+  // Independent CQRS projection. Offset commit must be atomic with read
+  // model write or use a proven idempotent consumer contract.
+  pub define abstract actor ProjectionActor<Event, View> as
+    pure apply_projection(View view, Event event): View;
+
+    validate_next_offset(int current_offset, int next_offset): Result<bool, String> {
+      if current_offset < 0 || current_offset >= 2147483646 ||
+         next_offset != current_offset + 1; do
+        return Err("projection event offset must be contiguous");
+      fi
+      return Ok(true);
+    }
+  end
+
+  // Durable inbox and transactional outbox require privileged atomic provider
+  // support; parent merely validates IDs. No claim of exactly-once delivery.
+  pub define abstract actor DurableOutboxActor<Message> as
+    validate_message_id(String operation_id, String message_id): Result<bool, String> {
+      if operation_id == "" || message_id == ""; do
+        return Err("durable operation and message IDs are required");
+      fi
+      return Ok(true);
+    }
+  end
+end

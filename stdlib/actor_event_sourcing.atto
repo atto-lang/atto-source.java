@@ -1,0 +1,223 @@
+// AttoLang stdlib: pure local policy bookkeeping for durable actor turns.
+// This module is NOT a storage provider, authentication mechanism or actor
+// scheduler. Trusted host code MUST authenticate receipts, epochs, ActorId,
+// operation identity and tenant before invoking an acceptance method.
+// Public methods NEVER grant storage authority or durable-success evidence.
+//
+// New guest source; runtime/guest compiler execution is NOT YET VERIFIED.
+define module actor_event_sourcing as
+  // Phases: 0 recovering, 1 ready, 2 pending, 3 outcome_unknown,
+  //         4 fenced, 5 stopped. Only ready can admit a new operation.
+  pub define class CommitGate as
+    let int activation_epoch;
+    let mut int phase_code;
+    let mut int committed_version;
+    let mut int pending_first;
+    let mut int pending_last;
+    let mut String pending_operation_id;
+    let mut String pending_fingerprint;
+
+    pub constructor(int activation_epoch, int snapshot_version) {
+      if activation_epoch < 1 || snapshot_version < 0 ||
+         snapshot_version >= 2147483647; do
+        rt fail("event_sourcing: invalid incarnation or version");
+      fi
+      self.activation_epoch = activation_epoch;
+      self.phase_code = 0;
+      self.committed_version = snapshot_version;
+      self.pending_first = 0;
+      self.pending_last = 0;
+      self.pending_operation_id = "";
+      self.pending_fingerprint = "";
+    }
+
+    // Runtime must have validated one consistent fenced snapshot+event read,
+    // contiguous replay, schema fingerprints and the authoritative head.
+    // This changes local policy state ONLY, not durable storage authority.
+    pub finish_verified_replay(mut self)(int verified_epoch, int head_version): bool {
+      if self.phase_code != 0 || verified_epoch != self.activation_epoch ||
+         head_version < self.committed_version ||
+         head_version >= 2147483647; do
+        return false;
+      fi
+      self.committed_version = head_version;
+      self.phase_code = 1;
+      return true;
+    }
+
+    // Caller supplies an owned payload assembled from pure decisions. Any
+    // actor state loan MUST be released before asynchronous persistence.
+    // Only one pending write is admitted for this state slot.
+    pub begin_append(mut self)(String operation_id, String payload_fingerprint,
+                               int expected_version, int event_count): Result<int, String> {
+      if self.phase_code != 1; do
+        return Err("actor is not ready for a new durable command");
+      fi
+      if operation_id == "" || payload_fingerprint == "" ||
+         expected_version != self.committed_version ||
+         event_count < 1 || event_count > 256 ||
+         event_count > 2147483647 - self.committed_version; do
+        return Err("invalid operation, expected version or batch bounds");
+      fi
+      self.pending_first = self.committed_version + 1;
+      self.pending_last = self.committed_version + event_count;
+      self.pending_operation_id = operation_id;
+      self.pending_fingerprint = payload_fingerprint;
+      self.phase_code = 2;
+      return Ok(self.pending_last);
+    }
+
+    // Timeout/cancellation cannot clear a possibly committed journal write.
+    // Unresolved operations stay fenced from subsequent command admission.
+    pub mark_outcome_unknown(mut self)(String operation_id): bool {
+      if self.phase_code != 2 ||
+         operation_id != self.pending_operation_id; do
+        return false;
+      fi
+      self.phase_code = 3;
+      return true;
+    }
+
+    // Called ONLY by a trusted adapter after provider-side operation-ID
+    // resolution and authentic epoch/tenant/ActorId binding. This local
+    // predicate does not authenticate its own arguments.
+    pub accept_verified_commit(mut self)(
+        int verified_epoch, String operation_id, String payload_fingerprint,
+        int first_version, int last_version): bool {
+      if (self.phase_code != 2 && self.phase_code != 3) ||
+         verified_epoch != self.activation_epoch ||
+         operation_id != self.pending_operation_id ||
+         payload_fingerprint != self.pending_fingerprint ||
+         first_version != self.pending_first ||
+         last_version != self.pending_last; do
+        return false;
+      fi
+      self.committed_version = self.pending_last;
+      self.pending_first = 0;
+      self.pending_last = 0;
+      self.pending_operation_id = "";
+      self.pending_fingerprint = "";
+      self.phase_code = 1;
+      return true;
+    }
+
+    // No public retry/reset after OUTCOME_UNKNOWN: first fence this
+    // incarnation and reconstruct from authoritative persisted data.
+    pub fence(mut self)(): bool {
+      if self.phase_code == 5; do
+        return false;
+      fi
+      self.phase_code = 4;
+      return true;
+    }
+
+    pub stop(mut self)(): void {
+      self.phase_code = 5;
+    }
+
+    pub is_ready(): bool {
+      return self.phase_code == 1;
+    }
+
+    pub is_unresolved(): bool {
+      return self.phase_code == 2 || self.phase_code == 3;
+    }
+
+    pub phase(): int {
+      return self.phase_code;
+    }
+
+    pub durable_version(): int {
+      return self.committed_version;
+    }
+
+    pub epoch(): int {
+      return self.activation_epoch;
+    }
+
+    pub outstanding_operation_id(): String {
+      return self.pending_operation_id;
+    }
+  end
+
+  pub fnc commit_gate(int epoch, int snapshot_version): CommitGate {
+    return new CommitGate(epoch, snapshot_version);
+  }
+
+  // Bounded, contiguous replay progress. The host MUST first obtain the
+  // snapshot, authoritative head and events in a consistent fenced read.
+  // Pure reducers are run by actor-owned code; no side effects on replay.
+  pub define class ReplayWindow as
+    let int head_version;
+    let mut int applied_version;
+    let int max_events;
+    let mut int applied_count;
+    let mut bool invalid;
+
+    pub constructor(int snapshot_version, int head_version, int max_events) {
+      if snapshot_version < 0 || head_version < snapshot_version ||
+         head_version >= 2147483647 || max_events < 0 ||
+         max_events > 10000 || head_version - snapshot_version > max_events; do
+        rt fail("event_sourcing: invalid or unbounded replay window");
+      fi
+      self.head_version = head_version;
+      self.applied_version = snapshot_version;
+      self.max_events = max_events;
+      self.applied_count = 0;
+      self.invalid = false;
+    }
+
+    // Call only after valid wire/schema decoding and pure reducer success.
+    pub accept_next(mut self)(int event_version): bool {
+      if self.invalid || self.applied_version >= self.head_version ||
+         self.applied_count >= self.max_events ||
+         event_version != self.applied_version + 1; do
+        self.invalid = true;
+        return false;
+      fi
+      self.applied_version = event_version;
+      self.applied_count = self.applied_count + 1;
+      return true;
+    }
+
+    pub complete(): bool {
+      return !self.invalid && self.applied_version == self.head_version;
+    }
+
+    pub applied(): int {
+      return self.applied_version;
+    }
+  end
+
+  pub fnc replay_window(int snapshot_version, int head_version,
+                        int max_events): ReplayWindow {
+    return new ReplayWindow(snapshot_version, head_version, max_events);
+  }
+
+  // Read-model checkpoint; not a journal receipt and not exactly-once I/O.
+  pub define class ProjectionOffset as
+    let mut int offset;
+
+    pub constructor(int restored_offset) {
+      if restored_offset < 0 || restored_offset >= 2147483647; do
+        rt fail("event_sourcing: invalid projection offset");
+      fi
+      self.offset = restored_offset;
+    }
+
+    // A projection must commit its read-model update and this offset in one
+    // transaction, or make both steps safely idempotent.
+    pub accept_verified_checkpoint(mut self)(int next_offset): bool {
+      if self.offset >= 2147483646 ||
+         next_offset != self.offset + 1; do
+        return false;
+      fi
+      self.offset = next_offset;
+      return true;
+    }
+
+    pub current(): int {
+      return self.offset;
+    }
+  end
+end
