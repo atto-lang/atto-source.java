@@ -230,6 +230,20 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
                     }
                 }
             }
+            // The earliest unconsumed delivery defines per-actor admission
+            // order. A stale or racing sender cannot leapfrog an older message
+            // simply by supplying its own known delivery ID.
+            try (PreparedStatement oldest = db.prepareStatement("""
+                    SELECT delivery_id FROM durable_inbox
+                    WHERE tenant=? AND workflow=? AND run=? AND node=?
+                      AND consumed=0 ORDER BY sequence LIMIT 1""")) {
+                bind(oldest, a);
+                try (ResultSet pending = oldest.executeQuery()) {
+                    if (!pending.next()
+                            || !turn.consumedDeliveryId().equals(pending.getString(1)))
+                        throw new IllegalStateException("out-of-order or missing durable delivery");
+                }
+            }
             try (PreparedStatement u = db.prepareStatement("""
                     UPDATE durable_inbox SET consumed=1
                     WHERE tenant=? AND workflow=? AND run=? AND node=?
