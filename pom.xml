@@ -62,6 +62,13 @@
       <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- SQLite is an opt-in host adapter; do not pull native SQLite into core. -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>3.54.1.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
