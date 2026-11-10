@@ -3580,9 +3580,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * For terminal CONTROL decisions, validate the exact physical ActorId
-         * as well as the logical identity and burned generation watermark.
-         * Recheck at the policy side effect, not at receipt capture.
+         * Read-only host diagnostic: is this exact retired ActorId still the
+         * unclaimed current terminal receipt? This check is NOT an atomic
+         * policy authorization. CONTROL must claim and hold the one-shot
+         * beginVirtualActorTerminalDecision lease through the policy effect.
          */
         public boolean isCurrentVirtualActorTerminal(
                 VirtualActorActivationRegistry.Identity identity,
@@ -9250,27 +9251,27 @@ public final class ActorRuntime implements AutoCloseable {
                 try { lease.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) {
-                virtualPhysicalCleanupComplete = false;
-                recordFinalizationFailure(failure);
-            }
+                    virtualPhysicalCleanupComplete = false;
+                    recordFinalizationFailure(failure);
+                }
             }
             shardLeases.clear();
             for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
                 try { snapshot.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) {
-                virtualPhysicalCleanupComplete = false;
-                recordFinalizationFailure(failure);
-            }
+                    virtualPhysicalCleanupComplete = false;
+                    recordFinalizationFailure(failure);
+                }
             }
             shardSnapshotLeases.clear();
             if (memorySlice != null) {
                 try { memorySlice.close(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) {
-                virtualPhysicalCleanupComplete = false;
-                recordFinalizationFailure(failure);
-            }
+                    virtualPhysicalCleanupComplete = false;
+                    recordFinalizationFailure(failure);
+                }
             }
             try { actorExitHook.accept(executionDomain); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
