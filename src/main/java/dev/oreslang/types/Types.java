@@ -287,6 +287,9 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Exact type identity preserves nominal capability provenance; an
+        // unrelated generic parameter in a function type is not a conversion.
+        if (from.equals(to)) return true;
         // Unknown and generic compatibility cannot manufacture a mailbox
         // capability, including through Option/List/Record/Function wrappers.
         if (containsActorReference(to) && containsUncertainType(from)) return false;
