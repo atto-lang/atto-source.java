@@ -1,0 +1,7 @@
+// REJECT (type checker): actor contract requires public nominal actor.
+define contract CartApi as
+  actor Cart;
+end
+define module carts conforms CartApi as
+  define actor Cart;
+end
