@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -96,12 +97,22 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
     }
 
     @Test
-    void mapLiteralsAndAmbiguousSyntaxFailClosed() {
+    void typedMapsParseButUnprovenOrMixedKindsFailClosed() {
+        Ast.MapLiteralExpr typed = assertInstanceOf(
+                Ast.MapLiteralExpr.class, initializer("~map<String,bool>(\"ready\" => true)"));
+        assertEquals(1, typed.entries().size());
+        assertNotNull(typed.mapType());
+
         for (String source : List.of(
-                "~()", "~map(\"ready\" => true)",
-                "~map<String,bool>(\"ready\" => true)",
+                "~map(\"ready\" => true)",
                 "~(\"ready\" => true)",
-                "~(ready => true)",
+                "~(ready => true)")) {
+            assertInstanceOf(Ast.MapLiteralExpr.class, initializer(source), source);
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                    "fnc f(): void { const v = " + source + "; return; }"), source);
+        }
+        for (String source : List.of(
+                "~()",
                 "~record(\"ready\" => true)",
                 "~(foo: 1, foo: 2)",
                 "~record(...)",

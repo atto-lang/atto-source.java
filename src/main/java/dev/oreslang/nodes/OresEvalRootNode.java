@@ -5628,6 +5628,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> typedMap) {
+                // The source checker has admitted only typed String/Symbol keys
+                // and copyable scalar values. Dispatch through the canonical
+                // guest Map runtime; never expose a host Map or partial storage.
+                if (!(index instanceof String
+                        || index instanceof dev.oreslang.runtime.OresSymbol)) {
+                    throw new IllegalArgumentException(
+                            "typed Map index must be a String or Symbol");
+                }
+                return typedMap.getRequired(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(

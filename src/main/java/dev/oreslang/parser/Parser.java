@@ -4259,7 +4259,9 @@ public final class Parser {
                     return new Ast.TypePattern(
                             target, consume(IDENT, "expected binding name after 'as'").lexeme());
                 }
-                if (check(IDENT) && !peek().lexeme().equals("_")) {
+                if (check(IDENT) && !peek().lexeme().equals("_")
+                        && !peek().lexeme().equals("when")) {
+                    // 'when' starts an arm guard, never a typed binding name.
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
                 }
