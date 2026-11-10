@@ -106,14 +106,14 @@ public final class ActorRuntimeAtomicCommandIntegrationTestMain {
                 Receipt committed=deposit(runtime,sidecar,id,1,0,0,
                          "logical-deposit-100",100,first);
                 check(committed.version()==2,"initial command head");
-                check(replay(legacy.loadFenced(id,1))==100,"committed events failed replay");
+                check(replay(storage.loadVerified(id,1))==100,"committed events failed replay");
             }
             try(SqlitePersistenceStore legacy=new SqlitePersistenceStore(database);
                 SqliteCommandTransactionStore storage=new SqliteCommandTransactionStore(database);
                 AtomicCommandSidecar sidecar=new AtomicCommandSidecar(id.tenant(),storage,32,65536);
                 ActorRuntime runtime=new ActorRuntime()) {
                 legacy.grantEpoch(id.tenant(),id.actor(),2);
-                var loaded=legacy.loadFenced(id,2);
+                var loaded=storage.loadVerified(id,2);
                 check(replay(loaded)==100 && loaded.version()==2,"recovery disagrees");
                 Command retry=new Command(id,"logical-deposit-100",2,0,1,
                     "deposit:100".getBytes(StandardCharsets.UTF_8),
@@ -123,12 +123,12 @@ public final class ActorRuntimeAtomicCommandIntegrationTestMain {
                 check(duplicate.durable() && duplicate.status()==Status.DUPLICATE &&
                       duplicate.version()==2 && decode(duplicate.resultBytes())==100,
                       "lost ACK retried as a second deposit");
-                check(legacy.loadFenced(id,2).events().size()==2,"duplicate wrote events");
+                check(storage.loadVerified(id,2).events().size()==2,"duplicate wrote events");
                 Receipt committed=deposit(runtime,sidecar,id,2,2,100,
                           "logical-deposit-50",50,second);
                 check(committed.version()==4,"second logical command version");
                 check(first.get()!=second.get(),"new actor allocation reused old heap");
-                check(replay(legacy.loadFenced(id,2))==150,
+                check(replay(storage.loadVerified(id,2))==150,
                       "actor replay after second command did not match 150");
                 boolean denied=false;
                 try {storage.verify(new Command(id,"logical-deposit-100",1,0,1,
