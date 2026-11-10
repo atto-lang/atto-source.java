@@ -166,6 +166,32 @@ final class PersistentScalarActorV1Test {
     }
 
     @Test
+    void actualOperatingSystemProcessCrashAndColdRestartPreservesCommittedCounter() throws Exception {
+        Path path = temp.resolve("process.db");
+        String before = runProcess("crash", path);
+        assertTrue(before.contains("BEFORE_CRASH=2"), before);
+        String after = runProcess("recover", path);
+        assertTrue(after.contains("AFTER_RECOVERY=3"), after);
+    }
+
+    private static String runProcess(String mode, Path db) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String classpath = System.getProperty("surefire.test.class.path",
+                System.getProperty("java.class.path"));
+        Process process = new ProcessBuilder(java, "-cp", classpath,
+                PersistentScalarCounterProcessMain.class.getName(),
+                mode, db.toString()).redirectErrorStream(true).start();
+        if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new AssertionError("persistent actor child process timeout");
+        }
+        String output = new String(process.getInputStream().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.exitValue(), output);
+        return output;
+    }
+
+    @Test
     void rejectsUnverifiedAndStateEscapingMethodBodies() {
         var valid = compile();
         assertEquals(valid.codeGeneration(), PersistentScalarMirV1.lower(SOURCE).codeGeneration());
