@@ -1,15 +1,24 @@
-// Canonical AttoLang protected neuron-state schema. Parser/AST fixture only.
-// NOT executable until critical state-loan MIR is integrated.
+// Canonical AttoLang neuron state + explicit critical loan AST fixture.
+// The parser preserves critical read/write scopes, but full guest execution
+// is intentionally blocked with NEURON_STATE_MIR_UNSUPPORTED until compiler
+// borrow/escape checks and actor-scheduler state-loan binding are finished.
 define neuron actor LinearNeuron as
   state {
     let float weight;
     let float bias;
   }
 
+  on_start(): void {
+    self.handle_state(critical-write |s| -> {
+      s.weight = 2.0;
+      s.bias = 1.0;
+    });
+  }
+
   pub forward(float input): float {
-    // Placeholder. Eventually read weight/bias through a critical-read loan,
-    // never by treating them as self.weight/self.bias flat actor fields.
-    return input;
+    return self.handle_state(
+      critical-read |s| -> s.weight * input + s.bias
+    );
   }
 
   receive(ActorMail<float> mail): void {
