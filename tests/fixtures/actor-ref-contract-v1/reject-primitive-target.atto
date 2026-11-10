@@ -1,0 +1,3 @@
+pub fnc foo(ActorRef<int> actor): void {
+  return;
+}
