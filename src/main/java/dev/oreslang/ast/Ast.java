@@ -25,13 +25,26 @@ public final class Ast {
         return name;
     }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public record Program(String namespace, List<TypeRef> namespaceContracts,
+                          List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
+            namespaceContracts = List.copyOf(namespaceContracts);
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            if (!namespaceContracts.isEmpty() && (namespace == null || namespace.isBlank())) {
+                throw new IllegalArgumentException("namespace contract requires an explicit namespace");
+            }
         }
-        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
-        public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
+        /** Compatibility for existing parser, linker, compiler and host callers. */
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, List.of(), imports, modules);
+        }
+        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(null, List.of(), imports, modules);
+        }
+        public Program(List<ModuleDecl> modules) {
+            this(null, List.of(), List.of(), modules);
+        }
     }
 
     public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
