@@ -4744,6 +4744,59 @@ public final class TypeChecker {
                     "~map() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");
         }
+        if (expr instanceof Ast.MapLiteralExpr map) {
+            Ast.TypeRef witness = map.mapType();
+            if (findClass("Map") != null) {
+                throw new IllegalArgumentException(
+                        "populated Map requires the canonical built-in Map<K,V>, not a shadowing class");
+            }
+            if (witness.inferArguments() || !witness.name().equals("Map")
+                    || witness.arguments().size() != 2) {
+                throw new IllegalArgumentException("populated Map requires explicit Map<K,V>");
+            }
+            Ast.TypeRef key = witness.arguments().get(0);
+            Ast.TypeRef value = witness.arguments().get(1);
+            if (!isAdmittedEmptyMapScalarKey(key) || !isAdmittedEmptyMapScalarValue(value)) {
+                throw new IllegalArgumentException(
+                        "populated Map has unverified key/value domain " + witness);
+            }
+            // V1 is intentionally literal-only. Effectful expression evaluation,
+            // rollback and cross-actor ownership are a separate admission gate.
+            java.util.Set<Object> seenKeys = new java.util.HashSet<>();
+            for (Ast.MapLiteralEntry entry : map.entries()) {
+                if (!(entry.key() instanceof Ast.LiteralExpr keyLiteral)
+                        || !(entry.value() instanceof Ast.LiteralExpr valueLiteral)) {
+                    throw new IllegalArgumentException(
+                            "populated Map expressions require dedicated ordered evaluation/ownership proof; "
+                                    + "v1 accepts literal keys and values only");
+                }
+                Object k = keyLiteral.value();
+                Object v = valueLiteral.value();
+                boolean validKey = (key.name().equals("string") || key.name().equals("String"))
+                        ? k instanceof String
+                        : k instanceof dev.oreslang.runtime.OresSymbol;
+                boolean validValue = switch (value.name()) {
+                    case "int" -> v instanceof Long;
+                    case "bool", "Bool" -> v instanceof Boolean;
+                    case "string", "String" -> v instanceof String;
+                    case "Symbol" -> v instanceof dev.oreslang.runtime.OresSymbol;
+                    default -> false;
+                };
+                if (!validKey || !validValue) {
+                    throw new IllegalArgumentException(
+                            "populated Map entry is incompatible with Map key/value domain " + witness);
+                }
+                if (!seenKeys.add(k)) {
+                    throw new IllegalArgumentException("duplicate logical key in populated Map literal");
+                }
+            }
+            Type checked = resolve(witness, generics, self);
+            if (!(checked instanceof Named named) || !named.name().equals("Map")
+                    || named.arguments().size() != 2) {
+                throw new IllegalArgumentException("populated Map must resolve to canonical Map<K,V>");
+            }
+            return checked;
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // First proven slice: syntactically concrete, zero-field readonly
             // records and zero-arity tuples. Both use the canonical existing

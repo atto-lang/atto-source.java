@@ -1130,7 +1130,7 @@ public final class Ast {
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
-            TypedEmptyAggregateExpr, ContextualEmptyMapExpr { }
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1167,6 +1167,30 @@ public final class Ast {
      *  witness. Never typecheck or execute this node as a dynamic map.
      */
     public record ContextualEmptyMapExpr() implements Expr { }
+
+    /**
+     * Staged, explicitly witnessed typed Map literal. Keep every source pair
+     * in order: converting to a Java Map here would silently erase duplicate
+     * keys before the compiler can reject them. Runtime authorization is a
+     * separate TypeChecker + OwnershipChecker decision.
+     */
+    public record MapLiteralEntry(Expr key, Expr value) {
+        public MapLiteralEntry {
+            java.util.Objects.requireNonNull(key, "Map literal key");
+            java.util.Objects.requireNonNull(value, "Map literal value");
+        }
+    }
+
+    public record MapLiteralExpr(TypeRef mapType, List<MapLiteralEntry> entries) implements Expr {
+        public MapLiteralExpr {
+            java.util.Objects.requireNonNull(mapType, "Map literal type witness");
+            entries = List.copyOf(entries);
+            if (!mapType.name().equals("Map") || mapType.inferArguments()
+                    || mapType.arguments().size() != 2 || entries.isEmpty()) {
+                throw new IllegalArgumentException("populated Map literal requires explicit Map<K,V> and entries");
+            }
+        }
+    }
 
     public record TypedEmptyAggregateExpr(TypeRef aggregateType) implements Expr {
         public TypedEmptyAggregateExpr {

@@ -1558,6 +1558,49 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw error("unresolved ~map() cannot pass ownership admission");
         }
+        if (expr instanceof Ast.MapLiteralExpr map) {
+            Ast.TypeRef witness = map.mapType();
+            if (!witness.name().equals("Map") || witness.inferArguments()
+                    || witness.arguments().size() != 2) {
+                throw error("unproved populated Map<K,V> type witness");
+            }
+            Ast.TypeRef keyType = witness.arguments().get(0);
+            Ast.TypeRef valueType = witness.arguments().get(1);
+            if (keyType.inferArguments() || !keyType.arguments().isEmpty()
+                    || valueType.inferArguments() || !valueType.arguments().isEmpty()
+                    || !(keyType.name().equals("string") || keyType.name().equals("String")
+                            || keyType.name().equals("Symbol"))
+                    || !java.util.Set.of("int", "bool", "Bool", "string", "String", "Symbol")
+                            .contains(valueType.name())) {
+                throw error("unproved populated Map<K,V> key/value domain " + witness);
+            }
+            java.util.Set<Object> keys = new java.util.HashSet<>();
+            for (Ast.MapLiteralEntry entry : map.entries()) {
+                // No borrows, moves, actor self, volatile state or calls can be
+                // admitted in this literal-only compilation stage.
+                if (!(entry.key() instanceof Ast.LiteralExpr key)
+                        || !(entry.value() instanceof Ast.LiteralExpr value)) {
+                    throw error("populated Map literal with nonliteral entries requires "
+                            + "a checked ownership/rollback boundary");
+                }
+                Object k = key.value();
+                Object v = value.value();
+                boolean keyOk = keyType.name().equals("Symbol")
+                        ? k instanceof dev.oreslang.runtime.OresSymbol
+                        : k instanceof String;
+                boolean valueOk = switch (valueType.name()) {
+                    case "int" -> v instanceof Long;
+                    case "bool", "Bool" -> v instanceof Boolean;
+                    case "string", "String" -> v instanceof String;
+                    case "Symbol" -> v instanceof dev.oreslang.runtime.OresSymbol;
+                    default -> false;
+                };
+                if (!keyOk || !valueOk || !keys.add(k)) {
+                    throw error("populated Map literal violates key/value domain or duplicate-key proof");
+                }
+            }
+            return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // Mirror the concrete-only TypeChecker admission. This also
             // prevents callers supplying an unchecked AST from eliding

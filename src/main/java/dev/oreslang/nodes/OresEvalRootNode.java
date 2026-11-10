@@ -7844,6 +7844,77 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
+            if (expr instanceof Ast.MapLiteralExpr literalMap) {
+                Ast.TypeRef witness = literalMap.mapType();
+                if (!witness.name().equals("Map") || witness.inferArguments()
+                        || witness.arguments().size() != 2) {
+                    throw new IllegalArgumentException("unchecked populated Map witness");
+                }
+                Ast.TypeRef kType = witness.arguments().get(0);
+                Ast.TypeRef vType = witness.arguments().get(1);
+                if (kType.inferArguments() || !kType.arguments().isEmpty()
+                        || vType.inferArguments() || !vType.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("unverified populated Map type parameters");
+                }
+                OresKeyedMap.ValueDomain domain = switch (vType.name()) {
+                    case "int" -> OresKeyedMap.ValueDomain.INT;
+                    case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
+                    case "string", "String" -> OresKeyedMap.ValueDomain.STRING;
+                    case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                    default -> throw new IllegalArgumentException("unverified populated Map value type");
+                };
+                // V1 literal-only: no user callbacks or partial move state can
+                // execute. Enforce both runtime domains again for forged ASTs.
+                LinkedHashMap<Object, Object> prepared = new LinkedHashMap<>();
+                for (Ast.MapLiteralEntry entry : literalMap.entries()) {
+                    if (!(entry.key() instanceof Ast.LiteralExpr key)
+                            || !(entry.value() instanceof Ast.LiteralExpr value)) {
+                        throw new IllegalArgumentException("unverified effectful Map literal entry");
+                    }
+                    Object k = key.value();
+                    Object v = value.value();
+                    boolean keyOk = switch (kType.name()) {
+                        case "string", "String" -> k instanceof String;
+                        case "Symbol" -> k instanceof dev.oreslang.runtime.OresSymbol;
+                        default -> false;
+                    };
+                    boolean valueOk = switch (vType.name()) {
+                        case "int" -> v instanceof Long;
+                        case "bool", "Bool" -> v instanceof Boolean;
+                        case "string", "String" -> v instanceof String;
+                        case "Symbol" -> v instanceof dev.oreslang.runtime.OresSymbol;
+                        default -> false;
+                    };
+                    if (!keyOk || !valueOk || prepared.containsKey(k)) {
+                        throw new IllegalArgumentException(
+                                "populated Map entry failed runtime domain/duplicate-key admission");
+                    }
+                    prepared.put(k, v);
+                }
+                // Publish only after the canonical storage validates and commits
+                // the whole batch. No half-built guest Map escapes on failure.
+                if (kType.name().equals("string") || kType.name().equals("String")) {
+                    OresKeyedMap<String, Object> result = OresKeyedMap.stringKeys(domain);
+                    LinkedHashMap<String, Object> typedEntries = new LinkedHashMap<>();
+                    for (Map.Entry<Object, Object> item : prepared.entrySet()) {
+                        typedEntries.put((String) item.getKey(), item.getValue());
+                    }
+                    result.putAll(typedEntries);
+                    return result;
+                }
+                if (kType.name().equals("Symbol")) {
+                    OresKeyedMap<dev.oreslang.runtime.OresSymbol, Object> result =
+                            OresKeyedMap.symbolKeys(domain);
+                    LinkedHashMap<dev.oreslang.runtime.OresSymbol, Object> typedEntries =
+                            new LinkedHashMap<>();
+                    for (Map.Entry<Object, Object> item : prepared.entrySet()) {
+                        typedEntries.put((dev.oreslang.runtime.OresSymbol) item.getKey(), item.getValue());
+                    }
+                    result.putAll(typedEntries);
+                    return result;
+                }
+                throw new IllegalArgumentException("unverified populated Map key type");
+            }
             if (expr instanceof Ast.ContextualEmptyMapExpr) {
                 throw new IllegalArgumentException(
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");

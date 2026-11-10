@@ -4656,10 +4656,24 @@ public final class Parser {
                 Ast.TypeRef valueType = parseTypeRef();
                 consume(GT, "~map<K,V>() requires exactly two type arguments");
                 consume(LPAREN, "expected '(' after ~map<K,V>");
-                consume(RPAREN, "nonempty ~map<K,V>(...) is pending transactional map "
-                        + "entry insertion and ownership proofs");
-                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(
-                        new Ast.TypeRef("Map", List.of(keyType, valueType), false)));
+                Ast.TypeRef mapType = new Ast.TypeRef(
+                        "Map", List.of(keyType, valueType), false);
+                if (match(RPAREN)) {
+                    return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(mapType));
+                }
+                List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+                do {
+                    // Parse key and value independently. Never collapse pairs to
+                    // Map/LinkedHashMap: that would erase duplicate source keys.
+                    Ast.Expr key = parseExpression();
+                    consume(FAT_ARROW, "typed ~map<K,V> entries require 'key => value'");
+                    Ast.Expr value = parseExpression();
+                    entries.add(new Ast.MapLiteralEntry(key, value));
+                    if (!match(COMMA)) break;
+                    if (check(RPAREN)) break;
+                } while (true);
+                consume(RPAREN, "expected ')' after typed ~map<K,V> entries");
+                return parsePostfixSuffix(new Ast.MapLiteralExpr(mapType, entries));
             }
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
