@@ -1,4 +1,4 @@
-name: Supervisor escrow and subtree recovery (real ActorRuntime)
+name: Supervisor admission/fence linearization (real ActorRuntime)
 on:
   pull_request:
     paths:
@@ -7,6 +7,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java'
       - 'src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java'
       - 'scripts/verify-supervisor-escrow-runtime-bridge-v1.sh'
