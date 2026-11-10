@@ -1,0 +1,11 @@
+// Stage-1 actor presence contract: compiler and guest-execution positive.
+define contract CartApi as
+  actor Cart;
+end
+
+define module cart_mod conforms CartApi as
+  pub define actor Cart as
+  end
+end
+
+pub fnc main(): int { return 42; }
