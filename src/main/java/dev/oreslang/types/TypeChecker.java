@@ -258,6 +258,10 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        if (!program.namespaceContracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "namespace contract conformance requires a complete, validated multi-file compilation");
+        }
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
             rejectUnloweredCheckedClassEffects(linked);
