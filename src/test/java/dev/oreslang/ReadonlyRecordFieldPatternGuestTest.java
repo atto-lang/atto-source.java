@@ -155,8 +155,8 @@ final class ReadonlyRecordFieldPatternGuestTest {
                     private val int secret = 42;
                 end
                 pub fnc main(): void {
-                    const obj = new Payload();
-                    const code = match<int> obj over
+                    const payload = new Payload();
+                    const code = match<int> payload over
                         on structural ~(status: 200) -> 42;
                         default -> 0;
                     end;
@@ -173,8 +173,8 @@ final class ReadonlyRecordFieldPatternGuestTest {
                         pub val int status = 200;
                         private val int secret = 42;
                     end
-                    fnc inspect(Payload obj): int {
-                        return match<int> obj over
+                    fnc inspect(Payload payload): int {
+                        return match<int> payload over
                     """ + arm + " default -> 0; end; }";
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(source), arm);
