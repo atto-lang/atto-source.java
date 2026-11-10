@@ -10044,6 +10044,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "ActorRef target must be a known concrete actor class, got " + target);
                 }
+                if (Types.containsUncertainType(target)) {
+                    throw new IllegalArgumentException(
+                            "ActorRef target requires fully resolved nominal actor type arguments; "
+                                    + "unbounded generics or dynamic types cannot establish mailbox authority");
+                }
                 Ast.ClassDecl actor = findClass(nominal.name());
                 if (actor == null || actor.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
