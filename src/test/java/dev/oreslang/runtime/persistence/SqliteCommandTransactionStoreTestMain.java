@@ -98,6 +98,29 @@ public final class SqliteCommandTransactionStoreTestMain {
                 check(conflict,"different command with same logical op accepted");
                 check(commands.commit(command(id,"bad-version",1,0,1,2)).status() ==
                       Status.VERSION_CONFLICT,"stale CAS committed");
+                // CompletableFuture dependents are permitted to close the
+                // sidecar inline on its writer thread. Do not self-deadlock,
+                // block the actor carrier or leave the completion unresolved.
+                Identity callbackId=new Identity(id.tenant(),"account-callback","ledger");
+                legacy.grantEpoch(callbackId.tenant(),callbackId.actor(),1);
+                AtomicCommandSidecar callbackSidecar=
+                    new AtomicCommandSidecar(callbackId.tenant(),commands,2,32768);
+                java.util.concurrent.CompletableFuture<Receipt> callbackDone=
+                    new java.util.concurrent.CompletableFuture<>();
+                callbackSidecar.submit(command(callbackId,"close-on-callback",1,0,4,6))
+                    .whenComplete((receipt,failure)->{
+                        try {
+                            if(failure!=null)throw new AssertionError(failure);
+                            callbackSidecar.close();
+                            callbackDone.complete(receipt);
+                        } catch(Throwable error) {
+                            callbackDone.completeExceptionally(error);
+                        }
+                    });
+                Receipt closedFromCallback=callbackDone.get(10,TimeUnit.SECONDS);
+                check(closedFromCallback.durable() &&
+                      closedFromCallback.version()==2,
+                      "synchronous completion could not close its own sidecar");
             }
             // Restart provider and change physical activation generation, but
             // keep stable command identity and original committed result.
