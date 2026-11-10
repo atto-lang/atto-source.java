@@ -81,6 +81,8 @@ final class ActorMailboxRefSecurityTest {
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::childIds);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> spoofed.awaitTermination(0, TimeUnit.MILLISECONDS));
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::gracefulStop);
             assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     spoofed::stop);
