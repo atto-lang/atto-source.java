@@ -117,3 +117,26 @@ Do not expose this privileged provider API to an untrusted actor.
 The new `DurableCommandInboxTestMain` is host-only. It requires a real
 JDK21 + SQLite JDBC runner and currently has no executed proof from the
 zero-step source GitHub Actions jobs.
+
+## Bounded async actor-owned command bridge (fourth host slice)
+
+DurableCommandSidecar runs JDBC only on a private single storage worker. The
+queue has explicit outstanding-job and owned-byte budgets; requests, events
+and reply bytes are cloned before admission. Wrong tenant and excess capacity
+are rejected. On interrupted termination, unresolved futures are conservatively
+marked OUTCOME_UNKNOWN instead of being reported as durable success.
+
+ActorPersistenceBridge now provides owner-checked host-only continuation
+hooks onDurableCommandCompletionInCurrentActor and
+onPriorCommandResolutionInCurrentActor. Both capture the current actor turn
+and resume exclusively on its serialized actor continuation lane. A durable
+command stages all owned immutable events, commits them on the worker, then
+allows state publication. A recovered actor resolves operation ID plus original
+command bytes BEFORE running decide, and may return the stored reply without
+duplicating the journal. Original actor epoch/identity is still enforced.
+
+DurableCommandActorRuntimeTestMain covers these sequences using the actual
+HOST ActorRuntime and SQLite; it does not execute compiled .atto guest source
+or implement automatic supervisor recovery. Exact-head Maven/JDK21/SQLite
+execution remains required before claiming it passed. The legacy single-event
+API and its old tests remain untouched.

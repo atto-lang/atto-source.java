@@ -99,8 +99,8 @@ public final class ActorPersistenceBridge {
     /**
      * Stage exactly one immutable domain event for this actor/slot. The caller
      * must have finished pure decision logic and released all sealed-state
-     * loans BEFORE submitting. Multi-event atomic commands are deliberately
-     * not supported by the v1 store and must fail closed in compiler lowering.
+     * loans BEFORE submitting. This legacy event path is separate from the
+     * new transactional multi-event command inbox.
      */
     private static Write event(Activation activation, String operationId,
                                long expectedVersion, int schemaVersion, byte[] ownedBytes) {
@@ -153,6 +153,51 @@ public final class ActorPersistenceBridge {
                 return;
             }
             continuation.accept(receipt, null);
+        });
+    }
+
+    /** Trusted host-only multi-event command: all state loans already released. */
+    public static void onDurableCommandCompletionInCurrentActor(
+            Activation activation,DurableCommandSidecar sidecar,String operationId,
+            long expectedVersion,byte[] canonicalCommand,
+            java.util.List<SqlitePersistenceStore.CommandEvent> events,byte[] originalReply,
+            BiConsumer<? super SqlitePersistenceStore.CommandReceipt,? super Throwable> callback) {
+        Objects.requireNonNull(activation);Objects.requireNonNull(sidecar);
+        Objects.requireNonNull(events);Objects.requireNonNull(callback);
+        assertBoundTurn(activation);
+        ActorRuntime.ContinuationTarget target=activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<SqlitePersistenceStore.CommandReceipt> result=OresFuture.from(
+            sidecar.commit(activation.stableIdentity,activation.epoch,operationId,
+                           expectedVersion,canonicalCommand,events,originalReply));
+        activation.runtime.enqueueOnCompletion(result,target,(receipt,failure)->{
+            assertBoundTurn(activation);
+            if(failure!=null){callback.accept(null,failure);return;}
+            if(receipt==null || events.isEmpty() ||
+                    expectedVersion>Long.MAX_VALUE-events.size() ||
+                    receipt.firstVersion()!=expectedVersion+1 ||
+                    receipt.lastVersion()!=expectedVersion+events.size()) {
+                callback.accept(null,new IllegalStateException("DURABLE_COMMAND_UNVERIFIED"));
+                return;
+            }
+            callback.accept(receipt,null);
+        });
+    }
+
+    /** Resolve a previous result BEFORE application-level decide(). */
+    public static void onPriorCommandResolutionInCurrentActor(
+            Activation activation,DurableCommandSidecar sidecar,String operationId,
+            byte[] canonicalCommand,
+            BiConsumer<? super java.util.Optional<SqlitePersistenceStore.CommandReceipt>,
+                       ? super Throwable> callback) {
+        Objects.requireNonNull(activation);Objects.requireNonNull(sidecar);
+        Objects.requireNonNull(callback);assertBoundTurn(activation);
+        ActorRuntime.ContinuationTarget target=activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<java.util.Optional<SqlitePersistenceStore.CommandReceipt>> result=
+            OresFuture.from(sidecar.resolve(activation.stableIdentity,
+                    activation.epoch,operationId,canonicalCommand));
+        activation.runtime.enqueueOnCompletion(result,target,(receipt,failure)->{
+            assertBoundTurn(activation);
+            callback.accept(receipt,failure);
         });
     }
 
