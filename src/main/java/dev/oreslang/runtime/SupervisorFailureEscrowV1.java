@@ -123,16 +123,23 @@ final class SupervisorFailureEscrowV1 {
         return cell.delivery;
     }
 
-    /** A stale delivery cannot be acknowledged even before it is redelivered. */
-    synchronized boolean acknowledge(Delivery delivery) {
+    /** Validate a delivery before invoking a potentially external decision sink.
+     * This check MUST be repeated after that sink completes. */
+    synchronized boolean currentDelivery(Delivery delivery) {
         Objects.requireNonNull(delivery, "delivery");
         Cell cell = nodes.get(delivery.notice.failedId());
         if (cell == null || !cell.pending || cell.delivery != delivery
                 || cell.terminal != delivery.notice
                 || cell.generation != delivery.notice.failedGeneration()) return false;
         Cell currentAuthority = nearestLiveAncestor(cell);
-        if (currentAuthority == null || currentAuthority.id != delivery.controllerId
-                || currentAuthority.generation != delivery.controllerGeneration) return false;
+        return currentAuthority != null && currentAuthority.id == delivery.controllerId
+                && currentAuthority.generation == delivery.controllerGeneration;
+    }
+
+    /** A stale delivery cannot be acknowledged even before it is redelivered. */
+    synchronized boolean acknowledge(Delivery delivery) {
+        if (!currentDelivery(delivery)) return false;
+        Cell cell = nodes.get(delivery.notice.failedId());
         cell.pending = false;
         cell.delivery = null;
         return true;
