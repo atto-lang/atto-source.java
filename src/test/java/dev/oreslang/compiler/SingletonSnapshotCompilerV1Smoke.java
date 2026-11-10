@@ -115,6 +115,9 @@ public final class SingletonSnapshotCompilerV1Smoke {
                 SOURCE.replace("answer = 42", "answer = Settings.answer"), "pkg/settings.atto"),
                 "ORES-SINGLETON-SELF-ESCAPE");
         reject(() -> SingletonSnapshotCompilerV1.compile(
+                SOURCE.replace("answer = 42", "answer = #untrusted_symbol"), "pkg/settings.atto"),
+                "Symbol literals cannot be interned");
+        reject(() -> SingletonSnapshotCompilerV1.compile(
                 "import module other from \"other.atto\";\n" + SOURCE, "pkg/settings.atto"),
                 "ORES-SINGLETON-CHECKONLY");
         reject(() -> SingletonSnapshotCompilerV1.compile(
