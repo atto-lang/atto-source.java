@@ -298,4 +298,21 @@ final class HostImportTest {
                 program.imports().getFirst().path());
     }
 
+    @Test
+    void jvmAliasCannotGrantAccessToSensitiveJdkClassEvenWhenNamedInHostAllowlist() {
+        var parsed = Parser.parse("""
+                import jvm "java.lang.System" as JSystem;
+                pub fnc main(): int { return 42; }
+                """);
+        assertEquals("java:java.lang.System", parsed.imports().getFirst().path());
+        assertDoesNotThrow(() -> TypeChecker.check(parsed),
+                "syntax admission alone must not be confused with host authority");
+
+        IsolatePolicy hostCap = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+        assertThrows(SecurityException.class, () -> hostCap.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.System")),
+                "JAVA_INTEROP plus a requested host name cannot authorize System");
+    }
+
 }
