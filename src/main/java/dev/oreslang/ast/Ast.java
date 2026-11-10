@@ -495,9 +495,19 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            String standaloneBinding) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            // The binding in "define actor A as a;" is retained as explicit
+            // metadata. It is not a class instance, ActorRef, or executable
+            // mailbox authority until checked actor binding lowering exists.
+            if (standaloneBinding != null
+                    && (standaloneBinding.isBlank() || standaloneBinding.equals(name)
+                        || actorKind == ActorKind.NONE)) {
+                throw new IllegalArgumentException(
+                        "standalone actor binding must be a distinct, nonblank actor binding name");
+            }
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -505,6 +515,16 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Preserve the pre-standalone-binder canonical constructor shape. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, actorConcurrency, null);
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
