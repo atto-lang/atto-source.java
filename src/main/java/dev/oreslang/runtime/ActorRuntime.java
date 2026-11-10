@@ -4739,6 +4739,15 @@ public final class ActorRuntime implements AutoCloseable {
                                             + parent.ref.id());
                         }
                         requireSupervisorEscrowAdmission(parent.ref);
+                        // Until supervision lineage can be atomically registered
+                        // with the runtime-owned terminal escrow BEFORE actor
+                        // publication, reject nested guest spawn. Otherwise a
+                        // child can be published outside its supervisor's ledger
+                        // and escape subtree fencing after a parent crash.
+                        if (supervisorEscrowBindings.containsKey(parent.ref.id())) {
+                            throw new IllegalStateException(
+                                    "supervised actor nested spawn requires atomic CONTROL child registration");
+                        }
                         // A nested spawn inherits its parent's structured
                         // lifecycle group. The spawn lineage is not a new
                         // supervisor or a new group. Event-bus membership
