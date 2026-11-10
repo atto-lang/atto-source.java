@@ -1,0 +1,11 @@
+// Stage 2: existing actor method satisfies a declarative receiver contract.
+define contract CartApi as
+  actor Cart;
+  pub mtd count(Cart cart)(): int;
+end
+define module carts conforms CartApi as
+  pub define actor Cart as
+    pub count(): int { return 42; }
+  end
+end
+pub fnc main(): int { return 42; }
