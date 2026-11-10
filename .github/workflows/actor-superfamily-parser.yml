@@ -3,7 +3,9 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/ActorSuperfamilyParserTest.java'
+      - 'src/test/java/dev/oreslang/ActorSuperfamilyTypeCheckTest.java'
       - '.github/workflows/actor-superfamily-parser.yml'
   workflow_dispatch:
 permissions:
@@ -36,4 +38,4 @@ jobs:
         run: |
           set -euo pipefail
           java -version
-          mvn -B -ntp -Dtest=ActorSuperfamilyParserTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=ActorSuperfamilyParserTest,ActorSuperfamilyTypeCheckTest -DfailIfNoTests=true test

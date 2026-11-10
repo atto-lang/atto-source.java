@@ -38,3 +38,20 @@ actor-inheritance semantics or a new keyword.
 
 This parser feature MUST NOT be merged as proof that the stdlib super-actors
 can yet persist or recover guest state.
+
+## Type-checker ancestry gate (second slice)
+
+`TypeChecker.checkClassBody` now recursively validates the entire nominal
+actor ancestor chain, not only the direct parent. A parent or grandparent with
+class fields or an explicit constructor is rejected, as is a parent that is
+an ordinary class rather than an actor. This is necessary to keep future
+compiler-sealed `state { }` the **only** mutable state region of a leaf actor.
+
+Focused negative JUnit cases cover a fieldful actor parent, a fieldful
+grandparent, ordinary-class actor escalation, missing nominal parent and
+inheritance cycles. They require actual execution of the exact-head Maven
+workflow; repository source inspection does not constitute a passing test.
+
+The runtime still cannot execute a `pure` event reducer or a sealed state
+block. Neither parser/TypeChecker AST acceptance nor an abstract actor
+superclass provides durable access without verified guest lowering.
