@@ -235,6 +235,24 @@ final class NamespaceContractMultiFileTest {
     }
 
     @Test
+    void namespaceAbiEdgesDoNotInventRuntimeInitializationCycles() {
+        var result = new IncrementalCompiler().compile(complete());
+        assertEquals(3, result.initializationGroups().size());
+        assertTrue(result.initializationGroups().stream().allMatch(group -> group.size() == 1),
+                "namespace-only ABI edges must never change runtime init barriers");
+    }
+
+    @Test
+    void namespaceFieldRequirementsFailClosedUntilCrossFileTypedBindingProof() {
+        Map<String, String> sources = complete();
+        sources.put("shop/contracts.atto", CONTRACT.replace(
+                "  fnc tick(int amount): int;", "  value: int;"));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("supports only actor and fnc requirements"));
+    }
+
+    @Test
     void functionDeclarationMustNotBeAmbiguousAcrossFiles() {
         Map<String, String> sources = complete();
         sources.put("shop/tick-dupe.atto", FUNCTION);
