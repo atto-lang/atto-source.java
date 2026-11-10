@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.compiler.ExportInterfaceCodec;
 import dev.oreslang.compiler.ExportInterfaceCollector;
 import dev.oreslang.compiler.IncrementalCompiler;
@@ -198,6 +199,30 @@ final class StandaloneActorDeclarationAdmissionTest {
                 end
                 """));
         assertTrue(error.getMessage().contains("duplicate"));
+    }
+
+    @Test
+    void annotationExpansionCannotEraseUnloweredActorBinding() {
+        String source = """
+                define module carts as
+                  pub define actor Cart as cart;
+                end
+                """;
+        Ast.Program expanded = AnnotationExpander.expand(Parser.parse(source));
+        Ast.ClassDecl klass = null;
+        for (Ast.ModuleDecl module : expanded.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.ClassDecl candidate
+                        && candidate.name().equals("Cart")) {
+                    klass = candidate;
+                }
+            }
+        }
+        assertEquals("cart", klass == null ? null : klass.standaloneBinding(),
+                "the annotation pass must never silently erase unlowered actor authority");
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(expanded));
+        assertTrue(error.getMessage().contains("not executable yet"));
     }
 
     @Test
