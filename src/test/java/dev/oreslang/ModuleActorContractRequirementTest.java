@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.ExportInterfaceCodec;
 import dev.oreslang.compiler.ExportInterfaceCollector;
