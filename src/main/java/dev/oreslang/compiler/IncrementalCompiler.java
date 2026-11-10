@@ -406,6 +406,12 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.ClassDecl klass && klass.standaloneBinding() != null) {
+            throw new IllegalArgumentException(
+                    "standalone actor binding '" + klass.name() + " as "
+                            + klass.standaloneBinding()
+                            + "' has no checked activation/dispatch ABI");
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
