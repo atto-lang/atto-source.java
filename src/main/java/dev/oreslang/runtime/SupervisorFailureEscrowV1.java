@@ -93,6 +93,23 @@ final class SupervisorFailureEscrowV1 {
         return cell.terminal;
     }
 
+    /** Normal/cancelled finalization never manufactures a failure notice.
+     * A supervisor exiting normally still fences descendants; the caller
+     * must arrange structured child cleanup outside this pure ledger. */
+    synchronized void completeNormally(long id) {
+        Cell cell = requireNode(id);
+        if (id == rootId) throw new IllegalStateException("guardian requires external supervisor");
+        if (cell.pending || cell.terminal != null) {
+            // A real failure may not be laundered into a clean termination.
+            throw new IllegalStateException("cannot erase a failed terminal notice");
+        }
+        cell.alive = false;
+        cell.fenced = true;
+        for (Cell descendant : nodes.values()) {
+            if (isDescendantOf(descendant, id)) descendant.fenced = true;
+        }
+    }
+
     /** Returns the nearest healthy ancestor's CONTROL delivery, never guest DATA. */
     synchronized Delivery deliver(long failedId) {
         Cell cell = requireNode(failedId);
