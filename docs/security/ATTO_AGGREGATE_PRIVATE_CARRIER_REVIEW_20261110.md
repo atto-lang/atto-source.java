@@ -21,7 +21,27 @@ An independent source-free probe already proved **a real JDK25/Maven runner**:
 - workflow blob `f44ff33648e2cddd710b776bbad580da82ac3b94`;
 - `jdk25-host-smoke` completed SUCCESS; steps checked no source checkout,
   installed Temurin JDK25, and ran `javac -version` / `mvn -version`.
+- Verified job logs on 2026-11-10 record `openjdk version "25.0.5"`,
+  `javac 25.0.5`, `Apache Maven 3.10.0`,
+  and `SOURCE_FREE_JDK25_ADMISSION=PASS`.
 - This **does not** prove Java AttoLang source compilation or available remaining Actions budget.
+
+## Executed read-only source-static audit (not compiler tests)
+At the pinned #2733/#2734 Git heads above, the GitHub connector retrieved:
+- `Parser.java` blob `a21c6e3419134bd8259f08c24117f82672bd792c`
+- `TypeChecker.java` blob `fb1b9c5fa2ffb2875f838941f9e009907f5187ac`
+- `TildeAggregateTypeAliasCompilerTest.java` blob
+  `2a209d615fc3fd0edfd5d263e402552e3db9e255`
+- `TildeArrayTupleValueGuestTest.java` blob
+  `dfba879df01f2f73b609379c3d803970f1b06c7d`.
+
+Twelve source-static assertions passed: stacked base/head relation; old arr and
+tuple parsing; sigil adjacency; preexisting AST node reuse; typed witness
+fail-closed path; intrinsic shape before alias lookup; forbidden-null test fix;
+nominal shadowing test; Graal guest test authored; once-only argument side
+effect test authored; and absence of unsupported factory AST lowering. These
+are checks on source text, **NOT compiled Java, JUnit, guest, ownership or AOT
+evidence**.
 
 ## Hard export gate
 Current `.github/private-ci-approved-repositories.txt` does **not** list
