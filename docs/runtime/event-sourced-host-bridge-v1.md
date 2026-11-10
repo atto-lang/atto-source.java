@@ -82,3 +82,38 @@ transaction. A missing event due to compaction intentionally fails closed.
 `CommittedEventResolutionTestMain` is a host-only JDBC test and has a
 dedicated exact-head workflow step. It remains unexecuted until CI runs
 nonzero steps successfully.
+
+## Durable command inbox and multi-event atomicity (third slice)
+
+`SqlitePersistenceStore.commitCommand` provides a privileged, blocking
+**host provider** operation, called only on a dedicated storage worker.
+One SQLite `BEGIN IMMEDIATE` transaction atomically persists 1..256
+contiguous event rows, the updated journal head, the original immutable
+command bytes, and its original reply. A bounded canonical event batch
+records each event's schema, length and exact bytes. The new table is
+additive and legacy `commit(Write)` remains compatible, with collision
+checks between the legacy operation namespace and command inbox.
+
+`resolveCommandFenced` authorizes only the CURRENT epoch and exact actor,
+slot, operation ID and original command bytes, and validates retained
+journal rows against the inbox batch before returning the original stored
+reply. After a crash before ACK, the new actor activation can re-resolve the
+committed command without re-running `decide`, by using the SAME command
+bytes and ID. A duplicate commit returns the original reply, ignoring any
+newly submitted events or replies; runtime must resolve **before** decide.
+
+A corrupt/pruned journal, mismatched command payload, bad epoch, altered
+schema, or missing inbox record fails closed. A database error at COMMIT
+remains an unknown outcome, not a definitive rejection. An event batch
+aborted by a SQLite trigger must roll back head, journal rows and inbox
+reply together.
+
+This stage does **not** add compiler-generated `.atto` guest actor
+transactions, automatic actor scheduler-owned continuation, or transactional
+outbox. The sidecar's legacy `Write` remains single-event; host async
+staging of `commitCommand` and guest wiring are separate follow-ups.
+Do not expose this privileged provider API to an untrusted actor.
+
+The new `DurableCommandInboxTestMain` is host-only. It requires a real
+JDK21 + SQLite JDBC runner and currently has no executed proof from the
+zero-step source GitHub Actions jobs.

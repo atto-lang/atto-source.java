@@ -31,7 +31,8 @@ jobs:
             src/main/java/dev/oreslang/runtime/persistence/BatchPersistenceSidecar.java \
             src/main/java/dev/oreslang/runtime/persistence/SqlitePersistenceStore.java \
             src/test/java/dev/oreslang/runtime/persistence/SqlitePersistenceStoreTestMain.java \
-            src/test/java/dev/oreslang/runtime/persistence/CommittedEventResolutionTestMain.java
+            src/test/java/dev/oreslang/runtime/persistence/CommittedEventResolutionTestMain.java \
+            src/test/java/dev/oreslang/runtime/persistence/DurableCommandInboxTestMain.java
       - name: Run 1000 actor commits, journal restore, epochs, abrupt halt
         run: |
           set -euo pipefail
@@ -47,3 +48,10 @@ jobs:
           SLF4J="$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar"
           java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
             dev.oreslang.runtime.persistence.CommittedEventResolutionTestMain
+      - name: Execute real SQLite durable inbox, atomic multi-event rollback and retry
+        run: |
+          set -euo pipefail
+          JDBC="$HOME/.m2/repository/org/xerial/sqlite-jdbc/3.53.4.0/sqlite-jdbc-3.53.4.0.jar"
+          SLF4J="$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar"
+          java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
+            dev.oreslang.runtime.persistence.DurableCommandInboxTestMain

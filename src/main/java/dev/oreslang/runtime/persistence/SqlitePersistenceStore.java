@@ -38,6 +38,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             execute("CREATE TABLE IF NOT EXISTS state(tenant TEXT NOT NULL, actor TEXT NOT NULL, slot TEXT NOT NULL, version INTEGER NOT NULL, snapshot_version INTEGER NOT NULL DEFAULT 0, snapshot_schema INTEGER NOT NULL DEFAULT 0, snapshot BLOB, PRIMARY KEY(tenant,actor,slot))");
             execute("CREATE TABLE IF NOT EXISTS ops(tenant TEXT NOT NULL, actor TEXT NOT NULL, slot TEXT NOT NULL, op TEXT NOT NULL, epoch INTEGER NOT NULL, expected INTEGER NOT NULL, kind INTEGER NOT NULL, schema INTEGER NOT NULL, payload BLOB NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(tenant,actor,slot,op))");
             execute("CREATE TABLE IF NOT EXISTS events(tenant TEXT NOT NULL, actor TEXT NOT NULL, slot TEXT NOT NULL, version INTEGER NOT NULL, schema INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(tenant,actor,slot,version))");
+            // Transactional command inbox is additive. Do not change the
+            // legacy single-event ops table or its receipt semantics.
+            execute("CREATE TABLE IF NOT EXISTS command_inbox(tenant TEXT NOT NULL, actor TEXT NOT NULL, slot TEXT NOT NULL, op TEXT NOT NULL, epoch INTEGER NOT NULL, expected INTEGER NOT NULL, request BLOB NOT NULL, first_version INTEGER NOT NULL, last_version INTEGER NOT NULL, event_batch BLOB NOT NULL, reply BLOB NOT NULL, PRIMARY KEY(tenant,actor,slot,op))");
         } catch (SQLException e) { db.close(); throw e; }
     }
     private void execute(String sql) throws SQLException { try (Statement q=db.createStatement()) { q.execute(sql); } }
@@ -107,6 +110,18 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                                 Arrays.equals(r.getBytes(5),w.ownedPayload());
                             out.add(new Result(w.operationId(),same?Status.DUPLICATE:Status.OP_ID_CONFLICT,
                                 same?r.getLong(6):-1,false));continue;
+                        }
+                    }
+                }
+                // One operation ID must never represent BOTH a legacy event
+                // write and a durable command/reply transaction.
+                try (PreparedStatement inbox=db.prepareStatement(
+                        "SELECT 1 FROM command_inbox WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+                    bindKey(inbox,id);inbox.setString(4,w.operationId());
+                    try (ResultSet existing=inbox.executeQuery()) {
+                        if (existing.next()) {
+                            out.add(new Result(w.operationId(),Status.OP_ID_CONFLICT,-1,false));
+                            continue;
                         }
                     }
                 }
@@ -194,6 +209,216 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             throw new SQLException("durable operation proof unavailable",error);
         }
     }
+    /**
+     * A trusted host may atomically append 1..256 immutable domain events
+     * and their original COMMAND request/reply identity in one SQLite commit.
+     * These records are NOT guest-authenticating capabilities. The compiler
+     * must still prohibit mutable state publication until durable success.
+     */
+    public record CommandEvent(int schemaVersion, byte[] payload) {
+        public CommandEvent {
+            if (schemaVersion <= 0) throw new IllegalArgumentException("bad event schema");
+            payload = Objects.requireNonNull(payload, "event payload").clone();
+            if (payload.length > 65536) throw new IllegalArgumentException("event too large");
+        }
+        @Override public byte[] payload() { return payload.clone(); }
+    }
+    public record CommandReceipt(long firstVersion, long lastVersion,
+                                 byte[] reply, boolean duplicate) {
+        public CommandReceipt {
+            if (firstVersion < 1 || lastVersion < firstVersion)
+                throw new IllegalArgumentException("bad command version range");
+            reply = Objects.requireNonNull(reply, "reply").clone();
+        }
+        @Override public byte[] reply() { return reply.clone(); }
+    }
+
+    private static byte[] encodeCommandEvents(List<CommandEvent> events) {
+        Objects.requireNonNull(events,"events");
+        if (events.isEmpty() || events.size() > 256)
+            throw new IllegalArgumentException("command must emit 1..256 events");
+        long size = 4;
+        for (CommandEvent event : events) {
+            Objects.requireNonNull(event,"event");
+            size += 8L + event.payload().length;
+            if (size > 1048576) throw new IllegalArgumentException("event batch exceeds 1MiB");
+        }
+        java.nio.ByteBuffer encoded=java.nio.ByteBuffer.allocate((int)size);
+        encoded.putInt(events.size());
+        for (CommandEvent event : events) {
+            byte[] payload=event.payload();
+            encoded.putInt(event.schemaVersion()).putInt(payload.length).put(payload);
+        }
+        return encoded.array();
+    }
+
+    private static List<CommandEvent> decodeCommandEvents(byte[] bytes) {
+        if (bytes == null || bytes.length < 12 || bytes.length > 1048576)
+            throw new SecurityException("INVALID_COMMAND_EVENT_BATCH");
+        java.nio.ByteBuffer input=java.nio.ByteBuffer.wrap(bytes);
+        int count=input.getInt();
+        if (count < 1 || count > 256) throw new SecurityException("INVALID_COMMAND_EVENT_BATCH");
+        List<CommandEvent> result=new ArrayList<>(count);
+        for (int i=0;i<count;i++) {
+            if (input.remaining() < 8) throw new SecurityException("INVALID_COMMAND_EVENT_BATCH");
+            int schema=input.getInt(),length=input.getInt();
+            if (schema <= 0 || length < 0 || length > 65536 || length > input.remaining())
+                throw new SecurityException("INVALID_COMMAND_EVENT_BATCH");
+            byte[] event=new byte[length];input.get(event);
+            result.add(new CommandEvent(schema,event));
+        }
+        if (input.hasRemaining()) throw new SecurityException("INVALID_COMMAND_EVENT_BATCH");
+        return result;
+    }
+
+    /** Must be invoked inside the current SQLite transaction only. */
+    private Optional<CommandReceipt> resolveCommandInsideTransaction(
+            Identity id,long currentEpoch,String operationId,byte[] exactCommand) throws SQLException {
+        try (PreparedStatement q=db.prepareStatement(
+                "SELECT epoch,expected,length(request),substr(request,1,65537),"
+                + "first_version,last_version,length(event_batch),substr(event_batch,1,1048577),"
+                + "length(reply),substr(reply,1,65537) FROM command_inbox "
+                + "WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+            bindKey(q,id);q.setString(4,operationId);
+            try (ResultSet r=q.executeQuery()) {
+                if (!r.next()) return Optional.empty();
+                long originalEpoch=r.getLong(1),expected=r.getLong(2),first=r.getLong(5),last=r.getLong(6);
+                byte[] request=r.getBytes(4),batch=r.getBytes(8),reply=r.getBytes(10);
+                if (originalEpoch <= 0 || originalEpoch > currentEpoch
+                        || expected < 0 || expected >= Long.MAX_VALUE
+                        || first != expected+1 || last < first || last > version(id)
+                        || last-first >= 256
+                        || r.getLong(3) != exactCommand.length
+                        || request == null || !Arrays.equals(request,exactCommand)
+                        || r.getLong(7) < 12 || r.getLong(7) > 1048576
+                        || r.getLong(9) > 65536 || reply == null)
+                    throw new SecurityException("OP_ID_CONFLICT");
+                List<CommandEvent> events=decodeCommandEvents(batch);
+                if (events.size() != last-first+1)
+                    throw new SecurityException("INVALID_COMMAND_EVENT_BATCH");
+                try (PreparedStatement journal=db.prepareStatement(
+                        "SELECT version,schema,length(payload),substr(payload,1,65537) "
+                        + "FROM events WHERE tenant=? AND actor=? AND slot=? "
+                        + "AND version>=? AND version<=? ORDER BY version ASC")) {
+                    bindKey(journal,id);journal.setLong(4,first);journal.setLong(5,last);
+                    try (ResultSet row=journal.executeQuery()) {
+                        for (int i=0;i<events.size();i++) {
+                            CommandEvent event=events.get(i);
+                            if (!row.next() || row.getLong(1) != first+i
+                                    || row.getInt(2) != event.schemaVersion()
+                                    || row.getLong(3) != event.payload().length
+                                    || !Arrays.equals(row.getBytes(4),event.payload()))
+                                throw new SecurityException("INCOMPLETE_COMMAND_JOURNAL");
+                        }
+                        if (row.next()) throw new SecurityException("INCOMPLETE_COMMAND_JOURNAL");
+                    }
+                }
+                return Optional.of(new CommandReceipt(first,last,reply,true));
+            }
+        }
+    }
+
+    /**
+     * A new activation may resolve an earlier committed command by the SAME
+     * immutable command bytes and op ID, without rerunning decide() or
+     * reacquiring the prior writer epoch. Never expose this store method to
+     * untrusted guest code or use it to bypass runtime actor turn ownership.
+     */
+    public synchronized Optional<CommandReceipt> resolveCommandFenced(
+            Identity id,long currentEpoch,String operationId,byte[] exactCommand) throws SQLException {
+        checkOpen();Objects.requireNonNull(id);Objects.requireNonNull(exactCommand);
+        checkId(id.tenant());checkId(id.actor());checkId(id.state());checkId(operationId);
+        if (currentEpoch<=0 || exactCommand.length>65536)
+            throw new IllegalArgumentException("invalid request/epoch");
+        byte[] request=exactCommand.clone();
+        execute("BEGIN");
+        try {
+            if (epoch(id)!=currentEpoch) throw new SecurityException("STALE_EPOCH");
+            Optional<CommandReceipt> receipt=resolveCommandInsideTransaction(
+                    id,currentEpoch,operationId,request);
+            commitTransaction();
+            return receipt;
+        } catch(Exception failure) {
+            rollback();
+            if (failure instanceof SQLException sql) throw sql;
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            throw new SQLException("unknown command resolution outcome",failure);
+        }
+    }
+
+    /**
+     * Transactional inbox + contiguous multi-event append + persisted reply.
+     * The caller is a trusted non-actor storage worker; it MUST copy the
+     * staged immutable event batch and release actor state loans first.
+     * Unknown COMMIT outcome requires resolveCommandFenced with SAME op ID.
+     */
+    public synchronized CommandReceipt commitCommand(
+            Identity id,long activationEpoch,String operationId,long expectedVersion,
+            byte[] commandBytes,List<CommandEvent> domainEvents,byte[] replyBytes)
+            throws SQLException {
+        checkOpen();Objects.requireNonNull(id);Objects.requireNonNull(commandBytes);
+        Objects.requireNonNull(replyBytes);
+        checkId(id.tenant());checkId(id.actor());checkId(id.state());checkId(operationId);
+        if (activationEpoch <= 0 || expectedVersion < 0
+                || commandBytes.length > 65536 || replyBytes.length > 65536)
+            throw new IllegalArgumentException("invalid durable command bounds");
+        List<CommandEvent> events=List.copyOf(domainEvents);
+        byte[] batch=encodeCommandEvents(events),request=commandBytes.clone(),reply=replyBytes.clone();
+        if (expectedVersion > Long.MAX_VALUE-events.size())
+            throw new IllegalArgumentException("journal version overflow");
+
+        begin();
+        try {
+            if (epoch(id) != activationEpoch) throw new SecurityException("STALE_EPOCH");
+            Optional<CommandReceipt> previous=resolveCommandInsideTransaction(
+                    id,activationEpoch,operationId,request);
+            if (previous.isPresent()) {
+                commitTransaction();
+                return previous.get();
+            }
+            // No legacy write may use the same logical operation ID.
+            try (PreparedStatement q=db.prepareStatement(
+                    "SELECT 1 FROM ops WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+                bindKey(q,id);q.setString(4,operationId);
+                try (ResultSet existing=q.executeQuery()) {
+                    if (existing.next()) throw new SecurityException("OP_ID_CONFLICT");
+                }
+            }
+            long before=version(id);
+            if (before != expectedVersion) throw new IllegalStateException("VERSION_CONFLICT");
+            long first=before+1,last=before+events.size();
+            try (PreparedStatement q=db.prepareStatement(
+                    "INSERT INTO state(tenant,actor,slot,version,snapshot_version,snapshot_schema,snapshot) "
+                    + "VALUES(?,?,?,?,0,0,NULL) ON CONFLICT(tenant,actor,slot) "
+                    + "DO UPDATE SET version=excluded.version")) {
+                bindKey(q,id);q.setLong(4,last);q.executeUpdate();
+            }
+            try (PreparedStatement q=db.prepareStatement(
+                    "INSERT INTO events VALUES(?,?,?,?,?,?)")) {
+                for (int i=0;i<events.size();i++) {
+                    CommandEvent event=events.get(i);
+                    bindKey(q,id);q.setLong(4,first+i);
+                    q.setInt(5,event.schemaVersion());q.setBytes(6,event.payload());
+                    q.executeUpdate();
+                }
+            }
+            try (PreparedStatement q=db.prepareStatement(
+                    "INSERT INTO command_inbox VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
+                bindKey(q,id);q.setString(4,operationId);
+                q.setLong(5,activationEpoch);q.setLong(6,expectedVersion);
+                q.setBytes(7,request);q.setLong(8,first);q.setLong(9,last);
+                q.setBytes(10,batch);q.setBytes(11,reply);q.executeUpdate();
+            }
+            commitTransaction();
+            return new CommandReceipt(first,last,reply,false);
+        } catch(Exception failure) {
+            rollback();
+            if (failure instanceof SQLException sql) throw sql;
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            throw new SQLException("unknown durable command outcome",failure);
+        }
+    }
+
     /**
      * Trusted, read-only reconciliation of an EVENT committed by any prior
      * activation of the SAME logical actor. The current provider epoch must
