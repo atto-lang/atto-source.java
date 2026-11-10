@@ -829,9 +829,9 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
-    private record ActorPrefix(Ast.ActorTransport transport, boolean serial) {
+    private record ActorPrefix(Ast.ActorTransport transport, boolean serial, Ast.ActorRole role) {
         private static final ActorPrefix DEFAULT =
-                new ActorPrefix(Ast.ActorTransport.GENERIC, false);
+                new ActorPrefix(Ast.ActorTransport.GENERIC, false, Ast.ActorRole.GENERAL);
     }
 
     /**
@@ -842,11 +842,17 @@ public final class Parser {
     private ActorPrefix parseActorPrefix() {
         boolean serial = false;
         Ast.ActorTransport transport = Ast.ActorTransport.GENERIC;
+        Ast.ActorRole role = Ast.ActorRole.GENERAL;
         boolean recognized = false;
         for (;;) {
             if (matchContextualIdentifier("serial")) {
                 if (serial) throw error(previous(), "duplicate serial actor modifier");
                 serial = true;
+                recognized = true;
+            } else if (matchContextualIdentifier("neuron")) {
+                if (role == Ast.ActorRole.NEURON)
+                    throw error(previous(), "duplicate neuron actor modifier");
+                role = Ast.ActorRole.NEURON;
                 recognized = true;
             } else if (matchContextualIdentifier("http")) {
                 if (transport != Ast.ActorTransport.GENERIC)
@@ -867,8 +873,10 @@ public final class Parser {
             } else break;
         }
         if (recognized && !check(ACTOR) && !check(ISOACTOR))
-            throw error(peek(), "serial/http/tcp/websocket modifiers require an actor declaration");
-        return new ActorPrefix(transport, serial);
+            throw error(peek(), "serial/neuron/http/tcp/websocket modifiers require an actor declaration");
+        if (role == Ast.ActorRole.NEURON && transport != Ast.ActorTransport.GENERIC)
+            throw error(peek(), "neuron actor cannot combine with http/tcp/websocket transport");
+        return new ActorPrefix(transport, serial, role);
     }
 
     private Ast.ClassDecl parseDefinedActorClass(
@@ -879,6 +887,8 @@ public final class Parser {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
+        if (prefix.role() == Ast.ActorRole.NEURON && actorToken.type() != ACTOR)
+            throw error(actorToken, "neuron actor v0 requires 'actor', not 'isoactor'");
         if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
                 || modifiers.isAbstract) {
@@ -1229,7 +1239,8 @@ public final class Parser {
         }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency,
+                        messageConcurrency, prefix.role()));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

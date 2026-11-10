@@ -1336,8 +1336,67 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Scalar neuron v0 is a typed actor ABI, not synthetic mailbox routing or
+     * automatic differentiation. Require both hooks before guest lowering.
+     */
+    private static void checkNeuronV0Contract(Ast.ClassDecl klass) {
+        if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "neuron actor '" + klass.name() + "' v0 supports only nongeneric, noninherited scalar actors");
+        }
+        java.util.List<Ast.MethodDecl> forwards = klass.methods().stream()
+                .filter(method -> method.name().equals("forward")).toList();
+        if (forwards.size() != 1) {
+            throw new IllegalArgumentException(
+                    "neuron actor '" + klass.name() + "' requires exactly one forward(float): float method");
+        }
+        Ast.MethodDecl forward = forwards.getFirst();
+        if (forward.visibility() != Ast.Visibility.PUBLIC || forward.isStatic()
+                || forward.isAbstract() || forward.async() || forward.suspends()
+                || forward.structural() || !forward.genericParameters().isEmpty()
+                || !forward.effects().isEmpty() || forward.arity() != 1
+                || !forward.parameters().getFirst().type().equals(Ast.TypeRef.simple("float"))
+                || !forward.returnType().equals(Ast.TypeRef.simple("float"))
+                || (forward.explicitReceiverType() != null
+                    && forward.explicitReceiverType().isBorrow()
+                    && forward.explicitReceiverType().name().equals("$borrow_mut$"))) {
+            throw new IllegalArgumentException(
+                    "neuron actor '" + klass.name() + "' forward must be public, synchronous, "
+                    + "nongeneric forward(float): float with a readonly receiver");
+        }
+        java.util.List<Ast.MethodDecl> receives = klass.methods().stream()
+                .filter(method -> method.name().equals("receive")).toList();
+        Ast.TypeRef incoming = new Ast.TypeRef(
+                "ActorMail", List.of(Ast.TypeRef.simple("float")), false);
+        if (receives.size() != 1) {
+            throw new IllegalArgumentException(
+                    "neuron actor '" + klass.name() + "' requires exactly one receive(ActorMail<float>): void");
+        }
+        Ast.MethodDecl receive = receives.getFirst();
+        if (receive.isStatic() || receive.isAbstract() || receive.async()
+                || receive.suspends() || receive.structural()
+                || !receive.genericParameters().isEmpty() || !receive.effects().isEmpty()
+                || receive.arity() != 1
+                || !receive.parameters().getFirst().type().equals(incoming)
+                || !receive.returnType().equals(Ast.TypeRef.simple("void"))) {
+            throw new IllegalArgumentException(
+                    "neuron actor '" + klass.name()
+                    + "' receive must be synchronous receive(ActorMail<float>): void");
+        }
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Ast.ActorConcurrency concurrency = klass.actorConcurrency();
+        if (concurrency.role() == Ast.ActorRole.NEURON) {
+            if (klass.actorKind() == Ast.ActorKind.NONE
+                    || concurrency.transport() != Ast.ActorTransport.GENERIC
+                    || concurrency.requestConcurrency() != 1 || concurrency.messageConcurrency() != 1) {
+                throw new IllegalArgumentException(
+                        "neuron actor requires generic transport and serial mailbox admission");
+            }
+            checkNeuronV0Contract(klass);
+        }
         if (klass.actorKind() == Ast.ActorKind.NONE
                 && concurrency.transport() != Ast.ActorTransport.GENERIC) {
             throw new IllegalArgumentException("only actors may declare a transport concurrency policy");

@@ -1,0 +1,35 @@
+// Candidate .atto guest execution: one physical actor hosts one scalar neuron.
+// No automatic differentiation or train-step commit is claimed.
+define neuron actor LinearNeuron as
+  let float weight;
+  let float bias;
+
+  on_start(): void {
+    self.weight = 2.0;
+    self.bias = 1.0;
+    return;
+  }
+
+  pub forward(float input): float {
+    return self.weight * input + self.bias;
+  }
+
+  receive(ActorMail<float> mail): void {
+    self.send(self.forward(mail.value));
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val neuron = spawn LinearNeuron();
+  await neuron.get_ready();
+  neuron.send(3.0);
+  val output = (await neuron.outputs.next()).value.unwrap();
+  if output.value != 7.0; do
+    rt fail("neuron forward result mismatch");
+  fi
+  stdio.stdout.write("NEURON-V0-PASS");
+  await neuron.get_done();
+  return;
+}

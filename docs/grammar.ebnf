@@ -58,6 +58,12 @@ actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
+(* The `neuron` role is a contextual actor specialization, not a transport.
+   Scalar v0 type checking requires public forward(float):float and a
+   receive(ActorMail<float>):void handler. Training is not implicitly admitted. *)
+neuron_actor_decl = "define" visibility [ "serial" ] "neuron" "actor" IDENT
+                    "as" { actor_member } "end" ;
+
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
 actor_member    = field_decl

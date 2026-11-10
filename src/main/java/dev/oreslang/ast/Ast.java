@@ -465,19 +465,30 @@ public final class Ast {
 
     /** Connection-oriented actors have two distinct admission dimensions. */
     public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
+    /** Computational actor role is distinct from transport and actor isolation. */
+    public enum ActorRole { GENERAL, NEURON }
 
     /**
-     * Declarative admission limits are VM policy, NOT mutable actor fields.
-     * The legacy actor scheduler currently implements precisely (1,1).
+     * Declarative actor admission metadata belongs to the compiler, NOT actor fields.
+     * Existing three-argument constructor preserves the legacy serial actor ABI.
      */
     public record ActorConcurrency(
-            ActorTransport transport, int requestConcurrency, int messageConcurrency) {
+            ActorTransport transport, int requestConcurrency, int messageConcurrency,
+            ActorRole role) {
         public ActorConcurrency {
             java.util.Objects.requireNonNull(transport, "actor transport");
+            java.util.Objects.requireNonNull(role, "actor role");
             if (requestConcurrency < 1 || messageConcurrency < 1) {
                 throw new IllegalArgumentException(
                         "actor concurrency limits must be positive");
             }
+            if (role == ActorRole.NEURON && transport != ActorTransport.GENERIC) {
+                throw new IllegalArgumentException("neuron actor cannot use connection transport");
+            }
+        }
+        public ActorConcurrency(ActorTransport transport, int requestConcurrency,
+                                int messageConcurrency) {
+            this(transport, requestConcurrency, messageConcurrency, ActorRole.GENERAL);
         }
         public static ActorConcurrency serial(ActorTransport transport) {
             return new ActorConcurrency(transport, 1, 1);
@@ -498,8 +509,10 @@ public final class Ast {
             ActorConcurrency actorConcurrency) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
-            if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
-                throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
+            if (actorKind == ActorKind.NONE
+                    && (actorConcurrency.transport() != ActorTransport.GENERIC
+                        || actorConcurrency.role() != ActorRole.GENERAL))
+                throw new IllegalArgumentException("ordinary classes cannot carry actor transport or neuron role");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
