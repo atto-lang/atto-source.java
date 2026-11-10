@@ -91,7 +91,10 @@ public final class SqliteDurableActorStore implements DurableActorStore, AutoClo
         Objects.requireNonNull(file, "file");
         Connection c = DriverManager.getConnection("jdbc:sqlite:" + file.toAbsolutePath());
         try {
-            try (Statement s = c.createStatement()) { s.execute("PRAGMA journal_mode=WAL"); }
+            try (Statement s = c.createStatement()) {
+                s.execute("PRAGMA journal_mode=WAL");
+                s.execute("PRAGMA synchronous=FULL");
+            }
             return new SqliteDurableActorStore(c, true);
         } catch (RuntimeException | SQLException failure) {
             try { c.close(); } catch (SQLException closeFailure) { failure.addSuppressed(closeFailure); }
