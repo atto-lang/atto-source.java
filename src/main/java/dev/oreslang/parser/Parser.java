@@ -505,6 +505,12 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // Runtime-only actor hooks use an explicit contextual ingress marker.
+        // This marker is separate from public method visibility and does not
+        // grant a guest callable or executable actor permission.
+        if (isContextualIdentifier("external")) {
+            return parseActorIngressMethod(annotations, modifiers);
+        }
         // Allow 'pub mtd (Actor self) method(...)' without a redundant
         // 'define'. Bare 'mtd' stays contextual, not a new global keyword.
         if (modifiers.visibilitySeen && isExternalActorMethodHead()) {
@@ -672,8 +678,26 @@ public final class Parser {
                         && tokens.get(current + 2).type() == LPAREN));
     }
 
+    private Ast.ExternalActorMethodDecl parseActorIngressMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "actor ingress declarations");
+        if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+            throw error(peek(), "external mtd is a private runtime ingress, not a public method");
+        }
+        consumeContextualIdentifier("external", "expected runtime ingress marker");
+        if (!isExternalActorMethodHead()) {
+            throw error(peek(), "external must be followed by 'mtd (Actor receiver) init/receive'");
+        }
+        return parseExternalActorMethod(annotations, modifiers, true);
+    }
+
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
             List<Ast.Annotation> annotations, Modifiers modifiers) {
+        return parseExternalActorMethod(annotations, modifiers, false);
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers, boolean runtimeIngress) {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
@@ -715,7 +739,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body);
+                modifiers.visibility, parameters, returns, body, runtimeIngress);
     }
 
     private Ast.ClassDecl parseClass(
