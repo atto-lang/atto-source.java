@@ -29,7 +29,7 @@ oracle() {
 self_test() {
   local t
   t="$(mktemp -d)"
-  trap 'rm -rf -- "$t"' EXIT
+  trap 'rm -rf -- "$t"' RETURN
   : > "$t/out"
   local entry="$t/missing-helper.atto"
   printf '%s\n' "$entry:1:1: error: import foo does not resolve to a file" > "$t/err"
@@ -98,6 +98,9 @@ done
 
 {
   printf 'status=NOT_EXECUTED\n'
+  printf 'github_run_id=%s\n' "$GITHUB_RUN_ID"
+  printf 'github_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+  printf 'github_job=%s\n' "$GITHUB_JOB"
   printf 'policy_head=%s\n' "$ATTO_EXPECTED_POLICY_SHA"
   printf 'policy_tree=%s\n' "$(git -C "$policy" rev-parse 'HEAD^{tree}')"
   printf 'compiler_head=%s\n' "$ATTO_EXPECTED_COMPILER_SHA"
@@ -116,7 +119,7 @@ test -s "$receipt/fixture-sources.sha256"
 if ! env -u ORESLANG_PATH timeout --signal=TERM --kill-after=5s 600s \
     mvn -B -ntp -q -f "$compiler/pom.xml" -DskipTests clean package \
     > "$receipt/compiler-build.stdout" 2> "$receipt/compiler-build.stderr"; then
-  printf 'status=BUILD_FAILED\n' >> "$receipt/identity.txt"
+  sed -i 's/^status=NOT_EXECUTED$/status=BUILD_FAILED/' "$receipt/identity.txt"
   fail "private compiler build failed; no guest proof"
 fi
 find "$compiler/target" -maxdepth 1 -type f -name '*.jar' -print0 |
@@ -143,7 +146,7 @@ test -s "$receipt/runtime-dependencies.sha256"
 runtime_cp="$compiler/target/classes:$(cat "$receipt/classpath.txt")"
 java -version > "$receipt/java.stdout" 2> "$receipt/java.stderr"
 printf 'case\tphase\texit\tverdict\n' > "$receipt/cases.tsv"
-printf 'status=GUEST_FAILED\n' >> "$receipt/identity.txt"
+sed -i 's/^status=NOT_EXECUTED$/status=GUEST_FAILED/' "$receipt/identity.txt"
 
 invoke() {
   local label="$1" rc=0
@@ -194,5 +197,6 @@ negative missing-import "$demo/native-multifile/negative/missing-helper.atto"
 negative ambiguous-import "$demo/native-multifile/negative/ambiguous-import.atto"
 negative ownership-conflict "$demo/native-multifile/negative/ownership-conflict.atto"
 negative aliased-module-leak "$demo/native-multifile/module/alias-leak.atto"
-printf 'status=PASS\npositive_cases=3\nnegative_cases=4\n' >> "$receipt/identity.txt"
+sed -i 's/^status=GUEST_FAILED$/status=PASS/' "$receipt/identity.txt"
+printf 'positive_cases=3\nnegative_cases=4\n' >> "$receipt/identity.txt"
 echo "ATTO_OWNED_GUEST_PASS source=$ATTO_EXPECTED_COMPILER_SHA demo=$ATTO_EXPECTED_DEMO_SHA cases=7 (guest JIT, not AOT)"
