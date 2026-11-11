@@ -15,6 +15,7 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
                 | "*" "as" IDENT ;
 
 top_level_item  = annotated_module_decl
+                | declared_actor_decl
                 | contract_decl
                 | actor_decl
                 | actor_callable_decl
@@ -30,7 +31,8 @@ top_level_item  = annotated_module_decl
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
                         [ "as" ] { module_member } "end" ;
 
-module_member   = contract_decl
+module_member   = declared_actor_decl
+                | contract_decl
                 | actor_decl
                 | actor_callable_decl
                 | external_actor_method_decl
@@ -68,6 +70,12 @@ external_actor_method_decl
 (* For nominal actor receiver methods named init or receive, the explicit
    external marker is mandatory. init: private () -> void; receive:
    private (ActorMail<T>) -> void. Both are compiler-owned ingress only. *)
+
+(* Canonical namespace actor declaration: static identity only, non-executable.
+   The implements list is retained, not yet typechecked as trait conformance. *)
+declared_actor_decl = "declare" visibility "actor" IDENT
+                      [ ( "implements" | "impl" ) type_ref
+                        { "," type_ref } ] ";" ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]

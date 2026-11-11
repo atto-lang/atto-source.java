@@ -242,6 +242,47 @@ final class ActorExternalEntrypointTest {
                 ex.getMessage());
     }
 
+    @Test void declarePubActorHasNominalIdentityAndNoExecutableAuthority() {
+        Ast.Program parsed = Parser.parse(
+                "namespace foo; declare pub actor Foo implements ActorXYZ;\n"
+                        + "external mtd (Foo f) init(): void { return; }\n"
+                        + "external mtd (Foo f) receive(ActorMail<int> mail): void { return; }");
+        var actor = assertInstanceOf(Ast.StandaloneActorDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        assertTrue(actor.declared());
+        assertEquals("Foo", actor.name());
+        assertEquals("$declared$Foo", actor.receiverName());
+        assertEquals(Ast.Visibility.PUBLIC, actor.visibility());
+        assertEquals("ActorXYZ", actor.implementsTypes().getFirst().name());
+        assertEquals(2, ActorReceiverBinder.bind(parsed).size());
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(ex.getMessage().contains("STANDALONE_ACTOR_LOWERING_UNSUPPORTED"),
+                ex.getMessage());
+    }
+
+    @Test void declaredActorCanBindNamespaceEntrypointFromSeparateSourceUnit() {
+        Map<String, Ast.Program> units = Map.of(
+                "actor.atto", Parser.parse("namespace foo; declare pub actor Foo;"),
+                "entry.atto", Parser.parse("namespace foo; external mtd (Foo f) init(): void { return; }"));
+        var bindings = ActorReceiverBinder.bindSourceSet("test-package", units);
+        assertEquals(1, bindings.size());
+        assertEquals("actor.atto", bindings.values().iterator().next().actorUnit());
+    }
+
+    @Test void declareActorRejectsLegacyAliasBodyGenericAndReversedModifiers() {
+        for (String source : new String[]{
+                "namespace foo; pub declare actor Foo;",
+                "namespace foo; declare pub actor Foo as f;",
+                "namespace foo; declare pub actor Foo<T>;",
+                "namespace foo; declare pub actor Foo as end",
+                "namespace foo; declare pub actor Foo extends Base;"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source),
+                    "declaration should fail closed: " + source);
+        }
+    }
+
     @Test void crossFileNamespaceRetainsSourceProvenanceAndMarker() throws IOException {
         Path root = Path.of("contracts", "actor-external-entrypoints-v1");
         var sources = Map.of(

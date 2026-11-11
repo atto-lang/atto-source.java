@@ -136,7 +136,11 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (isContextualIdentifier("declare")) {
-                rootForwards.add(parseForwardType(annotations, modifiers));
+                if (isDeclaredActorHead()) {
+                    rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                } else {
+                    rootForwards.add(parseForwardType(annotations, modifiers));
+                }
                 continue;
             }
 
@@ -419,6 +423,9 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (isContextualIdentifier("declare")) {
+            if (isDeclaredActorHead()) {
+                return parseDeclaredActor(annotations, modifiers);
+            }
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
             return null;
@@ -1772,6 +1779,46 @@ public final class Parser {
             throw error(name, "'_' cannot be used as a declared type name");
         }
         return name.lexeme();
+    }
+
+    /**
+     * A declared namespace actor is a nominal identity, not a forward type,
+     * class instance, or executable actor. Visibility must follow 'declare'.
+     */
+    private boolean isDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int index = current + 1;
+        if (index < tokens.size()
+                && (tokens.get(index).type() == PUB
+                    || tokens.get(index).type() == PRIVATE)) {
+            index++;
+        }
+        return index < tokens.size() && tokens.get(index).type() == ACTOR;
+    }
+
+    private Ast.StandaloneActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        Token start = advance(); // contextual declare
+        if (!annotations.isEmpty() || before.visibilitySeen || before.async || before.suspends
+                || before.generator || before.structural || before.nonLexical || before.trapped
+                || before.isStatic || before.isAbstract || before.shared || before.untrusted) {
+            throw error(start, "actor declarations must start with 'declare'; visibility follows it");
+        }
+        Modifiers after = parseModifiers();
+        validateOnlyVisibilityModifiers(after, "declared actors");
+        consume(ACTOR, "declare actor requires an actor nominal type");
+        String name = consumeTypeDeclarationName("expected declared actor name");
+        if (check(LT)) {
+            throw error(peek(), "generic declared actor requires checked generic actor lowering");
+        }
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL)
+                ? parseTypeRefList() : List.of();
+        // An interface list is retained as untrusted AST data for the later
+        // conformance checker. Runtime / trait conformance is NOT established.
+        consume(SEMICOLON, "declare actor must end in ';' and cannot define a body or receiver alias");
+        return new Ast.StandaloneActorDecl(
+                name, "$declared$" + name, after.visibility,
+                Ast.ActorKind.SHARED, interfaces, true);
     }
 
     private ForwardType parseForwardType(List<Ast.Annotation> annotations, Modifiers before) {

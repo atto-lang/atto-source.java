@@ -4,7 +4,7 @@ AttoLang namespace-actor entrypoint spelling:
 
 ```atto
 namespace foo;
-pub define actor Foo as f;
+declare pub actor Foo implements ActorXYZ;
 external mtd (Foo f) init(): void { return; }
 external mtd (Foo f) receive(ActorMail<int> mail): void { return; }
 pub mtd (Foo f) bar(): void { return; }
@@ -59,3 +59,11 @@ be redefined in another compilation unit and `external receive` cannot be
 overloaded based on different `ActorMail<T>` payload types. Both use the
 original multi-source namespace binder, not a source-text regex. These tests
 must actually run before being counted as evidence.
+
+The canonical actor form is `declare pub actor Foo;` (optionally
+`implements ActorXYZ`). This is distinct from the `declare` forward-type
+syntax and from the legacy `pub define actor Foo as f;` compatibility form.
+Its AST uses a non-sourceable internal receiver sentinel to preserve nominal
+binding without introducing a guest-visible actor variable. Trait names remain
+unresolved syntax: no conformance proof, state authority, dispatch, or runtime
+actor instance is created until the executable backend implements those gates.
