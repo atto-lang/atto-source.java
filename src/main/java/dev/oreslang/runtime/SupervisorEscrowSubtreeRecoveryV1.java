@@ -85,6 +85,30 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         return nodeId;
     }
 
+    /** Must be invoked before the child is visible to any runtime registry.
+     * The bridge's own publication monitor serializes this step against
+     * supervisor failure, so CONTROL cannot observe a half-published child. */
+    void registerInheritedChildFromRuntime(
+            long nodeId, ActorRuntime.ActorRef<?> child) {
+        Objects.requireNonNull(child, "child");
+        synchronized (lock) {
+            if (controlFault.get() != null || refs.containsKey(nodeId)) {
+                throw new IllegalStateException("CONTROL child registration unavailable");
+            }
+            refs.put(nodeId, child);
+        }
+    }
+
+    /** Reservation was never published; no terminal notification is allowed. */
+    void rollbackInheritedChildFromRuntime(
+            long nodeId, ActorRuntime.ActorRef<?> child) {
+        synchronized (lock) {
+            if (refs.get(nodeId) != child || refs.remove(nodeId) != child) {
+                throw new IllegalStateException("CONTROL child rollback ref mismatch");
+            }
+        }
+    }
+
     /** Called only from the already-fenced runtime failure publication path. */
     void failedFromRuntime(long failedNode) {
         boolean submit = false;
