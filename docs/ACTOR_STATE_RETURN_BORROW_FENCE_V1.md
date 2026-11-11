@@ -73,10 +73,18 @@ Java safety test or a passing one.
   adapter after all consumers migrate to scoped CONTROL.
 - Independent review, verified source-org CI/billing/runner settings,
   and cross-backend AOT (LLVM, .NET NativeAOT, Wasm, Forge) evidence.
-- Real negative mutation test: deliberately disable the actor-self
-  return gate in a disposable, authorized runner worktree, require the
-  specific five negative tests to fail, restore the exact source tree,
-  and preserve separate mutation receipts.
+- **Authored automated negative mutation gate** (not yet executed):
+  after the 78 positive JUnit cases pass, the source-org workflow
+  invokes `scripts/ci/actor_state_return_borrow_negative_mutation.py`.
+  It removes the actor-self return guard in the **temporary authorized
+  runner checkout**, reruns the direct-field escape JUnit method,
+  requires one exact assertion failure (not an unrelated compilation
+  error), restores pristine source and original passing Surefire XML
+  in `finally`, and uploads separate mutation XML/JSON receipts.
+  No private source crosses organization boundaries. Acceptance
+  requires a real runner, nonzero executed steps, and the receipt.
+  Subsequent work should extend the mutation matrix to all five
+  negative projections and actual generated guest paths.
 
 ## Alternative organization testing is still authorization-gated
 
