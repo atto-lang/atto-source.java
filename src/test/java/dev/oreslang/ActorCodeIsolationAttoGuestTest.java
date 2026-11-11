@@ -87,4 +87,15 @@ final class ActorCodeIsolationAttoGuestTest {
                         || rejected.getMessage().contains("actor-boundary"),
                 rejected::getMessage);
     }
+
+    @Test
+    void parentOrSupervisorCannotReachPrivateFieldsViaActorRef() throws Exception {
+        String source = Files.readString(
+                fixture("forbidden-parent-child-object-read.atto"));
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(rejected.getMessage().contains("unknown ActorRef member 'total'"),
+                rejected::getMessage);
+    }
 }
