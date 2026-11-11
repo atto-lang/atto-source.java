@@ -5,6 +5,7 @@ on:
       - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorCarrierQuiescencePollingTest.java"
       - ".github/workflows/http-actor-dispatch-handoff.yml"
 permissions:
   contents: read
@@ -36,7 +37,7 @@ jobs:
           cache: maven
       - name: Execute native HTTP host and actor handoff regressions
         run: |
-          mvn -B -ntp -Dtest=NativeHttpTest test
+          mvn -B -ntp -Dtest=NativeHttpTest,ActorCarrierQuiescencePollingTest test
       - name: Print Surefire result inventory (never synthesize success)
         if: always()
         run: |
