@@ -481,6 +481,35 @@ final class VirtualActorTerminalControlCurrentMainTest {
     }
 
     @Test
+    void guestActorCannotInstallSupervisorTerminalControlHandler() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            CountDownLatch attempted = new CountDownLatch(1);
+            AtomicReference<Throwable> rejected = new AtomicReference<>();
+            var guest = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    factory -> (message, context) -> {
+                        try {
+                            group.installVirtualActorTerminalHandler(
+                                    notice -> CompletableFuture.completedFuture(null));
+                        } catch (Throwable failure) {
+                            rejected.set(failure);
+                        } finally {
+                            attempted.countDown();
+                        }
+                    });
+            guest.getReady().get(5, TimeUnit.SECONDS);
+            guest.send("unauthorized");
+            assertTrue(attempted.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, rejected.get(),
+                    "guest code must never install CONTROL policy authority");
+            guest.stop();
+            guest.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
+    @Test
     void installingTerminalHandlerTwiceIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
