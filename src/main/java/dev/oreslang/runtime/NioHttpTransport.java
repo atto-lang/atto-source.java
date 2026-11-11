@@ -83,6 +83,18 @@ final class NioHttpTransport {
                         reject(ctx, 400); return;
                     }
                     try {
+                        // Host ambiguity must be rejected before creating a guest exchange.
+                        var hosts = request.headers().getAll(HttpHeaderNames.HOST);
+                        if (request.protocolVersion().equals(HttpVersion.HTTP_1_1)
+                                && (hosts.size() != 1 || hosts.get(0).isBlank()
+                                    || hosts.get(0).indexOf(',') >= 0)) {
+                            reject(ctx, 400); return;
+                        }
+                        for (var field : request.headers()) {
+                            if (field.getKey().length() + field.getValue().length() > 8192) {
+                                reject(ctx, 400); return;
+                            }
+                        }
                         long length = HttpUtil.getContentLength(request, -1);
                         if (length > bodyLimit) { reject(ctx, 413); return; }
                         current = new Exchange(ctx, request);
