@@ -24,8 +24,8 @@ grep -Eq "java-version: ['\"]25['\"]" "$workflow" \
 if grep -Eq 'continue-on-error:|if:[[:space:]]*false|-DskipTests|-Dmaven.test.skip' "$workflow"; then
   fail 'workflow contains an obvious test skip or soft-fail'
 fi
-[[ "$(grep -Ec '^[[:space:]]*@Test[[:space:]]*$' "$test_src")" -eq 5 ]] \
-  || fail 'expected five JUnit regression methods'
+[[ "$(grep -Ec '^[[:space:]]*@Test[[:space:]]*$' "$test_src")" -eq 6 ]] \
+  || fail 'expected six JUnit regression methods'
 grep -Fq 'private static final Object TRANSFER_COORDINATOR' "$lane_src" \
   || fail 'two-lane transfer arbitration missing'
 grep -Fq 'Slot reserved = root.required(slot.child, slot.generation)' "$lane_src" \
@@ -40,13 +40,37 @@ mvn -B -ntp -Dores.runtime.carriers=native \
   -DfailIfNoTests=true test
 
 [[ -s "$report" && ! -L "$report" ]] || fail 'actual Surefire test report missing'
-# A method may compile but never run if the selector silently drifts.
-head -n 3 "$report" | grep -Eq 'tests="5"' \
-  || fail 'Surefire did not execute exactly five methods'
-head -n 3 "$report" | grep -Eq 'errors="0"' \
-  || fail 'Surefire errors were nonzero'
-head -n 3 "$report" | grep -Eq 'failures="0"' \
-  || fail 'Surefire failures were nonzero'
-head -n 3 "$report" | grep -Eq 'skipped="0"' \
-  || fail 'some JUnit cases were skipped'
-printf 'SUPERVISOR_CONTROL_LANE_JUNIT_PASS tests=5\n'
+# Parse actual testcase nodes rather than trusting the testsuite summary.
+# Exact expected methods prevent a false green from a selected empty/other suite.
+python3 -I -B - "$report" <<'PY'
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+path = Path(sys.argv[1])
+root = ET.parse(path).getroot()
+expected = {
+    "missingSecondRootReservationRejectsWholeTransferWithoutPartialMove",
+    "staleOrOccupiedRootReservationNeverConsumesParentNotice",
+    "transferredInFlightNoticeCannotBeDroppedByParentAck",
+    "opposingTransfersDoNotDeadlockAndRetainEveryNotice",
+    "staleAndForeignSettlementLeasesCannotAckANewerDelivery",
+    "deliveryTicketOverflowDoesNotDequeueOrLoseTheControlNotice",
+}
+if root.tag != "testsuite":
+    raise SystemExit("SUPERVISOR_CONTROL_LANE_GATE_REJECTED: wrong XML root")
+for field, count in (
+    ("tests", len(expected)), ("errors", 0), ("failures", 0), ("skipped", 0)
+):
+    if root.get(field) != str(count):
+        raise SystemExit("SUPERVISOR_CONTROL_LANE_GATE_REJECTED: invalid " + field)
+cases = root.findall("testcase")
+names = [case.get("name") for case in cases]
+if len(names) != len(expected) or set(names) != expected:
+    raise SystemExit("SUPERVISOR_CONTROL_LANE_GATE_REJECTED: missing/duplicate JUnit method")
+if any(case.find("failure") is not None or
+       case.find("error") is not None or
+       case.find("skipped") is not None for case in cases):
+    raise SystemExit("SUPERVISOR_CONTROL_LANE_GATE_REJECTED: skipped or failed JUnit method")
+print("SUPERVISOR_CONTROL_LANE_JUNIT_PASS tests=6")
+PY
