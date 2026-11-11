@@ -207,6 +207,18 @@ public final class SqliteCommandTransactionStoreTestMain {
                 }
                 expectSqlFailure(()->commands.verify(candidate),"CORRUPT_COMMAND_EVENTS");
                 expectSqlFailure(()->commands.loadVerified(rollbackId,1),"CORRUPT_COMMAND_EVENTS");
+                expectSqlFailure(()->legacy.commit(List.of(new Write(rollbackId,
+                        "unsafe-checkpoint",1,2,1,Kind.SNAPSHOT,enc(15)))),
+                        "CORRUPT_COMMAND_EVENTS");
+                try(Connection db=DriverManager.getConnection("jdbc:sqlite:"+file);
+                    Statement s=db.createStatement()) {
+                    try(var q=s.executeQuery(
+                        "SELECT snapshot_version FROM state " +
+                        "WHERE actor='account-rollback' AND slot='ledger'")) {
+                        check(q.next() && q.getLong(1)==0,
+                              "corrupt command journal was laundered by checkpoint");
+                    }
+                }
             }
             System.out.println("PASS host SQLite atomic multi-event / epoch retry / compaction / trigger rollback");
         } finally {
