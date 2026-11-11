@@ -244,7 +244,7 @@ final class AotClassProxyLanguageTest {
     void rejectsTargetIdentityEscapeViaDirectAndNestedReturnTypes() {
         Ast.TypeRef target = Ast.TypeRef.simple("Foo");
         Ast.TypeRef nested = new Ast.TypeRef("Option", List.of(target), false);
-        for (Ast.TypeRef result : List.of(target, nested)) {
+        for (Ast.TypeRef result : List.of(target, nested, Ast.TypeRef.simple("self"))) {
             Ast.MethodDecl method = proxySurfaceMethod(result, List.of(), List.of());
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> dev.oreslang.ast.StaticProxySynthesis.expand(
@@ -263,12 +263,16 @@ final class AotClassProxyLanguageTest {
     void rejectsCallableMethodValuesBeforeForwarding() {
         Ast.TypeRef fnc = Ast.TypeRef.functionType(
                 List.of(Ast.TypeRef.simple("int")), Ast.TypeRef.simple("int"));
-        Ast.MethodDecl method = proxySurfaceMethod(Ast.TypeRef.simple("void"),
-                List.of(new Ast.Param(fnc, "callback")), List.of());
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
-                        proxySurfaceProgram(List.of(method)), Set.of("Foo")));
-        assertTrue(error.getMessage().contains("reborrowing"), error.getMessage());
+        Ast.TypeRef alias = new Ast.TypeRef("Function",
+                List.of(Ast.TypeRef.simple("int"), Ast.TypeRef.simple("int")), false);
+        for (Ast.TypeRef callable : List.of(fnc, alias)) {
+            Ast.MethodDecl method = proxySurfaceMethod(Ast.TypeRef.simple("void"),
+                    List.of(new Ast.Param(callable, "callback")), List.of());
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("reborrowing"), error.getMessage());
+        }
     }
 
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
