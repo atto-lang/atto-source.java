@@ -6325,6 +6325,51 @@ public final class ActorRuntime implements AutoCloseable {
         return cell.drainAcceptedMessages();
     }
 
+    /**
+     * Host-only, point-in-time HTTP carrier quiescence observation.
+     * This is NOT an actor termination receipt or a future admission seal:
+     * NativeHttp must stop this listener's dispatches and retain its own
+     * accepted-exchange/worker tracking before sampling. The observation
+     * cannot be made by a guest actor or for a foreign-runtime ActorRef.
+     *
+     * The per-actor lifecycle lock makes the mailbox watermark and physical
+     * TurnExecutor exit check atomic with the actor scheduler. It never runs
+     * guest code, parks an actor, or publishes callbacks under that lock.
+     */
+    boolean httpCarrierQuiescent(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("observe HTTP actor carrier quiescence");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        if (currentActor.get() != null) {
+            throw new IllegalStateException(
+                    "HTTP carrier quiescence can only be inspected from host context");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) {
+            // ActorCell leaves the registry only after physical finalization.
+            return true;
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.finalized) return true;
+            // A stopped actor may still own source cleanup or child leases
+            // even when no guest turn is currently executing.
+            if (cell.stopped.get()) return false;
+            return !cell.carrierActive
+                    && cell.carrierOwnerThread == null
+                    && cell.activeTurns == 0
+                    && !cell.scheduled.get()
+                    && !cell.hasQueuedWorkLocked()
+                    && !cell.sourceReceiveSuspended
+                    && cell.activeAsyncSendAdmissions == 0
+                    && cell.pendingOperations.isEmpty()
+                    && cell.lastProcessedUserMessageSequence
+                            >= cell.nextUserMessageSequence - 1L;
+        }
+    }
+
     /** Graceful stop seals new mail, drains prior admissions, then terminates.
      * Never blocks a carrier: done is resolved after physical finalization. */
     public OresFuture<Void> gracefulStop(ActorRef<?> ref) {
