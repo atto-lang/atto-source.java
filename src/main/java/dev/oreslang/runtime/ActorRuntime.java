@@ -283,6 +283,85 @@ public final class ActorRuntime implements AutoCloseable {
         return proof;
     }
 
+    /**
+     * Host-only witness for one exact, physically admitted shared actor turn.
+     *
+     * Not an actor reference, not a state-loan token and not transferable into
+     * guest mail. In particular the saved context object is compared by
+     * identity so a continuation or a later mailbox turn cannot reuse this
+     * witness merely because its actor UUID is unchanged.
+     */
+    static final class NeuronActorTurnProof {
+        private final ActorRuntime runtime;
+        private final ActorRef<?> actor;
+        private final Object executionDomain;
+        private final ActorExecutionContext turnContext;
+
+        private NeuronActorTurnProof(ActorRuntime runtime, ActorRef<?> actor,
+                Object executionDomain, ActorExecutionContext turnContext) {
+            this.runtime = runtime;
+            this.actor = actor;
+            this.executionDomain = executionDomain;
+            this.turnContext = turnContext;
+        }
+
+        ActorRuntime runtime() { return runtime; }
+        ActorId actorId() { return actor.id(); }
+
+        boolean validOnCurrentTurn() {
+            if (CURRENT_ACTOR_EXECUTION.get() != turnContext
+                    || turnContext.kind() != ActorKind.SHARED
+                    || turnContext.runtime() != runtime
+                    || !turnContext.actorId().equals(actor.id())
+                    || turnContext.executionDomain() != executionDomain) return false;
+            ActorCell<?> cell = runtime.actors.get(actor.id());
+            if (cell == null || cell.ref != actor
+                    || cell.executionDomain != executionDomain
+                    || runtime.closed.get()
+                    || runtime.currentActor.get() != cell) return false;
+            synchronized (cell.lifecycleLock) {
+                return !cell.stopped.get() && !cell.finalized
+                        && !cell.forceKillFenced && !runtime.closed.get()
+                        && cell.activeTurns == 1 && cell.carrierActive
+                        && cell.carrierOwnerThread == Thread.currentThread()
+                        && cell.scheduled.get();
+            }
+        }
+
+        /** Identity-only logical handler key, verified again on every access. */
+        Object checkedHandlerIdentity() {
+            if (!validOnCurrentTurn()) {
+                throw new SecurityException(
+                        "neuron protected state requires an admitted live shared actor turn");
+            }
+            return turnContext;
+        }
+    }
+
+    /**
+     * Only the runtime can mint this proof. Guest source must never accept,
+     * deserialize, or manufacture a matching context. The proof by itself
+     * does not grant access to an actor state region or safe reclamation.
+     */
+    static NeuronActorTurnProof mintNeuronActorTurnProof() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null || current.kind() != ActorKind.SHARED) {
+            throw new SecurityException(
+                    "neuron protected state requires a shared actor turn");
+        }
+        ActorCell<?> cell = current.runtime().currentActor.get();
+        if (cell == null) {
+            throw new SecurityException("neuron proof missing physical ActorCell");
+        }
+        NeuronActorTurnProof proof = new NeuronActorTurnProof(
+                current.runtime(), cell.ref, cell.executionDomain, current);
+        if (!proof.validOnCurrentTurn()) {
+            throw new SecurityException(
+                    "neuron proof requires an admitted physical actor turn");
+        }
+        return proof;
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
