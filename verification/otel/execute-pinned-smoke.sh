@@ -10,6 +10,8 @@ fi
 mode="$1"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$root"
+# Never generate test artifacts inside the pinned, byte-verified source tree.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target/otel/rust-build}"
 pinned=verification/otel/pinned
 guest="$pinned/tests/smoke.ores"
 oracle="$pinned/tools/telemetry-check/Cargo.toml"
