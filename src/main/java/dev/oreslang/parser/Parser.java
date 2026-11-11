@@ -1220,6 +1220,10 @@ public final class Parser {
                 // ordinary user-invokable actor method. The first executable
                 // slice is synchronous; suspend/async awaits require a pinned
                 // teardown continuation and are rejected until implemented.
+                if (teardown.visibility() == Ast.Visibility.PUBLIC) {
+                    throw error(previous(),
+                            "actor tear_down is a runtime-only lifecycle hook and cannot be public");
+                }
                 if (teardown.isStatic() || teardown.async() || teardown.suspends()
                         || teardown.arity() != 0
                         || !teardown.genericParameters().isEmpty()
