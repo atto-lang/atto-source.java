@@ -220,3 +220,41 @@ is not a transparent migration of historical unverified databases.
 The actual Java/JDBC and guest tests remain NOT_EXECUTED as long as
 source-owned Actions jobs have no executed steps. Keep all related
 PRs in DRAFT and preserve source-export restrictions.
+
+
+### 2026-11-10 P0 bounded replay admission (additional hardening)
+
+A successful durable write must not leave a journal that cannot be restored.
+Both `SqlitePersistenceStore.commit` (legacy EVENT) and
+`SqliteCommandTransactionStore.commit` (atomic multi-event) now enforce
+the maximum **10,000 post-snapshot events** and **16 MiB of replay BLOBs**
+BEFORE inserting new events. The `BEGIN IMMEDIATE` transaction serializes
+these quota checks against writers sharing the same SQLite WAL database.
+
+The new `Status.REPLAY_LIMIT_EXCEEDED` is a **definite, nondurable**
+rejection rather than `OUTCOME_UNKNOWN`, because the check occurs before
+the first INSERT. In particular, a full stream does not roll back unrelated
+actors' successful writes in the legacy batch. Snapshot checkpoint writes
+can advance the snapshot barrier, after which the bounded replay suffix
+may resume. Stored historical operation IDs remain retained for dedup.
+
+Neither writer trusts a checkpoint version merely because it appears in the
+state row: the checkpoint must lie within the stream head, its payload and
+schema must be valid and its original durable `ops` snapshot record must
+match the bytes before it is allowed to reset replay accounting.
+
+`SqliteReplayAdmissionTestMain` (included in exact-head strict Java 21
+JDBC CI) now tests the 10,001st event, the 16 MiB boundary, both writer
+APIs, same-batch isolation, snapshot barrier reset, verified
+post-checkpoint recovery and altered checkpoint rejection. These tests
+are **AUTHORED / NOT_EXECUTED** on the source repository because workflow
+jobs continue to fail before the first step.
+
+Independent locally executed Node 22 SQLite count/byte/checkpoint SQL
+checks passed 7/7. A separately authored source-free runner
+[run #42940311766](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42940311766)
+executed 7/7 comparable checks alongside its existing 3 SIGKILL and 4
+checkpoint-integrity canary assertions, with all seven Actions job steps
+successful. Neither result proves Java/JDBC source compilation, exact-head
+source SQLite tests or AttoLang guest code. No cross-org private-source
+copy, release promotion or merge is authorized by this evidence.
