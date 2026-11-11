@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
 public final class NativeHttp implements AutoCloseable {
@@ -198,7 +200,24 @@ public final class NativeHttp implements AutoCloseable {
             created++;
             Worker attached = worker;
             worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
-                for (State state : List.copyOf(attached.requests)) state.abort(500);
+                try {
+                    // One failed socket abort must not strand unrelated
+                    // requests served by the same retired worker.
+                    for (State state : List.copyOf(attached.requests)) {
+                        try { state.abort(500, false); }
+                        catch (RuntimeException abortFailure) {
+                            state.server.failDrain(abortFailure);
+                        }
+                    }
+                } finally {
+                    // Actor DONE follows physical carrier finalization.
+                    // Unlink the listener/worker association at retirement.
+                    for (Server server : List.copyOf(attached.served)) {
+                        server.pooledWorkers.remove(attached);
+                    }
+                    attached.served.clear();
+                    attached.requests.clear();
+                }
             });
             return worker;
         }
@@ -210,6 +229,7 @@ public final class NativeHttp implements AutoCloseable {
         private final class Worker {
             final ActorRuntime.ActorRef<Object> actor;
             final Set<State> requests = ConcurrentHashMap.newKeySet();
+            final Set<Server> served = ConcurrentHashMap.newKeySet();
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
@@ -248,6 +268,11 @@ public final class NativeHttp implements AutoCloseable {
                             if (!denyWorkerDispatch) {
                                 state.poolWorker = worker;
                                 worker.requests.add(state);
+                                // Track ALL previously associated pooled workers
+                                // until listener shutdown witnesses their carrier
+                                // exit, including generations later replaced.
+                                state.server.pooledWorkers.add(worker);
+                                worker.served.add(state.server);
                                 state.readyNanos = state.spawnNanos;
                             }
                         }
