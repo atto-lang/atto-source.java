@@ -87,5 +87,11 @@ final class NeuronStateLayoutV0Test {
                 () -> new NeuronStateLayoutV0("X", java.util.List.of("x", "x")));
         assertThrows(IllegalArgumentException.class,
                 () -> new NeuronStateLayoutV0("X", java.util.List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NeuronStateLayoutV0("X", java.util.List.of("$internal")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NeuronStateLayoutV0("X".repeat(129), java.util.List.of("weight")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NeuronStateLayoutV0("X", java.util.List.of("w".repeat(129))));
     }
 }
