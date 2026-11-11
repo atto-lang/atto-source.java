@@ -1535,12 +1535,29 @@ public final class TypeChecker {
             // A type-level .new factory is opt-in through Newable. Parsing a
             // user method with the reserved name does not grant construction
             // or static-call authority, and must not bypass that trait gate.
-            if (method.name().equals("new")
-                    && klass.interfaces().stream()
-                            .noneMatch(ref -> ref.name().equals("Newable"))) {
-                throw new IllegalArgumentException(
-                        "class '" + klass.name() + "' declares new() without implementing Newable; "
-                                + "T.new() is never an implicit constructor");
+            if (method.name().equals("new")) {
+                boolean optedIn = klass.interfaces().stream()
+                        .anyMatch(ref -> ref.name().equals("Newable"));
+                if (!optedIn) {
+                    throw new IllegalArgumentException(
+                            "class '" + klass.name() + "' declares new() without implementing Newable; "
+                                    + "T.new() is never an implicit constructor");
+                }
+                // A same-named empty interface is not a factory contract.
+                // Require an actual typed Newable.new signature; ordinary
+                // class/interface shape checking below validates its API.
+                Ast.InterfaceDecl newable = findInterface("Newable");
+                boolean hasFactoryContract = newable != null
+                        && !newable.moduleContract()
+                        && newable.members().stream().anyMatch(member ->
+                                member instanceof Ast.InterfaceFunctionDecl fn
+                                        && fn.name().equals("new")
+                                        && fn.parameters().size() == method.parameters().size());
+                if (!hasFactoryContract) {
+                    throw new IllegalArgumentException(
+                            "Newable must declare a typed new() contract matching class '"
+                                    + klass.name() + "' factory arity");
+                }
             }
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
