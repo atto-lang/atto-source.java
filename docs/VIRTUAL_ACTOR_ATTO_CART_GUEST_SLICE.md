@@ -13,13 +13,13 @@ CONTROL / physical generation-fence stack:
 
 ## Guest source
 
-- `src/test/resources/atto/virtual-cart-v1/cart_ops.atto` contains the entire
+- `contracts/virtual-actor-cart-v1/positive/cart_ops.atto` contains the entire
   arithmetic/application transition: the pure, checked `cart_step(current,
   delta)` AttoLang function.
-- `cart_main.atto` imports and exercises this function via the production
+- `contracts/virtual-actor-cart-v1/positive/cart_main.atto` imports and exercises this function via the production
   linked-source compiler and Graal/Truffle guest runner. Expected guest stdout
-  is exactly `cart|2|7|5`.
-- `virtual_cart_unsupported.atto` is a mandatory negative fixture for the
+  is exactly `cart|2|7|5`, recorded in `contracts/virtual-actor-cart-v1/expected/cart_main.stdout`.
+- `contracts/virtual-actor-cart-v1/negative/virtual_cart_unsupported.atto` is a mandatory negative fixture for the
   desired `define virtual actor Cart` syntax. It MUST reject with
   `VIRTUAL_ACTOR_MIR_UNSUPPORTED` until the protected state/CONTROL MIR exists.
   It must not lower unsafely as an ordinary Java class or as an old isoactor.
