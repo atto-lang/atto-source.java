@@ -54,7 +54,7 @@ jobs:
       ATTO_POLICY_DIR: ${{ github.workspace }}/policy
       ATTO_COMPILER_DIR: ${{ github.workspace }}/compiler
       ATTO_DEMO_DIR: ${{ github.workspace }}/demo
-      ATTO_RECEIPT_DIR: ${{ runner.temp }}/atto-native-owned-receipt
+      ATTO_RECEIPT_DIR: ${{ github.workspace }}/atto-native-owned-receipt
     steps:
       - name: Confirm exact source-owner main dispatch
         shell: bash
@@ -122,6 +122,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: atto-native-multifile-owned-guest-receipt
-          path: ${{ runner.temp }}/atto-native-owned-receipt/
+          path: ${{ github.workspace }}/atto-native-owned-receipt/
           if-no-files-found: warn
           retention-days: 14
