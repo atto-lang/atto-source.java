@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           test -s target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
           REPORT=target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
-          TEST_COUNT="$(grep -Eo 'tests="[0-9]+"' "$REPORT" | head -n 1 | tr -dc '0-9')"
+          TEST_COUNT="$(grep -m1 -Eo 'tests="[0-9]+"' "$REPORT" | sed -E 's/tests="([0-9]+)"/\\1/')"
           test "${TEST_COUNT:-0}" -ge 12
           ! grep -Eq '<(failure|error|skipped)( |>)' "$REPORT"
           printf 'ATTO_PROXY_TEST_COUNT=%s\\n' "$TEST_COUNT"
