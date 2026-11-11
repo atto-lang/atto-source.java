@@ -108,6 +108,14 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
         }
     }
 
+    // Borrow an existing BEGIN IMMEDIATE transaction only for verification.
+    // Do NOT open a new connection, begin a nested transaction or close the
+    // owner connection. This permits trustworthy legacy snapshot admission
+    // after earlier uncommitted legacy/command writes in the same batch.
+    private SqliteCommandTransactionStore(Connection borrowed) {
+        db=Objects.requireNonNull(borrowed);
+    }
+
     private static void checkId(String value) {
         if (value == null || value.isBlank() ||
             value.getBytes(StandardCharsets.UTF_8).length > 128 ||
@@ -423,14 +431,21 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
      * must reconstruct into a fresh private arena and revalidate its
      * activation authority before transitioning from RECOVERING to READY.
      */
-    public synchronized SqlitePersistenceStore.Recovery loadVerified(Identity id,
-                                                                      long trustedEpoch)
-            throws SQLException {
-        Objects.requireNonNull(id);checkOpen();
-        if (trustedEpoch<1) throw new IllegalArgumentException("INVALID_RESTORE_EPOCH");
-        execute("BEGIN");
-        try {
-            if (currentEpoch(id)!=trustedEpoch)throw new SecurityException("STALE_EPOCH");
+    /**
+     * Verify the complete currently committed/uncommitted actor journal
+     * inside a transaction owned by another trusted SQLite provider. Exact
+     * per-event proof and command digests are required before snapshotting.
+     */
+    static SqlitePersistenceStore.Recovery verifyWithinCurrentTransaction(
+            Connection ownedByCaller, Identity id) throws SQLException {
+        Objects.requireNonNull(ownedByCaller);
+        Objects.requireNonNull(id);
+        return new SqliteCommandTransactionStore(ownedByCaller)
+                .readVerifiedWithinCurrentTransaction(id);
+    }
+
+    private SqlitePersistenceStore.Recovery readVerifiedWithinCurrentTransaction(
+            Identity id) throws SQLException {
             long headVersion=0,snapshotVersion=0;
             int snapshotSchema=0;
             byte[] snapshot=new byte[0];
@@ -567,6 +582,19 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
             SqlitePersistenceStore.Recovery restored=
                 new SqlitePersistenceStore.Recovery(headVersion,snapshotVersion,
                                                      snapshotSchema,snapshot,events);
+        return restored;
+    }
+
+    public synchronized SqlitePersistenceStore.Recovery loadVerified(Identity id,
+                                                                      long trustedEpoch)
+            throws SQLException {
+        Objects.requireNonNull(id);checkOpen();
+        if (trustedEpoch<1) throw new IllegalArgumentException("INVALID_RESTORE_EPOCH");
+        execute("BEGIN");
+        try {
+            if (currentEpoch(id)!=trustedEpoch)throw new SecurityException("STALE_EPOCH");
+            SqlitePersistenceStore.Recovery restored=
+                readVerifiedWithinCurrentTransaction(id);
             execute("COMMIT");
             return restored;
         } catch(Exception failure) {
