@@ -1,6 +1,6 @@
 namespace foo;
 
-pub declare actor Foo;
+declare pub actor Foo;
 pub mtd (Foo f) bar(): void {
     return;
 }
