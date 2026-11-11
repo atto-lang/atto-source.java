@@ -508,7 +508,7 @@ public final class Parser {
         // Runtime-only actor hooks use an explicit contextual ingress marker.
         // This marker is separate from public method visibility and does not
         // grant a guest callable or executable actor permission.
-        if (isContextualIdentifier("external")) {
+        if (isActorIngressMethodHead()) {
             return parseActorIngressMethod(annotations, modifiers);
         }
         // Allow 'pub mtd (Actor self) method(...)' without a redundant
@@ -676,6 +676,19 @@ public final class Parser {
                     || (current + 2 < tokens.size()
                         && tokens.get(current + 1).type() == IDENT
                         && tokens.get(current + 2).type() == LPAREN));
+    }
+
+    private boolean isActorIngressMethodHead() {
+        if (!isContextualIdentifier("external")
+                || current + 2 >= tokens.size()
+                || tokens.get(current + 1).type() != IDENT
+                || !tokens.get(current + 1).lexeme().equals("mtd")) {
+            return false;
+        }
+        return tokens.get(current + 2).type() == LPAREN
+                || (current + 3 < tokens.size()
+                    && tokens.get(current + 2).type() == IDENT
+                    && tokens.get(current + 3).type() == LPAREN);
     }
 
     private Ast.ExternalActorMethodDecl parseActorIngressMethod(
