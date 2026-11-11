@@ -8197,6 +8197,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                 return switch (name) {
+                    case "read_resp2_hex_async" -> (Invokable) args -> {
+                        requireZero(args, "socket.read_resp2_hex_async");
+                        return socket.readResp2HexAsync();
+                    };
+                    case "write_resp2_hex_async" -> (Invokable) args -> {
+                        requireTwo(args, "socket.write_resp2_hex_async");
+                        String status = requireString(args.get(0), "RESP reply kind");
+                        String payload = requireString(args.get(1), "RESP reply payload");
+                        return socket.writeResp2HexAsync(status, payload);
+                    };
                     case "read_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.read_bytes_async");
                         if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
