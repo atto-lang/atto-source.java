@@ -46,7 +46,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest \
+            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest,ActorCodeIsolationAttoGuestTest,ActorSharedCodeImageWhitelistTest \
             clean test
       - name: Require nonempty unskipped Surefire reports
         if: always()
@@ -60,7 +60,9 @@ jobs:
             dev.oreslang.launcher.OresMainSourceBudgetTest \
             dev.oreslang.config.OresProjectConfigTest \
             dev.oreslang.AttoCacheShapeAdmissionTest \
-            dev.oreslang.ProjectManifestImportTest; do
+            dev.oreslang.ProjectManifestImportTest \
+            dev.oreslang.ActorCodeIsolationAttoGuestTest \
+            dev.oreslang.runtime.ActorSharedCodeImageWhitelistTest; do
             report="target/surefire-reports/TEST-${suite}.xml"
             test -s "$report"
             grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
