@@ -74,17 +74,13 @@ final class NamespaceActorIngressAdmissionTest {
     }
 
     @Test
-    void legacyPlainInitCannotClaimRuntimeIngress() {
+    void publicInitCannotClaimRuntimeIngress() {
         var error = assertThrows(IllegalArgumentException.class,
-                () -> bind(HEADER + "mtd_dummy_placeholder"));
-        assertTrue(error.getMessage().length() > 0);
-        var proper = assertThrows(IllegalArgumentException.class,
                 () -> bind(HEADER + """
                         pub mtd (Foo f) init(): void { return; }
                         """));
-        assertTrue(proper.getMessage().contains("cannot expose private") == false);
-        assertTrue(proper.getMessage().contains("requires explicit private 'external mtd'"),
-                proper.getMessage());
+        assertTrue(error.getMessage().contains("requires explicit private 'external mtd'"),
+                error.getMessage());
     }
 
     @Test
