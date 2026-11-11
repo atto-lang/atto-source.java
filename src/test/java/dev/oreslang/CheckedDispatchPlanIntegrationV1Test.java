@@ -37,10 +37,16 @@ final class CheckedDispatchPlanIntegrationV1Test {
                 Path.of("tests/fixtures/dispatch/known_and_virtual_v1.atto"),
                 StandardCharsets.UTF_8);
         Ast.Program checked = OresCompiler.parseAndTypeCheck(source);
+        var snapshot = CheckedDispatchPlansV1.forProgram(checked);
+        assertFalse(snapshot.isEmpty(), "type checking must publish a program-local snapshot");
+        assertThrows(UnsupportedOperationException.class, snapshot::clear,
+                "guest evaluators must not mutate the checked plan image");
 
         Ast.CallExpr baseCall = returnCall(function(checked, "invoke_base"));
         CheckedDispatchPlansV1.Plan slot = CheckedDispatchPlansV1.lookup(baseCall);
         assertNotNull(slot, "base-typed call must have a checked slot plan");
+        assertSame(slot, snapshot.get(baseCall),
+                "published program metadata must preserve exact AST call identity");
         assertEquals(AotDispatchPlannerV1.CallKind.INSTANCE_METHOD, slot.kind());
         assertEquals(AotDispatchPlannerV1.Strategy.METHOD_SLOT, slot.strategy());
         assertEquals("Base", slot.receiverClass().name());
