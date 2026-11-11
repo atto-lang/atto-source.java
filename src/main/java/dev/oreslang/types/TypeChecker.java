@@ -2493,6 +2493,26 @@ public final class TypeChecker {
      * immutable, non-actor, ctorless products of builtin Copy scalar fields.
      * This is an explicit rt copy operation, NOT implicit Copy for classes.
      */
+    /**
+     * A with receiver may be an explicit copy/take or a chained with value.
+     * Those wrappers do not authorize suspending or effectful original sources.
+     * Inspect the underlying expression rather than blanket-rejecting the
+     * copy/take syntax that v1 explicitly supports.
+     */
+    private boolean withReceiverMaySuspend(Ast.Expr source) {
+        if (source instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("copy") || runtime.operation().equals("take"))) {
+            return runtime.arguments().size() != 1
+                    || withReceiverMaySuspend(runtime.arguments().getFirst());
+        }
+        if (source instanceof Ast.WithExpr nested) {
+            return withReceiverMaySuspend(nested.source())
+                    || nested.changes().stream().anyMatch(
+                            change -> fieldInitializerMaySuspend(change.value()));
+        }
+        return fieldInitializerMaySuspend(source);
+    }
+
     private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
         if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
                 || klass.constructor() != null || klass.isAbstract()
@@ -2506,13 +2526,27 @@ public final class TypeChecker {
                     || slot == null || slot.isBorrow() || slot.inferArguments()
                     || !slot.arguments().isEmpty()
                     || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
-                    || findClass(slot.name()) != null) return false;
+                    || findClass(slot.name()) != null
+                    || findTypeAlias(slot.name()) != null
+                    || linkedClassAliases.getOrDefault(klass, Map.of()).containsKey(slot.name())) {
+                return false;
+            }
+            Type resolved = classFieldType(klass, field);
+            if (resolved != Primitive.INT && resolved != Primitive.BOOL
+                    && resolved != Primitive.FLOAT && resolved != Primitive.STRING) {
+                return false;
+            }
         }
         return true;
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.WithExpr update) {
+            if (withReceiverMaySuspend(update.source())) {
+                throw new IllegalArgumentException(
+                        "with receiver must be a synchronous, effect-safe value source; "
+                                + "await, calls with unproven effects and side effects are not admitted");
+            }
             Type receiver = typeOf(update.source(), env, generics, self);
             Type projected = receiver instanceof SelfType receiverSelf
                     ? receiverSelf.bound() : receiver;
