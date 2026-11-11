@@ -313,7 +313,10 @@ pub fnc encode_bulk(borrow List<int> value): List<int> {
 pub fnc encode_reply(Tuple[int, List[int]] reply): List<int> {
   if reply[0] == 0 then return [36, 45, 49, 13, 10]; fi
   if reply[0] == 1 then return [43, 79, 75, 13, 10]; fi
-  if reply[0] == 2 then return encode_bulk(rt borrow reply[1]); fi
+  if reply[0] == 2; do
+    const List<int> data = reply[1];
+    return encode_bulk(rt borrow data);
+  fi
   if reply[0] == 3 then return [58, 49, 13, 10]; fi
   if reply[0] == 4 then return [58, 48, 13, 10]; fi
   if reply[0] == 5 then return [43, 80, 79, 78, 71, 13, 10]; fi
