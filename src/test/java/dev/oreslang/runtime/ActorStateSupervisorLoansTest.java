@@ -105,7 +105,7 @@ final class ActorStateSupervisorLoansTest {
         try (var runtime = new ActorRuntime()) {
             assertThrows(SecurityException.class,
                     () -> runtime.createCurrentActorStateLoans(2, 1));
-            var freeActor = runtime.spawnPrivate(
+            ActorRuntime.ActorRef<String> freeActor = runtime.spawnPrivate(
                     context -> (message, actorContext) -> {
                         assertThrows(SecurityException.class,
                                 () -> runtime.createCurrentActorStateLoans(2, 1));
