@@ -139,6 +139,12 @@ public final class NativeHttp implements AutoCloseable {
         return !runtimeClosed && !listenerStopping;
     }
 
+    /** Source of truth for request permit retirement during transport aborts. */
+    static boolean canRetireRequest(boolean transportClosed, boolean dispatchInProgress,
+                                    boolean actorPhysicallyDone) {
+        return transportClosed && !dispatchInProgress && actorPhysicallyDone;
+    }
+
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
@@ -204,78 +210,106 @@ public final class NativeHttp implements AutoCloseable {
         }
         public void dispatch(Exchange exchange) {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
-            // The exchange was accepted earlier and already owns an HTTP
-            // permit. A dispatch denial MUST settle that permit and response;
-            // throwing here leaves cleanup to an unrelated shutdown path.
+            // The request has already reserved an HTTP admission permit.
+            // Reserve handoff ownership before selecting/spawning a worker:
+            // timeout/abort must not retire the request during actor startup.
             State state = exchange.state;
             boolean denyDispatch;
             synchronized (state) {
                 exchange.checkOwner();
+                if (state.dispatchInProgress) {
+                    throw new IllegalStateException("HTTP exchange already dispatching");
+                }
                 denyDispatch = !mayBeginDispatch(closed, state.server.stopped);
-                if (!denyDispatch) state.spawnNanos = System.nanoTime();
+                if (!denyDispatch) {
+                    state.dispatchInProgress = true;
+                    state.spawnNanos = System.nanoTime();
+                }
             }
             if (denyDispatch) {
                 state.abort(503, false);
                 return;
             }
-            // Preflight can throw before work is admitted; do not leave the
-            // HTTP dispatch perf span half-open on rejection.
             long perf = CorePerf.start();
-            if (workers != null) {
-                try {
-                    Worker worker = worker();
-                    boolean denyWorkerDispatch;
-                    synchronized (state) {
-                        // Repeat under exchange ownership after selecting/spawning
-                        // the worker; a concurrent listener stop must be visible.
-                        denyWorkerDispatch = !mayBeginDispatch(closed, state.server.stopped);
-                        if (!denyWorkerDispatch) {
-                            state.poolWorker = worker;
-                            worker.requests.add(state);
-                            // Reused workers have no per-request startup.
-                            state.readyNanos = state.spawnNanos;
+            try {
+                if (workers != null) {
+                    try {
+                        Worker worker = worker();
+                        boolean denyWorkerDispatch;
+                        synchronized (state) {
+                            // Recheck after choosing the worker; a concurrent
+                            // timeout/stop must not transfer a stale exchange.
+                            denyWorkerDispatch = state.terminal
+                                    || !mayBeginDispatch(closed, state.server.stopped);
+                            if (!denyWorkerDispatch) {
+                                state.poolWorker = worker;
+                                worker.requests.add(state);
+                                state.readyNanos = state.spawnNanos;
+                            }
                         }
+                        if (denyWorkerDispatch) {
+                            state.abort(503, false);
+                            return;
+                        }
+                        worker.actor.send(exchange.moveTo(worker.actor));
+                    } catch (RuntimeException failure) {
+                        state.abort(mayBeginDispatch(closed, state.server.stopped)
+                                ? 500 : 503, false);
                     }
-                    if (denyWorkerDispatch) {
+                    return;
+                }
+
+                ActorRuntime.ActorRef<Object> actor = null;
+                try {
+                    long spawnPerf = CorePerf.start();
+                    try {
+                        actor = context.actors().spawnCodeActor(kind, code, type);
+                    } finally {
+                        CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
+                    }
+                    ActorRuntime.ActorRef<Object> spawned = actor;
+                    // Attach actor identity as soon as spawn returns, even if
+                    // an HTTP timeout already closed the transport. The DONE
+                    // observer is needed when moveTo never installs its own
+                    // completion callback due to cancellation during spawn.
+                    synchronized (state) {
+                        state.actor = spawned;
+                    }
+                    spawned.done().whenCompleteRuntime((ignored, failure) -> state.release());
+                    spawned.ready().whenCompleteRuntime((ignored, failure) -> {
+                        long spawn;
+                        long ready;
+                        synchronized (state) {
+                            state.readyNanos = System.nanoTime();
+                            spawn = state.spawnNanos;
+                            ready = state.readyNanos;
+                        }
+                        CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
+                    });
+                    boolean denyAfterSpawn;
+                    synchronized (state) {
+                        denyAfterSpawn = state.terminal
+                                || !mayBeginDispatch(closed, state.server.stopped);
+                    }
+                    if (denyAfterSpawn) {
+                        spawned.cancel();
                         state.abort(503, false);
                         return;
                     }
-                    worker.actor.send(exchange.moveTo(worker.actor));
+                    spawned.send(exchange.moveTo(spawned));
                 } catch (RuntimeException failure) {
+                    if (actor != null) actor.cancel();
                     state.abort(mayBeginDispatch(closed, state.server.stopped)
-                            ? 500 : 503, false);
-                } finally {
-                    CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
+                            ? 500 : 503);
                 }
-                return;
-            }
-            ActorRuntime.ActorRef<Object> actor = null;
-            try {
-                long spawnPerf = CorePerf.start();
-                actor = context.actors().spawnCodeActor(kind, code, type);
-                CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
-                actor.ready().whenCompleteRuntime((ignored, failure) -> {
-                    long spawn;
-                    long ready;
-                    synchronized (exchange.state) {
-                        exchange.state.readyNanos = System.nanoTime();
-                        spawn = exchange.state.spawnNanos;
-                        ready = exchange.state.readyNanos;
-                    }
-                    CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
-                });
-                if (!mayBeginDispatch(closed, state.server.stopped)) {
-                    actor.cancel();
-                    state.abort(503, false);
-                    return;
-                }
-                actor.send(exchange.moveTo(actor));
-            } catch (RuntimeException failure) {
-                if (actor != null) actor.cancel();
-                state.abort(mayBeginDispatch(closed, state.server.stopped)
-                        ? 500 : 503);
             } finally {
-                CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
+                // Publication must follow the handoff association, even if
+                // transport abort/response close occurred on another thread.
+                synchronized (state) {
+                    state.dispatchInProgress = false;
+                }
+                try { state.release(); }
+                finally { CorePerf.end(CorePerf.HTTP_DISPATCH, perf); }
             }
         }
     }
@@ -441,6 +475,8 @@ public final class NativeHttp implements AutoCloseable {
         // with the first, irreversible HTTP header attempt.
         final HttpResponseWirePhase wirePhase = new HttpResponseWirePhase();
         boolean busy, committed, bodyRead, streamingBody, suppressBody;
+        /** Guarded by State monitor; permit survives timeout until handoff completes. */
+        boolean dispatchInProgress;
         int bodyBytes;
         volatile boolean terminal;
         volatile InputStream activeResponseInput;
@@ -518,7 +554,10 @@ public final class NativeHttp implements AutoCloseable {
             // pools bound worker count separately and release closed exchanges;
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
-                if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                boolean actorPhysicallyDone = poolWorker != null || actor == null
+                        || actor.done().isDone();
+                if (!canRetireRequest(transportClosed, dispatchInProgress,
+                        actorPhysicallyDone)) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
