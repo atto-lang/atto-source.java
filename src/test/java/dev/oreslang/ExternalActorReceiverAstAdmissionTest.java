@@ -41,9 +41,9 @@ final class ExternalActorReceiverAstAdmissionTest {
         assertInstanceOf(Ast.FunctionDecl.class,
                 declaration("define pub routine inspect(Worker worker): void { return; }"));
         assertInstanceOf(Ast.FunctionDecl.class,
-                declaration("define module workers as\\n"
-                        + "  define pub fnc inspect(Worker worker): void { return; }\\n"
-                        + "end\\n"));
+                declaration("define module workers as\n"
+                        + "  define pub fnc inspect(Worker worker): void { return; }\n"
+                        + "end\n"));
     }
 
     @Test
