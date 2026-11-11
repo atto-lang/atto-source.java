@@ -15,6 +15,8 @@ define external mtd (Worker w) receive(ActorMail<int> mail): void { return; }
 
 The nominal binder accepts runtime role metadata **only** for private `init`/`receive`, rejects public lifecycle entrypoints, rejects raw actor-owner returns from init, rejects arbitrary `external` RPC methods and prevents multiple lifecycle slots differing only by arity. Existing `receive` must accept exactly one `ActorMail<T>` and return `void`. No runtime capability or direct method invocation is granted by this metadata.
 
+**Hardening:** canonical `declare actor Worker;` requires an explicit `external` marker on `init` and `receive` (`ACTOR_EXTERNAL_REQUIRED`). Other ordinary `mtd` declarations may remain unmarked. Existing `define actor Worker as receiver;` and inline actor forms preserve their migration behavior. An `external init` can currently return only `void`: a user-defined nominal `state` return is rejected with `ACTOR_INIT_STATE_BUILDER_UNVERIFIED` until the compiler proves genuine builder provenance, sealed ownership and atomic publication. Out-of-line source unit IDs now reject Windows colon/alternate data streams, Unicode format controls including bidi/zero-width markers, invalid path traversal and non-normalized separators.
+
 ## Deliberate limitations
 
 - No actor body `external init` or `external receive` grammar yet; inline class/actor method syntax is a separate AST integration step.
@@ -26,7 +28,7 @@ The nominal binder accepts runtime role metadata **only** for private `init`/`re
 
 ## Evidence required before integration
 
-Run `ActorExternalEntrypointModifierTest` plus the inherited `ActorReceiverBinderTest`, `ExternalActorReceiverAstAdmissionTest` and `CrossFileActorReceiverBindingTest` against the **exact final** commit SHA in an admitted JDK 25 runner. Then add real actor init/receive guest execution and negative diagnostics, complete Java no-fallback Native Image, and independently port LLVM/.NET/Wasm/Forge. Treat source-free inventory checks as insufficient.
+Run `ActorExternalEntrypointModifierTest`, `DeclaredActorNominalSyntaxTest`, `DeclaredActorHardeningTest` (27 adversarial cases), plus the inherited `ActorReceiverBinderTest`, `ExternalActorReceiverAstAdmissionTest` and `CrossFileActorReceiverBindingTest` against the **exact final** commit SHA in an admitted JDK 25 runner. Then add real actor init/receive guest execution and negative diagnostics, complete Java no-fallback Native Image, and independently port LLVM/.NET/Wasm/Forge. Treat source-free inventory checks as insufficient.
 
 Private source must not be mirrored to an unrelated organization without independently authorized exact-head publisher/carrier protection and review.
 
