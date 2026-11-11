@@ -14,6 +14,10 @@ import java.util.Objects;
 public final class DataOrientedBorrowChecker {
     private DataOrientedBorrowChecker() { }
 
+    // Bound quadratic admission over logical worksets. This is a conservative
+    // compiler admission budget, not a runtime actor mailbox quota.
+    public static final int MAX_LOANS_PER_WORKSET = 1024;
+
     public enum Layout { AOS, SOA, AOSOA }
     public enum Access { READ, WRITE }
 
@@ -95,6 +99,8 @@ public final class DataOrientedBorrowChecker {
     }
 
     public static boolean canRunConcurrently(List<Loan> left, List<Loan> right) {
+        requireBudget(left);
+        requireBudget(right);
         left = List.copyOf(left);
         right = List.copyOf(right);
         // A malformed individual workset must never be admitted simply
@@ -111,6 +117,7 @@ public final class DataOrientedBorrowChecker {
     }
 
     public static void requireInternallyValid(List<Loan> loans) {
+        requireBudget(loans);
         loans = List.copyOf(loans);
         for (int i = 0; i < loans.size(); i++) {
             for (int j = i + 1; j < loans.size(); j++) {
@@ -120,6 +127,13 @@ public final class DataOrientedBorrowChecker {
                                     + " overlaps " + loans.get(j));
                 }
             }
+        }
+    }
+
+    private static void requireBudget(List<Loan> loans) {
+        Objects.requireNonNull(loans, "loans");
+        if (loans.size() > MAX_LOANS_PER_WORKSET) {
+            throw new IllegalArgumentException("DOP loan workset exceeds admission budget");
         }
     }
 
