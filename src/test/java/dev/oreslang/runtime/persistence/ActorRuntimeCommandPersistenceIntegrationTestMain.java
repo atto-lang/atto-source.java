@@ -28,6 +28,11 @@ public final class ActorRuntimeCommandPersistenceIntegrationTestMain {
     private static byte[] encode(long value) {
         return ByteBuffer.allocate(Long.BYTES).putLong(value).array();
     }
+    private static long decode(byte[] payload) {
+        if(payload == null || payload.length != Long.BYTES)
+            throw new AssertionError("invalid durable i64 result");
+        return ByteBuffer.wrap(payload).getLong();
+    }
     public static void main(String[] args) throws Exception {
         Path dir=Files.createTempDirectory("ores-actor-command-v2-");
         Path path=dir.resolve("command.sqlite");
