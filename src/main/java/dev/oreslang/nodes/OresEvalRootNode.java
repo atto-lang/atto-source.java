@@ -164,6 +164,8 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        /** Immutable, AST-identity-indexed proof snapshot; no global lock in guest call hot paths. */
+        private final Map<Ast.CallExpr, CheckedDispatchPlansV1.Plan> checkedDispatchPlans;
 
         private int checkedOptionDepth(Ast.CallExpr call) {
             synchronized (optionDepthCache) {
@@ -246,6 +248,7 @@ public final class OresEvalRootNode extends RootNode {
                 String codeUnitId,
                 long taskAdmissionEpoch) {
             this.program = program;
+            this.checkedDispatchPlans = CheckedDispatchPlansV1.forProgram(program);
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
@@ -7079,7 +7082,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
-            CheckedDispatchPlansV1.Plan plan = CheckedDispatchPlansV1.lookup(call);
+            CheckedDispatchPlansV1.Plan plan = checkedDispatchPlans.get(call);
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 // Immutable checked target within this evaluator's code image.
