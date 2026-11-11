@@ -54,7 +54,10 @@ final class NestedFunctorAdtGuestTest {
                 "bad-result-transpose-input.atto",
                 "bad-implicit-layer-collapse.atto",
                 "bad-map-err-domain.atto",
-                "bad-result-flatten-arity.atto")) {
+                "bad-result-flatten-arity.atto",
+                "bad-borrowed-result-transpose.atto",
+                "bad-borrowed-result-flatten.atto",
+                "bad-borrowed-option-transpose.atto")) {
             String text = fixture(filename);
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(text),
