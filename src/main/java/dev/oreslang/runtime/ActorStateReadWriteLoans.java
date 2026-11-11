@@ -277,6 +277,9 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
                     notifications.remove(request.publication);
                     request.publication = null;
                 }
+                // The cancellation Future is terminal. Do not retain a
+                // stale loan through its Pending/cancel-hook closure.
+                request.reservation = null;
             }
         }
         if (reserved != null) reserved.close();
