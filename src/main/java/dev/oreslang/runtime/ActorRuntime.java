@@ -8959,6 +8959,9 @@ public final class ActorRuntime implements AutoCloseable {
                     @SuppressWarnings("unchecked")
                     ActorContext<Object> sourceContext =
                             (ActorContext<Object>) (ActorContext<?>) context;
+                    // Teardown is a terminal once-only actor-owned turn,
+                    // never a callable guest method or a new mailbox receive.
+                    sourceLifecycleGate.beginTeardown(ref.id(), codeActorType, state);
                     codeExecutor.tearDownActor(codeActorType, state, sourceContext);
                 }
             } finally {
