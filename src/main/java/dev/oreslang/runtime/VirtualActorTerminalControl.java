@@ -102,6 +102,17 @@ final class VirtualActorTerminalControl {
         }
     }
 
+    /**
+     * A failed physical cleanup is not a terminal receipt. Discard any
+     * captured host callback to avoid retaining its closure indefinitely;
+     * the ledger deliberately keeps the old physical binding quarantined.
+     */
+    void discardIncomplete(ActorRuntime.ActorId actorId) {
+        synchronized (monitor) {
+            bindings.remove(actorId);
+        }
+    }
+
     boolean registered(ActorRuntime.ActorId actorId) {
         synchronized (monitor) {
             return bindings.containsKey(actorId);
