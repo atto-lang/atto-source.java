@@ -53,6 +53,10 @@ final class ActorStateReadWriteLoansTest {
                 () -> new ActorStateReadWriteLoans(1, 1, java.util.List.of("")));
         assertThrows(NullPointerException.class,
                 () -> new ActorStateReadWriteLoans(1, 1, null));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, java.util.List.of("$internal")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, java.util.List.of("w".repeat(129))));
         assertThrows(IllegalArgumentException.class, () ->
                 new ActorStateReadWriteLoans(1, 1,
                         java.util.Collections.nCopies(129, "field")));
