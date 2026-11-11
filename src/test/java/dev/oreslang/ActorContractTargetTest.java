@@ -262,6 +262,32 @@ final class ActorContractTargetTest {
     }
 
     @Test
+    void onStopAndOnRestartRequireCompilerOwnedControlLowering() {
+        for (String name : new String[] {"on_stop", "on_restart"}) {
+            String source = "pub define actor Foo as\n"
+                    + "  pub " + name + "(): void { return; }\n"
+                    + "end\n";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), name);
+            assertTrue(error.getMessage().contains("generation-fenced lowering"),
+                    () -> name + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void reservedControlHooksCannotBeActorContractRequirements() {
+        for (String name : new String[] {"on_stop", "on_restart", "on_panic"}) {
+            String source = "define contract FooContract for actor as\n"
+                    + "  mtd " + name + "(): void;\n"
+                    + "end\n";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), name);
+            assertTrue(error.getMessage().contains("reserved lifecycle/control/receive hook"),
+                    () -> name + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void actualAttoCorpusReachesParserAndTypeChecker() throws IOException {
         Path root = Path.of("contracts", "actor-contract-target-v1");
         String positive = Files.readString(root.resolve("accept_actor_contract.atto"));
