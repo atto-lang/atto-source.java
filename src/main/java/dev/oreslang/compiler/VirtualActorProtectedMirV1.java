@@ -76,16 +76,32 @@ public final class VirtualActorProtectedMirV1 {
         }
     }
 
-    public record Plan(String declaration, Ast.Visibility visibility,
-                       ScalarState state, List<CheckedAdd> methods,
-                       TypedRefContract referenceType) {
-        public Plan {
-            Objects.requireNonNull(declaration, "declaration");
-            Objects.requireNonNull(visibility, "visibility");
-            Objects.requireNonNull(state, "state");
-            methods = List.copyOf(methods);
-            Objects.requireNonNull(referenceType, "referenceType");
+    /**
+     * A caller cannot hand-construct a validated Plan to impersonate a compiler
+     * checker result. A plan remains observational metadata, not a capability.
+     */
+    public static final class Plan {
+        private final String declaration;
+        private final Ast.Visibility visibility;
+        private final ScalarState state;
+        private final List<CheckedAdd> methods;
+        private final TypedRefContract referenceType;
+
+        private Plan(String declaration, Ast.Visibility visibility,
+                     ScalarState state, List<CheckedAdd> methods,
+                     TypedRefContract referenceType) {
+            this.declaration = Objects.requireNonNull(declaration, "declaration");
+            this.visibility = Objects.requireNonNull(visibility, "visibility");
+            this.state = Objects.requireNonNull(state, "state");
+            this.methods = List.copyOf(methods);
+            this.referenceType = Objects.requireNonNull(referenceType, "referenceType");
         }
+
+        public String declaration() { return declaration; }
+        public Ast.Visibility visibility() { return visibility; }
+        public ScalarState state() { return state; }
+        public List<CheckedAdd> methods() { return methods; }
+        public TypedRefContract referenceType() { return referenceType; }
     }
 
     /** Build an immutable type/ownership plan without changing execution. */
