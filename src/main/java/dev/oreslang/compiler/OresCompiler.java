@@ -32,6 +32,13 @@ public final class OresCompiler {
      */
     public static Ast.Program parseAndTypeCheckStrictAtto(String source) {
         Ast.Program program = Parser.parseStrictAtto(source);
+        // Profile evidence must cover the complete compilation closure.
+        // The single-unit API cannot validate imported source transitively,
+        // so fail closed rather than linking a legacy-checked dependency.
+        if (!program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED: every imported unit must use the same source profile");
+        }
         TypeChecker.TypeCheckResult checked =
                 TypeChecker.checkTypesWithDiagnostics(program, true);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
