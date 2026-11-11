@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target/otel/rust-build
+
 jobs:
   otel-jvm:
     name: Java/GraalVM JVM actual Oreslang guest
@@ -28,6 +31,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
+          test ! -e target
           echo "SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Use GraalVM 25.3 on JDK 25 (same toolchain as compiler CI)
@@ -77,6 +81,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
+          test ! -e target
           echo "SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Use GraalVM 25.3 JDK 25
