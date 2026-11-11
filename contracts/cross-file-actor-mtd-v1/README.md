@@ -76,3 +76,33 @@ non-skipped Surefire reports for all three actor binder/parser suites.
 head. Zero-step GitHub Actions failures are runner-admission failures, not
 compiler or JUnit results. Do not advance the PR to merge-ready based on
 static source readback or source-free canaries alone.
+
+## Namespace actor hardening gate (2026-11-11)
+
+The static binder also rejects any external `init` slot, whether public,
+private, receiver-first, or legacy name-first. Actor initialization is a
+one-shot pre-publication lifecycle transition, not a normal externally
+attached method or a route to return a raw actor receiver. A future
+`init(...)` implementation must use a dedicated typed lifecycle lowering
+with complete state installation, actor generation fencing and no early
+`ActorRef` publication.
+
+External methods targeting an actor with any inherited parent are rejected
+until a hierarchy-aware slot linearization and contract witness can prove
+non-override. External `receive(ActorMail<T>)` cannot admit borrowed or
+closed-structural payloads without separately proven deep ownership and
+sendability. None of these static checks grant a receiver context.
+
+The seven additional `NamespaceActorReceiverSecurityTest` JUnit methods are
+authored, **not executed**. The source-local exact-head workflow must run
+that suite and emit a passing non-skipped Surefire receipt before this gate
+can be considered validated. This branch is stacked on Java PR #2823 and
+must be reconciled with the independent inherited-slot hardening in PR #2828.
+
+The user's proposed abbreviated `namespace foo; define actor Foo implements
+ActorXYZ; pub mtd (Foo f) bar(): void {...}` spelling is **not claimed to
+be executable or even fully parsed in this stage**. Existing canonical
+external method syntax requires `define pub mtd`; compact actor
+forward declarations with an `implements` clause and contract conformance
+across external method bodies require a separate checked declaration/linker
+integration. Do not substitute the current static binder for that proof.
