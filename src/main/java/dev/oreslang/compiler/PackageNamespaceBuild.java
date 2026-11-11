@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -104,10 +105,39 @@ public final class PackageNamespaceBuild {
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             parsed.put(entry.getKey(), Parser.parse(entry.getValue()));
         }
+        validatePackageImportProvenance(parsed);
         ActorMethodIndex index = ActorMethodIndex.collect(packageIdentity, parsed);
         IncrementalCompiler.BuildResult compiled = compiler.compile(sources);
         return new Result(packageIdentity, sources.keySet().stream().sorted().toList(),
                 index, compiled);
+    }
+
+    /**
+     * Until a signed/pinned external-dependency manifest is implemented,
+     * every source-level import must resolve to another unit in this same
+     * manifest's closed source set. Built-in standard-library and Java-host
+     * imports remain governed by their separate existing compiler policies.
+     */
+    private static void validatePackageImportProvenance(
+            Map<String, Ast.Program> sourceUnits) {
+        for (Map.Entry<String, Ast.Program> unit : sourceUnits.entrySet()) {
+            for (Ast.ImportDecl imported : unit.getValue().imports()) {
+                String path = imported.path();
+                if (ImportRules.isJavaPath(path)
+                        || path.startsWith("ores.core/")
+                        || path.startsWith("ores.std/")
+                        || path.startsWith("std/")) {
+                    continue;
+                }
+                String resolved = ImportGraph.resolveImportUnitId(
+                        unit.getKey(), imported, sourceUnits.keySet());
+                if (resolved == null) {
+                    throw new IllegalArgumentException(
+                            "untracked package source import '" + path + "' from '"
+                                    + unit.getKey() + "' has no pinned source/dependency proof");
+                }
+            }
+        }
     }
 
     public record Result(
