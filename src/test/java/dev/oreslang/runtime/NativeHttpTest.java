@@ -16,6 +16,18 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void httpDispatchPreflightSealsBothRuntimeAndListenerAdmissions() {
+        for (boolean runtimeClosed : new boolean[]{false, true}) {
+            for (boolean listenerStopped : new boolean[]{false, true}) {
+                assertEquals(!runtimeClosed && !listenerStopped,
+                        NativeHttp.mayBeginDispatch(runtimeClosed, listenerStopped),
+                        "runtimeClosed=" + runtimeClosed + ", listenerStopped=" + listenerStopped);
+            }
+        }
+        assertFalse(NativeHttp.mayBeginDispatch(true, false));
+        assertFalse(NativeHttp.mayBeginDispatch(false, true));
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
