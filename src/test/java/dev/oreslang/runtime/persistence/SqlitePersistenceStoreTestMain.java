@@ -285,6 +285,91 @@ public final class SqlitePersistenceStoreTestMain {
                 }
                 check(denied,"future-version event row bypassed replay admission");
             }
+            // Historical legacy operation IDs remain durable after a
+            // verified checkpoint permits compaction and a supervisor
+            // advances to a new epoch. The old actor stays fenced.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","compacted-legacy",1);
+                check(store.commit(List.of(write("compacted-legacy","event-1",
+                        1,0,Kind.EVENT,40))).get(0).durable(),
+                        "compacted legacy event setup");
+                check(store.commit(List.of(write("compacted-legacy","snapshot-2",
+                        1,1,Kind.SNAPSHOT,40))).get(0).durable(),
+                        "compacted legacy checkpoint setup");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "DELETE FROM events WHERE actor='compacted-legacy' AND version=1")==1,
+                    "legacy event compaction setup");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","compacted-legacy",2);
+                Write retry=write("compacted-legacy","event-1",2,0,Kind.EVENT,40);
+                Result receipt=store.commit(List.of(retry)).get(0);
+                check(receipt.status()==Status.DUPLICATE && receipt.durable() &&
+                      receipt.version()==1,"compacted event lost durable idempotency");
+                check(store.verifyDurableCommit(retry,receipt),
+                      "valid new epoch could not prove archived original event");
+                check(!store.verifyDurableCommit(
+                        write("compacted-legacy","event-1",1,0,Kind.EVENT,40),receipt),
+                        "stale actor epoch re-used archived proof");
+                Result changed=store.commit(List.of(write("compacted-legacy",
+                        "event-1",2,0,Kind.EVENT,41))).get(0);
+                check(changed.status()==Status.OP_ID_CONFLICT && !changed.durable(),
+                      "altered historical payload received a durable ACK");
+                check(store.loadFenced(new Identity("tenant-a","compacted-legacy","main"),2)
+                        .snapshotVersion()==2,"compacted checkpoint not restored");
+            }
+            // A newer checkpoint also covers the durable identity of its
+            // superseded predecessor, but only with original op metadata.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","superseded-legacy",1);
+                check(store.commit(List.of(write("superseded-legacy","snapshot-old",
+                        1,0,Kind.SNAPSHOT,11))).get(0).durable(),
+                        "first snapshot setup");
+                check(store.commit(List.of(write("superseded-legacy","snapshot-new",
+                        1,1,Kind.SNAPSHOT,12))).get(0).durable(),
+                        "second snapshot setup");
+                store.grantEpoch("tenant-a","superseded-legacy",2);
+                Write retry=write("superseded-legacy","snapshot-old",2,0,Kind.SNAPSHOT,11);
+                Result r=store.commit(List.of(retry)).get(0);
+                check(r.status()==Status.DUPLICATE && r.durable() && r.version()==1,
+                      "superseded checkpoint incorrectly lost operation identity");
+                check(store.verifyDurableCommit(retry,r),
+                      "newer checkpoint failed to prove historic snapshot");
+            }
+            // The compaction fallback must never turn a corrupted active
+            // snapshot into proof for a deleted legacy event.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","compacted-corrupt",1);
+                check(store.commit(List.of(write("compacted-corrupt","old-event",
+                        1,0,Kind.EVENT,17))).get(0).durable(),
+                        "corrupt compacted event setup");
+                check(store.commit(List.of(write("compacted-corrupt","checkpoint",
+                        1,1,Kind.SNAPSHOT,17))).get(0).durable(),
+                        "corrupt compacted checkpoint setup");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "DELETE FROM events WHERE actor='compacted-corrupt' AND version=1")==1,
+                    "corrupt compacted delete setup");
+                check(statement.executeUpdate(
+                    "UPDATE state SET snapshot=x'12' WHERE actor='compacted-corrupt'")==1,
+                    "corrupt compacted snapshot mutation setup");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","compacted-corrupt",2);
+                boolean denied=false;
+                try {store.commit(List.of(write("compacted-corrupt","old-event",
+                        2,0,Kind.EVENT,17)));}
+                catch(java.sql.SQLException expected) {
+                    denied=expected.toString().contains("UNVERIFIED_ACTOR_SNAPSHOT") ||
+                           expected.toString().contains("CORRUPT_SNAPSHOT_PROOF");
+                }
+                check(denied,"corrupted checkpoint authenticated compacted duplicate");
+            }
             Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),
                 "-cp",System.getProperty("java.class.path"),SqlitePersistenceStoreTestMain.class.getName(),"child",file.toString())
                 .redirectErrorStream(true).start();
