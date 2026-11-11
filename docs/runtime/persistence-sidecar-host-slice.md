@@ -258,3 +258,27 @@ checkpoint-integrity canary assertions, with all seven Actions job steps
 successful. Neither result proves Java/JDBC source compilation, exact-head
 source SQLite tests or AttoLang guest code. No cross-org private-source
 copy, release promotion or merge is authorized by this evidence.
+
+
+### Subprocess crash/restart and exact-runner admission (2026-11-10)
+
+`SqliteCommandCrashRestartTestMain` is a new **real JDBC** host
+subprocess test, wired into the strict JDK 21 `javac -Xlint:all -Werror`
+workflow and the same pinned SQLite JDBC classpath. Child processes
+first exercise halt-before-commit and halt-immediately-after-provider-commit
+without delivering any user-level ACK. Parent processes reopen the same
+SQLite WAL database, raise the activation epoch, verify replayed events
+and durable result, confirm exactly-once command identity, and reject
+stale-epoch proof. The pre-COMMIT first-event SIGKILL phase is covered
+by the **Node host** reference via a connection-local SQLite TEMP trigger;
+it is not claimed as a Java JVM provider execution.
+
+A source-owned Java JDBC workflow rerun
+[#42948642624](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/42948642624),
+attempt 2, again failed with no assigned runner and **zero executed job
+steps**. No JDK compilation, JDBC integration, crash subprocess or
+guest AttoLang test was executed in source CI. The failure is in the
+execution-admission path but the specific billing/policy/root cause
+is still unknown. Reuse the secure private-source export gate in
+security draft PR #2694: do not mirror sources solely because a
+different private organization's synthetic canary has working minutes.
