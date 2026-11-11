@@ -173,7 +173,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                 if(row.next()) checkpoint=row.getLong(1);
             }
         }
-        if(checkpoint<0)throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        if(checkpoint<0 || checkpoint>head(id))
+            throw new SQLException("INVALID_ACTOR_SNAPSHOT");
         try(PreparedStatement s=db.prepareStatement(
                 "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
                 "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
