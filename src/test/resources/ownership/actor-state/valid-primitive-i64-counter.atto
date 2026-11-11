@@ -1,0 +1,28 @@
+// Fixed-width i64 state remains valid under the normal source-language guest path.
+define actor I64Counter as
+  state {
+    let i64 count;
+  }
+
+  on_start(): void {
+    self.count = 1;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    self.count = self.count + 1;
+    self.send(self.count);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn I64Counter();
+  await worker.get_ready();
+  worker.send("increment");
+  val observed = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(observed.value);
+  await worker.get_done();
+  return;
+}
