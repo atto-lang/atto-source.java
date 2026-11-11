@@ -40,6 +40,29 @@ final class CoreProtocolsGuestTest {
     }
 
     @Test
+    void importedCoreTraitRequiresActualNominalMethodConformance() throws Exception {
+        Path accepted = temp.resolve("good.atto");
+        Files.writeString(accepted, """
+                import trait Eq from "ores.core/protocols";
+                define class Counter implements Eq<int> as
+                  pub equals(int other): bool { return true; }
+                end
+                pub fnc main(): void { return; }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(accepted));
+
+        Path rejected = temp.resolve("bad.atto");
+        Files.writeString(rejected, """
+                import trait Eq from "ores.core/protocols";
+                define class Counter implements Eq<int> as
+                end
+                pub fnc main(): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(rejected));
+    }
+
+    @Test
     void coreProtocolNamesCannotBeDefinedAsUserClaimedSafetyAuthorities() throws Exception {
         String source = CoreLibrarySources.oresCoreSource("ores.core/protocols");
         for (String forbidden : new String[] {
