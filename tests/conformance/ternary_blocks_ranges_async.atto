@@ -7,10 +7,11 @@ async fnc answer(): int {
 pub async fnc main(): void {
   val result: int = true ? {
     val value = await answer();
-    value
+    return value
   } : {
     stdio.stdout.write("WRONG");
-    0
+    return 0
   };
+  // A ternary-arm return must never terminate the surrounding async fnc.
   stdio.stdout.write(result);
 }
