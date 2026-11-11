@@ -60,6 +60,29 @@ final class ActorStateFieldBorrowBoundaryTest {
     }
 
     @Test
+    void legacyUnaryProjectedBorrowCannotBypassActorRegionLoanGate() {
+        // Legacy .ores syntax remains parsed, but is never an escape hatch
+        // around the canonical .atto physical field-loan requirement.
+        String legacy = """
+                define actor Ledger as
+                  state {
+                    let List<int> entries;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    val borrow List<int> alias = &self.entries;
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+        var rejection = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(legacy)));
+        assertTrue(rejection.getMessage().contains(
+                        "actor state field/index borrow requires compiler-lowered"),
+                rejection.getMessage());
+    }
+
+    @Test
     void nestedActorFieldTakeMustRejectBeforeBackendLowering() throws Exception {
         String source = atto("reject-nested-take-field.atto");
         var rejection = assertThrows(IllegalArgumentException.class,
