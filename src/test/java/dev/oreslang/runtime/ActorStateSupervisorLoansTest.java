@@ -174,7 +174,7 @@ final class ActorStateSupervisorLoansTest {
         }
 
         void release(ActorStateSupervisorLoans.Loan loan) throws Exception {
-            asControl(supervisor, () -> { fixture.release(loan); return null; });
+            asControl(supervisor, () -> { loan.close(); return null; });
         }
 
         long read(ActorStateSupervisorLoans.Loan loan) throws Exception {
