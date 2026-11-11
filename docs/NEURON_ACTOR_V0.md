@@ -80,6 +80,38 @@ The 19 reader/writer JUnit methods, 10 neuron parser/type-check methods, and
 4 layout JUnit methods are **33 committed host tests, NOT EXECUTED** on the
 current exact PR tree. No compiled guest `.atto` inference is certified.
 
+### Compiler scoped-scalar preflight (new, still fail closed)
+
+`NeuronScalarScopeV0.preflight(ClassDecl)` now performs a **closed AST walk**
+of the initial `on_start` write and `forward` read scopes. It is invoked
+from `TypeChecker.rejectUnloweredCheckedEffects` only **before** the existing
+`NEURON_STATE_MIR_UNSUPPORTED` mandatory throw. It does **not** grant a loan
+or execute the neuron. The preflight:
+
+- Accepts only the compiler-marked `self.handle_state` call, one inferred
+  nonmutable state alias, and the expected `critical-write` or
+  `critical-read` form. It rejects duplicate hooks, direct critical scopes
+  in other methods, unmatched read/write pairs, or extra statements.
+- Requires `on_start` to initialize every declared float slot exactly once.
+  The right-hand side is checked **before** its assignment marks the slot
+  initialized, so `s.weight = s.weight + 1.0` is not an implicit zero read.
+- Allows only scalar double literals, initialized state-field loads, the
+  explicitly declared `float` forward argument, and straight-line `+`,
+  `-`, `*` arithmetic. Rejects closures, arbitrary calls, `await`,
+  `return s`, other projections, array/object references, mutation in read
+  scopes, and unsupported operations by default.
+- Returns an immutable **descriptive** plan of read/write field names.
+  Its public record data is **not an authorization receipt**. A complete
+  borrow checker must still validate all program paths and all methods, and
+  bind the loan to the actual physical actor execution/heap generation.
+
+`NeuronScalarScopeV0Test` adds 12 source-level JUnit methods for valid
+preflight shape and negative escape, side-effect, early-read, unexpected
+method and expression-depth cases. The targeted workflow includes this
+suite along with the prior three host suites. This is **not executable
+guest MIR**, and no current-head test pass may be asserted from these
+committed tests alone.
+
 ### Guest/compiler next implementation slice
 
 1. Create an actor-owned allocation for `ClassDecl.stateFields()` with initial
