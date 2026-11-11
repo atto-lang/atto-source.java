@@ -34,6 +34,11 @@ final class CoreProtocolsGuestTest {
         assertTrue(source.contains("define pub trait Write<E>"));
         assertTrue(source.contains("define pub trait IntoIterator<T>"));
         assertTrue(source.contains("define pub trait Service<Request, Reply, E>"));
+        assertTrue(source.contains("define pub trait KeyValueStore<K, V, E>"));
+        assertTrue(source.contains("define pub trait BatchWritable<T, E>"));
+        assertTrue(source.contains("define pub trait Transform<I, O, E>"));
+        assertTrue(source.contains("define pub trait ReadWrite<E>"));
+        assertTrue(source.contains("define pub trait TryFrom<Src, Dst, E>"));
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
     }
 
@@ -45,6 +50,11 @@ final class CoreProtocolsGuestTest {
                 import trait Write from "ores.core/protocols";
                 import trait Source from "ores.core/protocols";
                 import trait Eq from "ores.core/protocols";
+                import trait TryFrom from "ores.core/protocols";
+                import trait ReadWrite from "ores.core/protocols";
+                import trait Transform from "ores.core/protocols";
+                import trait BatchWritable from "ores.core/protocols";
+                import trait KeyValueStore from "ores.core/protocols";
                 pub fnc main(): void { return; }
                 """);
         assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest));
@@ -117,12 +127,34 @@ final class CoreProtocolsGuestTest {
         }
     }
 
+
+    @Test
+    void missingMethodsInExtendedCoreTraitsAreRejectedByRealLinker() throws Exception {
+        // These are negative compilation checks, not fabricated I/O executions.
+        String[][] invalid = {
+                {"TryFrom", "TryFrom<int, int, int>"},
+                {"ReadWrite", "ReadWrite<int>"},
+                {"Transform", "Transform<int, int, int>"},
+                {"BatchWritable", "BatchWritable<int, int>"},
+                {"KeyValueStore", "KeyValueStore<int, int, int>"}
+        };
+        for (String[] entry : invalid) {
+            Path guest = temp.resolve("missing-" + entry[0] + ".atto");
+            Files.writeString(guest,
+                    "import trait " + entry[0] + " from \"ores.core/protocols\";\\n"
+                    + "define class Broken implements " + entry[1] + " as end\\n"
+                    + "pub fnc main(): void { return; }\\n");
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(guest, Map.of()), entry[0]);
+        }
+    }
+
     @Test
     void guestCannotForgeCompilerOwnedAutoTraitsOrSupervisorProtocols() {
         for (String name : new String[]{
                 "Sendable", "Shareable", "Copy", "Drop",
                 "Receives", "Supervisor", "ActorLifecycle"}) {
-            for (String kind : new String[]{"trait", "interface"}) {
+            for (String kind : new String[]{"trait", "interface", "contract"}) {
                 String source = "define pub " + kind + " " + name
                         + " as fnc grant() => bool; end";
                 IllegalArgumentException denied = assertThrows(
