@@ -6080,7 +6080,7 @@ public final class TypeChecker {
                     case "close_async" -> {
                         result = Primitive.VOID; parameters = List.of();
                     }
-                    default -> { return null; }
+                    default -> throw new IllegalArgumentException("unknown NioListener member " + name);
                 }
             }
             case "NioConnection" -> {
@@ -6094,7 +6094,7 @@ public final class TypeChecker {
                     case "close_async" -> {
                         result = Primitive.VOID; parameters = List.of();
                     }
-                    default -> { return null; }
+                    default -> throw new IllegalArgumentException("unknown NioConnection member " + name);
                 }
             }
             case "TcpConnection" -> {
