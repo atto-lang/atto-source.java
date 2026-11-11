@@ -116,20 +116,52 @@ final class CanonicalDefineScopeTest {
     }
 
     @Test
-    void emptyNewableInterfaceCannotAuthorizeFactoryByNameOnly() {
+    void sealedNewableCannotBeSpoofedByUserDeclaredInterface() {
         Ast.Program parsed = Parser.parse("""
                 define trait Newable as
                 end
-
-                define pub class Plain implements Newable as
-                  pub static fnc new(): Plain {
-                    return new Plain();
-                  }
-                end
                 """);
         IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
-        assertTrue(failure.getMessage().contains("Newable must declare"), failure.getMessage());
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(parsed));
+        assertTrue(failure.getMessage().contains("reserved compiler-owned"), failure.getMessage());
+    }
+
+    @Test
+    void newableFactoryHasStaticWitnessWithExactPublicReturnType() {
+        Ast.Program program = Parser.parse("""
+                define pub class Cart implements Newable[Cart] as
+                  pub fnc new(): Cart { return new Cart(); }
+                end
+                define pub fnc build(): Cart { return Cart.new(); }
+                """);
+        Ast.ClassDecl cart = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertTrue(cart.methods().getFirst().isStatic(), "Newable new must lower to a type-level factory");
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void newableFactoryRejectsIncorrectStaticWitnesses() {
+        for (String member : new String[] {
+                "private fnc new(): Cart { return new Cart(); }",
+                "pub fnc new(): int { return 42; }",
+                "pub fnc new(int ignored): Cart { return new Cart(); }",
+                "pub async fnc new(): Cart { return new Cart(); }",
+                "pub fnc new<Other>(): Cart { return new Cart(); }"
+        }) {
+            String source = "define pub class Cart implements Newable[Cart] as " + member + " end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+        }
+        for (String source : new String[] {
+                "define pub class Cart implements Newable as pub fnc new(): Cart { return new Cart(); } end",
+                "define pub class Cart implements Newable[int] as pub fnc new(): Cart { return new Cart(); } end",
+                "define pub class Cart implements Newable[Cart, int] as pub fnc new(): Cart { return new Cart(); } end",
+                "define pub class Cart implements Newable[Cart] as end"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+        }
     }
 
     @Test
@@ -148,9 +180,9 @@ final class CanonicalDefineScopeTest {
     }
 
     @Test
-    void newableTraitMethodNameParsesWithoutUnreservingNewEverywhere() {
+    void reservedNewIsStillUsableAsAnOrdinaryTraitSignatureName() {
         Ast.InterfaceDecl contract = assertInstanceOf(Ast.InterfaceDecl.class,
-                onlyDeclaration("define trait Newable as fnc new(): int; end"));
+                onlyDeclaration("define trait FactoryContract as fnc new(): int; end"));
         assertEquals("new",
                 assertInstanceOf(Ast.InterfaceFunctionDecl.class, contract.members().getFirst()).name());
     }
