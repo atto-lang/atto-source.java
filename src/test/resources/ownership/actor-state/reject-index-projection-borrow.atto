@@ -1,0 +1,11 @@
+// A nested indexed actor-state projection must not bypass region admission.
+define actor Ledger as
+  state {
+    let List<int> entries;
+  }
+  receive(ActorMail<String> mail): void {
+    val borrow int first = rt borrow self.entries[0];
+    self.end();
+    return;
+  }
+end
