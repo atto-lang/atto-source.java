@@ -1,0 +1,4 @@
+pub routine main(): void {
+    const next = get_point() with {x => 2};
+    return;
+}

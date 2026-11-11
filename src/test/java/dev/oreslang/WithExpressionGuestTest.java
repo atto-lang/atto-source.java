@@ -109,6 +109,53 @@ final class WithExpressionGuestTest {
     }
 
     @Test
+    void readonlyRecordUpdateUsesOriginalRhsValuesInSourceOrder() throws Exception {
+        assertEquals("6115", run(readGuest("record-original-rhs-order.atto")));
+    }
+
+    @Test
+    void effectfulOrSuspendableWithReceiverFailsClosed() {
+        for (String file : java.util.List.of(
+                "with-receiver-call-rejected.atto",
+                "with-receiver-await-rejected.atto")) {
+            IllegalArgumentException failure = rejects(readGuest(file));
+            assertTrue(failure.getMessage().contains("with receiver must be a synchronous"),
+                    () -> file + ": " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void nominalCopyDoesNotLaunderAliasesOrPrivateFields() {
+        assertNotNull(rejects(readGuest("with-scalar-alias-rejected.atto")));
+        IllegalArgumentException privateField =
+                rejects(readGuest("with-private-field-rejected.atto"));
+        assertTrue(privateField.getMessage().contains("private"),
+                privateField::getMessage);
+    }
+
+    @Test
+    void borrowedSelfAndLiveLoansCannotBeConsumedByWith() {
+        for (String file : java.util.List.of(
+                "with-take-self-rejected.atto",
+                "with-borrow-live-rejected.atto")) {
+            IllegalArgumentException failure = rejects(readGuest(file));
+            assertTrue(failure.getMessage().contains("borrow")
+                    || failure.getMessage().contains("self")
+                    || failure.getMessage().contains("move"),
+                    () -> file + ": " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void inheritedNominalLayoutsCannotUseDerivedCopyShortcut() {
+        IllegalArgumentException failure =
+                rejects(readGuest("with-inherited-class-rejected.atto"));
+        assertTrue(failure.getMessage().contains("immutable scalar-field class")
+                        || failure.getMessage().contains("copy contract"),
+                failure::getMessage);
+    }
+
+    @Test
     void rejectsMoveOnlyRecordContentWithoutCopyContract() {
         IllegalArgumentException failure = rejects(readGuest("record-move-only-field-rejected.atto"));
         assertTrue(failure.getMessage().contains("rt copy")
