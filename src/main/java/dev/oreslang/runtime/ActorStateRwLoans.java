@@ -48,10 +48,13 @@ public final class ActorStateRwLoans implements AutoCloseable {
 
     /**
      * The actor's region owner is selected at allocation time, NEVER by its
-     * first reader/writer. Only a trusted actor-runtime allocation registry
-     * may provide this value: a caller must not construct it from guest input.
+     * first reader/writer. Package-private constructor: callers outside the
+     * runtime package cannot forge an independent state lock from a value
+     * descriptor. Production admission must use ActorRuntime's one-use
+     * StateRegionMint and ActorStateSupervisorLoans; ordinary allocation
+     * records are NOT bearer capabilities.
      */
-    public ActorStateRwLoans(
+    ActorStateRwLoans(
             ExecutionContext.AllocationDomain ownerAllocation,
             int maxPending, int maxReaders) {
         this(ownerAllocation, maxPending, maxReaders, () -> { });
@@ -62,7 +65,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
      * admission and the final physical reader/writer/completion retires.
      * The active-reader limit is separate from the pending queue limit.
      */
-    public ActorStateRwLoans(
+    ActorStateRwLoans(
             ExecutionContext.AllocationDomain ownerAllocation,
             int maxPending, int maxReaders, Runnable retirementWakeup) {
         this.boundAllocation = Objects.requireNonNull(
