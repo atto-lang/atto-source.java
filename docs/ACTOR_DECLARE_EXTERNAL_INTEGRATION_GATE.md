@@ -48,17 +48,31 @@ A dedicated read-only workflow exists at
 `.github/workflows/actor-declare-external-jdk25-exact-head.yml`.
 On same-repository PRs, it checks out the literal immutable PR head
 with no persisted credentials, verifies commit/tree/POM/parser/binder blob
-identities, requires GraalVM JDK 25, and runs **nine JUnit suites**:
-six declaration/binder static suites, `ActorReceiveIngressBoundaryTest`,
-`ActorReceiveIngressGuestExecutionTest` (real inline actor mailbox guest),
-and `ActorInitPublicationGateTest` (one-shot native Java host model).
-All nine Surefire XML reports must have real unskipped, zero-failure cases;
-at least **88** authored cases are now in the integrated set (64 new
-declaration cases plus 13 receive negatives/positives, one JVM guest test,
-and 10 init gate model cases). This is NOT 88 executed cases until a runner
-starts and Maven completes. Neither a successful inline actor test nor
-an independently compiled host model establishes executable `declare actor`
-support. No success is inferred from `workflow status=success` alone.
+identities, requires GraalVM JDK 25 and runs **11 JUnit suites**:
+six declaration/binder suites, the 13-case `ActorReceiveIngressBoundaryTest`,
+`ActorReceiveIngressGuestExecutionTest` (real inline mailbox guest),
+the 10-case `ActorInitPublicationGateTest` native host model,
+the 18-case `ActorSourceLifecycleGateTest` actor-cell admission suite,
+and the 14-case `StatelessDeclaredActorExecutionTest` (including a real
+**opt-in stateless** `declare actor` guest program). The exact-head
+workflow now requires at least **120** successful, unskipped Surefire cases,
+and prints exact source/git tree receipts. This is NOT 120 executed cases
+until a runner starts and Maven finishes.
+
+A *separate isolated local check* compiled the exact gate source blob
+`f338b808161133e2d9248ed8b9cd12a8dc54d4ab` using Java 21 with
+a narrow `ActorRuntime` API stub and executed 18 assertions. That checks
+only the actor lifecycle gate itself; it is NOT the production Maven,
+GraalVM, Java25, guest, Native Image or backend parity result.
+
+`OresCompiler.parseAndTypeCheckStatelessDeclaredActors` is an explicit
+opt-in prototype that lowers a fully bound, **stateless same-source** actor
+with inert `external init` and private typed `external receive` into the
+existing actor runtime path, followed by the unchanged type and ownership
+checks. The ordinary source compilation path stays fail-closed. It is
+documented in `docs/STATELESS_DECLARED_ACTOR_OPT_IN_V1.md`.
+A passing opt-in guest test will not prove general stateful/cross-file
+actor ownership or backend parity.
 
 The following blockers must be resolved by a **trusted operator**, not by
 editing a draft PR to grant itself runner or export authority:
@@ -77,10 +91,12 @@ editing a draft PR to grant itself runner or export authority:
 ## Runtime and backend release receipts (subsequent gate)
 
 The exact-blob receive/guest fixtures from #2822 and the one-shot gate
-from #2256 are already staged on this Java integration head, without
-silently replacing the original implementation PRs. The executable
-`OresEvalRootNode`, `ActorRuntime`, typed inline `init`, and out-of-line
-actor role lowering are **not yet integrated or verified**. Require:
+from #2256 are staged on this Java integration head. The existing
+`ActorRuntime` source actor path is now additionally guarded by
+`ActorSourceLifecycleGate` around startup, receive, teardown and
+retirement. The **opt-in stateless** out-of-line compiler lowering reuses
+that actor executor, but **general stateful source lowering and #2256's typed
+init/spawn arguments remain unintegrated and unverified**. Require:
 - typed spawn arguments, exactly-once `init`, state-builder authenticity,
   atomic READY publication, startup failure supervision and cleanup;
 - bounded mailbox sends and `ActorMail<T>` decode with generation-scoped
