@@ -160,10 +160,33 @@ proof before guest execution is permitted. These boundaries remain blocked
 by `NEURON_STATE_MIR_UNSUPPORTED`. Do not treat turn-proof tests as a
 guest compiler or deterministic memory-reclamation result.
 
-The targeted suite now has **51 committed JUnit methods** across six test
-classes, including the four real-runtime host tests. At the time of this
+The targeted suite now has **55 committed JUnit methods** across seven test
+classes, including four real-runtime host tests and four typed-MIR descriptor
+tests. At the time of this
 edit the exact-head GitHub-hosted test admission remains at
 `steps=null`; source tests are not executed receipts.
+
+### Structured scalar MIR descriptor (AOT preparation, not emission)
+
+`NeuronScalarMirV0.lower(ClassDecl)` now consumes the already preflighted
+real parser AST and emits a **typed, immutable float-only instruction plan**:
+`CONST_F64`, `LOAD_STATE_F64`, `LOAD_INPUT_F64`, `NEG_F64`,
+`ADD_F64`, `SUB_F64`, `MUL_F64`, and `STORE_STATE_F64`.
+It has no dynamic dispatch, reflection, guest callback, runtime parser,
+macro evaluation, or unbounded field lookup. Both critical read and critical
+write are represented as structured `GuardedScope` blocks with a mandatory
+`RELEASE_IN_FINALLY` edge, not a fallthrough-only release instruction.
+A real emitter must implement the cleanup edge for traps, cancellation,
+runtime failures and all normal exits.
+
+The TypeChecker now requests this descriptor for a complete preflighted
+scope pair and then **still throws** `NEURON_STATE_MIR_UNSUPPORTED` without
+emitting guest code. `NeuronScalarMirV0Test` adds four JUnit cases proving
+the accepted static instruction sequence, malformed/inconsistent descriptor
+rejection, expression/alias negative cases, and the retained type-check gate.
+The descriptor is not a portable executable binary, authenticated loan, or
+compiled JVM/LLVM/.NET/Wasm/Forge result; native backend-specific lowering
+and physical actor lifecycle binding remain outstanding.
 
 ### Guest/compiler next implementation slice
 
