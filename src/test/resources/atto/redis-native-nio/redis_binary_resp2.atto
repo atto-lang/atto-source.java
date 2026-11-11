@@ -209,7 +209,7 @@ define actor BinaryKvActor as
     return;
   }
 
-  receive(ActorMail<Tuple<int,List<int>,List<int>>> mail): void {
+  receive(ActorMail<Tuple[int, List[int], List[int]]> mail): void {
     val tuple = mail.value;
     val int kind = tuple[0];
     val List<int> key = tuple[1];
@@ -310,7 +310,7 @@ pub fnc encode_bulk(borrow List<int> value): List<int> {
   return out;
 }
 
-pub fnc encode_reply(Tuple<int,List<int>> reply): List<int> {
+pub fnc encode_reply(Tuple[int, List[int]] reply): List<int> {
   if reply[0] == 0 then return [36, 45, 49, 13, 10]; fi
   if reply[0] == 1 then return [43, 79, 75, 13, 10]; fi
   if reply[0] == 2 then return encode_bulk(rt borrow reply[1]); fi
