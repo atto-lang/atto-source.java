@@ -8760,7 +8760,10 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<ActorStateSupervisorLoans> createManagedPrimitiveStateRegion(
                             int maxPending, int maxReaders) {
-                        if (codeExecutor == null || managedByGroup.get() == null) {
+                        // Untrusted tenants must remain isolate-only and
+                        // cannot acquire a same-process shared-state region.
+                        if (codeExecutor == null || managedByGroup.get() == null
+                                || kind == ActorKind.UNTRUSTED) {
                             return Optional.empty();
                         }
                         return Optional.of(ActorRuntime.this.createCurrentActorStateLoans(
