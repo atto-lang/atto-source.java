@@ -238,6 +238,7 @@ public final class ActorReceiverBinder {
     private static void bindModule(
             Ast.ModuleDecl module, Map<Slot, Binding> bindings) {
         Map<String, Ast.Decl> nominalActors = new LinkedHashMap<>();
+        Map<String, Set<String>> embeddedInstanceSlots = new LinkedHashMap<>();
         Map<String, String> declaredTypes = new LinkedHashMap<>();
         Set<String> receiverAliases = new LinkedHashSet<>();
 
@@ -260,6 +261,17 @@ public final class ActorReceiverBinder {
                 category = klass.actorKind() == Ast.ActorKind.NONE ? "class" : "actor class";
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
                     nominalActors.put(typeName, klass);
+                    Set<String> slots = new LinkedHashSet<>();
+                    for (Ast.MethodDecl owned : klass.methods()) {
+                        if (owned.isStatic()) continue;
+                        if (!slots.add(methodSelector(owned.name(), owned.arity()))) {
+                            throw new IllegalArgumentException(
+                                    "duplicate in-class actor method slot '" + module.name() + "."
+                                            + klass.name() + "." + owned.name() + "/"
+                                            + owned.arity() + "'");
+                        }
+                    }
+                    embeddedInstanceSlots.put(typeName, slots);
                 }
             } else if (declaration instanceof Ast.InterfaceDecl iface) {
                 typeName = iface.name();
@@ -310,15 +322,13 @@ public final class ActorReceiverBinder {
                                     + module.name() + "." + klass.name()
                                     + "' requires generic witness lowering");
                 }
-                for (Ast.MethodDecl owned : klass.methods()) {
-                    if (!owned.isStatic() && owned.name().equals(method.name())
-                            && owned.arity() == method.parameters().size()) {
-                        throw new IllegalArgumentException(
-                                "external actor method slot '" + module.name() + "."
-                                        + klass.name() + "." + method.name() + "/"
-                                        + method.parameters().size()
-                                        + "' conflicts with an in-class actor method");
-                    }
+                if (embeddedInstanceSlots.get(klass.name()).contains(
+                        methodSelector(method.name(), method.parameters().size()))) {
+                    throw new IllegalArgumentException(
+                            "external actor method slot '" + module.name() + "."
+                                    + klass.name() + "." + method.name() + "/"
+                                    + method.parameters().size()
+                                    + "' conflicts with an in-class actor method");
                 }
             }
             validateHookShape(method);
@@ -334,6 +344,12 @@ public final class ActorReceiverBinder {
                                 + "'; parameter types and return types do not disambiguate overloads");
             }
         }
+    }
+
+    private static String methodSelector(String name, int arity) {
+        // The caller-visible selector is name/arity. Types, parameter names,
+        // effects and return types never distinguish two instance method slots.
+        return name + "/" + arity;
     }
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
