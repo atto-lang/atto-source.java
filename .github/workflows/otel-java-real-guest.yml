@@ -34,6 +34,16 @@ jobs:
           test ! -e target
           echo "SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify source-owned guest, original Rust checker and locked dependency bytes BEFORE execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object --no-filters verification/otel/pinned/tests/smoke.ores)" = c22a8841b868cd89dd4cb720435d9585fbbb05cc
+          test "$(git hash-object --no-filters verification/otel/pinned/src/otel.ores)" = 6a1b9b940f10e4b273ae2b02be5cfff5e0572afc
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/src/main.rs)" = 2f91087449a58e7b5756d23868860dbcb82e4847
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.toml)" = bb007125dff7b207f34acdde22f91f61283db256
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.lock)" = cc5a82761a5188f1a2ed4f9ec67e566ddfed7f45
+          echo "Pinned OTel guest and Rust oracle: five immutable Git blobs matched"
       - name: Use GraalVM 25.3 on JDK 25 (same toolchain as compiler CI)
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -84,6 +94,16 @@ jobs:
           test ! -e target
           echo "SOURCE_HEAD=$EXPECTED_SOURCE_SHA"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify source-owned guest, original Rust checker and locked dependency bytes BEFORE execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object --no-filters verification/otel/pinned/tests/smoke.ores)" = c22a8841b868cd89dd4cb720435d9585fbbb05cc
+          test "$(git hash-object --no-filters verification/otel/pinned/src/otel.ores)" = 6a1b9b940f10e4b273ae2b02be5cfff5e0572afc
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/src/main.rs)" = 2f91087449a58e7b5756d23868860dbcb82e4847
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.toml)" = bb007125dff7b207f34acdde22f91f61283db256
+          test "$(git hash-object --no-filters verification/otel/pinned/tools/telemetry-check/Cargo.lock)" = cc5a82761a5188f1a2ed4f9ec67e566ddfed7f45
+          echo "Pinned OTel guest and Rust oracle: five immutable Git blobs matched"
       - name: Use GraalVM 25.3 JDK 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
