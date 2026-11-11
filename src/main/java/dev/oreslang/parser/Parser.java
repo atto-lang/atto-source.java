@@ -1246,6 +1246,12 @@ public final class Parser {
                 throw error(peek(), "actor handle_state is compiler-owned; "
                         + "user-defined state-loan authority is forbidden");
             }
+            if (check(IDENT) && (peek().lexeme().equals("on_stop")
+                    || peek().lexeme().equals("on_restart"))) {
+                throw error(peek(), "actor lifecycle on_stop/on_restart require "
+                        + "compiler-owned CONTROL and generation-fenced lowering; "
+                        + "source methods are not yet enabled");
+            }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
                         + "panic goes directly to the supervisor CONTROL lane");
