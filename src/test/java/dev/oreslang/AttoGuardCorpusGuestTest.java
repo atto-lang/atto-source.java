@@ -18,6 +18,8 @@ final class AttoGuardCorpusGuestTest {
     @Test
     void canonicalScalarGuardExecutes() throws Exception {
         String text = fixture("canonical-scalar.atto");
+        assertTrue(text.contains("x neq 5"), "AttoLang guard fixture must use canonical neq");
+        assertFalse(text.contains("x != 5"), "legacy inequality spelling is not canonical");
         TypeChecker.check(Parser.parse(text));
         Source source = Source.newBuilder(OresLanguage.ID, text, "canonical-scalar.atto")
                 .mimeType(OresLanguage.MIME_TYPE).build();
