@@ -62,6 +62,29 @@ public final class Parser {
     }
 
     /**
+     * Explicit opt-in strict AttoLang v1 syntax admission. This is not inferred
+     * from the filename: existing .ores and .atto legacy callers remain intact.
+     * Fail before AST lowering on C-style equality or opaque template payloads,
+     * which would otherwise be reparsed outside the selected source profile.
+     */
+    public static Ast.Program parseStrictAtto(String source) {
+        List<Token> scanned = new Lexer(source).scan();
+        for (Token token : scanned) {
+            if (token.type() == EQUAL_EQUAL || token.type() == BANG_EQUAL) {
+                throw new IllegalArgumentException("ATTO_STRICT_INVALID_EQUALITY_TOKEN at "
+                        + token.line() + ":" + token.column() + ": use eq / neq / !eq");
+            }
+            if (token.type() == TEMPLATE_LITERAL) {
+                throw new IllegalArgumentException("ATTO_STRICT_TEMPLATE_UNSUPPORTED at "
+                        + token.line() + ":" + token.column()
+                        + ": template interpolation requires profile-preserving typed lowering");
+            }
+        }
+        return new Parser(scanned).parseProgram();
+    }
+
+
+    /**
      * Parse one entire interpolation as an expression, never a statement.
      * Nested cpu/gpu domains cannot bypass the compilation-unit preflight.
      */
