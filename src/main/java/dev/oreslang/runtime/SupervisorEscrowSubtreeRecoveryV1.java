@@ -81,7 +81,16 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // Never hold the coordinator monitor while taking ActorRuntime's
         // admission/actor lifecycle locks (faults acquire them in reverse).
         long nodeId = bridge.attach(ref, supervisor);
-        synchronized (lock) { refs.put(nodeId, ref); }
+        // The bridge MUST have registered the exact physical ActorRef
+        // before publishing the runtime's CONTROL binding. Do not publish
+        // an after-the-fact ref here: ancestor failure could observe a
+        // ledger child without a cancellable runtime object.
+        synchronized (lock) {
+            if (refs.get(nodeId) != ref) {
+                throw new IllegalStateException(
+                        "host actor CONTROL attachment was not atomically published");
+            }
+        }
         return nodeId;
     }
 
