@@ -5,7 +5,7 @@ set -euo pipefail
 reject() { echo "ATTO_MATRIX_RECEIPT_REJECT: $*" >&2; return 1; }
 check_ledger() {
   local d="$1" entry="$2" label="$3" expected_rc="$4"
-  local file="$d/$label-$entry.exit"
+  local file="$d/$entry-$label.exit"
   [[ -f "$file" && ! -L "$file" ]] || { reject "missing exit for $label/$entry"; return 1; }
   [[ "$(cat "$file")" == "$expected_rc" ]] || { reject "wrong exit for $label/$entry"; return 1; }
   for suffix in stdout stderr; do
@@ -14,7 +14,7 @@ check_ledger() {
   done
 }
 check_cases() {
-  local d="$1" demo="$2" cp="$3" rc out err name file entry pattern
+  local d="$1" demo="$2" rc out err name file entry pattern
   [[ -d "$d" && ! -L "$d" ]] || { reject "receipt directory absent"; return 1; }
   [[ -f "$d/cases.tsv" && ! -L "$d/cases.tsv" ]] || { reject "case ledger absent"; return 1; }
   local expected
@@ -83,7 +83,7 @@ verify() {
     sha256sum --status -c "$receipt/$file" ||
       { reject "hash mismatch: $file"; return 1; }
   done
-  check_cases "$receipt" "$demo" "$compiler_sha" ||
+  check_cases "$receipt" "$demo" ||
     { reject 'case ledger verification failed'; return 1; }
   echo "ATTO_OWNED_MATRIX_RECEIPT_PASS demo=$demo_sha compiler=$compiler_sha cases=7 JIT_ONLY_NOT_AOT"
 }
@@ -100,7 +100,7 @@ self_test() {
     printf '%s\tcheck\t1\tPASS\n' "$n" >> "$p"
   done
   # Source-free mutation gates never claim compiler or guest execution.
-  if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'missing receipt streams accepted'; exit 1; fi
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'missing receipt streams accepted'; exit 1; fi
   printf '\n' >> "$p"
   if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'extra test row accepted'; exit 1; fi
   sed -i '$d' "$p"
