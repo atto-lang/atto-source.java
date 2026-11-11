@@ -56,7 +56,7 @@ A bodyless define actor Foo; is invalid.
   package attestation and cannot promote executable actor authority.
 - ManifestActorContractBuild requires an explicit canonical .atto.pkg.toml,
   project.name/version and manifest-owned source.roots. Sources are closed
-  and rescanned in sorted order (up to 4096 files, 16 MiB/file, 256 MiB
+  and rescanned in sorted order (up to 4096 files, 131072 visited filesystem entries, depth 64, 16 MiB/file, 256 MiB
   aggregate), valid UTF-8, with no symlinks, escapes, overlapping roots or
   casefold collisions. It returns exact parsed file SHA-256 digests and
   checks manifest SHA-256 before and after scanning. Ambient import paths
@@ -82,7 +82,7 @@ scanner is a static development API, not a secure process sandbox.
 4. Execute Java/GraalVM guest/compiler tests and Native Image, followed by
    LLVM, .NET Native AOT, Wasm and Forge parity. No cross-backend execution
    is claimed in this draft.
-5. Run the 22 authored DeclaredActorContractWitnessTest JUnit methods and
+5. Run the 26 authored DeclaredActorContractWitnessTest JUnit methods and
    existing actor suites on an admitted JDK25 runner. Require actual test
    reports, no skipping and exact source/fixture blob receipt. Prior Actions
    runs in source org failed before job steps; CI failure badges are not
@@ -90,3 +90,8 @@ scanner is a static development API, not a secure process sandbox.
    authorized security controls.
 
 Fixture files: contracts/declared-actor-witness-v1/.
+
+Additional defensive tests reject a manifest whose files contain no
+`declare actor` witness and invalid UTF-8 source bytes. The manifest builder
+fails rather than issuing an empty success receipt or silently replacing
+invalid bytes.
