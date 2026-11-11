@@ -7401,9 +7401,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
-            if (expr instanceof Ast.WithExpr) {
-                throw new IllegalStateException(
-                        "with expression reached guest evaluator without checked reconstruction lowering");
+            if (expr instanceof Ast.WithExpr update) {
+                Object source = eval(update.source(), env);
+                if (!(source instanceof ReadonlyRecordValue original)) {
+                    throw new IllegalStateException(
+                            "with reconstruction requires a compiler-checked readonly record");
+                }
+                // Evaluate all replacements before constructing/publishing a
+                // new value. Earlier replacements must never affect later RHS
+                // reads of the original receiver.
+                LinkedHashMap<String, Object> replacements = new LinkedHashMap<>();
+                for (Ast.WithField change : update.changes()) {
+                    if (!original.containsKey(change.name())
+                            || replacements.containsKey(change.name())) {
+                        throw new IllegalStateException(
+                                "unchecked with field '" + change.name() + "'");
+                    }
+                    replacements.put(change.name(), eval(change.value(), env));
+                }
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>(original);
+                fields.putAll(replacements);
+                return new ReadonlyRecordValue(fields);
             }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
