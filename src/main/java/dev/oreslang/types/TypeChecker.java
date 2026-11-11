@@ -162,6 +162,13 @@ public final class TypeChecker {
         ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ActorStateDecl state) {
+                    throw new IllegalArgumentException(
+                            "ATTACHED_ACTOR_STATE_CRITICAL_LOWERING_UNSUPPORTED: '"
+                                    + state.actorName() + "' has a sealed state schema but requires "
+                                    + "compiler-issued read/write loans, nonescaping critical effects, "
+                                    + "actor-owned allocation and generation-fenced execution");
+                }
                 if (declaration instanceof Ast.ExternalActorMethodDecl method) {
                     throw new IllegalArgumentException(
                             "EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED: '" + method.name()
