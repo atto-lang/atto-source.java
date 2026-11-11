@@ -21,7 +21,9 @@ with `VIRTUAL_ACTOR_MIR_UNSUPPORTED`.
   permitted in the v1 plan.
 - An immutable, **compile-time-only** nominal `VirtualActorRef[Cart]`
   interface descriptor records method name, exact arity, parameter type,
-  return type and actor name. It has no live `ActorRef`, heap authority or
+  return type and actor name. `requireCall` rejects wrong method names,
+  arities, or argument types statically; neither the plan nor descriptor
+  has a public constructor. It has no live `ActorRef`, heap authority or
   generated invocation method. This is NOT a new usable guest type.
 - `TypeChecker` runs the strict v1 recognition before its existing
   `VIRTUAL_ACTOR_MIR_UNSUPPORTED` fail-closed gate for virtual actors with
