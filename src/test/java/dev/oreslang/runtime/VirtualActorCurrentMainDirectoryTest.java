@@ -119,6 +119,10 @@ final class VirtualActorCurrentMainDirectoryTest {
                 assertEquals(1, first.entries().size());
                 assertEquals(alpha, first.entries().getFirst().identity());
                 assertEquals(alpha, first.nextAfter().orElseThrow());
+                assertThrows(IllegalArgumentException.class,
+                        () -> directory.list(grant, session, 1, 0L,
+                                first.nextAfter().orElseThrow()),
+                        "a cursor must never bypass stale-page validation with revision zero");
                 var second = directory.list(
                         grant, session, 1, first.revision(), first.nextAfter().orElseThrow());
                 assertEquals(beta, second.entries().getFirst().identity());
