@@ -77,6 +77,16 @@ final class VirtualActorProtectedMirV1Test {
         assertEquals("quantity", method.field());
         assertEquals("int", method.parameterType().name());
         assertEquals("void", method.returnType().name());
+        assertEquals(method, mir.referenceType().requireCall(
+                "add", List.of(Ast.TypeRef.simple("int"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> mir.referenceType().requireCall(
+                        "add", List.of(Ast.TypeRef.simple("string"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> mir.referenceType().requireCall("add", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> mir.referenceType().requireCall(
+                        "unknown", List.of(Ast.TypeRef.simple("int"))));
         assertThrows(IllegalArgumentException.class,
                 () -> mir.referenceType().method("add", 2));
         assertThrows(UnsupportedOperationException.class,
