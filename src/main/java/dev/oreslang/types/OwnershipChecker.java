@@ -1033,17 +1033,33 @@ public final class OwnershipChecker {
             return result;
         }
         if (expr instanceof Ast.WithExpr update) {
-            // The type checker has already admitted only closed readonly record
-            // values. Reprove copyability independently: callers may invoke
-            // the ownership checker directly on an untyped source tree.
+            // Reprove copyability independently: the ownership checker may
+            // be invoked directly without type-checker provenance.
             ValueInfo source = checkExpr(update.source(), scope, false);
-            if (source.type == null || !source.type.isReadonlyRecordType()
-                    || !isCopyType(source.type) || source.kind != ValueKind.COPY
-                    || source.borrowSource != null) {
-                throw error("with v1 needs an owned readonly Copy record; "
-                        + "move-only records, borrowed values and class copies need checked lowering");
+            boolean recordCopy = source.type != null
+                    && source.type.isReadonlyRecordType()
+                    && isCopyType(source.type)
+                    && source.kind == ValueKind.COPY
+                    && source.borrowSource == null;
+            boolean nominalCopy = source.type != null
+                    && withCopyEligibleClass(source.type)
+                    && source.kind == ValueKind.MOVE_ONLY
+                    && source.borrowSource == null
+                    && update.source() instanceof Ast.RuntimeCallExpr ownership
+                    && (ownership.operation().equals("copy")
+                            || ownership.operation().equals("take"));
+            if (!recordCopy && !nominalCopy) {
+                throw error("with requires an owned readonly Copy record or "
+                        + "explicit rt copy/take of a certified immutable scalar-field class");
             }
-            Map<String, Ast.TypeRef> fields = source.type.recordMembers();
+            Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            if (recordCopy) fields.putAll(source.type.recordMembers());
+            else {
+                Ast.ClassDecl klass = findClass(source.type.name());
+                for (Ast.FieldDecl field : klass.fields()) {
+                    fields.put(field.name(), field.type());
+                }
+            }
             for (Ast.WithField change : update.changes()) {
                 Ast.TypeRef slot = fields.get(change.name());
                 if (slot == null) {
@@ -1062,7 +1078,8 @@ public final class OwnershipChecker {
                             + "' must be an owned Copy value, never a borrow or guard");
                 }
             }
-            return new ValueInfo(source.type, ValueKind.COPY, null);
+            return new ValueInfo(source.type,
+                    recordCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
@@ -1218,12 +1235,18 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    if (source.kind != ValueKind.COPY) {
-                        throw error(
-                                "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
-                                        + "this current-main convergence patch fails closed instead of aliasing");
+                    if (source.kind == ValueKind.COPY) yield source;
+                    if (source.type != null && withCopyEligibleClass(source.type)
+                            && source.kind != ValueKind.MUT_BORROW
+                            && !scope.hasLiveMutexGuard()) {
+                        // An explicit class copy constructs a NEW owned value
+                        // from certified immutable fields. The source may be
+                        // an implicit immutable self receiver, never an actor
+                        // or a mutable/exclusive borrow.
+                        yield new ValueInfo(source.type, ValueKind.MOVE_ONLY, null);
                     }
-                    yield source;
+                    throw error("rt copy of move-only values needs a checked copy contract; "
+                            + "only immutable scalar-field product classes are enabled");
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
@@ -4928,6 +4951,27 @@ public final class OwnershipChecker {
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    /** Explicit-only nominal copy contract; classes never become implicit Copy. */
+    private boolean withCopyEligibleClass(Ast.TypeRef source) {
+        if (source == null || source.isBorrow() || source.inferArguments()
+                || source.isClosedAggregateType() || !source.arguments().isEmpty()) return false;
+        Ast.ClassDecl klass = findClass(source.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || klass.constructor() != null || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.genericParameters().isEmpty()
+                || klass.fields().isEmpty()) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            Ast.TypeRef slot = field.type();
+            if (field.bindingKind() == Ast.BindingKind.LET || field.mutableReferent()
+                    || slot == null || slot.isBorrow() || slot.inferArguments()
+                    || !slot.arguments().isEmpty()
+                    || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                    || findClass(slot.name()) != null) return false;
+        }
+        return true;
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
