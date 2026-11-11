@@ -17,24 +17,26 @@ After this patch:
 
 **Lock order:** runtimeLifecycleLock → target cell.lifecycleLock → escrow ledger. Terminal failure acquires failing cell.lifecycleLock → escrow ledger. Never call actor runtime cancellation, guest callbacks, external policy effect handlers, or an arbitrary mailbox callback **from inside the ledger monitor**. CONTROL coordinator snapshots release the ledger monitor before calling `runtime.cancel` on descendants.
 
-## Nested source actor admission — deliberate fail closed
+## Nested source actor admission — atomic CONTROL registration (stacked hardening)
 
-A previously admitted, supervised guest actor could create a *new* runtime child without atomically binding that child to the supervisor escrow. That child could escape a supervisor crash's **policy** subtree registry. For this draft, `spawnInternal` rejects nested spawn if its parent is opt-in escrow-supervised, rather than allow an untracked actor. **This temporarily restricts supervised nested spawn** until a subsequent transactional `reserve terminal slot → publish runtime actor identity + CONTROL owner → rollback on any failure` implementation is proven.
+A supervised actor now calls `registerSpawnedChildFromRuntime` from within the runtime parent lifecycle lock. The escrow ledger serializes child node reservation, exact-generation admission, coordinator ref registration, and actual actor publication in one synchronized transaction against an ancestor crash/fence. Publication failure removes the ledger node, actor ref mapping, coordinator entry, runtime binding and provisional actor/group records. Actor-slot, channel, output and private slice allocations are disposed on failed spawn. **A supervisor WITHOUT an installed recovery coordinator still rejects nested spawn before allocating any actor resources.** The CONTROL coordinator remains opt-in and no production guest supervisor policy is certified.
 
 Host-only `recovery.attach` before first activation continues to work and is used for current bounded tree tests. Other, non-escrow actor spawn paths remain unchanged.
 
 ## Test gates and evidence
 
+- Additional JDK21 standalone `SupervisorAtomicChildAdmissionStandalone` races 16,384 child node admissions against supervisor failure, including injected publication rollback. This checks the production *ledger* but not ActorRuntime. The `voxletra/voxletra-e2e` private carrier copies five byte-exact blobs only, with separate provenance; release certification remains blocked.
+
 - **Dependency-free Java 21 race harness**, `SupervisorEscrowDataAdmissionRaceStandalone`, executes 16 rounds × 8 workers × 512 admission attempts = **65,536 attempted racing permits**, plus a deterministic pre-fence outstanding permit, ancestor failure, unrelated sibling, foreign/replayed token denial, and committed-vs-aborted counters. Must run on exact Git source blobs with `javac -Xlint:all -Werror`.
 - Existing standalone `SupervisorFailureEscrowV1Standalone` contains **557 assertions**; the previous revision of the escrow passed those under JDK21. **The modified escrow blob and new 65,536-attempt harness are NOT_YET_EXECUTED**, so do not reuse the old result as a pass for this commit.
-- New real runtime JUnit `SupervisorEscrowAdmissionLinearizationIntegrationTest` adds 3 authored tests: concurrent host sends vs real actor supervisor crash and committed-accounting equality; synthetic physical oracle cannot ignore pre-fence outstanding permits; supervised nested spawn denied until atomic child registration. Total dedicated real runtime tests now **10 (3 + 4 + 3)**, all **NOT_EXECUTED** unless a stepful exact-head hosted run becomes available.
+- New real runtime JUnit `SupervisorEscrowAdmissionLinearizationIntegrationTest` adds 5 authored tests: concurrent host sends vs real actor supervisor crash and committed-accounting equality; synthetic physical oracle cannot ignore pre-fence outstanding permits; supervised nested spawn denied until atomic child registration. Total dedicated real runtime tests now **12 (3 + 4 + 5)**, all **NOT_EXECUTED** unless a stepful exact-head hosted run becomes available.
 - Source-org JDK25 Maven workflow requires *both* standalone passes and exact Surefire XML 10 non-skipped successful tests, backed by SHA-locked source/test files. The earlier org workflows returned **steps=null**; a zero-step failure is not semantic test evidence.
 
 ## Remaining P0 gates
 
 1. Run real full-source `mvn test` and the 65,536-attempt exact-source Java race with actual stepful CI; fix any compiler/test errors. Verify no group or continuation bypasses the one `mailbox.tryWrite` DATA path.
 2. Prove real guest scheduling and in-flight DATA processing/physical cancellation, including an already-issued permit whose actual mailbox write occurs *after* the fence. A bounded ticket check does not prove immediate guest quiescence.
-3. Replace fail-closed supervised nested spawn with **atomic parent-child escrow reservation/publish/rollback**, without introducing an orphan window or acquiring locks out of order.
+3. Execute and independently audit the new **atomic parent-child escrow reservation/publish/rollback** against actual ActorRuntime, including forced constructor/registration failures, supervisor races, no-orphan cleanup, physical resource receipts, and lock ordering. This is implemented but not certified.
 4. Integrate authoritative terminal CONTROL ledger and `SupervisorProcess` journal and physical `SupervisorShutdownTree` receipts. Do not create a second receipt authority.
 5. Add actual native FFI/arena/borrow-frame release receipts, policy restart budget/escalation, compiled `define supervisor` guest tests, TLC and five-backend differential execution.
 6. For complete JVM/process crash, an in-memory guardian is insufficient: external process supervisor + crash-consistent journal + process-generation fencing are separate release gates.
