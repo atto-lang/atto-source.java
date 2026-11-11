@@ -631,7 +631,6 @@ public final class OresEvalRootNode extends RootNode {
                     .toList();
             boolean synchronous = klass.methods().stream().allMatch(method ->
                     !method.async() && !method.suspends()
-                    && !method.generator()
                     && !method.name().equals("tear_down")
                     && !methodContainsPotentialSuspension(method)
                     && method.body().stream().noneMatch(this::containsSourceLoop));
@@ -10997,7 +10996,8 @@ public final class OresEvalRootNode extends RootNode {
                 Map<String,ActorStateSupervisorLoans.LongField> bound) {
             this.region = Objects.requireNonNull(region);
             this.ordinary = Objects.requireNonNull(ordinary);
-            this.bound = Map.copyOf(bound);
+            this.bound = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(bound));
             if (this.bound.isEmpty()) {
                 throw new IllegalArgumentException("managed field layout must bind i64 cells");
             }
