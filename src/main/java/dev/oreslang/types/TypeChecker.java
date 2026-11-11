@@ -157,6 +157,26 @@ public final class TypeChecker {
      * projection could silently discard the metadata.
      */
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
+        // When the guest program contains a virtual actor and main, validate
+        // typed resolve/awaited invokes against compiler-owned nominal MIR
+        // before the unchanged executable virtual-actor rejection. The
+        // preflight is not a dispatch permission, and runs before expansion.
+        boolean virtualActor = program.modules().stream().anyMatch(module ->
+                module.declarations().stream().anyMatch(
+                        decl -> decl instanceof Ast.VirtualActorDecl));
+        boolean guestMain = program.modules().stream().anyMatch(module ->
+                module.declarations().stream().anyMatch(
+                        decl -> decl instanceof Ast.FunctionDecl fn
+                                && fn.name().equals("main")));
+        if (virtualActor && guestMain) {
+            try {
+                dev.oreslang.compiler.VirtualActorGuestInvocationMirV1.lower(program);
+            } catch (IllegalArgumentException unlowered) {
+                throw new IllegalArgumentException(
+                        "VIRTUAL_ACTOR_MIR_UNSUPPORTED: " + unlowered.getMessage(),
+                        unlowered);
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
