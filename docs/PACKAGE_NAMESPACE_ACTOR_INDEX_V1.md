@@ -99,6 +99,10 @@ new Java API must be explicitly selected.
 method name, arity)`. Each entry is assigned to one declaring source ID
 and carries parameter types/mutability, return type, visibility, async,
 suspension, generic, structural, checked-effect and abstract metadata.
+The actor declaration itself also retains declaring source unit, visibility,
+generic status and actor kind. A `publicNominalWitness()` check explicitly
+rejects private and generic actors; a method's separate
+`declarationEligible()` check cannot substitute for actor eligibility.
 
 A lookup is deliberately explicit and has **no fallback** across
 namespaces or package identities. Methods inside named modules or source
