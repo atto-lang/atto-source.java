@@ -49,6 +49,11 @@ case "$mode" in
     java_bin="$JAVA_HOME/bin/java"
     test -x "$java_bin"
     test -s target/classpath.txt
+    test -s target/oreslang-source-0.1.0-SNAPSHOT.jar
+    # Compiler classes and dependency classpath are independent build outputs;
+    # hashing the JDK's java launcher does not identify the Oreslang compiler.
+    compiler_jar_before="$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)"
+    classpath_before="$(sha256sum target/classpath.txt | cut -d' ' -f1)"
     # Actual modular compiler launcher with linked .ores imports.
     "$java_bin" --enable-native-access=ALL-UNNAMED \
       -Dpolyglot.engine.WarnInterpreterOnly=false \
@@ -70,6 +75,12 @@ case "$mode" in
     ;;
 esac
 
+# Keep the compiler build artifact and module path fixed across execution.
+if [[ "$mode" == jvm ]]; then
+  test "$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)" = "$compiler_jar_before"
+  test "$(sha256sum target/classpath.txt | cut -d' ' -f1)" = "$classpath_before"
+fi
+
 # The original Rust oracle rejects missing/extra records, malformed JSON,
 # duplicate fields, corruption, all control chars, i64 and span relationships.
 test -s "$output/guest.stdout.jsonl"
@@ -85,6 +96,10 @@ cargo +1.95.0 run --quiet --locked --manifest-path "$oracle" -- \
   printf 'pinned_fixture_git_blob=%s\n' c22a8841b868cd89dd4cb720435d9585fbbb05cc
   printf 'pinned_library_git_blob=%s\n' 6a1b9b940f10e4b273ae2b02be5cfff5e0572afc
   printf 'executable_sha256=%s\n' "$(sha256sum "$executable" | cut -d' ' -f1)"
+  if [[ "$mode" == jvm ]]; then
+    printf 'compiler_jar_sha256=%s\n' "$compiler_jar_before"
+    printf 'classpath_manifest_sha256=%s\n' "$classpath_before"
+  fi
   printf 'guest_stdout_sha256=%s\n' "$(sha256sum "$output/guest.stdout.jsonl" | cut -d' ' -f1)"
   printf 'guest_exit=0\n'
   printf 'rust_oracle_exit=0\n'
