@@ -46,9 +46,20 @@ jobs:
         run: |
           set -euo pipefail
           test -s target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
-          REPORT=target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
-          TEST_COUNT="$(grep -m1 -Eo 'tests="[0-9]+"' "$REPORT" | sed -E 's/tests="([0-9]+)"/\1/')"
-          test "${TEST_COUNT:-0}" -ge 13
-          ! grep -Eq '<(failure|error|skipped)( |>)' "$REPORT"
-          printf 'ATTO_PROXY_TEST_COUNT=%s\n' "$TEST_COUNT"
-          printf 'ATTO_PROXY_GUEST_RECEIPT=present\n'
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          path = Path("target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml")
+          assert path.is_file() and path.stat().st_size > 0, "proxy Surefire XML missing"
+          root = ET.parse(path).getroot()
+          assert root.tag == "testsuite", "wrong XML root"
+          assert root.attrib.get("name") == "dev.oreslang.AotClassProxyLanguageTest", "wrong test class"
+          count = int(root.attrib.get("tests", "0"))
+          assert count >= 16, f"only {count} proxy tests executed"
+          for failure in ("failures", "errors", "skipped"):
+              assert int(root.attrib.get(failure, "0")) == 0, f"nonzero {failure}"
+          assert len(root.findall("testcase")) >= 16, "missing testcase evidence"
+          print(f"ATTO_PROXY_TEST_COUNT={count}")
+          print("ATTO_PROXY_GUEST_RECEIPT=present")
+          PY
