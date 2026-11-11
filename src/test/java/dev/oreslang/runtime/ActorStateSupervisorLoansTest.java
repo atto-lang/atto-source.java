@@ -297,4 +297,74 @@ final class ActorStateSupervisorLoansTest {
         }
     }
 
+
+    @Test
+    void twoHostClaimantsCannotRedeemTheSameGrantTwice() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var grant = fixture.issue("read");
+            var ready = new java.util.concurrent.CountDownLatch(2);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var successful = new AtomicInteger();
+            var rejected = new AtomicInteger();
+            var unexpected = new AtomicReference<Throwable>();
+            var winner = new AtomicReference<OresFuture<ActorStateSupervisorLoans.Loan>>();
+            Runnable claim = () -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("host claimants did not start");
+                    }
+                    var accepted = region.redeem(grant, fixture.supervisor);
+                    winner.set(accepted);
+                    successful.incrementAndGet();
+                } catch (SecurityException expected) {
+                    rejected.incrementAndGet();
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            };
+            var first = Thread.ofPlatform().start(claim);
+            var second = Thread.ofPlatform().start(claim);
+            try {
+                assertTrue(ready.await(5, TimeUnit.SECONDS));
+            } finally {
+                start.countDown();
+                first.join(5000);
+                second.join(5000);
+            }
+            assertFalse(first.isAlive());
+            assertFalse(second.isAlive());
+            assertNull(unexpected.get());
+            assertEquals(1, successful.get());
+            assertEquals(1, rejected.get());
+            assertEquals(0, region.outstandingGrantCount());
+            winner.get().join().close();
+            assertEquals(0, region.activeReaders());
+        }
+    }
+
+    @Test
+    void stopFailsQueuedGrantButDoesNotUnpinActiveSupervisorWriter()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var write = fixture.issue("write");
+            var waitingRead = fixture.issue("read");
+            var held = region.redeem(write, fixture.supervisor).join();
+            var queued = region.redeem(waitingRead, fixture.supervisor);
+            assertFalse(queued.isDone());
+
+            fixture.worker.stop();
+            assertTrue(queued.isCompletedExceptionally(),
+                    "STOP should fail but physically drain queued host notifications");
+            assertFalse(fixture.worker.done().isDone(),
+                    "the active writer keeps actor memory physically pinned");
+            assertFalse(region.physicallyRetired());
+            held.close();
+            assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(region.physicallyRetired());
+        }
+    }
+
 }
