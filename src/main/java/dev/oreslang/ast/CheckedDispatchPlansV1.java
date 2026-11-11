@@ -165,7 +165,11 @@ public final class CheckedDispatchPlansV1 {
         for (Map.Entry<Ast.CallExpr, Plan> entry : resolved.entrySet()) {
             Ast.CallExpr call = Objects.requireNonNull(entry.getKey(), "checked call");
             Plan plan = Objects.requireNonNull(entry.getValue(), "checked plan");
-            if (lookup(call) != plan && !plan.equals(lookup(call))) {
+            // Hold one strong reference for the whole comparison. Two weak
+            // lookups could observe GC between reads and spuriously reject
+            // a valid repeated type-check of the same AST.
+            Plan registered = lookup(call);
+            if (registered == null || (registered != plan && !registered.equals(plan))) {
                 throw new IllegalStateException("unregistered checked call plan");
             }
             identity.put(call, plan);
