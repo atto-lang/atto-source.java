@@ -80,6 +80,13 @@ public final class SqliteCommandPersistenceTestMain {
                 catch(SQLException expected){checks++;}
                 check(p.loadFenced(id(),1).version()==0,"partial journal survived rollback");
                 check(p.verify(id(),"sum",1,bytes("sum:3,4"))==null,"orphaned receipt survived rollback");
+                // Event digests share the exact append transaction: an
+                // aborted command cannot leave a certified digest behind.
+                try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+rollback);
+                    Statement q=c.createStatement();
+                    var rows=q.executeQuery("SELECT count(*) FROM command_v2_event_digests")) {
+                    check(rows.next() && rows.getInt(1)==0,"orphaned event digest survived rollback");
+                }
                 sql(rollback,"DROP TRIGGER deny_second");
                 check(p.append(c("sum",1,0,bytes("sum:3,4"),List.of(bytes("+3"),bytes("+4")))).lastVersion()==2,
                     "retry after rollback failed");
@@ -106,6 +113,63 @@ public final class SqliteCommandPersistenceTestMain {
                 sql(corrupt,"DELETE FROM command_v2_receipts");
                 fails("UNINDEXED_JOURNAL",()->p.loadFenced(id(),1));
             }
+            // Detect byte modification without changing versions or operation IDs.
+            Path tamper=dir.resolve("tamper-event.sqlite");
+            try(SqliteCommandPersistence p=new SqliteCommandPersistence(tamper,"tenant-a")){
+                p.grantEpoch("bank-1",1);
+                p.append(deposit("immutable-event",1,0,100));
+                check(p.loadFenced(id(),1).events().size()==1,"baseline digest not readable");
+                sql(tamper,"UPDATE command_v2_events SET payload=X'2B393939' WHERE version=1");
+                fails("CORRUPT_JOURNAL_PAYLOAD",()->p.loadFenced(id(),1));
+                // The original bytes remain recoverable after repairing the
+                // corrupt event: digest is immutable and cannot be rewritten.
+                sql(tamper,"UPDATE command_v2_events SET payload=X'2B313030' WHERE version=1");
+                check(p.loadFenced(id(),1).events().size()==1,"repaired event cannot replay");
+                sql(tamper,"UPDATE command_v2_events SET schema=2 WHERE version=1");
+                fails("CORRUPT_JOURNAL_PAYLOAD",()->p.loadFenced(id(),1));
+                sql(tamper,"UPDATE command_v2_events SET schema=1 WHERE version=1");
+                try {
+                    sql(tamper,"DELETE FROM command_v2_event_digests");
+                    throw new AssertionError("immutable event checksum deletion accepted");
+                }catch(SQLException expected) {
+                    check(expected.toString().contains("IMMUTABLE_EVENT_DIGEST"),
+                        "event checksum deletion was not fenced");
+                }
+                // Simulate a privileged database migration that accidentally
+                // removes the checksum after bypassing the provider trigger.
+                sql(tamper,"DROP TRIGGER command_v2_event_digest_no_delete");
+                sql(tamper,"DELETE FROM command_v2_event_digests");
+                fails("CORRUPT_JOURNAL_PAYLOAD",()->p.loadFenced(id(),1));
+            }
+            // An older draft database with receipts but no event-checksum
+            // history must fail closed rather than mint a fabricated proof.
+            Path legacy=dir.resolve("legacy-no-digest.sqlite");
+            try(SqliteCommandPersistence p=new SqliteCommandPersistence(legacy,"tenant-a")){
+                p.grantEpoch("bank-1",1);
+                p.append(deposit("legacy",1,0,5));
+                sql(legacy,"DROP TRIGGER command_v2_event_digest_no_delete");
+                sql(legacy,"DELETE FROM command_v2_event_digests");
+                fails("CORRUPT_JOURNAL_PAYLOAD",()->p.loadFenced(id(),1));
+            }
+            // A bounded stream may contain valid, individually sized
+            // events whose aggregate replay exceeds the configured budget.
+            // Rejection must not mutate durable receipts or the journal.
+            Path bounded=dir.resolve("bounded-replay.sqlite");
+            try(SqliteCommandPersistence p=new SqliteCommandPersistence(bounded,"tenant-a",4)){
+                p.grantEpoch("bank-1",1);
+                p.append(deposit("first",1,0,100)); // 4 bytes: +100
+                check(p.loadFenced(id(),1).events().size()==1,"budget boundary failed");
+                p.append(deposit("second",1,1,2)); // 2 more bytes, > 4
+                fails("REPLAY_BYTES_LIMIT_EXCEEDED",()->p.loadFenced(id(),1));
+                check(p.verify(id(),"second",1,bytes("deposit:2"))!=null,
+                    "replay byte guard destroyed durable command proof");
+            }
+            fails("INVALID_CONFIG",()->{
+                try(SqliteCommandPersistence invalid=
+                        new SqliteCommandPersistence(dir.resolve("bad-budget.sqlite"),"tenant-a",0)) {
+                    throw new AssertionError("invalid replay configuration accepted: "+invalid);
+                }
+            });
             System.out.println("PASS "+checks+" Java SQLite v2 command integration checks");
         }finally{
             try(var stream=Files.walk(dir)){
