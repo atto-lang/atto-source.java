@@ -4704,21 +4704,11 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-            // An opt-in supervised actor cannot safely publish a new child
-            // without reserving that child's CONTROL ownership first. Deny
-            // BEFORE reserveActorSlot, ActorCell construction, memory slice
-            // allocation, or output stream registration to avoid rollback leaks.
-            // No host can bind an already-executing parent to supervision, so
-            // its escrow membership cannot appear midway through this turn.
-            if (parent != null
-                    && supervisorEscrowBindings.containsKey(parent.ref.id())) {
-                throw new IllegalStateException(
-                        "supervised actor nested spawn requires atomic CONTROL child registration");
-            }
             reserveActorSlot();
 
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
+            SupervisorEscrowBinding reservedChildEscrow = null;
             try {
                 // All potentially throwing incarnation construction belongs
                 // inside the same rollback boundary as actor registration.
@@ -4750,11 +4740,33 @@ public final class ActorRuntime implements AutoCloseable {
                                             + parent.ref.id());
                         }
                         requireSupervisorEscrowAdmission(parent.ref);
-                        // A nested spawn inherits its parent's structured
-                        // lifecycle group. The spawn lineage is not a new
-                        // supervisor or a new group. Event-bus membership
-                        // remains opt-in and is never inherited here.
-                        ActorGroupId inheritedId = parent.managedByGroup.get();
+                        // The parent ledger and all descendant terminal paths
+                        // share the bridge publication monitor. Holding it
+                        // across CONTROL reservation + the physical actors.put
+                        // linearizes child visibility against ancestor fail().
+                        SupervisorEscrowBinding parentEscrow =
+                                supervisorEscrowBindings.get(parent.ref.id());
+                        Object publishLock = parentEscrow == null
+                                ? parent.lifecycleLock : parentEscrow.bridge();
+                        synchronized (publishLock) {
+                            try {
+                                if (parentEscrow != null) {
+                                    long childNode = parentEscrow.bridge()
+                                            .reserveInheritedChildFromRuntime(
+                                                    ref, parentEscrow.nodeId(),
+                                                    parentEscrow.generation());
+                                    reservedChildEscrow = new SupervisorEscrowBinding(
+                                            parentEscrow.bridge(), childNode, ref.generation());
+                                    if (supervisorEscrowBindings.putIfAbsent(
+                                            id, reservedChildEscrow) != null) {
+                                        throw new IllegalStateException(
+                                                "new child CONTROL identity already published");
+                                    }
+                                }
+                                // A nested spawn inherits its parent's
+                                // structured lifecycle group, not guest
+                                // authority to rewrite supervisor parentage.
+                                ActorGroupId inheritedId = parent.managedByGroup.get();
                         ActorGroup inherited = inheritedId == null
                                 ? null : actorGroups.get(inheritedId);
                         if (inheritedId != null && inherited == null) {
@@ -4789,6 +4801,22 @@ public final class ActorRuntime implements AutoCloseable {
                             parent.children.add(cell);
                             linkedToParent = true;
                             actors.put(id, cell);
+                        }
+                            } catch (RuntimeException | Error publishFailure) {
+                                // No terminal CTRL or cancellation can observe
+                                // an orphan reservation: ancestor fail() waits
+                                // for this monitor until rollback is complete.
+                                if (reservedChildEscrow != null) {
+                                    supervisorEscrowBindings.remove(
+                                            id, reservedChildEscrow);
+                                    reservedChildEscrow.bridge()
+                                            .rollbackInheritedChildFromRuntime(
+                                                    ref, reservedChildEscrow.nodeId(),
+                                                    parentEscrow.nodeId());
+                                    reservedChildEscrow = null;
+                                }
+                                throw publishFailure;
+                            }
                         }
                     }
                 } else {
