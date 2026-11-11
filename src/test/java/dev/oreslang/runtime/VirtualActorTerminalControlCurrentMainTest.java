@@ -83,7 +83,7 @@ final class VirtualActorTerminalControlCurrentMainTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             CountDownLatch entered = new CountDownLatch(1);
             CompletableFuture<Void> finishPolicy = new CompletableFuture<>();
-            AtomicReference<VirtualActorTerminalControl.Notice> notice =
+            AtomicReference<ActorRuntime.VirtualActorTerminalNotice> notice =
                     new AtomicReference<>();
             AtomicReference<Boolean> actorContext = new AtomicReference<>();
             AtomicInteger delivered = new AtomicInteger();
@@ -107,7 +107,7 @@ final class VirtualActorTerminalControlCurrentMainTest {
             assertEquals(old.id(), receipt.actorId());
             assertEquals(ID, receipt.identity());
             assertEquals(1L, receipt.generation());
-            assertEquals(VirtualActorTerminalControl.Kind.TERMINAL_FAILURE, receipt.kind());
+            assertEquals(ActorRuntime.VirtualActorTerminalKind.TERMINAL_FAILURE, receipt.kind());
             assertEquals("java.lang.IllegalStateException", receipt.failureClass());
             assertFalse(receipt.toString().contains("PRIVATE GUEST DATA"));
             assertThrows(IllegalStateException.class,
