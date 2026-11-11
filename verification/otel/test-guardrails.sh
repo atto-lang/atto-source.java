@@ -106,7 +106,7 @@ if otel_guardrails_native_host_digest "$work/fake-native-script" >/dev/null 2>&1
 fi
 if command -v java >/dev/null; then
   java_bin="$(readlink -f "$(command -v java)")"
-  if readelf -d "$java_bin" 2>/dev/null | grep -Eq 'Shared library: \\[(libjvm|libjli|libjava)\\.so'; then
+  if readelf -d "$java_bin" 2>/dev/null | grep -Eq 'Shared library: \[(libjvm|libjli|libjava)\.so'; then
     if otel_guardrails_native_host_digest "$java_bin" >/dev/null 2>&1; then
       fail 'managed Java launcher was accepted as Native Image ELF'
     fi
