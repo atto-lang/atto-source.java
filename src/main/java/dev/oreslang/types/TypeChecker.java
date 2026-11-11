@@ -2489,6 +2489,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.WithExpr) {
+            throw new IllegalArgumentException(
+                    "with expression requires checked immutable field reconstruction, "
+                            + "rt copy/take ownership proof, and backend lowering; "
+                            + "syntax is parsed but execution is not yet enabled");
+        }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
                     "local aggregate constructor '" + construct.typeName()
