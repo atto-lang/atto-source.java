@@ -251,7 +251,10 @@ public final class ActorReceiverBinder {
             if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
-                if (!receiverAliases.add(actor.receiverName())) {
+                // Canonical 'declare actor A;' has no class-level alias.
+                // The (Actor receiver) name belongs to each mtd declaration.
+                if (actor.receiverName() != null
+                        && !receiverAliases.add(actor.receiverName())) {
                     throw new IllegalArgumentException(
                             "duplicate standalone actor receiver binding '"
                                     + module.name() + "." + actor.receiverName() + "'");
