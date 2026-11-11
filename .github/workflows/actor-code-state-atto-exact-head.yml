@@ -9,6 +9,8 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorSharedCodeImageWhitelistTest.java'
       - 'src/test/resources/atto/actor-code-isolation/**'
       - 'src/main/**'
+      - 'scripts/diagnose-private-actions-admission.sh'
+      - 'scripts/test-diagnose-private-actions-admission.sh'
       - '.github/workflows/actor-code-state-atto-exact-head.yml'
   workflow_dispatch:
 
@@ -38,6 +40,12 @@ jobs:
           printf 'ACTOR_CODE_GUEST_SOURCE_HEAD=%s\n' "$(git rev-parse HEAD)"
           printf 'ACTOR_CODE_GUEST_SOURCE_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
           sha256sum src/test/resources/atto/actor-code-isolation/*.atto
+
+      - name: Test CI admission diagnostic without GitHub API or private-source export
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-diagnose-private-actions-admission.sh
 
       - name: Provision GraalVM JDK 25
         uses: graalvm/setup-graalvm@v1
