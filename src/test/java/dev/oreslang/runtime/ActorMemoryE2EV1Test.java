@@ -93,7 +93,7 @@ final class ActorMemoryE2EV1Test {
                     fail("warmup native owner cleanup failed");
                 }
             }
-            assertEquals(0L, arena.usedBytes() == 0 ? 1L : 0L,
+            assertTrue(arena.usedBytes() > 0,
                     "persistent actor owner must survive warmup");
             assertEquals(1, arena.liveAllocations());
             assertNotEquals(0L, warmChecksum);
