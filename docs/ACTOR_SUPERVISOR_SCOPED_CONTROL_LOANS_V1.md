@@ -78,9 +78,9 @@ through another path.
 
 ## Adversarial JUnit coverage
 
-The existing 27-case `ActorStateRwLoansTest` is unchanged. Eight
+The existing 27-case `ActorStateRwLoansTest` is unchanged. Ten
 `ActorStateSupervisorLoansTest` cases are added, bringing that class to
-**30 authored tests** (57 focused JUnit cases total):
+**32 authored tests** (59 focused JUnit cases total):
 
 1. Scoped exclusive writer shares state with owner reads and releases
    before the next CONTROL turn.
@@ -94,9 +94,13 @@ The existing 27-case `ActorStateRwLoansTest` is unchanged. Eight
 7. Contended read scope fails immediately and removes its queued waiter.
 8. STOP during a scoped write revokes further reads/writes, while the
    physical writer remains pinned until `finally` releases it.
+9. A different simultaneous CONTROL turn with the very same supervisor
+   cannot use a scope minted for the first turn.
+10. Reflection checks that the legacy raw-Future adapter and the scoped
+    compiler bridge are not public Java methods.
 
 The dedicated exact-head CI workflow requires Surefire reports for both
-classes: **27+30=57 real tests, zero failed/errored/skipped**.
+classes: **27+32=59 real tests, zero failed/errored/skipped**.
 An unstarted job with `steps=null` or `runner_id=0` is **NOT_EXECUTED**
 even if GitHub shows a failure or red X. Do not report the authored
 tests as passes.
