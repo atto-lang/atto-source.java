@@ -568,13 +568,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         /** Host-only bounded send. No guest actor handle is exposed yet. */
         OresFuture<Void> sendTextAsync(String text) {
             Objects.requireNonNull(text, "text");
-            // Length in UTF-16 code units is a lower bound on UTF-8 output
-            // bytes for valid scalars. Reject huge input before allocating.
-            if (text.length() > maxFrameBytes) {
-                throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
-            }
             return sendUser(WebSocketFrameCodec.OPCODE_TEXT,
-                    text.getBytes(StandardCharsets.UTF_8));
+                    WebSocketFrameCodec.encodeTextUtf8(text, maxFrameBytes));
         }
 
         OresFuture<Void> sendBinaryAsync(byte[] payload) {
@@ -615,11 +610,8 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
                 ActorRuntime.ActorAddress authenticatedCaller, String text) {
             Objects.requireNonNull(text, "text");
-            if (text.length() > maxFrameBytes) {
-                throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
-            }
             return sendForActor(WebSocketFrameCodec.OPCODE_TEXT,
-                    text.getBytes(StandardCharsets.UTF_8),
+                    WebSocketFrameCodec.encodeTextUtf8(text, maxFrameBytes),
                     handle, tenant, authenticatedCaller);
         }
 

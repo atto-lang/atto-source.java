@@ -10,7 +10,9 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Strict bounded RFC 6455 frame codec used by the future actor-owned WebSocket transport.
@@ -150,6 +152,43 @@ public final class WebSocketFrameCodec {
         }
         validateTerminalPayload(fin, opcode, payload);
         return new Frame(fin, opcode, payload);
+    }
+
+    /**
+     * Convert outbound text without java.lang.String's default replacement
+     * of malformed UTF-16. Enforce UTF-8 byte limits BEFORE byte allocation.
+     * No actor or socket capability is minted by this host primitive.
+     */
+    static byte[] encodeTextUtf8(String text, int maxFrameBytes) {
+        Objects.requireNonNull(text, "WebSocket text");
+        requirePayloadLimit(maxFrameBytes, "maxFrameBytes");
+        if (text.length() > maxFrameBytes) {
+            throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
+        }
+        int count = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch < 0x80) count++;
+            else if (ch < 0x800) count += 2;
+            else if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= text.length()
+                        || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    throw new IllegalArgumentException("unpaired WebSocket text high surrogate");
+                }
+                count += 4;
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired WebSocket text low surrogate");
+            } else count += 3;
+            if (count > maxFrameBytes) {
+                throw new RejectedExecutionException("WebSocket outbound UTF-8 exceeds frame limit");
+            }
+        }
+        byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+        if (utf8.length != count) {
+            throw new IllegalStateException("WebSocket outbound UTF-8 byte count mismatch");
+        }
+        return utf8;
     }
 
     /** Write one complete server frame without creating an intermediate wire array. */
@@ -318,7 +357,7 @@ public final class WebSocketFrameCodec {
 
         int code = (Byte.toUnsignedInt(payload[0]) << 8) | Byte.toUnsignedInt(payload[1]);
         boolean standard = code >= 1000 && code <= 1014
-                && code != 1004 && code != 1005 && code != 1006;
+                && code != 1004 && code != 1005 && code != 1006 && code != 1014;
         boolean application = code >= 3000 && code <= 4999;
         if (!standard && !application) {
             throw new IllegalArgumentException("invalid WebSocket close status code " + code);
