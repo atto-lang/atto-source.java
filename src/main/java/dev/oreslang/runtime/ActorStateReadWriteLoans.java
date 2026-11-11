@@ -26,6 +26,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     private final Object monitor = new Object();
     private final long generation;
     private final int maxPending;
+    private final int maxActiveReaders;
     // This VM-only scalar layout is allocated once per actor generation and
     // never exposed as an array, reference or mutable field to guest code.
     private final Map<String, Integer> scalarFieldSlots;
@@ -45,7 +46,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     private boolean publishing;
 
     public ActorStateReadWriteLoans(long generation, int maxPending) {
-        this(generation, maxPending, List.of());
+        this(generation, maxPending, 128, List.of());
     }
 
     /**
@@ -55,8 +56,20 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
      */
     public ActorStateReadWriteLoans(long generation, int maxPending,
                                     List<String> scalarFieldNames) {
+        this(generation, maxPending, 128, scalarFieldNames);
+    }
+
+    /**
+     * A bounded active-reader budget is separate from the pending queue limit.
+     * Without this limit immediately admitted readers can exhaust the heap
+     * without ever consuming a pending queue slot.
+     */
+    public ActorStateReadWriteLoans(long generation, int maxPending,
+                                    int maxActiveReaders, List<String> scalarFieldNames) {
         if (generation < 1) throw new IllegalArgumentException("generation must be positive");
         if (maxPending < 0) throw new IllegalArgumentException("negative pending capacity");
+        if (maxActiveReaders < 1 || maxActiveReaders > 65_536)
+            throw new IllegalArgumentException("active reader capacity outside 1..65536");
         Objects.requireNonNull(scalarFieldNames, "scalarFieldNames");
         if (scalarFieldNames.size() > 128)
             throw new IllegalArgumentException("scalar state exceeds 128 fields");
@@ -68,6 +81,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
         }
         this.generation = generation;
         this.maxPending = maxPending;
+        this.maxActiveReaders = maxActiveReaders;
         this.scalarFieldSlots = Map.copyOf(slots);
         this.scalarValues = new double[scalarFieldNames.size()];
         this.scalarInitialized = new boolean[scalarFieldNames.size()];
@@ -77,6 +91,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     public int activeReaderCount() {
         synchronized (monitor) { return activeReaders; }
     }
+    public int activeReaderLimit() { return maxActiveReaders; }
     public boolean writerActive() {
         synchronized (monitor) { return writer != null; }
     }
@@ -158,7 +173,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
         synchronized (monitor) {
             String error = admissionError(handler, expectedGeneration);
             if (error != null) return OresFuture.failed(new IllegalStateException(error));
-            if (writer == null && pending.isEmpty()) {
+            if (writer == null && pending.isEmpty() && activeReaders < maxActiveReaders) {
                 try {
                     return OresFuture.completed(grantReaderLocked(handler));
                 } catch (IllegalStateException failure) {
@@ -213,6 +228,8 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     }
 
     private ReadLoan grantReaderLocked(Object handler) {
+        if (activeReaders >= maxActiveReaders || writer != null)
+            throw new IllegalStateException("active reader loan budget exhausted");
         ReadLoan loan = new ReadLoan(handler, allocateEpochLocked());
         active.add(loan);
         activeReaders++;
@@ -265,6 +282,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
                 continue;
             }
             if (next instanceof WritePending && activeReaders != 0) return;
+            if (next instanceof ReadPending && activeReaders >= maxActiveReaders) return;
             pending.removeFirst();
             Loan loan = next instanceof ReadPending
                     ? grantReaderLocked(next.handler)
