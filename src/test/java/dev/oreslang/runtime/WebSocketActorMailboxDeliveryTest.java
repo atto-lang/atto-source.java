@@ -15,6 +15,30 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(15)
 final class WebSocketActorMailboxDeliveryTest {
     @Test
+    void actorCarrierCannotForgeHostWebSocketAdmission() throws Exception {
+        var attempted = new CountDownLatch(1);
+        var ran = new AtomicInteger();
+        var retired = new AtomicInteger();
+        try (var runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivateTrusted(
+                    ctx -> (mail, turn) -> {
+                        assertThrows(SecurityException.class,
+                                () -> runtime.enqueueHostActorDelivery(
+                                        turn.self(), ran::incrementAndGet,
+                                        retired::incrementAndGet));
+                        attempted.countDown();
+                    });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send("unauthorized");
+            assertTrue(attempted.await(3, TimeUnit.SECONDS));
+            assertEquals(0, ran.get(), "guest actor turn cannot inject host delivery");
+            assertEquals(0, retired.get(),
+                    "rejected host admission must not steal caller-owned cleanup");
+            actor.cancel();
+        }
+    }
+
+    @Test
     void liveActorExecutesHostTicketOnItsMailboxTurnAndReleasesOnce() throws Exception {
         var delivered = new CountDownLatch(1);
         var executions = new AtomicInteger();
