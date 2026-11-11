@@ -119,6 +119,56 @@ final class DeclaredActorHardeningTest {
     }
 
     @Test
+    void canonicalActorCannotUseLegacyOnStartAsRuntimeIngress() {
+        assertTrue(bindError("declare actor Vault;"
+                + "define mtd (Vault v) on_start(): void { return; }")
+                .contains("ACTOR_LEGACY_START_UNSUPPORTED"));
+    }
+
+    @Test
+    void canonicalActorCannotRegisterBothModernAndLegacyBootstrapHooks() {
+        assertTrue(bindError("declare actor Vault;"
+                + "define external mtd (Vault v) init(): void { return; }"
+                + "define mtd (Vault v) on_start(): void { return; }")
+                .contains("ACTOR_INIT_ON_START_CONFLICT"));
+    }
+
+    @Test
+    void bootstrapConflictIsOrderIndependentWithinOneModule() {
+        assertTrue(bindError("declare actor Vault;"
+                + "define mtd (Vault v) on_start(): void { return; }"
+                + "define external mtd (Vault v) init(): void { return; }")
+                .contains("ACTOR_INIT_ON_START_CONFLICT"));
+    }
+
+    @Test
+    void inlineLegacyHookConflictsWithAttachedExternalInit() {
+        assertTrue(bindError("define actor Vault as on_start(): void { return; } end"
+                + "define external mtd (Vault v) init(): void { return; }")
+                .contains("ACTOR_INIT_ON_START_CONFLICT"));
+    }
+
+    @Test
+    void legacyStandaloneOnStartRemainsAStaticMigrationAdapter() {
+        Ast.Program parsed = Parser.parse("define actor Vault as v;"
+                + "define mtd (Vault v) on_start(): void { return; }");
+        assertEquals(1, ActorReceiverBinder.bind(parsed).size());
+    }
+
+    @Test
+    void bootstrapConflictAcrossVerifiedSourceNamespaceIsRejected() {
+        var files = new LinkedHashMap<String, Ast.Program>();
+        files.put("src/actor.atto", Parser.parse("namespace vault; declare actor Vault;"));
+        files.put("src/new.atto", Parser.parse("namespace vault;"
+                + "define external mtd (Vault v) init(): void { return; }"));
+        files.put("src/old.atto", Parser.parse("namespace vault;"
+                + "define mtd (Vault v) on_start(): void { return; }"));
+        String error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("pkg@1", files)).getMessage();
+        assertTrue(error.contains("ACTOR_INIT_ON_START_CONFLICT"), error);
+    }
+
+    @Test
     void runtimeInitCannotUseUnverifiedStateTypeAsBuilderToken() {
         assertTrue(bindError("declare actor Vault;"
                 + "define external mtd (Vault v) init(): state { return v; }")
