@@ -595,4 +595,125 @@ final class ValuePipeOperatorTest {
                     }
                     """)));
     }
+
+    @Test
+    void tuplePipelineDestructuresNamedReturnTypesAndPreservesTupleOutputs() throws Exception {
+        String program = """
+                fnc fetch_users(): Tuple[int, int, int] {
+                  stdio.println("fetch");
+                  return tuple(4, 2, 3);
+                }
+                fnc validate(Tuple[int, int, int] input): Tuple[int, int, int] {
+                  return input;
+                }
+                fnc filter(int users, int active): Tuple[int, int, int] {
+                  return tuple(users + active, 10, 20);
+                }
+                fnc sort(Tuple[int, int, int] values): Tuple[int, int, int] {
+                  return values;
+                }
+                fnc take(int sorted, int count): Tuple[int, int] {
+                  return tuple(sorted, count);
+                }
+                fnc calculate(): Tuple[int, int] {
+                  return fetch_users()
+                    |> validate
+                    |> |users, x, y| -> filter(users, x + y)
+                    |> sort
+                    |> |sorted, a, b| -> take(sorted, a + b);
+                }
+                pub fnc main(): void {
+                  stdio.println(calculate() |> |one, two| -> one + two);
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(program);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-tuple-return.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("fetch", "39"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void tuplePipelineOneBinderReceivesWholeValueAndMultibinderSplitsOnlyOneLevel()
+            throws Exception {
+        String program = """
+                fnc swapped(): Tuple[int, int] {
+                  return tuple(8, 2)
+                    |> |whole| -> whole
+                    |> |x, y| -> tuple(y, x);
+                }
+                fnc nested(): Tuple[Tuple[int, int], int] {
+                  return tuple(tuple(1, 2), 3)
+                    |> |pair, z| -> tuple(pair, z);
+                }
+                pub fnc main(): void {
+                  stdio.println(swapped() |> |x, y| -> x - y);
+                  stdio.println(nested() |> |pair, z| -> z + 5);
+                  stdio.println(tuple(5, 7) |> |x, y| -> Tuple[int, int] {
+                    return tuple(x + 1, y + 1);
+                  } |> |x, y| -> x + y);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-tuple-nesting.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("-6", "8", "14"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void tuplePipelineRejectsNonTupleShapeArityAndSlotTypeMismatch() {
+        String[] invalid = {
+                // More than one lambda parameter demands a real tuple.
+                "fnc bad(): int { return 3 |> |a, b| -> a + b; }",
+                "fnc bad(): int { return arr[1, 2] |> |a, b| -> a + b; }",
+                "fnc bad(Tuple[int, int] pair): int { return pair |> |a, b, c| -> a; }",
+                "fnc bad(): int { return tuple(1, 2, 3) |> |a, b| -> a; }",
+                // A fixed-array/list shape is not a tuple.
+                "fnc bad(FixedArray[2 of int] values): int { "
+                  + "return values |> |a, b| -> a + b; }",
+                // An explicit parameter type must match its tuple slot.
+                "fnc bad(): int { return tuple(1, 2) "
+                  + "|> |string a, int b| -> b; }",
+                // Tuple return shapes cannot be silently widened.
+                "fnc bad(): Tuple[int, string] { "
+                  + "return tuple(1, 2) |> |a, b| -> tuple(a, b); }",
+                // A function named as a stage still receives a SINGLE tuple.
+                "fnc add(int a, int b): int { return a + b; } "
+                  + "fnc bad(): int { return tuple(1, 2) |> add; }",
+                "fnc bad(): int { return tuple(1, 2) |> || -> 1; }"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
+    void tuplePipelineDoesNotDuplicateMoveOnlyElementsAcrossStages() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+                    fnc bad(): int {
+                      val Tuple[Box, int] owned = tuple(new Box(), 7);
+                      val int first = owned |> |box, n| -> n;
+                      return owned |> |box, n| -> n;
+                    }
+                    """)));
+        assertTrue(moved.getMessage().contains("moved value"), moved::toString);
+    }
 }
