@@ -101,6 +101,43 @@ final class CanonicalDefineScopeTest {
         }
     }
     @Test
+    void intrinsicNewRemainsIndependentOfTheNewableFactoryContract() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define pub class Plain as
+                end
+                pub fnc make(): Plain {
+                  return new Plain();
+                }
+                """)));
+        IllegalArgumentException noFactory = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
+                        define pub class Plain as
+                        end
+                        pub fnc make(): Plain {
+                          return Plain.new();
+                        }
+                        """)));
+        assertTrue(noFactory.getMessage().contains("static function")
+                        || noFactory.getMessage().contains("new"),
+                noFactory.getMessage());
+    }
+
+    @Test
+    void compilerBuiltinNewableRejectsGenericClassWitnessUntilAotSpecialization() {
+        String program = """
+                define pub class Box<T> implements Newable[Box<T>] as
+                  pub fnc new(): Box<T> {
+                    return new Box<T>();
+                  }
+                end
+                """;
+        // Backends may reject generic constructor syntax earlier; either way,
+        // generic type-level witnesses must never silently be admitted.
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(program)));
+    }
+
+    @Test
     void newIsOnlyAnExplicitNewableFactoryAndNeverAnImplicitConstructorAlias() {
         for (String declaration : new String[] {
                 "pub fnc new(): Plain { return new Plain(); }",
