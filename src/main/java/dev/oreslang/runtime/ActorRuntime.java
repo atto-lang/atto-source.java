@@ -8991,10 +8991,17 @@ public final class ActorRuntime implements AutoCloseable {
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
-            // Revoke every outstanding grant and seal future admission
-            // OUTSIDE lifecycleLock: failing a pending OresFuture may invoke
-            // synchronous host observers. The physical-retirement gate above
-            // keeps the actor arena pinned until every loan and callback drains.
+            if (scheduleTeardown) schedule();
+
+            // Physical sibling teardown may block or queue. All descendants,
+            // not merely immediate children, must reject new work BEFORE
+            // those asynchronous dispatches are submitted.
+            presealDescendantAdmissions(descendants);
+
+            // Seal descendants BEFORE any host Future revocation subscriber
+            // can block STOP's caller. Revoke actor RW admissions outside
+            // lifecycleLock, and wait for every physical loan/notification
+            // in finalizeStopLocked rather than trusting a logical seal.
             for (ActorStateSupervisorLoans region : List.copyOf(supervisorStateRegions)) {
                 try {
                     region.revokeFromRuntimeStop();
@@ -9004,12 +9011,6 @@ public final class ActorRuntime implements AutoCloseable {
                     quarantineChildStopFailure(revocationFailure);
                 }
             }
-            if (scheduleTeardown) schedule();
-
-            // Physical sibling teardown may block or queue. All descendants,
-            // not merely immediate children, must reject new work BEFORE
-            // those asynchronous dispatches are submitted.
-            presealDescendantAdmissions(descendants);
 
             // Propagate every sibling STOP without coupling it to another
             // sibling's blocking revoker when a VM-owned physical STOP
