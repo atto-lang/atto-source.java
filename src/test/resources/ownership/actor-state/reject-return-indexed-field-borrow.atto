@@ -1,0 +1,8 @@
+// An indexed actor field remains tied to its source owner.
+define actor Counter as
+  state { let List<int> items; }
+  leak(): borrow int {
+    return rt borrow self.items[0];
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
