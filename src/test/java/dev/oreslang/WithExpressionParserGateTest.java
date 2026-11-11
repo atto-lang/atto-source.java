@@ -65,7 +65,7 @@ final class WithExpressionParserGateTest {
         Ast.Program program = Parser.parse(source);
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(program));
-        assertTrue(failure.getMessage().contains("with v1 requires a readonly structural record"),
+        assertTrue(failure.getMessage().contains("with requires a readonly structural record"),
                 failure::getMessage);
     }
 }
