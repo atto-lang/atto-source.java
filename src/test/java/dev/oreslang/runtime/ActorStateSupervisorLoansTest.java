@@ -54,6 +54,10 @@ final class ActorStateSupervisorLoansTest {
         final java.util.concurrent.atomic.AtomicLong ownerScalarObserved =
                 new java.util.concurrent.atomic.AtomicLong(-1);
         final AtomicReference<Throwable> denied = new AtomicReference<>();
+        final java.util.concurrent.CountDownLatch ownerUpdateEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch allowOwnerUpdate =
+                new java.util.concurrent.CountDownLatch(1);
         final ActorRuntime.ActorRef<String> worker;
 
         Fixture() {
@@ -92,6 +96,25 @@ final class ActorStateSupervisorLoansTest {
                             case "scalar-owner-increment" -> {
                                 try {
                                     region.get().withOwnerScalarUpdate(value -> value + 1);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "paused-owner-update" -> {
+                                try {
+                                    region.get().withOwnerScalarUpdate(value -> {
+                                        ownerUpdateEntered.countDown();
+                                        try {
+                                            if (!allowOwnerUpdate.await(5, TimeUnit.SECONDS)) {
+                                                throw new IllegalStateException("owner update timed out");
+                                            }
+                                        } catch (InterruptedException interrupted) {
+                                            Thread.currentThread().interrupt();
+                                            throw new IllegalStateException(
+                                                    "owner update interrupted", interrupted);
+                                        }
+                                        return value + 100;
+                                    });
                                 } catch (Throwable rejected) {
                                     denied.set(rejected);
                                 }
@@ -621,6 +644,30 @@ final class ActorStateSupervisorLoansTest {
             assertFalse(region.physicallyRetired());
             fixture.release(writer);
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(region.physicallyRetired());
+        }
+    }
+
+
+    @Test
+    void stopSealsBeforePausedActorMutationCanCommit() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            fixture.worker.send("paused-owner-update");
+            assertTrue(fixture.ownerUpdateEntered.await(5, TimeUnit.SECONDS),
+                    "actor must have acquired owner writer and reached paused callback");
+            try {
+                assertTrue(fixture.worker.cancel(),
+                        "structured STOP must seal the state region without waiting for callback");
+                assertFalse(region.physicallyRetired(),
+                        "active actor lexical writer must pin physical memory");
+                assertFalse(fixture.worker.done().isDone());
+            } finally {
+                fixture.allowOwnerUpdate.countDown();
+            }
+            assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get(),
+                    "the actor write must fail its post-STOP state admission");
             assertTrue(region.physicallyRetired());
         }
     }
