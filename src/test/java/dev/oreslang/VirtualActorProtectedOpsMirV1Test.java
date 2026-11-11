@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -51,6 +52,18 @@ final class VirtualActorProtectedOpsMirV1Test {
                         VirtualActorProtectedOpsMirV1.Instruction::op).toList());
         assertEquals(VirtualActorProtectedOpsMirV1.Register.SUM_I64,
                 method.instructions().get(4).left());
+        assertEquals(VirtualActorProtectedOpsMirV1.Op.ADD_I64_TRAP_ON_OVERFLOW,
+                method.overflowExit().trigger());
+        assertEquals(List.of(
+                VirtualActorProtectedOpsMirV1.OverflowExitStep.DISCARD_UNCOMMITTED_WRITE,
+                VirtualActorProtectedOpsMirV1.OverflowExitStep.UNWIND_EXCLUSIVE_WRITE_LOAN,
+                VirtualActorProtectedOpsMirV1.OverflowExitStep.FENCE_FAILED_PHYSICAL_GENERATION,
+                VirtualActorProtectedOpsMirV1.OverflowExitStep.EMIT_SANITIZED_TERMINAL_CONTROL,
+                VirtualActorProtectedOpsMirV1.OverflowExitStep.AWAIT_SUPERVISOR_ACK_BEFORE_REACTIVATION),
+                method.overflowExit().requiredSteps());
+        assertThrows(UnsupportedOperationException.class,
+                () -> method.overflowExit().requiredSteps().clear());
+        VirtualActorProtectedOpsMirV1.verifyCandidate(method.instructions(), method.overflowExit());
         assertThrows(UnsupportedOperationException.class,
                 () -> method.instructions().clear());
         assertThrows(UnsupportedOperationException.class,
@@ -104,6 +117,51 @@ final class VirtualActorProtectedOpsMirV1Test {
         for (var ctor : VirtualActorProtectedOpsMirV1.ProgramPlan.class.getDeclaredConstructors())
             assertTrue(Modifier.isPrivate(ctor.getModifiers()));
         for (var ctor : VirtualActorProtectedOpsMirV1.MethodPlan.class.getDeclaredConstructors())
+            assertTrue(Modifier.isPrivate(ctor.getModifiers()));
+    }
+
+
+    @Test
+    void rejectsReorderedUncheckedOrExtraStoreInstructions() throws Exception {
+        var method = VirtualActorProtectedOpsMirV1.lower(parseActor(cart())).methods().getFirst();
+        var original = method.instructions();
+        var overflow = method.overflowExit();
+
+        for (int index : List.of(0, 1, 2, 3, 4, 5, 6)) {
+            var deleted = new ArrayList<>(original);
+            deleted.remove(index);
+            assertThrows(IllegalArgumentException.class,
+                    () -> VirtualActorProtectedOpsMirV1.verifyCandidate(deleted, overflow));
+        }
+        var earlyStore = new ArrayList<>(original);
+        java.util.Collections.swap(earlyStore, 3, 4);
+        assertThrows(IllegalArgumentException.class,
+                () -> VirtualActorProtectedOpsMirV1.verifyCandidate(earlyStore, overflow));
+        var duplicateWrite = new ArrayList<>(original);
+        duplicateWrite.add(5, original.get(4));
+        assertThrows(IllegalArgumentException.class,
+                () -> VirtualActorProtectedOpsMirV1.verifyCandidate(duplicateWrite, overflow));
+        var uncheckedAddition = new ArrayList<>(original);
+        uncheckedAddition.set(3, new VirtualActorProtectedOpsMirV1.Instruction(
+                VirtualActorProtectedOpsMirV1.Op.STORE_STATE_I64,
+                VirtualActorProtectedOpsMirV1.Register.NONE,
+                VirtualActorProtectedOpsMirV1.Register.ARGUMENT_I64,
+                VirtualActorProtectedOpsMirV1.Register.NONE));
+        assertThrows(IllegalArgumentException.class,
+                () -> VirtualActorProtectedOpsMirV1.verifyCandidate(uncheckedAddition, overflow));
+    }
+
+    @Test
+    void rejectsMissingExceptionalCleanupOrUnboundExit() throws Exception {
+        var method = VirtualActorProtectedOpsMirV1.lower(parseActor(cart())).methods().getFirst();
+        assertThrows(IllegalArgumentException.class,
+                () -> VirtualActorProtectedOpsMirV1.verifyCandidate(method.instructions(), null));
+        assertThrows(IllegalArgumentException.class,
+                () -> VirtualActorProtectedOpsMirV1.verifyCandidate(null, method.overflowExit()));
+        assertThrows(IllegalArgumentException.class,
+                () -> VirtualActorProtectedOpsMirV1.verifyCandidate(
+                        List.of(), method.overflowExit()));
+        for (var ctor : VirtualActorProtectedOpsMirV1.OverflowExit.class.getDeclaredConstructors())
             assertTrue(Modifier.isPrivate(ctor.getModifiers()));
     }
 
