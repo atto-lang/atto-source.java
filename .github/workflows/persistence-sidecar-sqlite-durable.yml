@@ -43,7 +43,8 @@ jobs:
             src/main/java/dev/oreslang/runtime/persistence/SqliteCommandTransactionStore.java \
             src/main/java/dev/oreslang/runtime/persistence/AtomicCommandSidecar.java \
             src/test/java/dev/oreslang/runtime/persistence/SqlitePersistenceStoreTestMain.java \
-            src/test/java/dev/oreslang/runtime/persistence/SqliteCommandTransactionStoreTestMain.java
+            src/test/java/dev/oreslang/runtime/persistence/SqliteCommandTransactionStoreTestMain.java \
+            src/test/java/dev/oreslang/runtime/persistence/SqliteReplayAdmissionTestMain.java
       - name: Run 1000 actor commits, journal restore, epochs, abrupt halt
         run: |
           set -euo pipefail
@@ -54,3 +55,5 @@ jobs:
             dev.oreslang.runtime.persistence.SqlitePersistenceStoreTestMain
           java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
             dev.oreslang.runtime.persistence.SqliteCommandTransactionStoreTestMain
+          java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
+            dev.oreslang.runtime.persistence.SqliteReplayAdmissionTestMain
