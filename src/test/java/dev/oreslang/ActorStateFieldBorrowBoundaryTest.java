@@ -102,6 +102,32 @@ final class ActorStateFieldBorrowBoundaryTest {
     }
 
     @Test
+    void ordinaryClassFieldAndIndexBorrowStillPassesCompiler() {
+        // Existing nonactor projections have a root-tracked lexical loan.
+        // Actor-state rejection must not turn off that independently proven
+        // and already exercised language feature.
+        String ordinary = """
+                define class Item as
+                  pub val int number;
+                end
+
+                define class Holder as
+                  pub let mut List<Item> items;
+                end
+
+                fnc inspect(borrow Item item): int {
+                  return item.number;
+                }
+
+                fnc valueAt(borrow Holder holder, int i): int {
+                  val borrow Item view = rt borrow holder.items[i];
+                  return inspect(view);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(ordinary)));
+    }
+
+    @Test
     void actualGraalGuestExecutesActorFieldCopySnapshot() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
