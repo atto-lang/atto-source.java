@@ -2749,7 +2749,10 @@ public final class OwnershipChecker {
             // A computed index may call a mutation/side-effect before a loan is
             // issued. Only lexical integer bindings/literals are admissible.
             if (!(indexed.index() instanceof Ast.NameExpr)
-                    && !(indexed.index() instanceof Ast.LiteralExpr)) {
+                    && !(indexed.index() instanceof Ast.LiteralExpr)
+                    && !(indexed.index() instanceof Ast.UnaryExpr signed
+                            && signed.operator().equals("-")
+                            && signed.operand() instanceof Ast.LiteralExpr)) {
                 throw error("projected borrow index must be a stable name or literal");
             }
             // Ordinary projected READ loans are conservatively pinned to
