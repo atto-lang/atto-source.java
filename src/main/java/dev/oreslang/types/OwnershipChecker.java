@@ -3077,6 +3077,18 @@ public final class OwnershipChecker {
                     throw error("inline pipeline lambda cannot return a borrow without a proven loan lifetime");
                 }
                 immediateResult = returned;
+                // The ownership pass does not run the full type inferencer.
+                // Retain a narrowly provable scalar result for the next
+                // inline stage rather than incorrectly rejecting a legal
+                // |n| -> n + 1 |> |m| -> m * 2 chain. Never infer a
+                // borrow, mutable alias, or unknown callable result here.
+                if (immediatePipelineStage && returned.type != null
+                        && returned.type.name().equals("$infer$")) {
+                    Ast.TypeRef scalar = syntacticType(lambda.expressionBody(), closure);
+                    if (!scalar.name().equals("$infer$") && !scalar.isBorrow()) {
+                        immediateResult = new ValueInfo(scalar, kindOfType(scalar), null);
+                    }
+                }
             } else {
                 for (Ast.Stmt stmt : lambda.blockBody()) {
                     checkStatement(stmt, closure, Ast.TypeRef.inferred());
@@ -3881,6 +3893,22 @@ public final class OwnershipChecker {
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.BinaryExpr binary) {
+            Ast.TypeRef left = syntacticType(binary.left(), scope);
+            Ast.TypeRef right = syntacticType(binary.right(), scope);
+            if (left.name().equals(right.name())
+                    && left.arguments().isEmpty() && right.arguments().isEmpty()
+                    && Set.of("int", "uint", "i8", "i16", "i32", "i64",
+                            "u8", "u16", "u32", "u64", "float",
+                            "f32", "f64").contains(left.name())
+                    && Set.of("+", "-", "*", "/").contains(binary.operator())) {
+                return left;
+            }
+            // Other binary operators and mixed types have no ownership-only
+            // scalar type proof; the independent type checker remains
+            // authoritative and this pass fails closed when necessary.
+            return Ast.TypeRef.inferred();
+        }
         if (expr instanceof Ast.TrapExpr trapped) {
             // Preserve the Option wrapper during generic call inference, even
             // when the operand is a local or literal rather than a CallExpr.
