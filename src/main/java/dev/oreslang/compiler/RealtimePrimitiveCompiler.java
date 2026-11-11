@@ -237,7 +237,7 @@ public final class RealtimePrimitiveCompiler {
             return new Cost(1, 1);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            if (!Set.of("+", "-", "*", "==", "!=", "<", "<=", ">", ">=",
+            if (!Set.of("+", "-", "*", "eq", "neq", "==", "!=", "<", "<=", ">", ">=",
                     "&&", "||", "&", "|", "^").contains(binary.operator())) {
                 throw invalid("operator may throw or lacks bounded primitive semantics: " + binary.operator());
             }
@@ -360,7 +360,15 @@ public final class RealtimePrimitiveCompiler {
         if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
         if (expr instanceof Ast.NameExpr name) return name.name();
         if (expr instanceof Ast.BinaryExpr b) {
-            return "(" + emitExpr(b.left()) + " " + b.operator() + " " + emitExpr(b.right()) + ")";
+            // Checked source equality is normalized by Parser to eq/neq.
+            // Java source is only an intermediate build artifact; translate
+            // at emission, never accept an interpreter or dynamic dispatch.
+            String operator = switch (b.operator()) {
+                case "eq", "==" -> "==";
+                case "neq", "!=" -> "!=";
+                default -> b.operator();
+            };
+            return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
         }
         if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
         if (expr instanceof Ast.CallExpr c && c.callee() instanceof Ast.NameExpr name) {
