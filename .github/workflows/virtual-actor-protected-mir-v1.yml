@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java'
+      - 'src/test/java/dev/oreslang/VirtualActorProtectedOpsMirV1Test.java'
       - 'contracts/virtual-actor-mir-v1/**'
       - '.github/workflows/virtual-actor-protected-mir-v1.yml'
   workflow_dispatch:
@@ -37,8 +39,10 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "HEAD_SHA=$EXPECTED_HEAD_SHA"
           echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java
           git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java
           git hash-object src/main/java/dev/oreslang/types/TypeChecker.java
+          git hash-object src/test/java/dev/oreslang/VirtualActorProtectedOpsMirV1Test.java
           git hash-object src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java
           git hash-object contracts/virtual-actor-mir-v1/cases.json
           git hash-object contracts/virtual-actor-mir-v1/positive/cart_checked_contract.atto
@@ -58,9 +62,10 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp \
-            -Dtest=VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
+            -Dtest=VirtualActorProtectedOpsMirV1Test,VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
             -DfailIfNoTests=true test
           for suite in \
+            dev.oreslang.VirtualActorProtectedOpsMirV1Test \
             dev.oreslang.VirtualActorProtectedMirV1Test \
             dev.oreslang.StateContainerVirtualActorAdmissionTest \
             dev.oreslang.AttoCartPhysicalActivationGuestTest \
