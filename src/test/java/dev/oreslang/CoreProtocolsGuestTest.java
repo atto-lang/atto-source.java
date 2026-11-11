@@ -140,10 +140,11 @@ final class CoreProtocolsGuestTest {
         };
         for (String[] entry : invalid) {
             Path guest = temp.resolve("missing-" + entry[0] + ".atto");
+            String eol = System.lineSeparator();
             Files.writeString(guest,
-                    "import trait " + entry[0] + " from \"ores.core/protocols\";\\n"
-                    + "define class Broken implements " + entry[1] + " as end\\n"
-                    + "pub fnc main(): void { return; }\\n");
+                    "import trait " + entry[0] + " from \"ores.core/protocols\";" + eol
+                    + "define class Broken implements " + entry[1] + " as end" + eol
+                    + "pub fnc main(): void { return; }" + eol);
             assertThrows(IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(guest, Map.of()), entry[0]);
         }
