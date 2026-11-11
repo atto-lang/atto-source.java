@@ -39,6 +39,8 @@ import java.util.TreeMap;
  */
 public final class ManifestActorContractBuild {
     public static final int MAX_FILES = 4096;
+    public static final int MAX_VISITED_ENTRIES = 131072;
+    public static final int MAX_SOURCE_DEPTH = 64;
     public static final long MAX_SOURCE_BYTES = 256L * 1024 * 1024;
     public static final int MAX_FILE_BYTES = 16 * 1024 * 1024;
     public static final int MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -96,6 +98,7 @@ public final class ManifestActorContractBuild {
 
         Map<String, Path> sources = new TreeMap<>();
         Map<String, String> folded = new LinkedHashMap<>();
+        final int[] scannedEntries = {0};
         for (Path declaredRoot : config.sourceRoots()) {
             Path sourceRoot = declaredRoot.toAbsolutePath().normalize();
             requireOrdinaryPath(sourceRoot, true);
@@ -107,11 +110,20 @@ public final class ManifestActorContractBuild {
                 @Override
                 public FileVisitResult preVisitDirectory(
                         Path dir, BasicFileAttributes attrs) {
+                    if (++scannedEntries[0] > MAX_VISITED_ENTRIES
+                            || sourceRoot.relativize(dir).getNameCount() > MAX_SOURCE_DEPTH) {
+                        throw new IllegalArgumentException(
+                                "actor witness source directory budget/depth exceeded");
+                    }
                     requireOrdinaryPath(dir, true);
                     return FileVisitResult.CONTINUE;
                 }
                 @Override
                 public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) {
+                    if (++scannedEntries[0] > MAX_VISITED_ENTRIES) {
+                        throw new IllegalArgumentException(
+                                "actor witness scanned-entry budget exceeded");
+                    }
                     if (Files.isSymbolicLink(path)) {
                         throw new IllegalArgumentException(
                                 "symlink inside manifest actor source root: " + path);
@@ -180,6 +192,10 @@ public final class ManifestActorContractBuild {
                     "manifest changed while checking actor contract source set");
         }
         var linked = ActorContractWitness.linkSourceSet(packageIdentity, parsed);
+        if (linked.actors().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "manifest actor witness package contains no declaration-only actors");
+        }
         return new Receipt(linked, sourceHashes, hex(manifestDigest));
     }
 
