@@ -9371,6 +9371,11 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
+            } else {
+                // Physical owner remains quarantined in the generation ledger.
+                // Avoid retaining the host callback/ActorGroup closure after
+                // failed reclaim, parent-child release or group bookkeeping.
+                virtualActorTerminalControl.discardIncomplete(ref.id());
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
