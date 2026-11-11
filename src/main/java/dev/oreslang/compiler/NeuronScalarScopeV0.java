@@ -130,16 +130,15 @@ public final class NeuronScalarScopeV0 {
             Ast.MethodDecl method, NeuronStateLayoutV0 layout) {
         if (!method.parameters().isEmpty() || method.async() || method.suspends()
                 || method.isStatic() || !Ast.TypeRef.simple("void").equals(method.returnType())
-                || method.body().isEmpty() || method.body().size() > 2) {
-            throw unsupported("on_start must be synchronous and have only a critical write and return");
+                || method.body().size() != 2) {
+            throw unsupported("on_start requires one critical write and an explicit return");
         }
         Ast.Stmt first = method.body().getFirst();
         if (!(first instanceof Ast.ExprStmt expr)) {
             throw unsupported("on_start must write under a critical scope");
         }
-        if (method.body().size() == 2
-                && !(method.body().get(1) instanceof Ast.ReturnStmt ret && ret.value() == null)) {
-            throw unsupported("on_start may only return after its write scope");
+        if (!(method.body().get(1) instanceof Ast.ReturnStmt ret && ret.value() == null)) {
+            throw unsupported("on_start requires explicit 'return;' after its write scope");
         }
         Ast.LambdaExpr lambda = scopeLambda(expr.expression(), Mode.WRITE, "on_start");
         if (lambda.blockBody() == null || lambda.expressionBody() != null
