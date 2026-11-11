@@ -313,6 +313,64 @@ final class VirtualActorTerminalControlCurrentMainTest {
     }
 
     @Test
+    void cancellationReceiptIsSanitizedAndRequiresPhysicalRetirement()
+            throws Exception {
+        try (ExecutorService control = Executors.newSingleThreadExecutor();
+             ActorRuntime runtime = runtimeWithControl(control)) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            CountDownLatch delivered = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.VirtualActorTerminalNotice> captured =
+                    new AtomicReference<>();
+            group.installVirtualActorTerminalHandler(notice -> {
+                captured.set(notice);
+                delivered.countDown();
+                return CompletableFuture.completedFuture(null);
+            });
+            var worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    factory -> (message, context) -> { });
+            worker.getReady().get(5, TimeUnit.SECONDS);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(worker, ID, 1L);
+            assertTrue(worker.cancel());
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            try {
+                worker.getDone().get(5, TimeUnit.SECONDS);
+            } catch (ExecutionException | java.util.concurrent.CancellationException ignored) {
+                // Cancellation may be surfaced as a failed or cancelled Future.
+            }
+            assertEquals(ActorRuntime.VirtualActorTerminalKind.CANCELLED,
+                    captured.get().kind());
+            assertEquals(worker.id(), captured.get().actorId());
+            assertFalse(captured.get().toString().contains("PRIVATE GUEST DATA"));
+            assertEquals(2L, awaitNextGeneration(group, ID, 2L));
+            group.abortVirtualActorGeneration(ID, 2L);
+            group.close();
+        }
+    }
+
+    @Test
+    void throwingSynchronousControlPolicyPermanentlyQuarantines() throws Exception {
+        try (ExecutorService control = Executors.newSingleThreadExecutor();
+             ActorRuntime runtime = runtimeWithControl(control)) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            CountDownLatch entered = new CountDownLatch(1);
+            group.installVirtualActorTerminalHandler(notice -> {
+                entered.countDown();
+                throw new IllegalStateException("policy failure");
+            });
+            var old = failingWorker(group);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(old, ID, 1L);
+            failActor(old);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class,
+                    () -> group.reserveNextVirtualActorGeneration(ID));
+            group.close();
+        }
+    }
+
+    @Test
     void installingTerminalHandlerTwiceIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
