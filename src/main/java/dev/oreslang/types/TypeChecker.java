@@ -119,6 +119,24 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    /** Identity-indexed call proofs, published only on successful type checking. */
+    private final IdentityHashMap<Ast.CallExpr, CheckedDispatchPlansV1.Plan> checkedDispatchPlans =
+            new IdentityHashMap<>();
+
+    private void recordCheckedDispatch(
+            Ast.CallExpr call, AotDispatchPlannerV1.CallKind kind,
+            String name, int arity, Ast.FunctionDecl function,
+            Ast.ClassDecl receiverClass, Ast.MethodDecl method) {
+        AotDispatchPlannerV1.Strategy strategy = AotDispatchPlannerV1.classify(
+                new AotDispatchPlannerV1.Evidence(
+                        kind, AotDispatchPlannerV1.ReceiverProof.NONE,
+                        AotDispatchPlannerV1.Linkage.FROZEN_CODE_GENERATION, true));
+        CheckedDispatchPlansV1.Plan plan = new CheckedDispatchPlansV1.Plan(
+                kind, strategy, name, arity, function, receiverClass, method);
+        CheckedDispatchPlansV1.record(call, plan);
+        checkedDispatchPlans.put(call, plan);
+    }
+
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(
@@ -221,6 +239,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -362,6 +381,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -3086,10 +3106,8 @@ public final class TypeChecker {
                     // immutable, macro-expanded program. A runtime lexical value
                     // still wins if the identifier is shadowed.
                     if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
-                        CheckedDispatchPlansV1.record(call, new CheckedDispatchPlansV1.Plan(
-                                AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
-                                AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL,
-                                target.name(), arity, target, null, null));
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                                target.name(), arity, target, null, null);
                     }
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -3853,10 +3871,8 @@ public final class TypeChecker {
                     // Only the exact class identity can consume this direct
                     // target: a new code generation has different AST owners.
                     if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
-                        CheckedDispatchPlansV1.record(call, new CheckedDispatchPlansV1.Plan(
-                                AotDispatchPlannerV1.CallKind.STATIC_METHOD,
-                                AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL,
-                                fn.name(), staticArity, null, klass, fn));
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.STATIC_METHOD,
+                                fn.name(), staticArity, null, klass, fn);
                     }
                     return callableResult(fn.async(), false, result);
                 }
@@ -3975,10 +3991,8 @@ public final class TypeChecker {
                         // skip the slot lookup only if the receiver's *actual*
                         // class identity equals the checked class identity.
                         if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
-                            CheckedDispatchPlansV1.record(call, new CheckedDispatchPlansV1.Plan(
-                                    AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
-                                    AotDispatchPlannerV1.Strategy.METHOD_SLOT,
-                                    method.name(), methodArity, null, klass, method));
+                            recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
+                                    method.name(), methodArity, null, klass, method);
                         }
                         return result;
                     }
