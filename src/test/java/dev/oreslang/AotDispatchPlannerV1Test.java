@@ -65,4 +65,55 @@ final class AotDispatchPlannerV1Test {
         }
         assertThrows(NullPointerException.class, () -> AotDispatchPlannerV1.classify(null));
     }
+
+    @Test
+    void exhaustiveDispatchEvidenceMatrixCannotPromoteUnprovedVirtualCalls() {
+        // All combinations matter: a JIT profile or a source receiver name
+        // must not turn open-world/late-generation virtual dispatch into a
+        // direct symbol. This is source-policy coverage, not guest AOT proof.
+        int checked = 0;
+        for (CallKind kind : CallKind.values()) {
+            for (ReceiverProof proof : ReceiverProof.values()) {
+                for (Linkage linkage : Linkage.values()) {
+                    for (boolean resolved : new boolean[] {false, true}) {
+                        Evidence evidence = new Evidence(kind, proof, linkage, resolved);
+                        checked++;
+                        if (kind == CallKind.UNEXPANDED_MACRO ||
+                                (!resolved && (kind == CallKind.INSTANCE_METHOD ||
+                                        kind == CallKind.FREE_FUNCTION ||
+                                        kind == CallKind.STATIC_METHOD))) {
+                            assertThrows(IllegalArgumentException.class,
+                                    () -> AotDispatchPlannerV1.classify(evidence));
+                            continue;
+                        }
+                        Strategy selected = AotDispatchPlannerV1.classify(evidence);
+                        if (kind == CallKind.INSTANCE_METHOD) {
+                            Strategy expected = linkage == Linkage.LATE_BOUND_GENERATION
+                                    ? Strategy.VERSIONED_LOOKUP
+                                    : proof == ReceiverProof.NONE ? Strategy.METHOD_SLOT
+                                    : Strategy.DIRECT_SYMBOL;
+                            assertEquals(expected, selected, evidence.toString());
+                        }
+                        if (kind == CallKind.ACTOR_MESSAGE) {
+                            assertEquals(Strategy.ACTOR_MAILBOX, selected);
+                        }
+                        if (kind == CallKind.HOST_INTEROP) {
+                            assertEquals(Strategy.HOST_CAPABILITY_BOUNDARY, selected);
+                        }
+                        if (kind == CallKind.CALLABLE_VALUE) {
+                            assertEquals(Strategy.INDIRECT_CALLABLE, selected);
+                        }
+                        if (linkage == Linkage.LATE_BOUND_GENERATION &&
+                                (kind == CallKind.INSTANCE_METHOD ||
+                                 kind == CallKind.FREE_FUNCTION ||
+                                 kind == CallKind.STATIC_METHOD)) {
+                            assertNotEquals(Strategy.DIRECT_SYMBOL, selected);
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(CallKind.values().length * ReceiverProof.values().length *
+                Linkage.values().length * 2, checked);
+    }
 }
