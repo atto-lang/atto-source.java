@@ -4116,6 +4116,44 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Private runtime-owned half of inherited CONTROL registration. Caller
+     * must hold runtimeLifecycleLock. No guest/host late-binding API is
+     * introduced: an unpublished ActorRef and ledger transaction are required.
+     */
+    void bindSpawnedSupervisorEscrowFromRuntime(
+            ActorRef<?> ref, SupervisorFailureEscrowRuntimeBridgeV1 bridge, long nodeId) {
+        if (!Thread.holdsLock(runtimeLifecycleLock) || !ref.ownedBy(this)
+                || actors.containsKey(ref.id())
+                || supervisorEscrowBindings.putIfAbsent(ref.id(),
+                        new SupervisorEscrowBinding(bridge, nodeId, ref.generation())) != null) {
+            throw new IllegalStateException("invalid unpublished CONTROL child binding");
+        }
+    }
+
+    void rollbackSpawnedSupervisorEscrowFromRuntime(
+            ActorRef<?> ref, SupervisorFailureEscrowRuntimeBridgeV1 bridge, long nodeId) {
+        if (!Thread.holdsLock(runtimeLifecycleLock)
+                || !supervisorEscrowBindings.remove(ref.id(),
+                        new SupervisorEscrowBinding(bridge, nodeId, ref.generation()))) {
+            throw new IllegalStateException("CONTROL child binding rollback failed");
+        }
+    }
+
+    private void publishSpawnedChildWithEscrow(
+            ActorCell<?> parent, ActorCell<?> child, Runnable publisher) {
+        SupervisorEscrowBinding binding = supervisorEscrowBindings.get(parent.ref.id());
+        if (binding == null) {
+            publisher.run();
+            return;
+        }
+        // Lock ordering is runtimeLifecycleLock -> parent.lifecycleLock ->
+        // escrow ledger. The ledger holds its monitor through publication;
+        // concurrent ancestor failure cannot see an unregistered child.
+        binding.bridge().registerSpawnedChildFromRuntime(
+                parent.ref, child.ref, binding.nodeId(), binding.generation(), publisher);
+    }
+
     /** Revalidate at the actual DATA mailbox linearization point. */
     private void requireSupervisorEscrowAdmission(ActorRef<?> ref) {
         SupervisorEscrowBinding binding = supervisorEscrowBindings.get(ref.id());
@@ -4704,16 +4742,18 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-            // An opt-in supervised actor cannot safely publish a new child
-            // without reserving that child's CONTROL ownership first. Deny
-            // BEFORE reserveActorSlot, ActorCell construction, memory slice
-            // allocation, or output stream registration to avoid rollback leaks.
-            // No host can bind an already-executing parent to supervision, so
-            // its escrow membership cannot appear midway through this turn.
-            if (parent != null
-                    && supervisorEscrowBindings.containsKey(parent.ref.id())) {
-                throw new IllegalStateException(
-                        "supervised actor nested spawn requires atomic CONTROL child registration");
+            // A supervised nested spawn requires an installed runtime CONTROL
+            // coordinator before any actor slot or memory can be reserved.
+            // Unsupported deployments remain fail-closed. With a coordinator,
+            // ledger admission/publish will be atomic against ancestor fencing.
+            if (parent != null) {
+                SupervisorEscrowBinding inherited =
+                        supervisorEscrowBindings.get(parent.ref.id());
+                if (inherited != null
+                        && !inherited.bridge().hasRecoveryCoordinatorFromRuntime()) {
+                    throw new IllegalStateException(
+                            "supervised actor nested spawn requires atomic CONTROL child registration and recovery coordinator");
+                }
             }
             reserveActorSlot();
 
@@ -4780,15 +4820,34 @@ public final class ActorRuntime implements AutoCloseable {
                                                     + inherited.memberLimit);
                                 }
                                 cell.managedByGroup.set(inheritedId);
-                                inherited.managedWorkers.put(id, ref);
-                                parent.children.add(cell);
+                                ActorCell<M> unpublished = cell;
+                                publishSpawnedChildWithEscrow(parent, unpublished, () -> {
+                                    try {
+                                        inherited.managedWorkers.put(id, ref);
+                                        parent.children.add(unpublished);
+                                        actors.put(id, unpublished);
+                                    } catch (RuntimeException | Error failure) {
+                                        actors.remove(id, unpublished);
+                                        parent.children.remove(unpublished);
+                                        inherited.managedWorkers.remove(id, ref);
+                                        throw failure;
+                                    }
+                                });
                                 linkedToParent = true;
-                                actors.put(id, cell);
                             }
                         } else {
-                            parent.children.add(cell);
+                            ActorCell<M> unpublished = cell;
+                            publishSpawnedChildWithEscrow(parent, unpublished, () -> {
+                                try {
+                                    parent.children.add(unpublished);
+                                    actors.put(id, unpublished);
+                                } catch (RuntimeException | Error failure) {
+                                    actors.remove(id, unpublished);
+                                    parent.children.remove(unpublished);
+                                    throw failure;
+                                }
+                            });
                             linkedToParent = true;
-                            actors.put(id, cell);
                         }
                     }
                 } else {
@@ -4808,6 +4867,13 @@ public final class ActorRuntime implements AutoCloseable {
                         synchronized (inherited.authorityLock) {
                             inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
                         }
+                    }
+                }
+                if (cell != null) {
+                    try {
+                        cell.rollbackNeverPublishedSpawn();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
                     }
                 }
                 actorCount.decrementAndGet();
@@ -7349,10 +7415,23 @@ public final class ActorRuntime implements AutoCloseable {
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
-            actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+            actorOutputStreams.add(outputStream);
+        }
+
+        /** Rollback of an actor that was never activated or exposed. */
+        private void rollbackNeverPublishedSpawn() {
+            if (activationRequested || scheduled.get() || carrierActive
+                    || activeTurns != 0) {
+                throw new IllegalStateException(
+                        "cannot roll back an activated or published child");
+            }
+            mailbox.close();
+            continuationMailbox.close();
+            outputStream.closeAndDrainFromRuntime();
+            if (memorySlice != null) memorySlice.close();
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
