@@ -69,6 +69,14 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         runtime.requireSupervisorShutdownAuthority("install supervisor recovery CONTROL");
         Objects.requireNonNull(coordinator, "coordinator");
         if (recovery != null) throw new IllegalStateException("CONTROL coordinator already installed");
+        // Host actors attached before coordinator installation cannot be
+        // reconstructed from the ledger's IDs alone: their exact ActorRefs
+        // were never registered with a cancellation owner. Reject rather
+        // than grant a fake recoverable supervision tree.
+        if (ledger.snapshot().size() != 1) {
+            throw new IllegalStateException(
+                    "CONTROL recovery must be installed before the first actor attachment");
+        }
         recovery = coordinator;
     }
 
