@@ -67,3 +67,9 @@ Its AST uses a non-sourceable internal receiver sentinel to preserve nominal
 binding without introducing a guest-visible actor variable. Trait names remain
 unresolved syntax: no conformance proof, state authority, dispatch, or runtime
 actor instance is created until the executable backend implements those gates.
+
+The canonical syntax is also exercised by
+`contracts/actor-external-entrypoints-v1/declared_actor.atto`, and its
+rejected alias spelling by `reject_declared_actor_alias.atto`. The Java
+JUnit parser/binder test reads both actual `.atto` files. Neither fixture is
+a passing guest execution or trait-conformance certificate.

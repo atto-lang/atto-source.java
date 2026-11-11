@@ -1,0 +1,5 @@
+// Static namespace actor declaration/trait-reference fixture, NOT executable guest code.
+namespace foo;
+declare pub actor Foo implements ActorXYZ;
+external mtd (Foo f) init(): void { return; }
+external mtd (Foo f) receive(ActorMail<int> mail): void { return; }

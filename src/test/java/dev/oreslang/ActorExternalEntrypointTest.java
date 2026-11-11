@@ -242,6 +242,21 @@ final class ActorExternalEntrypointTest {
                 ex.getMessage());
     }
 
+    @Test void declaredActorGuestFixturesAreParserOnlyAndFailClosed() throws IOException {
+        Path root = Path.of("contracts", "actor-external-entrypoints-v1");
+        Ast.Program parsed = Parser.parse(Files.readString(root.resolve("declared_actor.atto")));
+        assertEquals(2, ActorReceiverBinder.bind(parsed).size());
+        assertInstanceOf(Ast.StandaloneActorDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        IllegalArgumentException execution = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(execution.getMessage().contains("STANDALONE_ACTOR_LOWERING_UNSUPPORTED"),
+                execution.getMessage());
+
+        String forbidden = Files.readString(root.resolve("reject_declared_actor_alias.atto"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(forbidden));
+    }
+
     @Test void declarePubActorHasNominalIdentityAndNoExecutableAuthority() {
         Ast.Program parsed = Parser.parse(
                 "namespace foo; declare pub actor Foo implements ActorXYZ;\n"
