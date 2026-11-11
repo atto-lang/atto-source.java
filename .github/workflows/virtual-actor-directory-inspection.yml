@@ -9,9 +9,18 @@ on:
       - 'src/main/java/dev/oreslang/runtime/VirtualActorDirectoryInspection.java'
       - 'src/test/java/dev/oreslang/runtime/VirtualActorDirectoryInspectionTest.java'
       - 'src/test/java/dev/oreslang/runtime/VirtualActorSupervisorDirectoryTest.java'
+      - 'src/test/java/dev/oreslang/runtime/VirtualActorIdAddressRestartTest.java'
       - 'src/test/java/dev/oreslang/ExecutableVirtualActorStateContainerTest.java'
       - '.github/workflows/virtual-actor-directory-inspection.yml'
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Trusted manual execution runner (PR events stay GitHub-hosted)'
+        type: choice
+        default: github-hosted-linux
+        options:
+          - github-hosted-linux
+          - self-hosted-linux
 permissions:
   contents: read
 concurrency:
@@ -19,7 +28,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   local-registry-inspection:
-    runs-on: ubuntu-24.04
+    # Self-hosted execution is opt-in for an authorized manual dispatch only;
+    # never run arbitrary pull_request code on a self-hosted machine.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted-linux' && fromJSON('["self-hosted", "linux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -43,6 +54,8 @@ jobs:
           git hash-object src/main/java/dev/oreslang/runtime/VirtualActorDirectoryInspection.java
           git hash-object src/test/java/dev/oreslang/runtime/VirtualActorDirectoryInspectionTest.java
           git hash-object src/test/java/dev/oreslang/runtime/VirtualActorSupervisorDirectoryTest.java
+          git hash-object src/test/java/dev/oreslang/runtime/VirtualActorIdAddressRestartTest.java
+          printf 'RUN_ID=%s ATTEMPT=%s RUNNER=%s\\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'
@@ -53,8 +66,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=VirtualActorDirectoryInspectionTest,VirtualActorSupervisorDirectoryTest,ExecutableVirtualActorStateContainerTest -DfailIfNoTests=true test
-          for suite in VirtualActorDirectoryInspectionTest VirtualActorSupervisorDirectoryTest ExecutableVirtualActorStateContainerTest; do
+          mvn -B -ntp -Dtest=VirtualActorDirectoryInspectionTest,VirtualActorSupervisorDirectoryTest,VirtualActorIdAddressRestartTest,ExecutableVirtualActorStateContainerTest -DfailIfNoTests=true test
+          for suite in VirtualActorDirectoryInspectionTest VirtualActorSupervisorDirectoryTest VirtualActorIdAddressRestartTest ExecutableVirtualActorStateContainerTest; do
             report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
             if [ "$suite" = "VirtualActorSupervisorDirectoryTest" ]; then
               report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
@@ -63,5 +76,8 @@ jobs:
               report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             fi
             test -s "$report"
+            # A zero-test/missing suite is not evidence. Reject failures,
+            # errors and skips, and require a positive per-suite test count.
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
             ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' "$report"
           done
