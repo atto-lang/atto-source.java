@@ -64,7 +64,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
 
         @Override public void close() {
             if (!released.compareAndSet(false, true)) return;
-            List<T> cleanup = List.of();
+            List<T> cleanup = null;
             synchronized (ActorOwnedGraphArena.this) {
                 int slot = id.slot;
                 if (loans[slot] <= 0) {
@@ -74,7 +74,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
                 activeLoans--;
                 if (retiring && activeLoans == 0) cleanup = detachAll();
             }
-            runDrops(cleanup);
+            finishRetirement(cleanup);
         }
     }
 
@@ -233,13 +233,13 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
 
     /** Called only by the owning actor memory slice after actor finalization. */
     void retireFromActor() {
-        List<T> cleanup = List.of();
+        List<T> cleanup = null;
         synchronized (this) {
             if (retiring) return;
             retiring = true;
             if (activeLoans == 0) cleanup = detachAll();
         }
-        runDrops(cleanup);
+        finishRetirement(cleanup);
     }
 
     private void unlinkOrder(int slot) {
@@ -267,13 +267,8 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         oldest = newest = -1;
         uniquePayloads.clear();
         size = 0;
-        fullyClosed = true;
-        // A broken host reservation callback may not skip detached payload drops.
-        try {
-            onRetired.accept(this);
-        } catch (Throwable failure) {
-            recordCleanupFailure(failure);
-        }
+        // Detaching revokes authority first. The onRetired callback may
+        // release backing actor storage; never call it BEFORE destructors.
         return cleanup;
     }
 
@@ -285,9 +280,23 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         }
     }
 
-    private void runDrops(List<T> cleanup) {
-        // Attempt all drops, preserving VM-fatal precedence after sibling cleanup.
+    private void finishRetirement(List<T> cleanup) {
+        // A null list means an external lease is still live. An empty (but
+        // non-null) list still requires exactly one backing-release callback.
+        if (cleanup == null) return;
+        // Execute every user destructor while the actor backing still exists.
+        // Failures are accumulated so one bad owner cannot skip later drops.
         for (T value : cleanup) runDrop(value);
+        try {
+            onRetired.accept(this);
+        } catch (Throwable failure) {
+            recordCleanupFailure(failure);
+        }
+        // Complete the retirement only after both deterministic destruction
+        // and backing release, including any failing callback.
+        synchronized (this) {
+            fullyClosed = true;
+        }
         propagateFatalDropFailure();
     }
 
