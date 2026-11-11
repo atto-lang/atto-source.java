@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
-import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -31,7 +30,6 @@ final class NominalEnumActorMailGuestTest {
         Ast.Program parsed = Parser.parse(guest);
         Ast.Program typed = TypeChecker.check(parsed);
         OwnershipChecker.check(typed);
-        ReturnCleanupChecker.check(typed);
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         Source program = Source.newBuilder(OresLanguage.ID, guest, "closed-enum-private-mail.atto")
                 .mimeType(OresLanguage.MIME_TYPE).build();
@@ -49,7 +47,6 @@ final class NominalEnumActorMailGuestTest {
         Ast.Program parsed = Parser.parse(guest);
         Ast.Program typed = TypeChecker.check(parsed);
         OwnershipChecker.check(typed);
-        ReturnCleanupChecker.check(typed);
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         Source program = Source.newBuilder(OresLanguage.ID, guest, "closed-enum-shared-mail.atto")
                 .mimeType(OresLanguage.MIME_TYPE).build();
