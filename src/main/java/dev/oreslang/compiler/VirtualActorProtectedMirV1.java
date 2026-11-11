@@ -58,13 +58,22 @@ public final class VirtualActorProtectedMirV1 {
      * The backend must still verify this type against its published code
      * image and logical-generation fence at actual invocation.
      */
-    public record TypedRefContract(String declaredActor, String spelling,
-                                   List<CheckedAdd> methods) {
-        public TypedRefContract {
-            Objects.requireNonNull(declaredActor, "declaredActor");
-            Objects.requireNonNull(spelling, "spelling");
-            methods = List.copyOf(methods);
+    /** Only this checker can mint a typed reference contract. */
+    public static final class TypedRefContract {
+        private final String declaredActor;
+        private final String spelling;
+        private final List<CheckedAdd> methods;
+
+        private TypedRefContract(String declaredActor, String spelling,
+                                 List<CheckedAdd> methods) {
+            this.declaredActor = Objects.requireNonNull(declaredActor, "declaredActor");
+            this.spelling = Objects.requireNonNull(spelling, "spelling");
+            this.methods = List.copyOf(methods);
         }
+
+        public String declaredActor() { return declaredActor; }
+        public String spelling() { return spelling; }
+        public List<CheckedAdd> methods() { return methods; }
 
         public CheckedAdd method(String name, int arity) {
             Objects.requireNonNull(name, "method name");
