@@ -89,6 +89,37 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             bindKey(q,id); try(ResultSet r=q.executeQuery()){return r.next()?r.getLong(1):0;}
         }
     }
+    /**
+     * Every legacy event admission must preserve the same recoverable journal
+     * ceiling as the atomic command writer. Called inside BEGIN IMMEDIATE.
+     * Snapshots are checkpoint barriers and do not add to the replay suffix.
+     */
+    private boolean replayCapacityAvailable(Identity id,long newBytes)
+            throws SQLException {
+        if(newBytes<0 || newBytes>1_048_576L)return false;
+        long checkpoint=0;
+        try(PreparedStatement q=db.prepareStatement(
+                "SELECT snapshot_version FROM state " +
+                "WHERE tenant=? AND actor=? AND slot=?")) {
+            bindKey(q,id);
+            try(ResultSet row=q.executeQuery()) {
+                if(row.next())checkpoint=row.getLong(1);
+            }
+        }
+        if(checkpoint<0)throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        try(PreparedStatement q=db.prepareStatement(
+                "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
+                "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
+            bindKey(q,id);q.setLong(4,checkpoint);
+            try(ResultSet row=q.executeQuery()) {
+                if(!row.next())throw new SQLException("ACTOR_JOURNAL_COUNT_UNAVAILABLE");
+                long count=row.getLong(1),bytes=row.getLong(2);
+                if(count<0||bytes<0)throw new SQLException("INVALID_ACTOR_JOURNAL");
+                return count<10000 && bytes<=16_777_216L-newBytes;
+            }
+        }
+    }
+
     @Override public synchronized void grantEpoch(String tenant,String actor,long newEpoch) {
         checkOpen();checkId(tenant);checkId(actor);
         if(newEpoch<=0)throw new IllegalArgumentException("invalid epoch");
@@ -183,8 +214,11 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 if(before!=w.expectedVersion()){
                     out.add(new Result(w.operationId(),Status.VERSION_CONFLICT,before,false));continue;
                 }
+                if(w.kind()==Kind.EVENT &&
+                   !replayCapacityAvailable(id,w.ownedPayload().length))
+                    throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
                 long next=before+1;
-                try(PreparedStatement q=db.prepareStatement("INSERT INTO state(tenant,actor,slot,version,snapshot_version,snapshot_schema,snapshot) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant,actor,slot) DO UPDATE SET version=excluded.version,snapshot_version=CASE WHEN ?=1 THEN excluded.snapshot_version ELSE state.snapshot_version END,snapshot_schema=CASE WHEN ?=1 THEN excluded.snapshot_schema ELSE state.snapshot_schema END,snapshot=CASE WHEN ?=1 THEN excluded.snapshot ELSE state.snapshot END")) {
+                try(PreparedStatement q=db.prepareStatement("INSERT INTO state(tenant,actor,slot,version,snapshot_version,snapshot_schema,snapshot) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant,actor,slot) DO UPDATE SET version=excluded.version,snapshot_version=CASE WHEN ?=1 THEN excluded.snapshot_version ELSE state.snapshot_version END,snapshot_schema=CASE WHEN ?=1 THEN excluded.snapshot_schema END,snapshot=CASE WHEN ?=1 THEN excluded.snapshot ELSE state.snapshot END")) {
                     bindKey(q,id);q.setLong(4,next);q.setLong(5,w.kind()==Kind.SNAPSHOT?next:0);q.setInt(6,w.kind()==Kind.SNAPSHOT?w.schemaVersion():0);
                     if(w.kind()==Kind.SNAPSHOT)q.setBytes(7,w.ownedPayload());else q.setNull(7,java.sql.Types.BLOB);
                     int isSnapshot=w.kind()==Kind.SNAPSHOT?1:0;
