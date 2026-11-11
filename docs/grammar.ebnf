@@ -17,6 +17,7 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
+                | neuron_actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
@@ -31,6 +32,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type
 
 module_member   = contract_decl
                 | actor_decl
+                | neuron_actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
@@ -66,7 +68,12 @@ neuron_actor_decl = "define" visibility [ "serial" ] "neuron" "actor" IDENT
 neuron_state     = "state" "{" "let" type_ref IDENT [ "=" expression ] ";"
                    { "let" type_ref IDENT [ "=" expression ] ";" } "}" ;
 (* Neuron state is retained as a separate sealed AST schema, not ordinary
-   actor fields; critical state-loan lowering is not yet implemented. *)
+   actor fields; in the scalar-v0 checker every field must be private 'let float'
+   without an initializer. Critical read/write is contextual in neuron methods:
+   self.handle_state(critical-read |s| -> scalar_expression)
+   self.handle_state(critical-write |s| -> { assignments; })
+   The parser preserves a critical scope marker but compiler lowering is not
+   enabled, and the type checker rejects neuron guest execution. *)
 
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
