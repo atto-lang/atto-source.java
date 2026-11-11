@@ -24,7 +24,7 @@ jobs:
           cache: maven
       - name: Execute typed enum matcher and compiled actor mailbox guest tests
         run: >-
-          mvn -B -ntp -Dtest=NominalEnumActorMailGuestTest,EnumMatchArmSyntaxGuestTest
+          mvn -B -ntp -Dtest=NominalEnumActorMailGuestTest,EnumMatchArmSyntaxGuestTest,OresEnumSymbolActorMailTest
           -DfailIfNoTests=true test
       - name: Preserve actual Surefire method reports
         if: always()
