@@ -41,6 +41,8 @@ jobs:
           git hash-object contracts/virtual-actor-cart-v1/positive/cart_ops.atto
           git hash-object contracts/virtual-actor-cart-v1/positive/cart_main.atto
           git hash-object contracts/virtual-actor-cart-v1/negative/virtual_cart_unsupported.atto
+          git hash-object contracts/virtual-actor-cart-v1/expected/cart_main.stdout
+          git hash-object contracts/virtual-actor-cart-v1/cases.json
           git hash-object src/test/java/dev/oreslang/AttoCartPhysicalActivationGuestTest.java
 
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
