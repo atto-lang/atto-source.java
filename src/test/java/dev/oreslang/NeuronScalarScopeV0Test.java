@@ -108,6 +108,13 @@ final class NeuronScalarScopeV0Test {
                 "critical-read |input| -> input.weight * input + input.bias"));
     }
 
+    @Test void rejectsMissingExplicitReturnFromOnStart() {
+        // AttoLang method bodies do not implicitly return the last
+        // expression. A protected state scope must exit through a known,
+        // explicit return so a future MIR emitter can attach cleanup.
+        rejected(SOURCE.replace("                return;\n", ""));
+    }
+
     @Test void rejectsIncompleteCriticalScopePairs() {
         String noWrite = SOURCE.replace(
                 "self.handle_state(critical-write |s| -> {\n"
