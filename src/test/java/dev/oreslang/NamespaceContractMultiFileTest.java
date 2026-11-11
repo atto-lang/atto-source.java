@@ -254,6 +254,56 @@ final class NamespaceContractMultiFileTest {
     }
 
     @Test
+    void ordinaryClassCannotImpersonateNominalActorAcrossFiles() {
+        Map<String, String> sources = complete();
+        sources.put("shop/cart.atto", """
+                namespace shop;
+                pub define class Cart as
+                end
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("missing public non-generic actor"));
+    }
+
+    @Test
+    void namespaceActorAndFieldWithSamePublicNameCannotCoexist() {
+        Map<String, String> sources = complete();
+        sources.put("shop/field.atto", """
+                namespace shop;
+                pub val int Cart = 1;
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("duplicate runtime value"));
+    }
+
+    @Test
+    void changedPublicFunctionParameterTypeInvalidatesContract() {
+        Map<String, String> sources = complete();
+        sources.put("shop/tick.atto", FUNCTION.replace(
+                "tick(int amount)", "tick(String amount)")
+                .replace("return amount;", "return 42;"));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("incompatible parameter"));
+    }
+
+    @Test
+    void ordinaryModuleCannotProvideNamespaceRootFunction() {
+        Map<String, String> sources = complete();
+        sources.put("shop/tick.atto", """
+                namespace shop;
+                define module actions as
+                  pub fnc tick(int amount): int { return amount; }
+                end
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("missing compatible public fnc"));
+    }
+
+    @Test
     void functionDeclarationMustNotBeAmbiguousAcrossFiles() {
         Map<String, String> sources = complete();
         sources.put("shop/tick-dupe.atto", FUNCTION);
