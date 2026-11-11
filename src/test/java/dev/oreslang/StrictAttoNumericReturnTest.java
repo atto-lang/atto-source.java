@@ -75,12 +75,11 @@ final class StrictAttoNumericReturnTest {
     }
 
     @Test
-    void typedNestedScopePreservesReturnWidth() {
+    void typedLocalAliasPreservesReturnWidth() {
         rejects("""
                 pub fnc bad(i32 value): i64 {
-                  {
-                    return value;
-                  }
+                  val i32 alias = value;
+                  return alias;
                 }
                 """, "ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES");
     }
