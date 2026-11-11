@@ -362,10 +362,117 @@ final class ManifestNamespaceActorTopologyTest {
     }
 
     @Test
+    void descriptorLinksPrivateStateAndHooksWithoutAuthorizingExecution() throws IOException {
+        var topology = fixture().inspectActorTopology();
+        var descriptor = topology.actorDescriptors().descriptor(key("Counter"));
+        assertNotNull(descriptor);
+        assertFalse(descriptor.guestExecutable());
+        assertEquals(key("Counter"), descriptor.actor());
+        assertEquals("src/foo/actor.atto", descriptor.declaration().declaringUnit());
+        assertEquals(5L, descriptor.stateFields().get("x").initialI64());
+        assertEquals(1, descriptor.stateFields().size());
+        assertEquals(2, descriptor.methods().size());
+        var get = descriptor.methods().get(
+                new ActorMethodIndex.MethodKey(key("Counter"), "get", 0));
+        assertNotNull(get);
+        assertTrue(get.unloweredExternal());
+        assertFalse(get.declarationEligible());
+        assertEquals(2, descriptor.runtimeIngress().size());
+        assertEquals(0, descriptor.runtimeIngress().get("init").arity());
+        assertEquals(1, descriptor.runtimeIngress().get("receive").arity());
+        assertEquals("src/foo/methods.atto",
+                descriptor.runtimeIngress().get("receive").declaringUnit());
+        assertFalse(descriptor.methods().keySet().stream().anyMatch(
+                key -> key.methodName().equals("init") || key.methodName().equals("receive")));
+        assertTrue(descriptor.sourceSetSha256().matches("[0-9a-f]{64}"));
+    }
+
+    @Test
+    void descriptorReceiptIsStableOnUnchangedInventoryAndChangesOnSourceEdit() throws IOException {
+        var compiler = fixture();
+        String before = compiler.inspectActorTopology()
+                .actorDescriptors().descriptor(key("Counter")).sourceSetSha256();
+        String same = compiler.inspectActorTopology()
+                .actorDescriptors().descriptor(key("Counter")).sourceSetSha256();
+        assertEquals(before, same);
+        write("src/foo/state.atto", STATE.replace("let int x: 5;", "let int x: 6;"));
+        var after = compiler.inspectActorTopology().actorDescriptors()
+                .descriptor(key("Counter"));
+        assertNotEquals(before, after.sourceSetSha256());
+        assertEquals(6L, after.stateFields().get("x").initialI64());
+        assertFalse(after.guestExecutable());
+    }
+
+    @Test
+    void namespaceSeparatedDescriptorsCannotBorrowAnotherActorsStateOrMethods()
+            throws IOException {
+        var compiler = fixture();
+        write("src/other/counter.atto", """
+                namespace other;
+                declare pub actor Counter;
+                """);
+        var topology = compiler.inspectActorTopology();
+        var local = topology.actorDescriptors().descriptor(key("Counter"));
+        var foreignKey = new ActorMethodIndex.ActorKey(
+                "counter-demo@0.1.0", "other", "Counter");
+        var foreign = topology.actorDescriptors().descriptor(foreignKey);
+        assertNotNull(local);
+        assertNotNull(foreign);
+        assertEquals(5L, local.stateFields().get("x").initialI64());
+        assertTrue(foreign.stateFields().isEmpty());
+        assertTrue(foreign.methods().isEmpty());
+        assertTrue(foreign.runtimeIngress().isEmpty());
+        assertEquals(2, topology.actorDescriptors().descriptors().size());
+        assertNull(topology.actorDescriptors().descriptor(
+                new ActorMethodIndex.ActorKey("foreign@1", "foo", "Counter")));
+    }
+
+    @Test
+    void privateIngressDoesNotBecomePublicViaDescriptorNameOrReturnType()
+            throws IOException {
+        var compiler = fixture();
+        var descriptor = compiler.inspectActorTopology().actorDescriptors()
+                .descriptor(key("Counter"));
+        assertNull(descriptor.methods().get(
+                new ActorMethodIndex.MethodKey(key("Counter"), "init", 0)));
+        assertNull(descriptor.methods().get(
+                new ActorMethodIndex.MethodKey(key("Counter"), "receive", 1)));
+        assertThrows(UnsupportedOperationException.class,
+                () -> descriptor.stateFields().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> descriptor.methods().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> descriptor.runtimeIngress().clear());
+    }
+
+    @Test
+    void descriptorStateLayoutRejectsForgedInlineAndDuplicateActorNames() throws IOException {
+        var compiler = fixture();
+        write("src/foo/second_actor.atto", ACTOR);
+        var error = assertThrows(IllegalArgumentException.class,
+                compiler::inspectActorTopology);
+        assertTrue(error.getMessage().contains("duplicate")
+                || error.getMessage().contains("ambiguous"), error.getMessage());
+    }
+
+    @Test
+    void sourceRuntimeAttemptStillRequiresCompilerIssuedActorPermit() throws IOException {
+        var topology = fixture().inspectActorTopology();
+        assertNotNull(topology.actorDescriptors().descriptor(key("Counter")));
+        var declared = Parser.parse(ACTOR);
+        var rejection = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(declared));
+        assertTrue(rejection.getMessage().contains("STANDALONE_ACTOR_LOWERING_UNSUPPORTED"),
+                rejection.getMessage());
+    }
+
+    @Test
     void returnedTopologyMapsAreImmutable() throws IOException {
         var topology = fixture().inspectActorTopology();
         assertThrows(UnsupportedOperationException.class,
                 () -> topology.sourceSha256().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> topology.actorDescriptors().descriptors().clear());
         assertThrows(UnsupportedOperationException.class,
                 () -> topology.attachedStates().clear());
         assertThrows(UnsupportedOperationException.class,
