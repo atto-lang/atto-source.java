@@ -2921,6 +2921,24 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            // Nullary enum variants are immutable, nominal values. A payload-bearing
+            // variant remains a constructor and cannot be referenced as a constant.
+            // Resolve only a free enum namespace, never a shadowing local binding.
+            if (member.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == null
+                    && nominalEnums != null) {
+                NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                        enumOwner.name() + "." + member.member());
+                if (enumCase != null) {
+                    rejectUnimportedTypeDependency(enumCase.owner());
+                    if (enumCase.payload() != null) {
+                        throw new IllegalArgumentException(
+                                "enum case " + enumCase.qualifiedName()
+                                        + " requires a payload argument");
+                    }
+                    return new Named(enumCase.qualifiedName(), List.of());
+                }
+            }
             if (currentClassOwner != null
                     && ActorStateContract.stateField(currentClassOwner) != null
                     && member.member().equals("state")
