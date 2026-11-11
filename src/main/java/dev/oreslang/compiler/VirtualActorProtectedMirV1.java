@@ -74,6 +74,21 @@ public final class VirtualActorProtectedMirV1 {
                     .orElseThrow(() -> new IllegalArgumentException(
                             "virtual actor type has no checked method '" + name + "/" + arity + "'"));
         }
+
+        /**
+         * Compile-time exact method selector for statically resolved guest
+         * argument types. A successful check is not a runtime invocation,
+         * host capability or borrow permit.
+         */
+        public CheckedAdd requireCall(String methodName, List<Ast.TypeRef> arguments) {
+            List<Ast.TypeRef> types = List.copyOf(Objects.requireNonNull(arguments));
+            CheckedAdd selected = method(methodName, types.size());
+            if (types.size() != 1 || !types.getFirst().equals(selected.parameterType()))
+                throw new IllegalArgumentException(
+                        "virtual actor call parameter type mismatch for '"
+                                + methodName + "/" + types.size() + "'");
+            return selected;
+        }
     }
 
     /**
