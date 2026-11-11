@@ -10,7 +10,7 @@ For each application-domain registry, `SingletonDependencyGraph<Key>` conservati
 
 - Source callbacks remain outside the `values` monitor. Only dependency metadata is touched while holding the registry's existing admission monitor.
 - Every edge is linked before exposing a newly-created registration future, and before returning an existing pending future.
-- Adding an edge that closes a dependency cycle returns a failed future with `singleton initializer cycle`; no newly allocated incomplete cell is retained on denied admission.
+- Adding an edge that closes a dependency cycle returns a failed future with `singleton initializer cycle`; no newly allocated incomplete cell is retained on denied admission. An existing pending target's publication is also completed exceptionally **outside the registry monitor** so callers cannot swallow the rejected receipt and publish a successful cycle.
 - The regular initializer catch/finally path completes its own immutable publication exceptionally, preserving sticky failure and waking all dependents.
 - A node retires outgoing and incoming edges after initialization reaches a terminal future, with O(in-degree + out-degree) cleanup.
 - The graph retains no serialized principals or actor-private heap addresses and never confers memory ownership or RW access.
@@ -20,7 +20,7 @@ The graph detects **nested requests made through this API**, not arbitrary `Comp
 
 ## Executable regression cases
 
-`SingletonCrossThreadCycleSmoke` uses the real `SingletonSharedDomain`: two- and three-carrier bounded rendezvous cycles must fail with the cycle diagnostic, failures must be sticky, threads must drain, and an acyclic three-declaration chain must succeed and retain canonical identity.
+`SingletonCrossThreadCycleSmoke` uses the real `SingletonSharedDomain`: two- and three-carrier bounded rendezvous cycles must fail with the cycle diagnostic, ignored direct recursion cannot publish successfully, failures must be sticky, threads must drain, and an acyclic three-declaration chain must succeed and retain canonical identity.
 
 `SingletonDependencyGraphSmoke` independently checks same-thread 2/3-node cycles, exactly one cross-thread detected edge when two live references form a cycle, duplicate edges, bounded outstanding edges and cleanup. The helper and standalone graph smoke were **actually compiled** locally with JDK 21 `javac -Xlint:all -Werror` and executed **100 rounds, 800 assertions, no failures**. The compiled helper's Git blob matches the pushed source blob. This is **not** evidence that the fully integrated runtime smoke or Maven/JUnit has executed.
 
