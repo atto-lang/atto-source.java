@@ -1,0 +1,12 @@
+define actor Coordinates as
+  state {
+    let int x;
+    let int y;
+  }
+  inspect(): void {
+    val borrow int first = rt borrow self.x;
+    val borrow int second = rt borrow self.y;
+    return;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
