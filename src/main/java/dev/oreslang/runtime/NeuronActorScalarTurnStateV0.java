@@ -37,7 +37,23 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
         long generation = proof.actorRef().generation();
         ActorStateReadWriteLoans storage =
                 new ActorStateReadWriteLoans(generation, maxPending, maxReaders, floatFields);
-        return new NeuronActorScalarTurnStateV0(proof, storage);
+        NeuronActorScalarTurnStateV0 state = new NeuronActorScalarTurnStateV0(proof, storage);
+        try {
+            ActorRuntime.registerNeuronScalarState(proof, state);
+            return state;
+        } catch (RuntimeException | Error rejected) {
+            // Registration must be atomic. An unbound allocation is never
+            // published or left with uninitialized mutable state authority.
+            storage.close();
+            storage.tryClearRetiredScalarStorage();
+            throw rejected;
+        }
+    }
+
+    boolean matchesOwner(ActorRuntime.NeuronActorTurnProof proof) {
+        return proof != null && proof.runtime() == runtime
+                && proof.actorRef() == actor
+                && proof.actorRef().generation() == generation;
     }
 
     private ActorRuntime.NeuronActorTurnProof currentOwnerTurn() {
