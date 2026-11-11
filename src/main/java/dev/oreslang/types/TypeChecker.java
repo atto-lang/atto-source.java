@@ -184,7 +184,14 @@ public final class TypeChecker {
                         // uninitialized reads, effectful scalar math and
                         // malformed critical-read/write ASTs. It does NOT
                         // authorize emitted guest state access.
-                        dev.oreslang.compiler.NeuronScalarScopeV0.preflight(klass);
+                        var neuronScopes =
+                                dev.oreslang.compiler.NeuronScalarScopeV0.preflight(klass);
+                        if (neuronScopes.hasCriticalScopes()) {
+                            // Produce a closed typed AOT descriptor while still
+                            // refusing emission. No MIR descriptor is a lease
+                            // authorization or executable guest capability.
+                            dev.oreslang.compiler.NeuronScalarMirV0.lower(klass);
+                        }
                         throw new IllegalArgumentException(
                                 "NEURON_STATE_MIR_UNSUPPORTED: neuron actor '" + klass.name()
                                 + "' has protected mutable state but critical read/write "
