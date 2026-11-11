@@ -1,7 +1,6 @@
 package dev.oreslang.compiler;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,7 +28,7 @@ public final class PinnedPackageInterface {
     private static final Pattern ALIAS = Pattern.compile("[a-z][a-z0-9_]{0,127}");
     private static final Pattern NAMESPACE = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
     private static final Pattern DIGEST = Pattern.compile("[0-9a-f]{64}");
-    private static final Pattern INSTANCE = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._/@#+-]{0,255}");
+    private static final Pattern INSTANCE = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._/@#:+-]{0,255}");
 
     /** One digest-pinned public-interface envelope per declared namespace. */
     public record NamespacePin(String namespace, String interfaceSha256) {
@@ -182,10 +181,7 @@ public final class PinnedPackageInterface {
                 visible.add(new PublicSymbol(lock.packageInstanceId(), pin.namespace(),
                         entry.module(), entry.kind(), entry.name(), entry.signature()));
             }
-            visible.sort(Comparator.comparing(PublicSymbol::module)
-                    .thenComparingInt(s -> s.kind().wireTag())
-                    .thenComparing(PublicSymbol::name)
-                    .thenComparing(PublicSymbol::signature));
+            // Preserve ExportInterfaceCodec's unsigned UTF-8 canonical entry order.
             index.put(pin.namespace(), visible);
         }
         if (index.size() != snapshot.size()) {
