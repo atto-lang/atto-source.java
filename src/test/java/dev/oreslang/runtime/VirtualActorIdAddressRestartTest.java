@@ -137,40 +137,40 @@ final class VirtualActorIdAddressRestartTest {
                 var supervisor = runtime.createSupervisor();
                 try (var directory = supervisor.virtualActorDirectory(TENANT, 8, 4)) {
                     try {
-                    var logical = directory.resolve("Cart", "queued-timeout");
-                    // Park the CONTROL carrier before admission so both
-                    // requests are queued; avoid sleeps and timing assumptions.
-                    pool.execute(() -> {
-                        started.countDown();
-                        try { blocked.await(); }
-                        catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                        }
-                    });
-                    assertTrue(started.await(2, TimeUnit.SECONDS));
-                    Object session = new Object();
-                    var grant = directory.issueInspectionGrant(
-                            session, TimeUnit.SECONDS.toNanos(5));
-                    var first = directory.requestInspect(grant, session, logical.identity(),
-                            TimeUnit.MILLISECONDS.toNanos(100));
-                    // One grant never authorizes concurrent observation turns.
-                    assertThrows(IllegalStateException.class,
-                            () -> directory.requestInspect(grant, session, logical.identity(),
-                                    TimeUnit.SECONDS.toNanos(2)));
-                    ExecutionException timedOut = assertThrows(ExecutionException.class,
-                            () -> first.toCompletableFuture().get(2, TimeUnit.SECONDS));
-                    assertInstanceOf(TimeoutException.class, timedOut.getCause());
-                    // The grant is reusable after queued cancellation, but the
-                    // undispatched CONTROL callback still consumes global credit.
-                    assertEquals(1, directory.pendingInspectionCount());
-                    var second = directory.requestInspect(grant, session, logical.identity(),
-                            TimeUnit.SECONDS.toNanos(2));
-                    assertEquals(2, directory.pendingInspectionCount());
-                    blocked.countDown();
-                    var observed = second.toCompletableFuture().get(5, TimeUnit.SECONDS)
-                            .orElseThrow();
-                    assertEquals(logical.identity(), observed.identity());
-                    assertEquals(0, directory.pendingInspectionCount());
+                        var logical = directory.resolve("Cart", "queued-timeout");
+                        // Park the CONTROL carrier before admission so both
+                        // requests are queued; avoid sleeps and timing assumptions.
+                        pool.execute(() -> {
+                            started.countDown();
+                            try { blocked.await(); }
+                            catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                            }
+                        });
+                        assertTrue(started.await(2, TimeUnit.SECONDS));
+                        Object session = new Object();
+                        var grant = directory.issueInspectionGrant(
+                                session, TimeUnit.SECONDS.toNanos(5));
+                        var first = directory.requestInspect(grant, session, logical.identity(),
+                                TimeUnit.MILLISECONDS.toNanos(100));
+                        // One grant never authorizes concurrent observation turns.
+                        assertThrows(IllegalStateException.class,
+                                () -> directory.requestInspect(grant, session, logical.identity(),
+                                        TimeUnit.SECONDS.toNanos(2)));
+                        ExecutionException timedOut = assertThrows(ExecutionException.class,
+                                () -> first.toCompletableFuture().get(2, TimeUnit.SECONDS));
+                        assertInstanceOf(TimeoutException.class, timedOut.getCause());
+                        // The grant is reusable after queued cancellation, but the
+                        // undispatched CONTROL callback still consumes global credit.
+                        assertEquals(1, directory.pendingInspectionCount());
+                        var second = directory.requestInspect(grant, session, logical.identity(),
+                                TimeUnit.SECONDS.toNanos(2));
+                        assertEquals(2, directory.pendingInspectionCount());
+                        blocked.countDown();
+                        var observed = second.toCompletableFuture().get(5, TimeUnit.SECONDS)
+                                .orElseThrow();
+                        assertEquals(logical.identity(), observed.identity());
+                        assertEquals(0, directory.pendingInspectionCount());
                     } finally {
                         // Release the carrier BEFORE closing runtime/executor
                         // resources even if an assertion has failed.
@@ -203,6 +203,82 @@ final class VirtualActorIdAddressRestartTest {
                                 TimeUnit.SECONDS.toNanos(1)));
                 assertEquals(0, directory.pendingInspectionCount());
             }
+        }
+    }
+
+    @Test
+    void synchronousInlineControlIsDeniedWithoutLeakingInspectionCapacity() throws Exception {
+        ActorRuntime.ControlDispatcher inline = turn -> {
+            turn.run(); // Deliberately violates the CONTROL enqueue contract.
+            return OresFuture.completed(null);
+        };
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(), inline)) {
+            var supervisor = runtime.createSupervisor();
+            try (var directory = supervisor.virtualActorDirectory(TENANT, 8, 4)) {
+                var logical = directory.resolve("Cart", "inline-forbidden");
+                Object session = new Object();
+                var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(5));
+                var result = directory.requestInspect(grant, session, logical.identity(),
+                        TimeUnit.SECONDS.toNanos(2));
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> result.toCompletableFuture().get(2, TimeUnit.SECONDS));
+                assertEquals("INLINE_CONTROL_DISPATCH_FORBIDDEN", failure.getCause().getMessage());
+                assertEquals(0, directory.pendingInspectionCount());
+            }
+        }
+    }
+
+    @Test
+    void queuedDispatchFailureReleasesGrantBeforeDependentRecovery() throws Exception {
+        CountDownLatch rejectFirst = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger submitted =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try (ExecutorService pool = Executors.newSingleThreadExecutor()) {
+            ActorRuntime.ControlDispatcher flaky = turn -> {
+                int index = submitted.incrementAndGet();
+                return OresFuture.fromCallback(done -> pool.execute(() -> {
+                    try {
+                        if (index == 1) {
+                            rejectFirst.await();
+                            done.reject(new IllegalStateException("synthetic CONTROL rejection"));
+                        } else {
+                            turn.run();
+                            done.resolve(null);
+                        }
+                    } catch (Throwable failure) {
+                        done.reject(failure);
+                    }
+                }));
+            };
+            try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                    ActorRuntime.DispatcherConfig.defaults(),
+                    ActorRuntime.TurnExecutor.direct(), flaky)) {
+                var supervisor = runtime.createSupervisor();
+                try (var directory = supervisor.virtualActorDirectory(TENANT, 8, 4)) {
+                    try {
+                        var logical = directory.resolve("Cart", "recover-control");
+                        Object session = new Object();
+                        var grant = directory.issueInspectionGrant(session, TimeUnit.SECONDS.toNanos(5));
+                        var first = directory.requestInspect(grant, session, logical.identity(),
+                                TimeUnit.SECONDS.toNanos(3));
+                        var recovered = first.exceptionallyCompose(failure ->
+                                directory.requestInspect(grant, session, logical.identity(),
+                                        TimeUnit.SECONDS.toNanos(3)));
+                        rejectFirst.countDown();
+                        var snapshot = recovered.toCompletableFuture()
+                                .get(5, TimeUnit.SECONDS).orElseThrow();
+                        assertEquals(logical.identity(), snapshot.identity());
+                        assertEquals(2, submitted.get());
+                        assertEquals(0, directory.pendingInspectionCount());
+                    } finally {
+                        rejectFirst.countDown();
+                    }
+                }
+            }
+        } finally {
+            rejectFirst.countDown();
         }
     }
 }
