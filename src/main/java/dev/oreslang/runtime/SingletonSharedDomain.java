@@ -150,6 +150,10 @@ public final class SingletonSharedDomain {
         Objects.requireNonNull(initialize, "initialize");
         CompletableFuture<Object> existing;
         CompletableFuture<Object> created = null;
+        // Cycle publication must fail *outside* values monitor; completion can
+        // run user callbacks synchronously. Preserve the old sticky-failure rule
+        // even if the nested caller ignores the rejected lookup receipt.
+        IllegalStateException cycleFailure = null;
         synchronized (values) {
             existing = values.get(key);
             if (existing != null) {
@@ -162,7 +166,11 @@ public final class SingletonSharedDomain {
                     try {
                         initializerDependencies.dependOn(key);
                     } catch (IllegalStateException dependencyFailure) {
-                        return CompletableFuture.failedFuture(dependencyFailure);
+                        if ("singleton initializer cycle".equals(dependencyFailure.getMessage())) {
+                            cycleFailure = dependencyFailure;
+                        } else {
+                            return CompletableFuture.failedFuture(dependencyFailure);
+                        }
                     }
                 }
             } else {
@@ -183,6 +191,14 @@ public final class SingletonSharedDomain {
                     compiledSchemas.put(key, compilerFingerprint);
                 }
             }
+        }
+        if (cycleFailure != null) {
+            // Do not let an initializer swallow the failed nested result and
+            // publish a "successful" singleton after observing a dependency cycle.
+            // Completing under values would run arbitrary Future observers while
+            // holding the global registry monitor, so it happens only here.
+            existing.completeExceptionally(cycleFailure);
+            return CompletableFuture.failedFuture(cycleFailure);
         }
         if (existing != null) {
             // Never leak the registry's writable completion receipt.
