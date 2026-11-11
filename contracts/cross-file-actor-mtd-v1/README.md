@@ -47,3 +47,32 @@ Run `CrossFileActorReceiverBindingTest`, `ActorReceiverBinderTest` and
 `ExternalActorReceiverAstAdmissionTest` on an admitted runner at the
 exact PR head. Record the root Git tree, nonzero executed steps,
 JUnit results, and later real guest call/return receipts.
+
+
+## Follow-up hardening
+
+The closed-source-map binder now validates every namespace group, even one
+without external methods, so duplicate actor/type declarations cannot hide
+until an unrelated `mtd` is added. Its file identifiers must be normalized,
+relative, slash-delimited `.atto` (or legacy `.ores`) paths. It rejects
+parent traversal, backslashes, empty/dot segments, control characters and
+case-insensitive path collisions, while allowing harmless embedded `..` in
+filenames. A single AST node may not be presented as originating in two files.
+
+Memory/workload bounds for this static API are 4096 source units and 65536
+file-root declarations. In-class actor method slots are indexed once by
+`(methodName, valueArity)` instead of scanning all embedded methods for
+each external method; static methods remain a separate dispatch domain.
+A duplicate embedded instance slot is an error. These changes are
+compiler-side metadata checks and do not prove guest execution.
+
+`CrossFileActorReceiverBindingTest` now has **24 authored JUnit test methods**
+for the positive two-file source and negative/edge cases. The focused
+`.github/workflows/cross-file-actor-mtd-junit.yml` workflow pins the exact
+source head, reports the Git tree and fixture hashes and requires real
+non-skipped Surefire reports for all three actor binder/parser suites.
+
+**Evidence remains NOT EXECUTED** until a runner executes the exact latest
+head. Zero-step GitHub Actions failures are runner-admission failures, not
+compiler or JUnit results. Do not advance the PR to merge-ready based on
+static source readback or source-free canaries alone.
