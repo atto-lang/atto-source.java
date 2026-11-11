@@ -157,6 +157,10 @@ public final class NativeHttp implements AutoCloseable {
         return stoppedTransport && noActive && publishingReleases == 0;
     }
 
+    static boolean claimForcedClose(AtomicBoolean claim) {
+        return claim.compareAndSet(false, true);
+    }
+
     /** Publish the terminal Future after leaving the HTTP listener monitor. */
     static void failOutsideMonitor(Object lock, OresFuture<Object> future, Throwable failure) {
         if (Thread.holdsLock(lock)) {
@@ -656,7 +660,7 @@ public final class NativeHttp implements AutoCloseable {
             OresFuture<Object> acceptToFail;
             OresFuture<Object> drainToFail = null;
             synchronized (this) {
-                if (!forcedCloseClaimed.compareAndSet(false, true)) return;
+                if (!claimForcedClose(forcedCloseClaimed)) return;
                 acceptToFail = stopAcceptingLocked();
                 if (drained != null && !drainOutcomeClaimed) {
                     drainOutcomeClaimed = true;
