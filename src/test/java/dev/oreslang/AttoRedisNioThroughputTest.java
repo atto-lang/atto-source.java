@@ -287,6 +287,35 @@ final class AttoRedisNioThroughputTest {
         }
     }
 
+    /**
+     * Execute both guest binaries on the same JDK/host, alternating order
+     * (original, single-reply, single-reply, original). Replies are verified
+     * against the exact same client-side Redis oracle in every trial.
+     * Never enforce a speed threshold on noisy shared GitHub runners.
+     */
+    @Test
+    @Timeout(value = 240, unit = TimeUnit.SECONDS)
+    void compareActualAttoNioSingleReplyAgainstDoubleReply() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_REPLY_AB_ENABLED")),
+                "dedicated exact-source ABBA performance diagnostic");
+        double originalFirst = runGuest("redis_actor_nio_fast_baseline.atto",
+                "atto_double_reply_before");
+        double singleFirst = runGuest("redis_actor_nio_fast.atto",
+                "atto_single_reply_first");
+        double singleSecond = runGuest("redis_actor_nio_fast.atto",
+                "atto_single_reply_second");
+        double originalSecond = runGuest("redis_actor_nio_fast_baseline.atto",
+                "atto_double_reply_after");
+        double baseline = (originalFirst + originalSecond) / 2.0;
+        double optimized = (singleFirst + singleSecond) / 2.0;
+        assertTrue(baseline > 0 && optimized > 0);
+        System.out.printf("ATTO_REDIS_SINGLE_REPLY_ABBA original_first=%.1f "
+                + "single_first=%.1f single_second=%.1f original_second=%.1f "
+                + "mean_original=%.1f mean_single_reply=%.1f ratio=%.4f correctness=PASS%n",
+                originalFirst, singleFirst, singleSecond, originalSecond,
+                baseline, optimized, optimized / baseline);
+    }
+
     @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
