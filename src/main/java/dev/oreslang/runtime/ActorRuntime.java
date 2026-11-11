@@ -3488,6 +3488,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Optional host CONTROL callback; copied into each physical binding. */
         private Function<VirtualActorTerminalNotice, CompletionStage<Void>>
                 virtualActorTerminalHandler;
+        /** No late subscription after a physical virtual actor has bound. */
+        private boolean virtualActorBindingEverStarted;
         // Trusted runtime resource closures, not guest callbacks. Invoked
         // outside authorityLock after the group is fenced but before worker
         // cancellation and event-bus teardown.
@@ -3592,6 +3594,9 @@ public final class ActorRuntime implements AutoCloseable {
                 requireOpen();
                 if (virtualActorTerminalHandler != null)
                     throw new IllegalStateException("virtual terminal CONTROL handler already installed");
+                if (virtualActorBindingEverStarted)
+                    throw new IllegalStateException(
+                            "install virtual terminal CONTROL before the first activation bind");
                 virtualActorTerminalHandler = handler;
             }
         }
@@ -3628,6 +3633,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     try {
                         virtualActorFences.bind(supervisor.id(), id, identity, generation, worker.id());
+                        virtualActorBindingEverStarted = true;
                     } catch (RuntimeException | Error failure) {
                         if (terminalHandler != null)
                             virtualActorTerminalControl.discardUnbound(worker.id());
