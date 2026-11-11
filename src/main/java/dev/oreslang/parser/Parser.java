@@ -4451,21 +4451,35 @@ public final class Parser {
         return new Ast.RangeExpr(start, end, inclusive);
     }
 
+    /**
+     * A ternary-arm-only value block. A final bare expression and a final
+     * `return expression` have identical ARM_RESULT semantics. The explicit
+     * spelling never constructs a function-level ReturnStmt: only the value
+     * crosses the arm boundary, and execution continues after the ternary.
+     */
     private Ast.BlockValueExpr parseValueBlock() {
-        consume(LBRACE, "expected '{' to start value block");
+        consume(LBRACE, "expected '{' to start ternary arm");
         localTypeScopes.push(new java.util.HashSet<>());
         try {
             List<Ast.Stmt> prefix = new ArrayList<>();
             while (!check(RBRACE) && !check(EOF)) {
+                if (match(RETURN)) {
+                    // Explicit return is terminal and arm-local. It may omit
+                    // the semicolon, or include one without changing meaning.
+                    Ast.Expr result = parseExpression();
+                    match(SEMICOLON);
+                    consume(RBRACE, "ternary-arm return must be the final statement");
+                    return new Ast.BlockValueExpr(prefix, result);
+                }
                 Ast.Stmt statement = parseStatement();
                 if (statement instanceof Ast.ExprStmt expression && check(RBRACE)
                         && previous().type() != SEMICOLON) {
-                    consume(RBRACE, "expected '}' after value block result");
+                    consume(RBRACE, "expected '}' after ternary-arm result");
                     return new Ast.BlockValueExpr(prefix, expression.expression());
                 }
                 prefix.add(statement);
             }
-            throw error(peek(), "value block requires a final expression without ';'");
+            throw error(peek(), "ternary arm requires a final expression or 'return value'");
         } finally {
             localTypeScopes.pop();
         }
@@ -4990,7 +5004,6 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        if (check(LBRACE)) return parseValueBlock();
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
