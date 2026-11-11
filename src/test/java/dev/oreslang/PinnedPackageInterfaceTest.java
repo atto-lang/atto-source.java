@@ -39,6 +39,12 @@ final class PinnedPackageInterfaceTest {
         return new Lock("math", INSTANCE, COMPILER, TARGET, POLICY, pins);
     }
 
+    @Test void fixedCrossToolchainOresiWireDigest() {
+        var encoded = iface("math", "algebra");
+        assertEquals("8db5681e1e41c389e2358f9e0cd5c46e78b5b33519ed4769056268a240847f3d",
+                encoded.sha256());
+    }
+
     @Test void resolvesPinnedPublicModuleAndNamespaceAcrossEnvelopes() {
         var geometry = iface("geometry", "vector");
         var arithmetic = iface("arithmetic", "scalar");
@@ -131,6 +137,15 @@ final class PinnedPackageInterfaceTest {
         var result = PinnedPackageInterface.admit(lock(original), Map.of("math", mutable));
         Arrays.fill(mutable, (byte) 0);
         assertEquals(2, result.namespaceExports("math").size());
+    }
+
+    @Test void acceptsEstablishedShaColonPackageIdentity() {
+        var original = iface("math", "algebra");
+        Lock established = new Lock("math", "foo@sha:" + "1".repeat(64),
+                COMPILER, TARGET, POLICY, lock(original).namespaces());
+        assertEquals(established.packageInstanceId(),
+                PinnedPackageInterface.admit(established,
+                        Map.of("math", original.bytes())).packageInstanceId());
     }
 
     @Test void distinctLockedPackageInstancesNeverCollapseByAlias() {
