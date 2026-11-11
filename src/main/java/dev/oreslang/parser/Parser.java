@@ -906,6 +906,7 @@ public final class Parser {
         boolean declaredRequestConcurrency = false;
         boolean declaredMessageConcurrency = false;
         boolean declaredStateContainer = false;
+        boolean declaredBareActorFields = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -963,6 +964,14 @@ public final class Parser {
             // OwnershipChecker rules. It does NOT create an ordinary class,
             // independent allocation, or transferable state reference.
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                // A grouped state declaration must be the ONLY source of
+                // storage fields for this actor. Mixing legacy bare fields
+                // with grouped fields would let future ownership/lowering
+                // rules accidentally instrument only one representation.
+                if (declaredBareActorFields) {
+                    throw error(peek(),
+                            "actor cannot mix bare fields and a state container");
+                }
                 if (declaredStateContainer) {
                     throw error(peek(), "actor may declare only one state container");
                 }
@@ -992,13 +1001,23 @@ public final class Parser {
                 continue;
             }
             if (isBindingKind(peek().type())) {
+                if (declaredStateContainer) {
+                    throw error(peek(),
+                            "actor cannot mix a state container and bare fields");
+                }
                 validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
+                declaredBareActorFields = true;
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                if (declaredStateContainer) {
+                    throw error(peek(),
+                            "actor cannot mix a state container and bare fields");
+                }
                 validateActorFieldModifiers(mods);
                 fields.add(parseFinalActorField(annotations, mods.visibility));
+                declaredBareActorFields = true;
                 continue;
             }
 
