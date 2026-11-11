@@ -115,6 +115,77 @@ final class ActorStateReadWriteLoansTest {
         assertTrue(state.acquireReadAsync(new Object(), 41).isCompletedExceptionally());
     }
 
+    @Test void activeReaderCapacityIsBoundedAndPendingSlotsAreIndependent() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, 0, java.util.List.of("w")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 1, 65_537, java.util.List.of("w")));
+
+        try (var state = new ActorStateReadWriteLoans(
+                61, 2, 2, java.util.List.of("weight"))) {
+            Object a = new Object(), b = new Object(), c = new Object();
+            Object writerId = new Object(), overflow = new Object();
+            assertEquals(2, state.activeReaderLimit());
+            var first = state.acquireReadAsync(a, 61).join();
+            var second = state.acquireReadAsync(b, 61).join();
+            assertEquals(2, state.activeReaderCount());
+
+            var third = state.acquireReadAsync(c, 61);
+            var writer = state.acquireWriteAsync(writerId, 61);
+            assertFalse(third.isDone(), "reader budget must defer an active loan");
+            assertFalse(writer.isDone());
+            assertEquals(2, state.pendingCount());
+            assertTrue(state.acquireReadAsync(overflow, 61).isCompletedExceptionally(),
+                    "bounded pending capacity still applies after reader saturation");
+
+            first.close();
+            var promoted = third.join();
+            assertEquals(2, state.activeReaderCount());
+            assertFalse(writer.isDone(),
+                    "waiting writer must not overlap promoted read loan");
+            assertTrue(promoted.heldBy(c, 61));
+            second.close();
+            assertFalse(writer.isDone());
+            promoted.close();
+            var write = writer.join();
+            assertTrue(state.writerActive());
+            assertEquals(0, state.activeReaderCount());
+            write.close();
+            assertEquals(0, state.activeCount());
+            assertEquals(0, state.pendingCount());
+        }
+    }
+
+    @Test void cappedReaderCancellationReleasesQueueIdentityAndPreservesWriterOrder() {
+        try (var state = new ActorStateReadWriteLoans(62, 3, 1,
+                java.util.List.of("weight"))) {
+            Object firstId = new Object(), cancelledId = new Object();
+            Object writerId = new Object(), lastId = new Object();
+            var first = state.acquireReadAsync(firstId, 62).join();
+            var cancelled = state.acquireReadAsync(cancelledId, 62);
+            var writer = state.acquireWriteAsync(writerId, 62);
+            var finalRead = state.acquireReadAsync(lastId, 62);
+            assertEquals(3, state.pendingCount());
+            assertTrue(cancelled.cancel(false));
+            assertEquals(2, state.pendingCount());
+            var restored = state.acquireReadAsync(cancelledId, 62);
+            assertFalse(restored.isDone());
+            first.close();
+            var exclusive = writer.join();
+            assertFalse(finalRead.isDone());
+            assertFalse(restored.isDone());
+            exclusive.close();
+            var queuedReader = finalRead.join();
+            assertFalse(restored.isDone(), "active reader capacity holds through FIFO");
+            queuedReader.close();
+            var last = restored.join();
+            assertTrue(last.heldBy(cancelledId, 62));
+            last.close();
+            assertEquals(0, state.pendingCount());
+            assertEquals(0, state.activeCount());
+        }
+    }
+
     @Test void concurrentReadersAndWaitingWriterHaveStrictFifoAndNoOverlap() {
         try (var loans = new ActorStateReadWriteLoans(17, 4)) {
             Object readerA = new Object(), readerB = new Object();
