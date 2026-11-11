@@ -103,21 +103,23 @@ jobs:
           from xml.etree import ElementTree as ET
           import hashlib
 
-          suites = (
-              'ActorExternalEntrypointModifierTest',
-              'DeclaredActorNominalSyntaxTest',
-              'DeclaredActorHardeningTest',
-              'ActorReceiverBinderTest',
-              'CrossFileActorReceiverBindingTest',
-              'ExternalActorReceiverAstAdmissionTest',
-              'ActorReceiveIngressBoundaryTest',
-              'ActorReceiveIngressGuestExecutionTest',
-              'runtime.ActorInitPublicationGateTest',
-              'runtime.ActorSourceLifecycleGateTest',
-              'StatelessDeclaredActorExecutionTest',
-          )
+          # These are real @Test counts read from the exact source head;
+          # each required suite must remain non-empty and individually complete.
+          minimum_by_suite = {
+              'ActorExternalEntrypointModifierTest': 14,
+              'DeclaredActorNominalSyntaxTest': 17,
+              'DeclaredActorHardeningTest': 33,
+              'ActorReceiverBinderTest': 25,
+              'CrossFileActorReceiverBindingTest': 24,
+              'ExternalActorReceiverAstAdmissionTest': 7,
+              'ActorReceiveIngressBoundaryTest': 13,
+              'ActorReceiveIngressGuestExecutionTest': 1,
+              'runtime.ActorInitPublicationGateTest': 10,
+              'runtime.ActorSourceLifecycleGateTest': 18,
+              'StatelessDeclaredActorExecutionTest': 14,
+          }
           total = 0
-          for suite in suites:
+          for suite, expected in minimum_by_suite.items():
               path = Path('target/surefire-reports') / f'TEST-dev.oreslang.{suite}.xml'
               if not path.is_file() or path.stat().st_size == 0:
                   raise SystemExit(f'MISSING_SUREFIRE_REPORT:{suite}')
@@ -129,11 +131,11 @@ jobs:
               errors = int(root.attrib.get('errors', '0'))
               skipped = int(root.attrib.get('skipped', '0'))
               actual = len(root.findall('testcase'))
-              if count < 1 or count != actual or failures or errors or skipped:
+              if count < expected or count != actual or failures or errors or skipped:
                   raise SystemExit(f'INVALID_SUREFIRE_RESULT:{suite}:tests={count}:testcases={actual}:fail={failures}:errors={errors}:skipped={skipped}')
               total += count
               print(f'RECEIPT junit={suite} tests={count} sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')
-          if total < 120:
+          if total < 176:
               raise SystemExit(f'INSUFFICIENT_TESTS:{total}')
           print(f'RECEIPT actor_external_junit=EXECUTED_VERIFIED total={total}')
           print('RECEIPT inline_actor_mailbox_guest=JVM_EXECUTED_VERIFIED')
