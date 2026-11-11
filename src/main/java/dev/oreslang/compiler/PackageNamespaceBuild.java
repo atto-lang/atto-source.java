@@ -42,6 +42,8 @@ public final class PackageNamespaceBuild {
 
     private final OresProjectConfig config;
     private final Path projectRoot;
+    private final Path manifestPath;
+    private final byte[] manifestFingerprint;
     private final String packageIdentity;
     private final IncrementalCompiler compiler = new IncrementalCompiler();
 
@@ -54,6 +56,8 @@ public final class PackageNamespaceBuild {
                 || !Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("package manifest must be an ordinary file");
         }
+        manifestPath = manifest.toAbsolutePath().normalize();
+        manifestFingerprint = digest(boundedRead(manifestPath));
         Path resolved = config.projectRoot().toAbsolutePath().normalize();
         if (!Files.isDirectory(resolved, LinkOption.NOFOLLOW_LINKS)
                 || Files.isSymbolicLink(resolved)) {
@@ -74,6 +78,19 @@ public final class PackageNamespaceBuild {
     public String packageIdentity() { return packageIdentity; }
 
     public synchronized Result build() throws IOException {
+        if (Files.isSymbolicLink(manifestPath)
+                || !Files.isRegularFile(manifestPath, LinkOption.NOFOLLOW_LINKS)
+                || !java.util.Arrays.equals(manifestFingerprint,
+                        digest(boundedRead(manifestPath)))) {
+            throw new IllegalArgumentException(
+                    "package manifest changed during incremental build; reload project configuration");
+        }
+        if (!Files.isDirectory(projectRoot, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(projectRoot)
+                || !projectRoot.toRealPath().equals(projectRoot)) {
+            throw new IllegalArgumentException(
+                    "package root changed or became a symlink during incremental build");
+        }
         config.requireStdJavaBackend();
         Map<String, String> sources = readCompleteSourceSet();
         if (sources.isEmpty()) {
@@ -195,7 +212,15 @@ public final class PackageNamespaceBuild {
                         "invalid UTF-8 in package source " + source.getKey(), invalid);
             }
         }
-        return Map.copyOf(result);
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(result));
+    }
+
+    private static byte[] digest(byte[] bytes) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 required for manifest binding", unavailable);
+        }
     }
 
     private static byte[] boundedRead(Path source) throws IOException {
