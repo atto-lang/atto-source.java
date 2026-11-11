@@ -273,4 +273,44 @@ final class CrossFileActorReceiverBindingTest {
         assertTrue(error.getMessage().contains("require an explicit source namespace"),
                 error.getMessage());
     }
+
+    @Test
+    void onlyAttoOrLegacyOresSourceUnitsCanContributeActorMethods() {
+        Ast.Program actor = Parser.parse("namespace foo; define actor Bar as end");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/actor.txt", actor);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("invalid package-relative source unit ID"),
+                error.getMessage());
+    }
+
+    @Test
+    void legacyOresSourceUnitMayStillContributeAReceiverMethod() {
+        Ast.Program actor = Parser.parse("namespace foo; define actor Bar as end");
+        Ast.Program method = Parser.parse(
+                "namespace foo; define mtd (Bar b) do_x(): void { return; }");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/actor.atto", actor);
+        units.put("src/method.ores", method);
+        var bindings = ActorReceiverBinder.bindSourceSet("demo@1.0.0", units);
+        assertEquals("src/method.ores", bindings.get(slot("do_x")).methodUnit());
+    }
+
+    @Test
+    void instanceAndStaticActorMethodSlotsRemainDifferentDomains() {
+        String actor = "namespace foo; define actor Bar as "
+                + "static fnc do_x(): void { return; } end";
+        String external = "namespace foo; define mtd (Bar b) do_x(): void { return; }";
+        assertEquals(1, resolve(actor, external).size());
+    }
+
+    @Test
+    void differentEmbeddedMethodAritiesDoNotCollide() {
+        String actor = "namespace foo; define actor Bar as "
+                + "do_x(): void { return; } "
+                + "do_x(int value): void { return; } end";
+        String external = "namespace foo; define mtd (Bar b) do_y(): void { return; }";
+        assertEquals(1, resolve(actor, external).size());
+    }
 }
