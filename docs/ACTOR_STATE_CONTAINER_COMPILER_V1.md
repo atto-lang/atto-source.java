@@ -62,6 +62,14 @@ actor-field checks also keep mutable projections fail-closed until
 exclusive path-level loan proofs exist, and prevent moving
 non-Copy state fields out of the actor turn.
 
+The predecessor's legacy `ActorStateSupervisorLoans.Loan` type is
+also now package-private, matching its package-private raw `redeem`
+adapter. An existing JUnit visibility regression asserts both. This
+removes that free-standing host handle from the external Java public
+surface, **but does not yet remove** the trusted runtime-package legacy
+adapter; remaining tests using it must migrate before the implementation
+can claim complete physical-unwind-only release.
+
 The Java backend still stores real guest fields in
 `ActorOwnedGuestState`. This PR does **not** yet lower arbitrary field
 projections and supervisors to `ActorStateSupervisorLoans`. The prior
