@@ -1532,6 +1532,16 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            // A type-level .new factory is opt-in through Newable. Parsing a
+            // user method with the reserved name does not grant construction
+            // or static-call authority, and must not bypass that trait gate.
+            if (method.name().equals("new")
+                    && klass.interfaces().stream()
+                            .noneMatch(ref -> ref.name().equals("Newable"))) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name() + "' declares new() without implementing Newable; "
+                                + "T.new() is never an implicit constructor");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
