@@ -67,9 +67,18 @@ timers, or native code-image holders are retired. Those need independent pins.
 ## Verification
 
 ```sh
-mvn -B -ntp -Dtest=ActorRouteCoordinatorV1Test,ActorRuntimeHotRouteBridgeV1Test -DfailIfNoTests=true test
+mvn -B -ntp -Dtest=ActorRouteCoordinatorV1Test,ActorPhysicalHotRouteIngressFenceTest,ActorRuntimeHotRouteBridgeV1Test -DfailIfNoTests=true test
 ```
 
 A private exact-blob mirror can execute the dependency-free gate, logical
 mailbox, coordinator, host JUnit and demo on a funded alternate-org runner;
 that is NOT evidence for the real ActorRuntime adapter or .atto compiler.
+
+## 2026-11-11 physical ActorRef ingress hardening
+
+- A host-only, one-way `ActorRuntime.claimPhysicalForHotRoute()` claim seals the physical actor's `ActorRef.send()`, `sendAsync()`, and ActorGroup Mailman direct DATA sends. The permit is issued by the actual `ActorRuntime` to a ready SHARED actor only.
+- `ActorCell` checks the fence before reserving mail and again inside the physical mailbox publication monitor. Pending asynchronous sends are rechecked to prevent races with a route claim.
+- `ActorRuntimeHotRouteBridgeV1` now requires a runtime-issued `HotRoutePhysical<M>`, never a naked physical ActorRef. Every send consumes exactly one coordinator-minted, route-and-epoch-bound physical receipt before physical admission.
+- Each physical endpoint binds to one logical coordinator. A duplicate owner, foreign-runtime successor, unready actor or stale physical receipt fails closed. Old endpoints retire monotonically once the v2 logical route publishes.
+
+**Remaining limitations:** the logical send handle remains host-side, not yet the language-level guest `ActorRef`. Fencing a raw physical ActorRef does not redirect that raw ref. Existing physical messages admitted before claim require a separate processing drain, and external Task/FFI/borrow/continuation leases still require independent proof. Candidate state is host-supplied rather than compiler-migrated. Do not treat source Actions runs with zero executed steps as guest evidence.
