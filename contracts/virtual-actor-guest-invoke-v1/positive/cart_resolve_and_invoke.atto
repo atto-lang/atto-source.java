@@ -1,0 +1,16 @@
+// Guest-source AST contract; native virtual actor execution remains gated.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    handle_state(critical-write |s| -> {
+      s.quantity = s.quantity + n;
+    });
+  end
+end
+
+pub async fnc main(): int {
+  const VirtualActorRef<Cart> cart = VirtualActorRef.resolve<Cart>("cart-123");
+  await cart.add(2);
+  await cart.add(5);
+  return 0;
+}
