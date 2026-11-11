@@ -54,6 +54,7 @@ final class NumericValueEqualityAdtTest {
                 9007199254740992.0d));
         assertFalse(NumericValueEquality.equals(42L, 42.5d));
     }
+
     @Test
     void nestedSumValueEqualityExecutesInActualAttoGuest() throws Exception {
         String program;
@@ -75,7 +76,7 @@ final class NumericValueEqualityAdtTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("true\\ntrue\\ntrue\\ntrue\\n",
+        assertEquals("true\ntrue\ntrue\ntrue\n",
                 output.toString(StandardCharsets.UTF_8));
     }
 
