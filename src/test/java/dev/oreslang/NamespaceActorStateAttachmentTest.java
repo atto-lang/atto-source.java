@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 final class NamespaceActorStateAttachmentTest {
     private static final String NS = "namespace foo;\n";
-    private static final String ACTOR = NS + "define actor Foo implements ActorXYZ;\n";
+    private static final String ACTOR = NS + "declare pub actor Foo implements ActorXYZ;\n";
     private static final String STATE = NS
             + "define state on actor Foo as { let int x : 5; val bool ready : true; }";
 
@@ -47,13 +47,13 @@ final class NamespaceActorStateAttachmentTest {
     }
 
     @Test
-    void semicolonActorPreservesItsNominalContractWithoutSpawningAnInstance() {
-        var decl = assertInstanceOf(Ast.ClassDecl.class,
+    void declaredActorPreservesItsNominalContractWithoutSpawningAnInstance() {
+        var decl = assertInstanceOf(Ast.DeclaredActorDecl.class,
                 Parser.parse(ACTOR).modules().getFirst().declarations().getFirst());
         assertEquals("Foo", decl.name());
         assertEquals(Ast.ActorKind.SHARED, decl.actorKind());
-        assertEquals("ActorXYZ", decl.interfaces().getFirst().name());
-        assertEquals(0, decl.fields().size());
+        assertEquals("ActorXYZ", decl.contracts().getFirst().name());
+        assertEquals(Ast.Visibility.PUBLIC, decl.visibility());
     }
 
     @Test
@@ -99,9 +99,9 @@ final class NamespaceActorStateAttachmentTest {
     void stateCannotBeTreatedAsOrdinaryExecutableDeclaration() {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(
-                        NS + "define actor Foo;\n"
+                        NS + "declare actor Foo;\n"
                                 + "define state on actor Foo as { let int x : 5; }")));
-        assertTrue(failure.getMessage().contains("ACTOR_STATE_ATTACHMENT_LOWERING_UNSUPPORTED"),
+        assertTrue(failure.getMessage().contains("DECLARED_ACTOR_LINKING_UNSUPPORTED"),
                 failure.getMessage());
     }
 
@@ -172,6 +172,86 @@ final class NamespaceActorStateAttachmentTest {
     void structuralStateRequiresSeparateOwnershipLowering() {
         rejectsParse(NS + "define state on actor Foo as { let Map<int, int> x : 5; }",
                 "supports only int/bool scalar fields");
+    }
+
+    @Test
+    void bodylessDefineActorRequiresDeclareInstead() {
+        rejectsParse(NS + "define actor Foo implements ActorXYZ;",
+                "bodyless actor types use 'declare actor Foo'");
+    }
+
+    @Test
+    void plainDeclareActorWithoutVisibilityIsAValidPrivateNominalDeclaration() {
+        var decl = assertInstanceOf(Ast.DeclaredActorDecl.class,
+                Parser.parse(NS + "declare actor Foo implements ActorXYZ;")
+                        .modules().getFirst().declarations().getFirst());
+        assertEquals(Ast.Visibility.PRIVATE, decl.visibility());
+        assertEquals(1, decl.contracts().size());
+    }
+
+    @Test
+    void publicReceiverCannotExposePrivateDeclaredActor() {
+        rejectsBinding(NS + "declare actor Foo implements ActorXYZ;",
+                NS + "pub mtd (Foo f) bar(): void { return; }",
+                "cannot expose private actor");
+    }
+
+    @Test
+    void duplicateDeclaredActorIsNeverImplicitlyMerged() {
+        Map<String, Ast.Program> source = units(ACTOR, ACTOR);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("duplicate actor/type identity"),
+                failure.getMessage());
+    }
+
+    @Test
+    void declaredAndDefinedActorWithSameNominalNameCannotCoexist() {
+        rejectsBinding(ACTOR,
+                NS + "define actor Foo as end",
+                "duplicate actor/type identity");
+    }
+
+    @Test
+    void declaredActorDoesNotAllowAnInlineBody() {
+        rejectsParse(NS + "declare actor Foo implements ActorXYZ as end",
+                "declare actor must end with ';'");
+    }
+
+    @Test
+    void declaredActorRejectsDuplicatedContracts() {
+        rejectsParse(NS + "declare actor Foo implements ActorXYZ, ActorXYZ;",
+                "duplicate declared actor contract");
+    }
+
+    @Test
+    void genericDeclaredActorRequiresDedicatedWitnesses() {
+        rejectsParse(NS + "declare actor Foo<T> implements ActorXYZ;",
+                "declare actor generics require");
+    }
+
+    @Test
+    void declaredActorCannotLeakIntoNamedModuleScopes() {
+        rejectsParse(NS + "define module other as declare actor Foo; end",
+                "namespace-root declaration");
+    }
+
+    @Test
+    void declarationOnlyActorFailsBeforeAnyGuestExecution() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(NS + "declare actor Foo;")));
+        assertTrue(failure.getMessage().contains("DECLARED_ACTOR_LINKING_UNSUPPORTED"),
+                failure.getMessage());
+    }
+
+    @Test
+    void sourceOnlyStateDeclarationAlsoFailsWithoutActorInstance() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(
+                        NS + "define state on actor Foo as { let int x : 5; }")));
+        assertTrue(failure.getMessage().contains("has no local nominal actor")
+                || failure.getMessage().contains("ACTOR_STATE_ATTACHMENT_LOWERING_UNSUPPORTED"),
+                failure.getMessage());
     }
 
     @Test
