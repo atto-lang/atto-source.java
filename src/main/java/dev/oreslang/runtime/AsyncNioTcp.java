@@ -228,6 +228,7 @@ public final class AsyncNioTcp {
             }
             respInput.flip();
             AsyncNioResp2.Parsed frame;
+            long parseStarted = CorePerf.start();
             try {
                 frame = AsyncNioResp2.parse(respInput);
             } catch (IOException invalid) {
@@ -235,6 +236,8 @@ public final class AsyncNioTcp {
                 closeQuietly();
                 callback.reject(invalid);
                 return;
+            } finally {
+                CorePerf.end(CorePerf.REDIS_RESP_PARSE, parseStarted);
             }
             if (frame != null) {
                 respInput.position(frame.consumed());
@@ -292,11 +295,14 @@ public final class AsyncNioTcp {
         public OresFuture<Void> writeResp2HexAsync(String status, String hexPayload) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.write_resp2_hex_async");
+            long encodeStarted = CorePerf.start();
             try {
                 byte[] frame = AsyncNioResp2.encode(status, hexPayload);
                 return writeDetachedAsync(frame);
             } catch (IOException failure) {
                 return OresFuture.failed(failure);
+            } finally {
+                CorePerf.end(CorePerf.REDIS_RESP_ENCODE, encodeStarted);
             }
         }
 
@@ -330,6 +336,8 @@ public final class AsyncNioTcp {
                         "closed socket or concurrent write"));
             }
             ByteBuffer buffer = ByteBuffer.wrap(detached);
+            // Includes async kernel completion latency, not just write CPU time.
+            long writeStarted = CorePerf.start();
             return OresFuture.fromCallback(callback -> {
                 CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
                     @Override public void completed(Integer count, Void ignored) {
@@ -348,6 +356,7 @@ public final class AsyncNioTcp {
                             }
                         } else {
                             writing.set(false);
+                            CorePerf.end(CorePerf.REDIS_TCP_WRITE, writeStarted);
                             callback.resolve(null);
                         }
                     }
