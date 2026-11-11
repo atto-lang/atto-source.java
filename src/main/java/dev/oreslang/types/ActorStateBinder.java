@@ -155,15 +155,13 @@ public final class ActorStateBinder {
                                 "ACTOR_CONTRACT_WITNESS_UNSUPPORTED: attached state cannot "
                                         + "satisfy a named actor contract");
                     }
-                    if (actor instanceof Ast.ClassDecl klass) {
-                        if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()) {
-                            throw new IllegalArgumentException(
-                                    "attached state on generic/inherited actor requires verified layout");
-                        }
-                        if (!klass.fields().isEmpty()) {
-                            throw new IllegalArgumentException(
-                                    "attached actor state cannot mix with legacy actor fields");
-                        }
+                    if (actor instanceof Ast.ClassDecl) {
+                        // This v1 state schema is exclusive to the newly
+                        // declared, out-of-line actor representation. In-class
+                        // actors use a separate layout/runtime ownership path.
+                        throw new IllegalArgumentException(
+                                "attached actor state requires a 'declare actor' header; "
+                                        + "inline actor definitions cannot acquire an out-of-line state schema");
                     }
                     Set<String> members = existingMembers.getOrDefault(slot, Set.of());
                     for (Ast.ProtectedStateField field : state.fields()) {
