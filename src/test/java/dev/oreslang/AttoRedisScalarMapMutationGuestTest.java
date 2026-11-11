@@ -76,7 +76,7 @@ final class AttoRedisScalarMapMutationGuestTest {
 
 
     @Test
-    void atomicOptionalLookupPreservesPresentAbsentAcrossDelete() {
+    void atomicOptionalLookupPreservesPresentAbsentAcrossDelete() throws Exception {
         String src = """
                 pub fnc main(): int {
                   let Map<string,int> db = ~map<string,int>();
