@@ -203,18 +203,82 @@ final class AttoRedisNioThroughputTest {
     }
 
     @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void framedNioFastPathPreservesBinaryEmptyNilAndPipelining() throws Exception {
+        String code = resource("redis_actor_nio_fast.atto");
+        int port = freePort();
+        String bind = "network.listen_async(\"127.0.0.1\", 16399)";
+        assertTrue(code.contains(bind));
+        code = code.replace(bind, "network.listen_async(\"127.0.0.1\", " + port + ")");
+        OresCompiler.parseAndTypeCheck(code);
+        final String guestCode = code;
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> guest = executor.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID,
+                                new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
+                        .build()) {
+                    context.eval(Source.newBuilder(OresLanguage.ID,
+                                    guestCode, "redis_actor_nio_fast.atto")
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
+                }
+            });
+            try (Socket client = awaitGuest(guest, port)) {
+                client.setTcpNoDelay(true);
+                client.setSoTimeout(20000);
+                byte[] key = {0, (byte) 255, 13, 10};
+                byte[] data = {(byte) 254, 0, 10, 13, 42};
+                ByteArrayOutputStream commands = new ByteArrayOutputStream();
+                commands.write(frame(ascii("PING")));
+                commands.write(frame(ascii("GET"), key));
+                commands.write(frame(ascii("SET"), key, new byte[0]));
+                commands.write(frame(ascii("GET"), key));
+                commands.write(frame(ascii("SET"), key, data));
+                commands.write(frame(ascii("GET"), key));
+                commands.write(frame(ascii("DEL"), key));
+                commands.write(frame(ascii("DEL"), key));
+                commands.write(frame(ascii("GET"), key));
+                commands.write(frame(ascii("QUIT")));
+                client.getOutputStream().write(commands.toByteArray());
+                ByteArrayOutputStream expected = new ByteArrayOutputStream();
+                expected.write(ascii("+PONG\r\n"));
+                expected.write(NIL);
+                expected.write(OK);
+                expected.write(bulk(new byte[0]));
+                expected.write(OK);
+                expected.write(bulk(data));
+                expected.write(ascii(":1\r\n"));
+                expected.write(ascii(":0\r\n"));
+                expected.write(NIL);
+                expected.write(OK);
+                assertArrayEquals(expected.toByteArray(),
+                        client.getInputStream().readNBytes(expected.size()),
+                        "real framed NIO Atto actor must preserve binary RESP2 without host KV");
+                assertEquals(-1, client.getInputStream().read());
+            }
+            guest.get(15, TimeUnit.SECONDS);
+        }
+        System.out.println("ATTO_NATIVE_NIO_FRAMED_REAL_ACTOR_BINARY_PIPELINE=PASS");
+    }
+
+    @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_PERF_ENABLED")),
                 "requires explicit same-runner performance gate and official Redis");
         double baseline = runGuest("redis_binary_resp2_baseline.atto", "atto_nio_baseline");
         double optimized = runGuest("redis_binary_resp2.atto", "atto_nio_fingerprint");
+        double framed = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed");
         double redis;
         try (Socket client = new Socket("127.0.0.1", REDIS_PORT)) {
             redis = runTrials(client, "official_redis_no_persistence");
         }
         System.out.printf("ATTO_NATIVE_NIO_COMPARISON baseline=%.1f optimized=%.1f "
-                + "redis=%.1f optimized_over_baseline=%.4f optimized_over_redis=%.4f%n",
-                baseline, optimized, redis, optimized / baseline, optimized / redis);
+                + "framed=%.1f redis=%.1f optimized_over_baseline=%.4f "
+                + "framed_over_optimized=%.4f framed_over_redis=%.4f%n",
+                baseline, optimized, framed, redis, optimized / baseline, framed / optimized, framed / redis);
     }
 }
