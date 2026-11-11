@@ -98,16 +98,50 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             throws SQLException {
         if(newBytes<0 || newBytes>1_048_576L)return false;
         long checkpoint=0;
+        int snapSchema=0;
+        byte[] snap=null;
         try(PreparedStatement q=db.prepareStatement(
-                "SELECT snapshot_version FROM state " +
+                "SELECT snapshot_version,snapshot_schema,length(snapshot)," +
+                "substr(snapshot,1,1048577) FROM state " +
                 "WHERE tenant=? AND actor=? AND slot=?")) {
             bindKey(q,id);
             try(ResultSet row=q.executeQuery()) {
-                if(row.next())checkpoint=row.getLong(1);
+                if(row.next()) {
+                    checkpoint=row.getLong(1);
+                    snapSchema=row.getInt(2);
+                    long size=row.getLong(3);
+                    boolean absent=row.wasNull();
+                    snap=row.getBytes(4);
+                    if(checkpoint>0 &&
+                       (absent || size<0 || size>1_048_576 ||
+                        snap==null || snap.length!=size))
+                        throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                    if(checkpoint==0 && (snapSchema!=0 || !absent))
+                        throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                }
             }
         }
         if(checkpoint<0 || checkpoint>version(id))
             throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        if(checkpoint>0) {
+            boolean witnessed=false;
+            try(PreparedStatement q=db.prepareStatement(
+                    "SELECT schema,length(payload),substr(payload,1,1048577) " +
+                    "FROM ops WHERE tenant=? AND actor=? AND slot=? " +
+                    "AND kind=1 AND version=?")) {
+                bindKey(q,id);q.setLong(4,checkpoint);
+                try(ResultSet row=q.executeQuery()) {
+                    if(row.next()) {
+                        long size=row.getLong(2);
+                        byte[] original=row.getBytes(3);
+                        witnessed=row.getInt(1)==snapSchema &&
+                                  size==snap.length && original!=null &&
+                                  Arrays.equals(original,snap) && !row.next();
+                    }
+                }
+            }
+            if(!witnessed)throw new SQLException("UNVERIFIED_ACTOR_SNAPSHOT");
+        }
         try(PreparedStatement q=db.prepareStatement(
                 "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
                 "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
