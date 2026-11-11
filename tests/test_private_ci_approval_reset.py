@@ -118,6 +118,44 @@ class PrivateCiApprovalResetTest(unittest.TestCase):
             self.assertFalse(marker.exists(), "policy rejection must precede GitHub API")
 
 
+    def test_all_retained_carriers_denied_by_real_legacy_approval_parser(self):
+        """Exercise the actual exporter's approval parser, not only this test's helper."""
+        script = ROOT / "scripts/publish-private-ci-source.py"
+        contracts_file = ROOT / ".github/private-ci-carrier-contracts.json"
+        self.assertTrue(script.is_file() and not script.is_symlink())
+        self.assertTrue(contracts_file.is_file() and not contracts_file.is_symlink())
+        contracts = json.loads(contracts_file.read_text(encoding="utf-8"))
+        self.assertEqual(contracts.get("schema"), 1)
+        self.assertIsInstance(contracts.get("carriers"), dict)
+        self.assertTrue(contracts["carriers"])
+        module_spec = importlib.util.spec_from_file_location(
+            "java_legacy_bootstrap_approval_denial", script)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        policy = (ROOT / POLICIES[0]).read_bytes()
+        candidates = set(contracts["carriers"]) | {
+            "beamscale/bmscl-compiler",
+            "voxletra/voxletra-e2e",
+            "scintilla-run/scintilla-run-e2e",
+        }
+        for destination in sorted(candidates):
+            with self.subTest(destination=destination):
+                with self.assertRaises(module.Denied):
+                    module._parse_policy_approval(
+                        policy, destination, "private CI approval policy")
+
+    def test_symlinked_policy_parent_is_denied(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            real = root / "real"
+            real.mkdir()
+            (real / "policy").write_bytes(bytes([35, 32, 110, 111, 32, 97, 112, 112, 114, 111, 118, 97, 108, 10]))
+            link = root / "linked"
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                read_regular_policy(link / "policy")
+
+
 
 if __name__ == "__main__":
     unittest.main()
