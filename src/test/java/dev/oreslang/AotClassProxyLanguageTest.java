@@ -204,6 +204,53 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void rejectsImportedTargetNameCaptureBeforeProxyGeneration() {
+        Ast.Program baseline = proxySurfaceProgram(List.of());
+        Ast.ImportDecl importedTarget = new Ast.ImportDecl(Ast.ImportKind.CLASS,
+                List.of("Foo"), false, null, "./other");
+        Ast.Program program = new Ast.Program(List.of(importedTarget), baseline.modules());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(program, Set.of("Foo")));
+        assertTrue(error.getMessage().contains("collides with an imported name"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsAnnotatedTargetConstructorRatherThanSilentlyDroppingPolicy() {
+        Ast.ConstructorDecl constructor = new Ast.ConstructorDecl(
+                Ast.Visibility.PUBLIC, List.of(),
+                List.of(new Ast.Annotation("RequiredPolicy", List.of())), List.of());
+        Ast.ClassDecl klass = new Ast.ClassDecl("Foo", Ast.Visibility.PUBLIC, false,
+                Ast.ActorKind.NONE, List.of(), List.of(), List.of(), List.of(),
+                constructor, List.of());
+        Ast.Program program = new Ast.Program(
+                List.of(new Ast.ModuleDecl("first", List.of(klass))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(program, Set.of("Foo")));
+        assertTrue(error.getMessage().contains("annotated target constructor"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsMutableStructSignaturesEvenWhenNested() {
+        Ast.TypeRef mutable = Ast.TypeRef.structType(
+                java.util.Map.of("count", Ast.TypeRef.simple("int")));
+        Ast.TypeRef nested = new Ast.TypeRef("Option", List.of(mutable), false);
+        for (Ast.TypeRef type : List.of(mutable, nested)) {
+            Ast.MethodDecl argument = proxySurfaceMethod(Ast.TypeRef.simple("void"),
+                    List.of(new Ast.Param(type, "value")), List.of());
+            Ast.MethodDecl result = proxySurfaceMethod(type, List.of(), List.of());
+            for (Ast.MethodDecl method : List.of(argument, result)) {
+                IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                        () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                                proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+                assertTrue(error.getMessage().contains("ownership/borrow")
+                        || error.getMessage().contains("reborrowing"), error.getMessage());
+            }
+        }
+    }
+
+    @Test
     void rejectsAmbiguousGeneratedMethodSlot() {
         Ast.MethodDecl first = proxySurfaceMethod(Ast.TypeRef.simple("int"),
                 List.of(new Ast.Param(Ast.TypeRef.simple("int"), "a")), List.of());
