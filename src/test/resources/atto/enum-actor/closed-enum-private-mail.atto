@@ -5,7 +5,7 @@ define enum Light as
   Yellow
 end
 
-define actor LightEcho as
+define isoactor LightEcho as
   receive(ActorMail<Light> mail): void {
     self.send(mail.value);
     self.end();
