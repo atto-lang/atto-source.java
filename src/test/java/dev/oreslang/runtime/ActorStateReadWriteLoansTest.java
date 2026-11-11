@@ -117,6 +117,8 @@ final class ActorStateReadWriteLoansTest {
 
     @Test void activeReaderCapacityIsBoundedAndPendingSlotsAreIndependent() {
         assertThrows(IllegalArgumentException.class,
+                () -> new ActorStateReadWriteLoans(1, 65_537, java.util.List.of("w")));
+        assertThrows(IllegalArgumentException.class,
                 () -> new ActorStateReadWriteLoans(1, 1, 0, java.util.List.of("w")));
         assertThrows(IllegalArgumentException.class,
                 () -> new ActorStateReadWriteLoans(1, 1, 65_537, java.util.List.of("w")));
@@ -183,6 +185,97 @@ final class ActorStateReadWriteLoansTest {
             last.close();
             assertEquals(0, state.pendingCount());
             assertEquals(0, state.activeCount());
+        }
+    }
+
+    @Test void concurrentReadWriteStressKeepsIncrementCountAndNoStaleReads() throws Exception {
+        try (var state = new ActorStateReadWriteLoans(
+                87, 64, 4, java.util.List.of("weight"))) {
+            Object initializer = new Object();
+            try (var loan = state.acquireWriteAsync(initializer, 87).join()) {
+                state.writeFloat(loan, initializer, 87, "weight", 0.0);
+            }
+
+            int workers = 8;
+            int turns = 100;
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(workers);
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger written = new java.util.concurrent.atomic.AtomicInteger();
+            var jobs = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            try {
+                for (int worker = 0; worker < workers; worker++) {
+                    final int workerIndex = worker;
+                    jobs.add(pool.submit(() -> {
+                        Object handler = new Object();
+                        try {
+                            start.await();
+                            for (int turn = 0; turn < turns; turn++) {
+                                if ((turn + workerIndex) % 3 == 0) {
+                                    try (var loan = state.acquireWriteAsync(handler, 87).join()) {
+                                        double before = state.readFloat(loan, handler, 87, "weight");
+                                        state.writeFloat(loan, handler, 87, "weight", before + 1.0);
+                                        written.incrementAndGet();
+                                    }
+                                } else {
+                                    try (var loan = state.acquireReadAsync(handler, 87).join()) {
+                                        double snapshot = state.readFloat(loan, handler, 87, "weight");
+                                        if (snapshot < 0 || snapshot > workers * turns)
+                                            throw new AssertionError("invalid concurrent state snapshot");
+                                        if (state.activeReaderCount() > state.activeReaderLimit())
+                                            throw new AssertionError("reader cap violated");
+                                    }
+                                }
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }));
+                }
+                start.countDown();
+                for (var job : jobs) job.get(20, TimeUnit.SECONDS);
+            } finally {
+                start.countDown();
+                pool.shutdownNow();
+            }
+            Object verifier = new Object();
+            try (var loan = state.acquireReadAsync(verifier, 87).join()) {
+                assertEquals((double) written.get(), state.readFloat(loan, verifier, 87, "weight"),
+                        "no lost writes or torn float reads");
+            }
+            assertEquals(0, state.pendingCount());
+            assertEquals(0, state.activeCount());
+        }
+    }
+
+    @Test void repeatedCancelRetireRacesCannotResurrectOrLeakLoanAuthority() {
+        java.util.SplittableRandom random = new java.util.SplittableRandom(20261110);
+        for (int round = 1; round <= 96; round++) {
+            var state = new ActorStateReadWriteLoans(round, 8, 2,
+                    java.util.List.of("weight", "bias"));
+            Object owner = new Object();
+            var active = state.acquireWriteAsync(owner, round).join();
+            state.writeFloat(active, owner, round, "weight", 2.0);
+            var waiting = new java.util.ArrayList<dev.oreslang.runtime.OresFuture<?>>();
+            for (int index = 0; index < 8; index++) {
+                Object id = new Object();
+                waiting.add(index % 2 == 0
+                        ? state.acquireReadAsync(id, round)
+                        : state.acquireWriteAsync(id, round));
+            }
+            // All waiters are queued while writer is physically held.
+            assertEquals(8, state.pendingCount());
+            for (var request : waiting) if (random.nextBoolean()) request.cancel(false);
+            state.close();
+            assertTrue(waiting.stream().allMatch(java.util.concurrent.Future::isDone));
+            assertFalse(active.heldBy(owner, round));
+            assertThrows(IllegalStateException.class,
+                    () -> state.readFloat(active, owner, round, "weight"));
+            assertFalse(state.tryClearRetiredScalarStorage());
+            active.close();
+            assertTrue(state.tryClearRetiredScalarStorage());
+            assertEquals(0, state.activeCount());
+            assertEquals(0, state.pendingCount());
         }
     }
 
