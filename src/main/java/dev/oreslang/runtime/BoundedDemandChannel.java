@@ -50,6 +50,10 @@ public final class BoundedDemandChannel<T> {
         }
     }
 
+    /** Prevent untrusted construction from allocating unbounded descriptor arrays. */
+    public static final int MAX_QUEUED_SLOTS = 65_536;
+    public static final int MAX_IN_FLIGHT = 4_096;
+
     private final Object gate = new Object();
     private final ChannelRuntime.Channel<T> channel;
     private final ToLongFunction<? super T> payloadBytes;
@@ -75,8 +79,10 @@ public final class BoundedDemandChannel<T> {
     public BoundedDemandChannel(int capacity, int maxInFlight,
                                 long maxBytes, long maxDemand,
                                 ToLongFunction<? super T> payloadBytes) {
-        if (capacity <= 0 || maxInFlight <= 0 || maxBytes <= 0 || maxDemand <= 0) {
-            throw new IllegalArgumentException("all demand-port budgets must be positive");
+        if (capacity <= 0 || capacity > MAX_QUEUED_SLOTS ||
+                maxInFlight <= 0 || maxInFlight > MAX_IN_FLIGHT ||
+                maxBytes <= 0 || maxDemand <= 0) {
+            throw new IllegalArgumentException("demand-port budgets must be positive and within fixed descriptor ceilings");
         }
         this.channel = new ChannelRuntime.Channel<>(capacity);
         this.queuedSizes = new long[capacity];
@@ -207,7 +213,7 @@ public final class BoundedDemandChannel<T> {
     /** Cancellation drops queued values once, preserving in-flight byte loans. */
     public boolean cancel() {
         synchronized (gate) {
-            if (cancelled) return false;
+            if (complete || cancelled) return false;
             cancelled = true;
             complete = true;
             credit = 0;
