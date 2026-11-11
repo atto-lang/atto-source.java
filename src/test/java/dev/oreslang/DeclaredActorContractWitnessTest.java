@@ -267,7 +267,7 @@ final class DeclaredActorContractWitnessTest {
         try {
             Files.createSymbolicLink(link, root.resolve("src/foo/method.atto"));
         } catch (UnsupportedOperationException | java.nio.file.FileSystemException denied) {
-            org.junit.jupiter.api.Assumptions.abort("symlink unavailable: " + denied);
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlink unavailable: " + denied);
         }
         var failure = assertThrows(IllegalArgumentException.class, build::build);
         assertTrue(failure.getMessage().contains("symlink"),
