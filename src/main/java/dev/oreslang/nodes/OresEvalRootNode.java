@@ -9349,22 +9349,52 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
-    private record NominalEnumValue(
-            String ownerUnitId,
-            String enumName,
-            String variant,
-            int tag,
-            Object payload) implements OresMutex.SharedState {
-        private NominalEnumValue {
-            Objects.requireNonNull(ownerUnitId, "ownerUnitId");
-            Objects.requireNonNull(enumName, "enumName");
-            Objects.requireNonNull(variant, "variant");
-            if (tag < 1) {
-                throw new IllegalArgumentException("invalid nominal enum tag");
-            }
+    /**
+     * Compiler-constructed nominal value. The private constructor is intentional:
+     * external Java callers cannot manufacture an apparent guest enum symbol.
+     *
+     * A nullary value is deeply immutable and safe to pass as an immediate
+     * through local actor mail. A payload-bearing value is NOT an immediate:
+     * its payload must pass the ordinary ownership/transport checks separately.
+     */
+    public static final class NominalEnumValue implements OresMutex.SharedState {
+        private final String ownerUnitId;
+        private final String enumName;
+        private final String variant;
+        private final int tag;
+        private final Object payload;
+
+        private NominalEnumValue(
+                String ownerUnitId, String enumName, String variant,
+                int tag, Object payload) {
+            this.ownerUnitId = Objects.requireNonNull(ownerUnitId, "ownerUnitId");
+            this.enumName = Objects.requireNonNull(enumName, "enumName");
+            this.variant = Objects.requireNonNull(variant, "variant");
+            if (tag < 1) throw new IllegalArgumentException("invalid nominal enum tag");
+            this.tag = tag;
+            this.payload = payload;
         }
+
+        public String ownerUnitId() { return ownerUnitId; }
+        public String enumName() { return enumName; }
+        public String variant() { return variant; }
+        public int tag() { return tag; }
+        public Object payload() { return payload; }
+
         @Override public Iterable<?> sharedStateChildren() {
             return payload == null ? List.of() : List.of(payload);
+        }
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof NominalEnumValue that)) return false;
+            return tag == that.tag
+                    && ownerUnitId.equals(that.ownerUnitId)
+                    && enumName.equals(that.enumName)
+                    && variant.equals(that.variant)
+                    && Objects.equals(payload, that.payload);
+        }
+        @Override public int hashCode() {
+            return Objects.hash(ownerUnitId, enumName, variant, tag, payload);
         }
         @Override public String toString() {
             String name = enumName + "." + variant;
