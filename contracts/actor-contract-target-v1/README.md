@@ -13,9 +13,13 @@ An actor contract is not a module contract, namespace contract, ordinary
 class interface, free function, actor reference, runtime singleton,
 `ActorContext`, or state capability. A nominal actor `implements`
 does not allow a caller to access private actor memory. The compiler
-reuses existing class/interface method shape checking and additionally
-rejects ordinary class implementations and unsupported generic and
-inherited actor contracts.
+reuses existing class/interface method shape checking, but additionally
+requires **directly declared public, synchronous, nonstatic actor
+methods** and rejects inherited ordinary-class methods, abstract slots,
+explicit-receiver lowering without proof, suspension/async/effects,
+reserved `receive`, `tear_down`, `handle_state`, and CONTROL
+`on_*` hooks. It also rejects ordinary class implementations and
+unsupported generic and inherited actor contracts.
 
 Foreign-file actor-contract linking, namespace-level actor contract
 requirements, and executable external `define mtd (Foo foo) abc():void`
