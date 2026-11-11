@@ -220,6 +220,69 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void rejectsSuspensionInsideDirectlyInvokedTernaryThunks() {
+        IllegalArgumentException unsafeThunk = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("""
+                        val value: int = true ? || -> {
+                          rt cooperate;
+                          return 1;
+                        } : { return 0; };
+                        """))));
+        assertTrue(unsafeThunk.getMessage().contains("immediately invoked lambda"),
+                unsafeThunk::getMessage);
+
+        IllegalArgumentException unsafeTypedCall = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("""
+                        val value: int = true ? (|int n| -> {
+                          rt cooperate;
+                          return n;
+                        })(42) : { return 0; };
+                        """))));
+        assertTrue(unsafeTypedCall.getMessage().contains("immediately invoked lambda"),
+                unsafeTypedCall::getMessage);
+    }
+
+    @Test
+    void nestedPureTernaryInsideImmediateLambdaRemainsAllowed() throws Exception {
+        String source = wrap("""
+                val x: int = true ? (|int n| -> {
+                  return n eq 42 ? {
+                    val offset = 1;
+                    n + offset
+                  } : {
+                    return 0
+                  };
+                })(42) : {
+                  return 0;
+                };
+                stdio.stdout.write(x);
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("43", run(source));
+    }
+
+    @Test
+    void rangeAllowsNegativeAscendingAndRejectsDescendingIterations() throws Exception {
+        String source = wrap("""
+                for id in -2..1 {
+                  stdio.stdout.write(id);
+                  stdio.stdout.write(",");
+                }
+                stdio.stdout.write("|");
+                for id in 4..1 {
+                  stdio.stdout.write("WRONG");
+                }
+                for id in 4..=1 {
+                  stdio.stdout.write("WRONG");
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("-2,-1,0,|", run(source));
+    }
+
+    @Test
     void ternaryRetainsRightAssociativityAndLazySelectedBranch() throws Exception {
         String source = wrap("""
                 val result: int = false ? { 1 } : true ? {
