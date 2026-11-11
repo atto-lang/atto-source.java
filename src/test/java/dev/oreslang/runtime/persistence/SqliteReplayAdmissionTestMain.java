@@ -7,8 +7,6 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.Comparator;
 import java.util.List;
 
@@ -27,19 +25,6 @@ public final class SqliteReplayAdmissionTestMain {
         return new Command(id,op,1,version,1,new byte[]{1},
                            List.of(new byte[]{2}),new byte[]{3});
     }
-    private static void expectLimit(ThrowingAction action) throws Exception {
-        try {
-            action.run();
-            throw new AssertionError("unrecoverable journal accepted another event");
-        } catch(SQLException expected) {
-            check(expected.toString().contains("ACTOR_JOURNAL_REPLAY_LIMIT"),
-                  "unexpected limit error: "+expected);
-        }
-    }
-    @FunctionalInterface private interface ThrowingAction {
-        void run() throws Exception;
-    }
-
     public static void main(String[] args) throws Exception {
         Path directory=Files.createTempDirectory("ores-replay-limit-");
         Path database=directory.resolve("ledger.sqlite");
@@ -91,14 +76,30 @@ public final class SqliteReplayAdmissionTestMain {
                         throw fail;
                     }
                 }
-                expectLimit(()->commands.commit(command(countId,10000,"count-overflow")));
-                expectLimit(()->legacy.commit(List.of(new Write(countId,"legacy-count",
-                            1,10000,1,Kind.EVENT,new byte[]{42}))));
-                expectLimit(()->commands.commit(command(bytesId,16,"bytes-overflow")));
-                expectLimit(()->legacy.commit(List.of(new Write(bytesId,"legacy-bytes",
-                            1,16,1,Kind.EVENT,new byte[]{42}))));
+                check(commands.commit(command(countId,10000,"count-overflow"))
+                      .status()==Status.REPLAY_LIMIT_EXCEEDED,
+                      "atomic command exceeded 10k event replay limit");
+                check(legacy.commit(List.of(new Write(countId,"legacy-count",
+                            1,10000,1,Kind.EVENT,new byte[]{42})))
+                      .get(0).status()==Status.REPLAY_LIMIT_EXCEEDED,
+                      "legacy event exceeded 10k event replay limit");
+                check(commands.commit(command(bytesId,16,"bytes-overflow"))
+                      .status()==Status.REPLAY_LIMIT_EXCEEDED,
+                      "atomic command exceeded 16 MiB replay limit");
+                check(legacy.commit(List.of(new Write(bytesId,"legacy-bytes",
+                            1,16,1,Kind.EVENT,new byte[]{42})))
+                      .get(0).status()==Status.REPLAY_LIMIT_EXCEEDED,
+                      "legacy event exceeded 16 MiB replay limit");
                 check(commands.commit(command(otherId,0,"other-actor")).durable(),
                       "full journal in one actor blocked unrelated actor");
+                List<Result> mixed=legacy.commit(List.of(
+                        new Write(countId,"blocked-in-batch",1,10000,1,
+                                  Kind.EVENT,new byte[]{1}),
+                        new Write(otherId,"accepted-in-batch",1,1,1,
+                                  Kind.EVENT,new byte[]{2})));
+                check(mixed.get(0).status()==Status.REPLAY_LIMIT_EXCEEDED &&
+                      mixed.get(1).status()==Status.COMMITTED && mixed.get(1).durable(),
+                      "replay-capacity rejection incorrectly blocked unrelated actor in batch");
                 // A separately durable checkpoint resets the bounded suffix
                 // but never releases ownership of logical operation IDs.
                 Result countSnapshot=legacy.commit(List.of(new Write(countId,
