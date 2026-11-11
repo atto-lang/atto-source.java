@@ -28,7 +28,7 @@ Channel/mailbox contract.
 ## Do not conflate these capabilities
 
 1. `Channel<T>` is the guest-facing communication primitive in its own
-   execution/admission domain. A raw `Channel`, `SelectSet` or control handle
+   execution/admission domain. A raw `Channel`, its read-only/write-only endpoint views, `SelectSet` or control handle
    cannot be placed in an `ActorMail` payload to mint new authority.
 2. `ActorMailbox<T>` is the internal Channel-backed envelope router with
    sender authority, incarnation, freeze/copy, byte budgets, sequence numbers,
@@ -51,11 +51,18 @@ Channel/mailbox contract.
   waiters settle without waiting for a USER credit; a physically held handler
   still joins before its old state can be considered retired; an unrelated
   sibling remains usable afterward.
-- Direct and nested raw `Channel` capabilities are rejected as ActorMail
-  payloads, and rejected payloads cannot consume legitimate mailbox credit.
-- A raw `Channel` cannot escape validation by entering `sendAsync` while
+- Full `Channel` capabilities and both read-only/write-only directional views
+  are rejected as direct/nested ActorMail payloads, and rejected payloads
+  cannot consume legitimate mailbox credit.
+- Neither a full `Channel` nor either directional endpoint view can escape
+  validation by entering `sendAsync` while
   the USER mailbox is full. A later valid producer still observes ordinary
   finite backpressure and cancellation.
+
+Production hardening explicitly recognizes `ChannelRuntime.ReadChannel` and
+`ChannelRuntime.WriteChannel` alongside the full Channel in all three actor
+transport/share rejection checks. This tightens an already fail-closed unknown
+host-object path with type-specific denials and regression diagnostics.
 
 These are **host JUnit tests** and may require a runner with JDK25/Maven. The
 host fixture intentionally holds one physical callback with a latch to force
