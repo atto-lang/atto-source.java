@@ -128,6 +128,22 @@ final class NeuronScalarScopeV0Test {
         rejected(SOURCE.replace("s.bias = 1.0;", "self.send(s.weight);"));
     }
 
+    @Test void rejectsCriticalStateScopesInjectedIntoReceiveOrOtherHelpers() {
+        String injected = SOURCE.replace(
+                "self.send(self.forward(mail.value));",
+                "self.handle_state(critical-read |s| -> s.weight);"
+                        + " self.send(self.forward(mail.value));");
+        rejected(injected);
+    }
+
+    @Test void rejectsOversizedScalarExpressionTreeWithoutStackBlowup() {
+        String expression = "s.weight";
+        for (int i = 0; i < 70; i++) {
+            expression = "(" + expression + " + 1.0)";
+        }
+        rejected(SOURCE.replace("s.weight * input + s.bias", expression));
+    }
+
     @Test void ordinaryNeuronDeclarationStillRemainsFailClosedWithoutScopePair() {
         String bare = """
                 define neuron actor LinearNeuron as
