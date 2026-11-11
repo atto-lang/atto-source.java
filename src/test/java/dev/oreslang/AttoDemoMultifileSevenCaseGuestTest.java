@@ -73,10 +73,25 @@ final class AttoDemoMultifileSevenCaseGuestTest {
         return path;
     }
 
-    private void acceptsAndRunsTo42(String relative) throws Exception {
+    private static String canonicalId(Path file) {
+        return file.toAbsolutePath().normalize().toString().replace('\\', '/');
+    }
+
+    private void assertExactSeparateSourceUnits(
+            java.util.Map<String, ?> actualUnits, String entry, String linkedFile) {
+        Set<String> expected = linkedFile == null
+                ? Set.of(canonicalId(entry(entry)))
+                : Set.of(canonicalId(entry(entry)), canonicalId(entry(linkedFile)));
+        assertEquals(expected, actualUnits.keySet(),
+                "compiler must preserve each exact .atto file as its own unit, "
+                        + "never stitch, omit, duplicate or substitute linked sources");
+    }
+
+    private void acceptsAndRunsTo42(String relative, String linkedFile) throws Exception {
         Path program = entry(relative);
-        // Source-graph resolution is a separate gate before real guest execution.
-        LinkedProgramRunner.validate(program, Map.of());
+        // Source-graph resolution must preserve every distinct file and unit.
+        var validation = LinkedProgramRunner.validate(program, Map.of());
+        assertExactSeparateSourceUnits(validation.units(), relative, linkedFile);
         IsolatePolicy policy = IsolatePolicy.developer();
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
@@ -90,6 +105,7 @@ final class AttoDemoMultifileSevenCaseGuestTest {
                 Map.of(),
                 stdout,
                 stderr);
+        assertExactSeparateSourceUnits(result.build().units(), relative, linkedFile);
         assertEquals(0, result.exitStatus(), "guest exit status for " + relative);
         assertEquals("42", stdout.toString(StandardCharsets.UTF_8),
                 "guest stdout must be exactly 42 for " + relative);
@@ -110,17 +126,17 @@ final class AttoDemoMultifileSevenCaseGuestTest {
 
     @Test
     void linkedExtensionlessFunctionImportEmits42() throws Exception {
-        acceptsAndRunsTo42("src/main.atto");
+        acceptsAndRunsTo42("src/main.atto", "src/math.atto");
     }
 
     @Test
     void linkedAliasedModulePublicClassEmits42() throws Exception {
-        acceptsAndRunsTo42("module/main.atto");
+        acceptsAndRunsTo42("module/main.atto", "module/contract.atto");
     }
 
     @Test
     void distinctMutableOwnerLoansEmit42() throws Exception {
-        acceptsAndRunsTo42("negative/ownership-valid.atto");
+        acceptsAndRunsTo42("negative/ownership-valid.atto", null);
     }
 
     @Test
