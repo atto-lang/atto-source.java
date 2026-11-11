@@ -17,8 +17,8 @@ final class ActorMailTypeContractTest {
                     // when projecting a payload rather than creating a mutable alias.
                     const String value = mail.value;
                     val int sequence = mail.sequence;
-                    val ActorId recipient = mail.recipient;
-                    val Option<ActorId> sender = mail.sender;
+                    const ActorId recipient = mail.recipient;
+                    const Option<ActorId> sender = mail.sender;
                     stdio.println(value);
                     stdio.println(sequence);
                     stdio.println(recipient);
