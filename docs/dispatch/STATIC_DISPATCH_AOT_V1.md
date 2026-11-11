@@ -32,6 +32,14 @@ Prefer statically resolved calls whenever the checked program proves their targe
 - **Wasm:** Real wasm32 macro parity requires the independently pinned compiler/linker/native guest gate described by `docs/MACRO_WASM32_PARITY_V1.md`; normal tests alone do not certify it.
 - **Forge:** `compiler/call_native.cpp` supports a narrow direct scalar-call stage; it is not general method dispatch.
 
+
+## 2026-11-10 proof-store hardening and honest verification
+
+- `CheckedDispatchPlansV1` now has **no global per-call proof registry**. The type checker accumulates AST-identity plans only in its own local `IdentityHashMap`, checks repeated-call target identity, and publishes a deep-copied immutable identity snapshot only after `checker.validate(program)` succeeds. A failed or partial type check has no published call plan. Re-publication to the same Program checks both exact call identity and exact referenced target identities; record structural equality cannot substitute for symbol identity.
+- All plans check matching lexical call shapes and reject argument spreads before publication. A malformed batch leaves the program snapshot unchanged. At the evaluator boundary, direct bindings must still pass local code-image slot checks; source-level checks cannot grant actor or host privileges.
+- Two **byte-exact, SHA-verified** Java production components were locally compiled using OpenJDK 21: `AotDispatchPlannerV1.java` (blob `bf32c8d627afbc41d9fe6958fe77aa34881a522a`) and `CheckedDispatchPlansV1.java` (blob `0eebc62039bd9143053d49df61ae2b012ae25e15`). Their **32/32 standalone policy/registry checks passed**, using a *minimal test-only AST stub*. This proves Java syntax and limited classifier/storage behavior only; it does **not** prove compilation against the real `Ast.java`, production `TypeChecker`, Truffle runtime, the `.atto` guest fixture, or native AOT. The full JUnit and JIT-disabled profile tests are **NOT EXECUTED** at this checkpoint.
+- **Private CI export denied:** current source `main` reports `protected: false` through GitHub's branch API. `.github/private-ci-approved-repositories.txt` and `.github/private-ci-carrier-contracts.json` do not authorize this PR and test plan on an independently approved carrier. Per `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md` V3, source export is forbidden until protected-main and exact independent review requirements are met. Do not bypass this by using another organization's Actions minutes or by publishing temporary refs. Source-free tests can execute elsewhere but cannot establish guest compiler parity.
+
 ## Promotion gates
 
 - [x] **Java-only staging:** emit checked free/static/instance `CallPlan` metadata after macro expansion and type validation; bind it to an exact checked program and verify the source symbol/slot once at evaluator creation. Ownership admission remains mandatory before execution. This is **not** a general native-IR call plan.
