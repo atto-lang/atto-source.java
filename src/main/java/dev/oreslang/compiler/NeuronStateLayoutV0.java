@@ -19,12 +19,14 @@ public record NeuronStateLayoutV0(String actorName, List<String> floatFields) {
     public NeuronStateLayoutV0 {
         Objects.requireNonNull(actorName, "actorName");
         Objects.requireNonNull(floatFields, "floatFields");
-        if (actorName.isBlank() || floatFields.isEmpty() || floatFields.size() > 128)
+        if (actorName.isBlank() || actorName.length() > 128
+                || floatFields.isEmpty() || floatFields.size() > 128)
             throw new IllegalArgumentException("NEURON_STATE_LAYOUT_INVALID: invalid actor or schema size");
         floatFields = List.copyOf(floatFields);
         Set<String> seen = new HashSet<>();
         for (String field : floatFields) {
-            if (field.isBlank() || !seen.add(field))
+            if (field.isBlank() || field.length() > 128 || field.startsWith("$")
+                    || !seen.add(field))
                 throw new IllegalArgumentException("NEURON_STATE_LAYOUT_INVALID: duplicate or blank field");
         }
     }
