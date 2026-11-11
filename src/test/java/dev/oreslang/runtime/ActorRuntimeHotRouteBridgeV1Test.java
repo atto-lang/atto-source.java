@@ -48,7 +48,20 @@ final class ActorRuntimeHotRouteBridgeV1Test {
                 var transport = ActorRuntimeHotRouteBridgeV1
                         .<Integer>processedReceiptTransport(bytes -> (int) bytes[0]);
                 for (int i = 0; i < 10; i++) stable.send(new byte[]{1});
-                for (int i = 0; i < 10; i++) assertTrue(route.dispatchNext(supervisor, transport));
+                // The logical coordinator deliberately allows only one
+                // unacknowledged physical submission to preserve FIFO even
+                // with competing CONTROL carriers.
+                int oldSubmitted = 0;
+                long oldDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (oldSubmitted < 10) {
+                    if (route.dispatchNext(supervisor, transport)) {
+                        oldSubmitted++;
+                    } else {
+                        if (System.nanoTime() >= oldDeadline)
+                            fail("v1 physical mailbox could not drain in time");
+                        Thread.sleep(2);
+                    }
+                }
                 drained(route);
                 assertEquals(10, oldCount.get());
 
@@ -65,7 +78,17 @@ final class ActorRuntimeHotRouteBridgeV1Test {
                 assertEquals(83, stable.id());
                 assertSame(v2, route.current().physicalRoute());
                 assertEquals(2L, route.current().routeEpoch());
-                for (int i = 0; i < 5; i++) assertTrue(route.dispatchNext(supervisor, transport));
+                int nextSubmitted = 0;
+                long nextDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (nextSubmitted < 5) {
+                    if (route.dispatchNext(supervisor, transport)) {
+                        nextSubmitted++;
+                    } else {
+                        if (System.nanoTime() >= nextDeadline)
+                            fail("v2 physical mailbox could not drain in time");
+                        Thread.sleep(2);
+                    }
+                }
                 drained(route);
                 assertEquals(10, oldCount.get());
                 assertEquals(15, newCount.get());
