@@ -186,6 +186,49 @@ final class ActorCarrierQuiescencePollingTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(12)
+    void completedDoneFutureDoesNotClaimCarrierExitWhileItsSubscriberIsStillRunning()
+            throws Exception {
+        // A terminal subscriber can be invoked from finalizeStopLocked
+        // while the runBatch wrapper still holds ACTOR_CARRIER authority.
+        // DONE is therefore not, by itself, a physical-exit receipt.
+        var callbackEntered = new CountDownLatch(1);
+        var allowCallbackToReturn = new CountDownLatch(1);
+        var callbackTimedOut = new AtomicBoolean();
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                Runnable::run)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> context.self().stop());
+            actor.done().whenCompleteRuntime((ignored, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    if (!allowCallbackToReturn.await(5, TimeUnit.SECONDS)) {
+                        callbackTimedOut.set(true);
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackTimedOut.set(true);
+                }
+            });
+            try {
+                actor.send(1);
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS),
+                        "actor never published its terminal callback");
+                assertTrue(actor.done().isDone(),
+                        "test must observe DONE before callback exits");
+                assertFalse(runtime.httpCarrierQuiescent(actor),
+                        "DONE publication is not the TurnExecutor exit boundary");
+            } finally {
+                allowCallbackToReturn.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            eventuallyQuiescent(runtime, actor);
+            assertFalse(callbackTimedOut.get(), "terminal subscriber never exited");
+        }
+    }
+
     @Test
     void cannotObserveForeignRuntimeActor() throws Exception {
         try (ActorRuntime first = new ActorRuntime(
