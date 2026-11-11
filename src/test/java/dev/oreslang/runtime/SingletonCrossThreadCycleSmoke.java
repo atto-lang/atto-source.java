@@ -95,10 +95,36 @@ public final class SingletonCrossThreadCycleSmoke {
                 "nested canonical identity reused after completion");
     }
 
+    private static void ignoredDirectCycleCannotPublish() {
+        var domain = new SingletonSharedDomain();
+        var key = new SingletonSharedDomain.Key("pkg", "M", "Sticky");
+        var result = domain.snapshotOnce(key, () -> {
+            // An initializer must not be able to mask a detected cycle by
+            // discarding the failed nested receipt and returning a constant.
+            var ignored = domain.snapshotOnce(key, () -> 91L);
+            require(ignored.isCompletedExceptionally(),
+                    "direct recursive nested receipt must fail");
+            return 42L;
+        });
+        try {
+            result.join();
+            throw new AssertionError("ignored recursive lookup published a successful singleton");
+        } catch (CompletionException failure) {
+            require(hasCycle(failure), "ignored nested cycle still poisons publication");
+        }
+        try {
+            domain.snapshotOnce(key, () -> 91L).join();
+            throw new AssertionError("cycle failure was not sticky");
+        } catch (CompletionException failure) {
+            require(hasCycle(failure), "cycle failure remains sticky on subsequent lookup");
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         checks = 0;
         crossThreadCycle(2);
         crossThreadCycle(3);
+        ignoredDirectCycleCannotPublish();
         acyclicIdentity();
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_PASS=true");
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_ASSERTIONS=" + checks);
