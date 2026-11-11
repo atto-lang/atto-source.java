@@ -100,46 +100,87 @@ final class ActorSharedCodeImageWhitelistTest {
         }
     }
 
-    // This is a Java host-runtime test: the code image is a shared parsed AST,
-    // not evidence that an AttoLang AOT binary has shared executable pages.
+    // This remains a host-runtime proof: CodeImage is a shared immutable AST,
+    // not a certificate for native executable memory mappings or AOT code.
     private static int advance(int value) {
         return value + 1;
+    }
+
+    // Private actor state must be in its authenticated private memory, not in
+    // mutable Java behavior fields or a captured host-side map.
+    private static final class PrivateCounterBehavior
+            implements ActorRuntime.Behavior<String> {
+        private final ActorRuntime.PrivateMemoryBlock state;
+
+        private PrivateCounterBehavior(ActorRuntime.PrivateMemoryBlock state) {
+            this.state = state;
+        }
+
+        @Override
+        public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+            if ("inc".equals(message)) {
+                int next = advance(Byte.toUnsignedInt(state.readByte(0)));
+                state.writeByte(0, (byte) next);
+            } else if ("report".equals(message)) {
+                context.runtime().emitCurrentActorOutput(
+                        Byte.toUnsignedInt(state.readByte(0)));
+                context.self().stop();
+            } else {
+                throw new IllegalArgumentException("unexpected private test mail");
+            }
+        }
+    }
+
+    // The SHARED actor still owns its own behavior instance. Shared execution
+    // permissions do not imply global instance fields or automatic sharing.
+    private static final class SharedCounterBehavior
+            implements ActorRuntime.Behavior<String> {
+        private int count;
+
+        @Override
+        public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+            if ("inc".equals(message)) {
+                count = advance(count);
+            } else if ("report".equals(message)) {
+                context.runtime().emitCurrentActorOutput(count);
+                context.self().stop();
+            } else {
+                throw new IllegalArgumentException("unexpected shared test mail");
+            }
+        }
+    }
+
+    // Capture-free factory: no CodeImage, map, external mutable reference, or
+    // supervisor object is smuggled through factory JVM closure state.
+    private static final class IndependentCounterFactory
+            implements ActorRuntime.BehaviorFactory<String> {
+        @Override
+        public ActorRuntime.Behavior<String> create(
+                ActorRuntime.ActorContext<String> context) {
+            assertEquals("app/shared-code-state.atto",
+                    context.codeImage().orElseThrow().codeUnitId());
+            if (context.kind() == ActorRuntime.ActorKind.PRIVATE) {
+                var state = context.privateMemory().orElseThrow()
+                        .allocatePrivateBytes(1);
+                state.writeByte(0, (byte) 0);
+                return new PrivateCounterBehavior(state);
+            }
+            assertEquals(ActorRuntime.ActorKind.SHARED, context.kind());
+            return new SharedCounterBehavior();
+        }
     }
 
     @Test
     void sharedCodeImageDoesNotShareMutableActorOrSupervisorState() throws Exception {
         Ast.Program parsedOnce =
                 Parser.parse("pub routine main(): void { return; }");
-        java.util.concurrent.ConcurrentHashMap<String, Integer> snapshots =
-                new java.util.concurrent.ConcurrentHashMap<>();
-
-        // Each actor gets a new mutable behavior instance. The callback code
-        // and the attached immutable code image remain shared by reference.
-        final class CounterBehavior implements ActorRuntime.Behavior<String> {
-            private int count;
-
-            @Override
-            public void onMessage(String message,
-                    ActorRuntime.ActorContext<String> context) {
-                if ("inc".equals(message)) {
-                    count = advance(count);
-                } else if (message.startsWith("report:")) {
-                    snapshots.put(message.substring("report:".length()), count);
-                    context.self().stop();
-                } else {
-                    throw new IllegalArgumentException("unexpected test mail");
-                }
-            }
-        }
 
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             SharedCodeImageStore.CodeImage image =
                     store.publish("app/shared-code-state.atto", parsedOnce);
-            ActorRuntime.BehaviorFactory<String> factory = context -> {
-                assertSame(image, context.codeImage().orElseThrow());
-                return new CounterBehavior();
-            };
+            ActorRuntime.BehaviorFactory<String> factory =
+                    new IndependentCounterFactory();
 
             ActorRuntime.ActorRef<String> privateActor =
                     runtime.spawnWithCodeImage(
@@ -159,23 +200,27 @@ final class ActorSharedCodeImageWhitelistTest {
             privateActor.send("inc");
             privateActor.send("inc");
             sharedActor.send("inc");
-            privateActor.send("report:private");
-            sharedActor.send("report:shared");
+            privateActor.send("report");
+            sharedActor.send("report");
+
+            var privateOutput = privateActor.outputs().next().get(2, TimeUnit.SECONDS);
+            var sharedOutput = sharedActor.outputs().next().get(2, TimeUnit.SECONDS);
+            assertFalse(privateOutput.done());
+            assertFalse(sharedOutput.done());
+            assertEquals(3, privateOutput.value().value());
+            assertEquals(1, sharedOutput.value().value(),
+                    "shared actor kind must not imply shared behavior objects");
 
             assertTrue(privateActor.awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(sharedActor.awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(privateActor.failure().isEmpty());
             assertTrue(sharedActor.failure().isEmpty());
-            assertEquals(3, snapshots.get("private"));
-            assertEquals(1, snapshots.get("shared"),
-                    "shared actor kind must not imply shared behavior objects");
 
-            // The supervisor/root can execute the same code body on its own
-            // state, but this cannot mutate an actor's independent state.
             int supervisorCount = advance(40);
             assertEquals(41, supervisorCount);
-            assertEquals(3, snapshots.get("private"));
-            assertEquals(1, snapshots.get("shared"));
+            assertEquals(3, privateOutput.value().value());
+            assertEquals(1, sharedOutput.value().value());
+            assertEquals(1, store.imageCount());
         }
     }
 }
