@@ -317,3 +317,30 @@ approved export destinations. No private code mirror is allowed
 until the exact independent approval/protected-policy prerequisites
 are fulfilled. Success of independent synthetic Actions SQLite
 canaries is NOT JDK compilation or guest execution.
+
+
+### Original operation metadata integrity (2026-11-10)
+
+Both Java SQLite stores already preserve the original operation
+`epoch`, `expected` version, payload and schema in the durable
+`ops` table. Their verified restore and checkpoint admission paths
+now require **epoch > 0** and
+`ops.expected == committed_event_or_snapshot_version - 1`,
+in addition to the existing original payload/schema witness. A
+freshly granted epoch must never be substituted for the historical
+commit's epoch. This closes a metadata-only rewrite gap without
+changing the Java SQLite schema.
+
+Negative JDBC fixtures exercise forged expected versions for legacy
+events and forged epoch zero for snapshots, including the mixed
+legacy/command reactivation path and exact bytes that were otherwise
+valid. Strict Java 21 and JDBC tests remain **NOT_EXECUTED** against
+the source-owned PR because Actions admission fails before executing
+jobs. The source-free alternate runner's successful independently
+written JDBC and SQLite oracle checks do not establish compilation of
+these modified Java files.
+
+Cross-backend source-of-truth: Node conformance now explicitly
+stores `operations.origin_epoch` to reconstruct the same historical
+operation digest. Older Node records missing this epoch are
+quarantined until independently verified migration, not guessed.
