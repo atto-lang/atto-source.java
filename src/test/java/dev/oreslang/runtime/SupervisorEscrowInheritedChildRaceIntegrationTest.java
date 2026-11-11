@@ -51,7 +51,6 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
             for (int i = 0; i < childCount; i++) {
                 parent.send("spawn");
             }
-            assertTrue(java.util.concurrent.locks.LockSupport.class != null);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (CHILDREN.size() < childCount && System.nanoTime() < deadline) {
                 Thread.yield();
