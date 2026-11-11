@@ -183,14 +183,15 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
         synchronized (monitor) {
             String error = admissionError(handler, expectedGeneration);
             if (error != null) throw new IllegalStateException(error);
+            boolean granted = false;
             try {
                 if (writer != null || !pending.isEmpty()
                         || activeReaders >= maxActiveReaders) return null;
-                return grantReaderLocked(handler);
+                ReadLoan loan = grantReaderLocked(handler);
+                granted = true;
+                return loan;
             } finally {
-                // Successful grants retain identity in the active ledger.
-                // Rejected immediate admission must never reserve a turn.
-                if (!identitiesHeldByActiveLocked(handler)) identities.remove(handler);
+                if (!granted) identities.remove(handler);
             }
         }
     }
@@ -200,21 +201,17 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
         synchronized (monitor) {
             String error = admissionError(handler, expectedGeneration);
             if (error != null) throw new IllegalStateException(error);
+            boolean granted = false;
             try {
                 if (writer != null || activeReaders != 0 || !pending.isEmpty())
                     return null;
-                return grantWriterLocked(handler);
+                WriteLoan loan = grantWriterLocked(handler);
+                granted = true;
+                return loan;
             } finally {
-                if (!identitiesHeldByActiveLocked(handler)) identities.remove(handler);
+                if (!granted) identities.remove(handler);
             }
         }
-    }
-
-    private boolean identitiesHeldByActiveLocked(Object handler) {
-        for (Loan loan : active) {
-            if (loan.handler == handler && !loan.released) return true;
-        }
-        return false;
     }
 
     /**
