@@ -111,6 +111,16 @@ final class ActorSupervisorMailChannelBoundaryTest {
             assertTrue(direct.getMessage().contains("channel"));
             assertThrows(IllegalArgumentException.class,
                     () -> receiver.send(List.of(source)));
+            IllegalArgumentException reader = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(source.output()));
+            IllegalArgumentException writer = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(source.input()));
+            assertTrue(reader.getMessage().contains("channel capability"));
+            assertTrue(writer.getMessage().contains("channel capability"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> receiver.send(List.of(source.output(), source.input())));
 
             // Rejection must not consume the USER mailbox credit.
             receiver.send("valid");
@@ -150,6 +160,14 @@ final class ActorSupervisorMailChannelBoundaryTest {
             // fast path first encounters a full ordinary mailbox.
             assertThrows(IllegalArgumentException.class,
                     () -> receiver.sendAsync(source));
+            IllegalArgumentException readDenied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.sendAsync(source.output()));
+            IllegalArgumentException writeDenied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.sendAsync(source.input()));
+            assertTrue(readDenied.getMessage().contains("channel capability"));
+            assertTrue(writeDenied.getMessage().contains("channel capability"));
             OresFuture<Void> legitimate = receiver.sendAsync(3);
             assertFalse(legitimate.isDone(),
                     "failed capability admission must not steal USER credit");
