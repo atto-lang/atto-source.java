@@ -153,6 +153,14 @@ final class PinnedPackageInterfaceTest {
                         Map.of("math", original.bytes())).packageInstanceId());
     }
 
+    @Test void deniesOversizedInterfaceBeforeCloningOrHashing() {
+        var valid = iface("math", "algebra");
+        byte[] giant = new byte[16 * 1024 * 1024 + 1];
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                PinnedPackageInterface.admit(lock(valid), Map.of("math", giant)));
+        assertTrue(ex.getMessage().contains("package interface byte budget"));
+    }
+
     @Test void rejectsImpossibleOresiEntryCountBeforeAllocation() {
         byte[] forged = iface("math", "algebra").bytes();
         int cursor = 7; // ORESI NUL v1 magic
