@@ -50,6 +50,8 @@ final class ActorStateSupervisorLoansTest {
         final AtomicReference<ActorStateSupervisorLoans> region = new AtomicReference<>();
         final AtomicReference<ActorStateSupervisorLoans.LongField> typedBalance =
                 new AtomicReference<>();
+        final AtomicReference<ActorStateSupervisorLoans.LongField> typedLate =
+                new AtomicReference<>();
         final ConcurrentLinkedQueue<ActorStateSupervisorLoans.Grant> grants =
                 new ConcurrentLinkedQueue<>();
         final AtomicInteger ownerReadOperations = new AtomicInteger();
@@ -73,6 +75,20 @@ final class ActorStateSupervisorLoansTest {
                                         runtime.createCurrentActorStateLoans(8, 2);
                                 region.set(created);
                                 typedBalance.set(created.declareOwnerLongField("balance", 5L));
+                            }
+                            case "typed-owner-add-field" -> {
+                                try {
+                                    typedLate.set(region.get().declareOwnerLongField("late", 71L));
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "typed-owner-duplicate-field" -> {
+                                try {
+                                    region.get().declareOwnerLongField("balance", 99L);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
                             }
                             case "typed-owner-read" -> {
                                 try {
@@ -1051,6 +1067,41 @@ final class ActorStateSupervisorLoansTest {
             assertNotNull(fixture.denied.get(),
                     "the stale write must fail instead of committing after STOP");
             assertTrue(region.physicallyRetired());
+        }
+    }
+
+
+    @Test
+    void typedFieldRegistrationWaitsForExclusivePhysicalRegionAdmission()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var writer = fixture.redeem(region, fixture.issue("write")).join();
+            sendAndDrain(fixture.worker, "typed-owner-add-field");
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get());
+            assertNull(fixture.typedLate.get(),
+                    "a contended owner cannot publish a new mutable field");
+            fixture.release(writer);
+            fixture.denied.set(null);
+            sendAndDrain(fixture.worker, "typed-owner-add-field");
+            assertNull(fixture.denied.get());
+            var late = fixture.typedLate.get();
+            assertNotNull(late);
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(71L, scope.read(late)));
+        }
+    }
+
+    @Test
+    void typedFieldNamesAreOneUseAndCannotReplaceExistingGuestBacking()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            sendAndDrain(fixture.worker, "typed-owner-duplicate-field");
+            assertInstanceOf(IllegalArgumentException.class, fixture.denied.get());
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(5L,
+                            scope.read(fixture.typedBalance.get())));
         }
     }
 
