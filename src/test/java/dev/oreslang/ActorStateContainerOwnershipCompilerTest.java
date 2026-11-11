@@ -71,6 +71,21 @@ final class ActorStateContainerOwnershipCompilerTest {
     }
 
     @Test
+    void separateCompiledActorsDoNotShareGroupedMutableState() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, fixture("valid-two-actors.atto"),
+                        "valid-two-actors.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("1|1", output.toString(StandardCharsets.UTF_8),
+                "two actors sharing immutable code must never share mutable state slots");
+    }
+
+    @Test
     void copyScalarCannotBeTakenOutOfActorOwnedState() throws Exception {
         var error = rejected("reject-take-field.atto");
         assertTrue(error.getMessage().contains("rt take cannot transfer actor-owned state"),
