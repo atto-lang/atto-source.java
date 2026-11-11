@@ -3,7 +3,7 @@ name: Atto Cart guest physical actor exact-head proof
 on:
   pull_request:
     paths:
-      - 'src/test/resources/atto/virtual-cart-v1/**'
+      - 'contracts/virtual-actor-cart-v1/**'
       - 'src/test/java/dev/oreslang/AttoCartPhysicalActivationGuestTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/VirtualActorRuntimeGenerationFence.java'
@@ -38,9 +38,9 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "HEAD_SHA=$EXPECTED_HEAD_SHA"
           echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
-          git hash-object src/test/resources/atto/virtual-cart-v1/cart_ops.atto
-          git hash-object src/test/resources/atto/virtual-cart-v1/cart_main.atto
-          git hash-object src/test/resources/atto/virtual-cart-v1/virtual_cart_unsupported.atto
+          git hash-object contracts/virtual-actor-cart-v1/positive/cart_ops.atto
+          git hash-object contracts/virtual-actor-cart-v1/positive/cart_main.atto
+          git hash-object contracts/virtual-actor-cart-v1/negative/virtual_cart_unsupported.atto
           git hash-object src/test/java/dev/oreslang/AttoCartPhysicalActivationGuestTest.java
 
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
