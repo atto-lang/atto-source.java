@@ -45,7 +45,10 @@ public final class SqliteReplayAdmissionTestMain {
                             "snapshot_version,snapshot_schema,snapshot) VALUES(?,?,?,?,0,0,NULL)");
                         PreparedStatement event=raw.prepareStatement(
                             "INSERT INTO events(tenant,actor,slot,version,schema,payload)" +
-                            " VALUES(?,?,?,?,1,?)")) {
+                            " VALUES(?,?,?,?,1,?)");
+                        PreparedStatement operation=raw.prepareStatement(
+                            "INSERT INTO ops(tenant,actor,slot,op,epoch,expected," +
+                            "kind,schema,payload,version) VALUES(?,?,?,?,?,?,?,?,?,?)")) {
                         for(Identity id:List.of(countId,bytesId)) {
                             head.setString(1,id.tenant());
                             head.setString(2,id.actor());
@@ -60,6 +63,20 @@ public final class SqliteReplayAdmissionTestMain {
                             event.setInt(4,i);
                             event.setBytes(5,new byte[0]);
                             event.executeUpdate();
+                            // A full-journal checkpoint is legal only when
+                            // every seeded legacy event has its original
+                            // durable operation evidence in the same stream.
+                            operation.setString(1,countId.tenant());
+                            operation.setString(2,countId.actor());
+                            operation.setString(3,countId.state());
+                            operation.setString(4,"seed-"+i);
+                            operation.setLong(5,1);
+                            operation.setLong(6,i-1L);
+                            operation.setInt(7,2);
+                            operation.setInt(8,1);
+                            operation.setBytes(9,new byte[0]);
+                            operation.setInt(10,i);
+                            operation.executeUpdate();
                         }
                         byte[] oneMiB=new byte[1_048_576];
                         for(int i=1;i<=16;i++) {
