@@ -82,7 +82,7 @@ final class NeuronScalarScopeV0Test {
     }
 
     @Test void rejectsMissingAndDuplicateScalarInitialization() {
-        rejected(SOURCE.replace("                  s.bias = 1.0;\n", ""));
+        rejected(SOURCE.replace("s.bias = 1.0;", ""));
         rejected(SOURCE.replace("s.bias = 1.0;", "s.weight = 1.0;"));
     }
 
@@ -116,16 +116,18 @@ final class NeuronScalarScopeV0Test {
     }
 
     @Test void rejectsIncompleteCriticalScopePairs() {
-        String noWrite = SOURCE.replace(
-                "self.handle_state(critical-write |s| -> {\n"
-                        + "                  s.weight = 2.0;\n"
-                        + "                  s.bias = 1.0;\n"
-                        + "                });", "log_start();");
+        int writeStart = SOURCE.indexOf("self.handle_state(critical-write");
+        int writeEnd = SOURCE.indexOf("});", writeStart) + 3;
+        assertTrue(writeStart > 0 && writeEnd > writeStart, "write fixture must exist");
+        String noWrite = SOURCE.substring(0, writeStart)
+                + "log_start();" + SOURCE.substring(writeEnd);
         rejected(noWrite);
-        String noRead = SOURCE.replace(
-                "return self.handle_state(\n"
-                        + "                  critical-read |s| -> s.weight * input + s.bias\n"
-                        + "                );", "return input;");
+
+        int readStart = SOURCE.indexOf("return self.handle_state(");
+        int readEnd = SOURCE.indexOf(");", readStart) + 2;
+        assertTrue(readStart > 0 && readEnd > readStart, "read fixture must exist");
+        String noRead = SOURCE.substring(0, readStart)
+                + "return input;" + SOURCE.substring(readEnd);
         rejected(noRead);
     }
 
