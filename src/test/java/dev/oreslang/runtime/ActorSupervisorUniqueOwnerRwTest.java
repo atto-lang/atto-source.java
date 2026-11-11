@@ -85,6 +85,47 @@ final class ActorSupervisorUniqueOwnerRwTest {
     }
 
     @Test
+    void threeSevenFifteenLogicalExecutionsCannotBargeAheadOfQueuedWriter() {
+        // Logical execution stress within ONE actor allocation. This is not
+        // multi-heap singleton publication or cross-actor shared state.
+        for (int cohortSize : new int[]{3, 7, 15}) {
+            try (var region = new ActorStateRwLoans(32)) {
+                var lead = actor(1000 + cohortSize, 2000 + cohortSize, 42, 7);
+                var writer = actor(3000 + cohortSize, 4000 + cohortSize, 42, 7);
+                var first = region.acquireReadAsync(lead).join();
+                var waitingWriter = region.acquireWriteAsync(writer);
+                assertFalse(waitingWriter.isDone());
+                var queued = new java.util.ArrayList<
+                        java.util.Map.Entry<ExecutionContext, OresFuture<ActorStateRwLoans.StateLoan>>>();
+                for (int i = 0; i < cohortSize; ++i) {
+                    var reader = actor(5000 + cohortSize * 100L + i,
+                            6000 + cohortSize * 100L + i, 42, 7);
+                    var pending = region.acquireReadAsync(reader);
+                    assertFalse(pending.isDone(), "late reader barged before writer");
+                    queued.add(java.util.Map.entry(reader, pending));
+                }
+                assertEquals(cohortSize + 1, region.pendingCount());
+                first.close();
+                var grantedWriter = waitingWriter.join();
+                assertTrue(grantedWriter.heldBy(writer));
+                assertEquals(1, region.activeWriterCount());
+                assertEquals(0, region.activeReaderCount());
+                for (var item : queued) assertFalse(item.getValue().isDone());
+                grantedWriter.close();
+                assertEquals(cohortSize, region.activeReaderCount());
+                for (var item : queued) {
+                    var read = item.getValue().join();
+                    assertTrue(read.heldBy(item.getKey()));
+                    read.close();
+                }
+                assertEquals(0, region.pendingCount());
+                assertEquals(0, region.activeReaderCount());
+                assertEquals(0, region.activeWriterCount());
+            }
+        }
+    }
+
+    @Test
     void closedChildRegionNeverBecomesAReusableSupervisorRegion() {
         var child = actor(21, 31, 42, 7);
         var supervisor = actor(22, 32, 41, 7);
