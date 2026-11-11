@@ -1171,8 +1171,11 @@ public final class Ast {
         }
     }
 
-    /** A lexical value block: prefix statements followed by one unterminated expression.
-     * The result belongs to the block, never to the enclosing callable.
+    /**
+     * Ternary-arm-only lexical value block. The parser normalizes both
+     * `{ expression }` and `{ return expression; }` into this same AST,
+     * so the arm result never becomes an enclosing-function ReturnStmt.
+     * Prefix statements must not contain function-level returns.
      */
     public record BlockValueExpr(List<Stmt> prefixStatements, Expr value) implements Expr {
         public BlockValueExpr {
