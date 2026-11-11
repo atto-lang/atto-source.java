@@ -36,3 +36,20 @@ The test suite `ActorExternalEntrypointTest` covers positive parser/AST,
 negative parser/binder shapes, duplicate selectors, fabricated AST rejection,
 cross-file namespace binding and execution denial. Run exact-head Maven
 JUnit with nonzero steps; source code alone is **NOT EXECUTED** evidence.
+
+## Follow-up static-boundary hardening
+
+An `Ast.ExternalActorMethodDecl.runtimeExternal` boolean is **untrusted
+declaration metadata**, never an actor-context capability or an unforgeable
+authorization proof. A tool can construct that AST with `true`: TypeChecker
+must still deny execution until compiler-issued actor turn/dispatch authority
+exists. The binder is deliberately not a runtime access-control layer.
+
+The binder rechecks argument names, duplicate parameters, receiver shadowing,
+structural/typeless values and the exact private mailbox/lifecycle signature
+even for constructed ASTs. A receive binding is not mutable and its nested
+payload type syntax rejects inferred, borrow, callable and void shapes with a
+256-node iterative admission limit. These checks are conservative front-end
+shape gates, not a transitive borrow checker or proof that user-defined types
+are safely transferable. Real `ActorMail<T>` identity must be resolved to a
+compiler-owned nominal type before any guest execution.

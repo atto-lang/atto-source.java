@@ -113,6 +113,108 @@ final class ActorExternalEntrypointTest {
                 ex.getMessage());
     }
 
+    private static Ast.Program withForgedExternal(Ast.ExternalActorMethodDecl method) {
+        Ast.Program parsed = Parser.parse(ACTOR);
+        Ast.ModuleDecl root = parsed.modules().getFirst();
+        var rewritten = new Ast.ModuleDecl(root.name(), root.annotations(), root.contracts(),
+                java.util.List.of(root.declarations().getFirst(), method));
+        return new Ast.Program(parsed.namespace(), parsed.imports(), java.util.List.of(rewritten));
+    }
+
+    private static Ast.ExternalActorMethodDecl withParams(
+            Ast.ExternalActorMethodDecl original, java.util.List<Ast.Param> parameters) {
+        return new Ast.ExternalActorMethodDecl(
+                original.actorName(), original.receiverName(), original.name(),
+                original.visibility(), parameters, original.returnType(),
+                original.body(), original.runtimeExternal());
+    }
+
+    private static void forgedRejected(Ast.ExternalActorMethodDecl method, String reason) {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bind(withForgedExternal(method)));
+        assertTrue(ex.getMessage().contains(reason), ex.getMessage());
+    }
+
+    @Test void constructedExternalCannotShadowActorReceiverOrDuplicateValueNames() {
+        var method = method("pub external mtd (Foo f) ping(int first, int second): void { return; }");
+        var scalar = Ast.TypeRef.simple("int");
+        forgedRejected(withParams(method, java.util.List.of(
+                new Ast.Param(scalar, "f"))), "receiver-shadowing");
+        forgedRejected(withParams(method, java.util.List.of(
+                new Ast.Param(scalar, "x"), new Ast.Param(scalar, "x"))), "duplicate");
+        forgedRejected(withParams(method, java.util.List.of(
+                new Ast.Param(scalar, null))), "invalid");
+    }
+
+    @Test void constructedExternalCannotSmuggleStructuralOrTypelessParameters() {
+        var method = method("external mtd (Foo f) receive(ActorMail<int> mail): void { return; }");
+        Ast.TypeRef envelope = method.parameters().getFirst().type();
+        forgedRejected(withParams(method, java.util.List.of(
+                new Ast.Param(envelope, "mail", true, false))), "structural");
+        forgedRejected(withParams(method, java.util.List.of(
+                new Ast.Param(null, "mail", false, false))), "invalid");
+    }
+
+    @Test void mailboxCannotReceiveMutableBindingEvenFromConstructedAst() {
+        var method = method("external mtd (Foo f) receive(ActorMail<int> mail): void { return; }");
+        var envelope = method.parameters().getFirst().type();
+        forgedRejected(withParams(method, java.util.List.of(
+                new Ast.Param(envelope, "mail", false, true))), "external receive must be private");
+    }
+
+    @Test void mailboxRejectsInferredBorrowedAndCallableNestedPayloads() {
+        var method = method("external mtd (Foo f) receive(ActorMail<int> mail): void { return; }");
+        var rejected = java.util.List.of(
+                Ast.TypeRef.inferred(),
+                Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), false),
+                Ast.TypeRef.functionType(java.util.List.of(Ast.TypeRef.simple("int")),
+                        Ast.TypeRef.simple("void")),
+                new Ast.TypeRef("Option", java.util.List.of(
+                        Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), true)), false),
+                Ast.TypeRef.simple("void"));
+        for (Ast.TypeRef unsafe : rejected) {
+            var envelope = new Ast.TypeRef("ActorMail", java.util.List.of(unsafe), false);
+            forgedRejected(withParams(method, java.util.List.of(
+                    new Ast.Param(envelope, "mail"))),
+                    "external receive must be private");
+        }
+    }
+
+    @Test void mailboxPayloadShapeHasBoundedNonrecursiveAdmission() {
+        var method = method("external mtd (Foo f) receive(ActorMail<int> mail): void { return; }");
+        var nested = Ast.TypeRef.simple("int");
+        for (int depth = 0; depth < 260; depth++) {
+            nested = new Ast.TypeRef("Box", java.util.List.of(nested), false);
+        }
+        var envelope = new Ast.TypeRef("ActorMail", java.util.List.of(nested), false);
+        forgedRejected(withParams(method, java.util.List.of(new Ast.Param(envelope, "mail"))),
+                "external receive must be private");
+    }
+
+    @Test void constructedExternalCannotForgeInferredVoidReturnType() {
+        var method = method("external mtd (Foo f) init(): void { return; }");
+        var inferredVoid = new Ast.TypeRef("void", java.util.List.of(), true);
+        var forged = new Ast.ExternalActorMethodDecl(
+                method.actorName(), method.receiverName(), method.name(),
+                method.visibility(), method.parameters(), inferredVoid,
+                method.body(), true);
+        forgedRejected(forged, "external lifecycle method");
+    }
+
+    @Test void explicitAstMarkerIsNeverExecutableRuntimeAuthority() {
+        var method = method("external mtd (Foo f) receive(ActorMail<int> mail): void { return; }");
+        // The boolean marker is constructible, not an unforgeable ActorContext.
+        var synthetic = new Ast.ExternalActorMethodDecl(
+                method.actorName(), method.receiverName(), method.name(),
+                method.visibility(), method.parameters(), method.returnType(),
+                method.body(), true);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(withForgedExternal(synthetic)));
+        assertTrue(ex.getMessage().contains("STANDALONE_ACTOR_LOWERING_UNSUPPORTED")
+                        || ex.getMessage().contains("EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED"),
+                ex.getMessage());
+    }
+
     @Test void crossFileNamespaceRetainsSourceProvenanceAndMarker() throws IOException {
         Path root = Path.of("contracts", "actor-external-entrypoints-v1");
         var sources = Map.of(

@@ -355,6 +355,22 @@ public final class ActorReceiverBinder {
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
         String name = method.name();
+
+        // Parser checks are not a security boundary: embedders, transformed
+        // ASTs, and incremental caches can construct method nodes directly.
+        // Repeat declaration-shape validation here before indexing any slot.
+        Set<String> argumentNames = new LinkedHashSet<>();
+        for (Ast.Param parameter : method.parameters()) {
+            if (parameter.type() == null || parameter.name() == null
+                    || parameter.name().isBlank() || parameter.structural()
+                    || parameter.name().equals(method.receiverName())
+                    || !argumentNames.add(parameter.name())) {
+                throw new IllegalArgumentException(
+                        "external actor method has invalid, duplicate, structural "
+                                + "or receiver-shadowing value parameters");
+            }
+        }
+
         // Independent validation is required: embedding tools may construct
         // an AST without passing through the production parser.
         if ((name.equals("init") || name.equals("receive")) && !method.runtimeExternal()) {
@@ -372,11 +388,15 @@ public final class ActorReceiverBinder {
             // Same private ActorMail<T> -> void ABI as the existing actor-local
             // receive hook; never authorize public or arbitrary typed-message
             // overloads through a static nominal binding.
+            Ast.Param mailbox = method.parameters().size() == 1
+                    ? method.parameters().getFirst() : null;
+            Ast.TypeRef envelope = mailbox == null ? null : mailbox.type();
             if (method.visibility() != Ast.Visibility.PRIVATE
-                    || method.parameters().size() != 1
-                    || !method.parameters().getFirst().type().name().equals("ActorMail")
-                    || method.parameters().getFirst().type().arguments().size() != 1
-                    || method.parameters().getFirst().type().inferArguments()
+                    || mailbox == null || mailbox.mutable()
+                    || envelope == null || !envelope.name().equals("ActorMail")
+                    || envelope.arguments().size() != 1
+                    || envelope.inferArguments()
+                    || !supportedMailPayloadShape(envelope.arguments().getFirst())
                     || !isVoid(method.returnType())) {
                 throw new IllegalArgumentException(
                         "external receive must be private and accept one "
@@ -391,6 +411,37 @@ public final class ActorReceiverBinder {
                                 + "' must be private, zero-argument and return void");
             }
         }
+    }
+
+    /**
+     * This does NOT prove borrow/ownership transfer. It only refuses source-
+     * impossible or obviously non-transferable type shapes in the static
+     * receiver index, including nested callable/borrow wrappers. The real
+     * runtime must still use the compiler's nominal ActorMail identity and
+     * transitive ownership checker before accepting a mailbox payload.
+     *
+     * Iterative with a node budget, so a crafted AST cannot stack overflow
+     * the Java host by nesting type parameters.
+     */
+    private static boolean supportedMailPayloadShape(Ast.TypeRef payload) {
+        if (payload == null) return false;
+        java.util.ArrayDeque<Ast.TypeRef> pending = new java.util.ArrayDeque<>();
+        pending.push(payload);
+        int scanned = 0;
+        while (!pending.isEmpty()) {
+            Ast.TypeRef type = pending.pop();
+            if (++scanned > 256 || type.inferArguments() || type.isBorrow()
+                    || type.name() == null || type.name().isBlank()
+                    || type.name().startsWith("$") || type.name().equals("void")
+                    || type.name().equals("Fnc")) {
+                return false;
+            }
+            for (Ast.TypeRef inner : type.arguments()) {
+                if (inner == null) return false;
+                pending.push(inner);
+            }
+        }
+        return true;
     }
 
     private static boolean isVoid(Ast.TypeRef type) {
