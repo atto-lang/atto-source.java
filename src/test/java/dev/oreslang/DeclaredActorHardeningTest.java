@@ -140,13 +140,13 @@ final class DeclaredActorHardeningTest {
 
     @Test
     void sourceIdentityCannotContainBidiControls() {
-        assertTrue(sourceIdError("src/\\u202Eactor.atto")
+        assertTrue(sourceIdError("src/" + (char) 0x202E + "actor.atto")
                 .contains("invalid package-relative"));
     }
 
     @Test
     void sourceIdentityCannotContainZeroWidthFormatCodePoints() {
-        assertTrue(sourceIdError("src/\\u200Dactor.atto")
+        assertTrue(sourceIdError("src/" + (char) 0x200D + "actor.atto")
                 .contains("invalid package-relative"));
     }
 
