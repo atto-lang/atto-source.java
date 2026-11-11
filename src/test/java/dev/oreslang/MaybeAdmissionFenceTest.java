@@ -1,69 +1,178 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.parser.Token;
+import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Admission fence only: not positive syntax support or guest execution.
- * Remove these expected rejections only with real checker+CFG+AOT tests.
- */
 final class MaybeAdmissionFenceTest {
     @Test
-    void contextualMaybeIdentifierRemainsLegalInOrdinaryExpressions() {
+    void questionEqualHasOneTokenAndDoesNotStealTernary() {
+        var tokens = new Lexer("Ok(value) ?= get(); true ? 1 : 0;").scan();
+        assertEquals(1, tokens.stream().filter(t -> t.type() == Token.Type.FALLIBLE_BIND).count());
+        assertEquals(1, tokens.stream().filter(t -> t.type() == Token.Type.QUESTION).count());
+        var spaced = new Lexer("Ok(value) ? = get();").scan();
+        assertEquals(0, spaced.stream().filter(t -> t.type() == Token.Type.FALLIBLE_BIND).count());
+    }
+
+    @Test
+    void contextualMaybeIdentifierRemainsLegal() {
         assertDoesNotThrow(() -> Parser.parse("""
-                fnc same(int maybe): int {
-                    return maybe;
-                }
-                fnc plus_one(int maybe): int {
-                    return maybe + 1;
-                }
-                fnc invoke(int maybe): int {
-                    return maybe;
-                }
+                fnc same(int maybe): int { return maybe; }
+                fnc plus_one(int maybe): int { return maybe + 1; }
                 """));
     }
 
     @Test
-    void proceduralMaybeMustNotBeSilentlyReinterpreted() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc f(int id): int {
-                    do maybe
-                        Ok(value) ?= fetch(id);
-                        return value;
-                    else
-                        Err(reason) -> return 0;
-                    end
+    void returnMaybeNestedReturnsAreTrueFunctionReturnsNotValueMatchResults() {
+        var program = Parser.parse("""
+                fnc f(Result<int, String> value): Result<int, String> {
+                  return maybe
+                    Ok(n) ?= value;
+                    return Ok(n + 1)
+                  else
+                    Err(reason) -> { return Err(reason); };
+                  end;
                 }
-                """));
-        assertTrue(error.getMessage().contains("'do maybe' requires checked"),
-                error::getMessage);
+                """);
+        var fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        assertInstanceOf(Ast.BlockStmt.class, fn.body().getFirst());
+        Ast.BlockStmt body = (Ast.BlockStmt) fn.body().getFirst();
+        Ast.MatchStmt match = (Ast.MatchStmt) body.body().getFirst();
+        assertTrue(match.procedural());
+        assertInstanceOf(Ast.ReturnStmt.class, match.arms().getFirst().body().getFirst());
+        assertDoesNotThrow(() -> OwnershipChecker.check(TypeChecker.check(program)));
     }
 
     @Test
-    void ReturnMaybeWithNestedFunctionReturnsNeedsDedicatedLowering() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc f(int id): int {
-                    return maybe
-                        Ok(value) ?= fetch(id);
-                        return value;
-                    else
-                        Err(reason) -> return 0;
-                    end;
+    void doMaybeAndValueReturnMaybeExecuteWithFirstFailureOnly() throws Exception {
+        String source = """
+                fnc do_case(Result<int, String> value): Result<int, String> {
+                  defer stdio.stdout.write("D");
+                  do maybe
+                    Ok(n) ?= value;
+                    return Ok(n + 1);
+                  else
+                    Err(reason) -> {
+                      stdio.stdout.write("E");
+                      return Err(reason);
+                    };
+                  end
                 }
-                """));
-        assertTrue(error.getMessage().contains("'return maybe' requires checked"),
-                error::getMessage);
+                fnc option_case(Option<int> value): int {
+                  return maybe
+                    Some(n) ?= value;
+                    n + 4
+                  else
+                    None -> 0;
+                  end;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(do_case(Ok(7)).unwrap());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(do_case(Err("bad")).is_err());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(option_case(Some(3)));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(option_case(None));
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(source));
+        OwnershipChecker.check(typed);
+        assertEquals("8D|EDtrue|7|0", run(source));
     }
 
     @Test
-    void FallibleBindingOutsideMaybeDoesNotParseAsTernaryOrAssignment() {
+    void multipleBindsStopAtFirstFailureAndOuterDeferRunsOnce() throws Exception {
+        String source = """
+                fnc passthrough(Result<int, String> one, Result<int, String> two): Result<int, String> {
+                  defer stdio.stdout.write("D");
+                  return maybe
+                    Ok(first) ?= one;
+                    Ok(second) ?= two;
+                    return Ok(first + second)
+                  else
+                    Err(reason) -> {
+                      stdio.stdout.write("E");
+                      return Err(reason)
+                    };
+                  end;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(passthrough(Ok(3), Ok(4)).unwrap());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(passthrough(Err("one"), Err("two")).is_err());
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(source));
+        OwnershipChecker.check(typed);
+        assertEquals("7D|EDtrue", run(source));
+    }
+
+    @Test
+    void failClosedOnMissingElseAndWrongFailureHandler() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc f(int id): int {
-                    Ok(value) ?= fetch(id);
-                    return value;
+                fnc f(Option<int> o): int {
+                  do maybe
+                    Some(n) ?= o;
+                    return n;
+                  end
                 }
                 """));
+        var error=assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc f(Option<int> o): int {
+                  do maybe
+                    Some(n) ?= o;
+                    return n;
+                  else
+                    Err(reason) -> return 0;
+                  end
+                }
+                """));
+        assertTrue(error.getMessage().contains("non-exhaustive maybe"), error::getMessage);
+    }
+
+    @Test
+    void rejectUnsafeInBodyDeferAndFallibleBindingOutsideScope() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc f(Option<int> o): int {
+                  do maybe
+                    Some(n) ?= o;
+                    defer stdio.stdout.write("unsafe-order");
+                    return n;
+                  else
+                    None -> return 0;
+                  end
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc f(Result<int, String> r): int {
+                  Ok(n) ?= r;
+                  return n;
+                }
+                """));
+    }
+
+    private static String run(String source) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        var guest=Source.newBuilder(OresLanguage.ID,source,"maybe-guest.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx=Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(guest);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 }

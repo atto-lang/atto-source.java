@@ -1,16 +1,29 @@
-# `maybe` /`?=` source admission fence (2026-11-10)
+# AttoLang maybe v1: typed procedural Result/Option lowering (2026-11-10)
 
-This repository **does not implement** the newly approved AttoLang `do maybe` / `return maybe` scopes. A production parser must not silently reinterpret them as ordinary expressions, an existing `try` with host exceptions, or the existing `return match` ARM_RESULT construct. Companion cross-backend **draft** [conformance PR #674](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/674) provides candidate `.atto` fixtures and a SOURCE-FREE (not compiler) reference oracle.
+**Candidate implementation: JAVA/GRAAL compiler execution NOT YET VERIFIED.** This draft replaces the temporary Java parser rejection with a source-to-AST lowering for a restricted but useful `maybe` subset. No result from source review or zero-step GitHub Actions establishes executed guest acceptance. It also does not establish LLVM/.NET/Wasm/Forge parity.
 
-The Java parser now gives an actionable **fail-closed diagnostic** for `do maybe` and block-shaped `return maybe` instead of depending on incidental downstream parse failure. `maybe` remains a legal identifier; there is **no global keyword reservation**. This fence is not executable language support. `?=` outside `maybe` is not admitted.
+## Implemented candidate
 
-## Release requirements
+- Contextual `do maybe` and `return maybe`, without globally reserving a local variable named `maybe`.
+- One atomic `?=` token, distinct from the ternary `?` operator.
+- Contiguous `Ok(name) ?= Result[T, E];` / `Some(name) ?= Option[T];` expressions: exactly once left-to-right and short-circuit first failed binding.
+- Mandatory `else` with `Err(...)`, `None`, or `_` arms; an appropriate failure pattern is required for each success constructor. The established `checkMatch` checker must additionally prove exhaustive pattern coverage, type compatibility and unreachable handlers.
+- Compiles into nested checked, **procedural** `Ast.MatchStmt` control flow, never the expression-valued `MatchValueArm.ARM_RESULT`. `return maybe` permits terminal value expressions via explicit function-return lowering; an inner `return` continues to exit the enclosing callable. The source-level outer return already establishes the return boundary.
+- Function-scope `defer` executes when the real function returns. No host-language catch, panic conversion, runtime reflection or dynamic code generation is introduced by this lowering.
 
-1. Parse dedicated `MaybeStmt`, `MaybeExpr`, and `FallibleBind` nodes; make `?=` an atomic operator without changing ordinary ternary `?`.
-2. Source-ordered, exactly-once evaluation; short-circuit on first failure; statically complete `Err`/`None` alternatives and no implicit error conversions.
-3. Every inner `return` is a FUNCTION_RETURN from the enclosing callable, **not** an expression-arm result. Divergent `return maybe` must typecheck with `Never`, and codegen must not emit a second return.
-4. LIFO lexical `defer` with explicit scope boundary between `maybe` body and `else`; cleanup and error effects may not intercept actor panic/CONTROL, process fatal, or cancellation incorrectly.
-5. Ownership/lifetime, branch definite-return, no host exceptions and no reflection/dynamic codegen; honor current `ReturnCleanupChecker` restrictions for deferred mutation of a returned binding.
-6. Add positive and negative Java/GraalVM executable `.atto` tests at an exact PR-head tree, and LLVM O0/O2, .NET NativeAOT, Wasm, Forge guest lanes. Source-only admission, Java-only unit tests, or zero-step workflow results **cannot** be promoted as compiler parity.
+## Explicit v1 exclusions
 
-This change intentionally adds no guest library functionality: proper implementation requires parser/typechecker and runtime/compiler work, not new Java business logic. Once implementation lands, replace the expected parser-rejection tests with compiler-backed success and negative coverage.
+The full specification remains in conformance [PR #674](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/674). In this first implementation, successful binding statements must come before all other body statements. The success tail permits expression statements and a terminal `return`; nested blocks, nested control statements, in-body `defer`, and `?=` interleaved among other statements are **rejected**, because naïvely nested matching would execute in-body cleanup after the failure handler rather than before it. Also not yet admitted: `val x = maybe ...`, nested success patterns, implicit else propagation, and async cleanup.
+
+The `return maybe` expression form currently appears directly in a callable return statement. The parser lowers it to procedural checked matches rather than a first-class `MaybeExpr`; no unverified claim of complete expression-form parity is made. Full AST nodes and a common typed CFG with scope cleanup pads are still required for general use, LLVM/.NET/Wasm/Forge, and a verified `Never`-aware lowering.
+
+## Verify and promote
+
+Run the exact-head Java test suite after runner admission:
+
+```sh
+mvn -B -ntp -Dtest=MaybeAdmissionFenceTest,OptionResultSemanticsTest,ValueMatchExpressionTest,CleanupReturnFinalityTest test
+mvn -B -ntp verify
+```
+
+The new tests include guest-positive cases in `.atto`, parse/typing assertions, and negative rejections. Until those jobs report executed nonzero steps and pass, mark guest/compiler status **NOT_EXECUTED**. Do not merge this draft as feature-complete parity.
