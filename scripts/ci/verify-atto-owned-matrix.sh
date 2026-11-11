@@ -130,6 +130,24 @@ self_test() {
     printf '%s:1:1: error: %s\n' "$entry" "$reason" > "$t/$name-check.stderr"
   done
   check_cases "$t" "$t" || { reject "valid synthetic matrix rejected"; exit 1; }
+  # A source-free fixture exercises the same full verification path used by
+  # the guest job, but carries only synthetic bytes, never a compiler binary.
+  local demo_sha="0123456789abcdef0123456789abcdef01234567"
+  local compiler_sha="abcdef0123456789abcdef0123456789abcdef01"
+  local policy_sha="1234567890abcdef1234567890abcdef12345678"
+  printf 'synthetic host-only identity bytes\n' > "$t/fake-artifact"
+  local hash_receipt
+  for hash_receipt in fixture-sources.sha256 compiler-artifacts.sha256 \
+          compiler-classes.sha256 runtime-dependencies.sha256; do
+    sha256sum "$t/fake-artifact" > "$t/$hash_receipt"
+  done
+  printf 'status=PASS\npolicy_head=%s\ngithub_run_id=4242\ngithub_run_attempt=1\ngithub_job=java-linked-guest\ndemo_head=%s\ncompiler_head=%s\npositive_cases=3\nnegative_cases=4\n' \
+    "$policy_sha" "$demo_sha" "$compiler_sha" > "$t/identity.txt"
+  if ! GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null; then
+    reject 'valid synthetic full receipt rejected'; exit 1
+  fi
   local reject_count=0
   printf '\n' >> "$p"
   if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'extra test row accepted'; exit 1; fi
@@ -149,6 +167,34 @@ self_test() {
   printf '42' > "$t/ownership-valid-guest.stdout"
   printf 'java.lang.RuntimeException\n' > "$t/missing-import-check.stderr"
   if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'JVM exception accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  # Mutate identity and attestations independently of case contents.
+  sed -i 's/github_run_attempt=1/github_run_attempt=2/' "$t/identity.txt"
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'stale job attempt accepted'; exit 1
+  fi
+  reject_count=$((reject_count+1))
+  sed -i 's/github_run_attempt=2/github_run_attempt=1/' "$t/identity.txt"
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=source-free-admission \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'wrong CI job accepted'; exit 1
+  fi
+  reject_count=$((reject_count+1))
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$compiler_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'wrong policy SHA accepted'; exit 1
+  fi
+  reject_count=$((reject_count+1))
+  printf 'tamper' >> "$t/fake-artifact"
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'tampered hash receipt accepted'; exit 1
+  fi
   reject_count=$((reject_count+1))
   echo "ATTO_OWNED_MATRIX_RECEIPT_HOST_SELF_TEST_PASS accepts=1 rejects=$reject_count NOT_EXECUTED"
 }
