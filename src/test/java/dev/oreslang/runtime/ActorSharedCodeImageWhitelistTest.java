@@ -223,4 +223,63 @@ final class ActorSharedCodeImageWhitelistTest {
             assertEquals(1, store.imageCount());
         }
     }
+
+    // Shared class definitions must not become ambient mutable storage. The
+    // host factory admission rejects both mutable JVM statics and captured
+    // objects, even when a correctly whitelisted code image is attached.
+    private static final class MutableStaticFactory
+            implements ActorRuntime.BehaviorFactory<String> {
+        private static int forbiddenGlobalCounter = 0;
+
+        @Override
+        public ActorRuntime.Behavior<String> create(
+                ActorRuntime.ActorContext<String> context) {
+            return (message, turn) -> turn.self().stop();
+        }
+    }
+
+    private static final class CapturingFactory
+            implements ActorRuntime.BehaviorFactory<String> {
+        private final Object captured = new Object();
+
+        @Override
+        public ActorRuntime.Behavior<String> create(
+                ActorRuntime.ActorContext<String> context) {
+            return (message, turn) -> turn.self().stop();
+        }
+    }
+
+    @Test
+    void whitelistedCodeImageDoesNotAuthorizeMutableGlobalOrCapturedHostState()
+            throws Exception {
+        Ast.Program parsedOnce =
+                Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("app/code-without-global-state.atto", parsedOnce);
+
+            for (ActorRuntime.ActorKind kind : new ActorRuntime.ActorKind[] {
+                    ActorRuntime.ActorKind.SHARED,
+                    ActorRuntime.ActorKind.PRIVATE
+            }) {
+                SecurityException global = assertThrows(
+                        SecurityException.class,
+                        () -> runtime.spawnWithCodeImage(
+                                kind, IsolatePolicy.developer(),
+                                image, new MutableStaticFactory()));
+                assertTrue(global.getMessage().contains("mutable static JVM state"),
+                        global::getMessage);
+
+                SecurityException captured = assertThrows(
+                        SecurityException.class,
+                        () -> runtime.spawnWithCodeImage(
+                                kind, IsolatePolicy.developer(),
+                                image, new CapturingFactory()));
+                assertTrue(captured.getMessage().contains("stateless"),
+                        captured::getMessage);
+            }
+            assertEquals(1, store.imageCount(),
+                    "denied actor state must not duplicate or grant code images");
+        }
+    }
 }
