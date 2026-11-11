@@ -77,8 +77,9 @@ A queued/failed job with
   No private source was copied to another organization.
 
 The 20 reader/writer JUnit methods, 10 neuron parser/type-check methods,
-4 layout methods, and 13 scoped-scalar preflight methods are **47 committed
-JUnit tests, NOT EXECUTED** on the current exact PR tree. No compiled guest `.atto` inference is certified.
+4 layout methods, 13 scoped-scalar preflight methods, and four real-ActorRuntime
+turn/state host methods are **51 committed JUnit tests, NOT EXECUTED**
+on the current exact PR tree. No compiled guest `.atto` inference is certified.
 
 ### Compiler scoped-scalar preflight (new, still fail closed)
 
@@ -118,6 +119,51 @@ committed tests alone.
 - Retirement now attempts to fail **all queued Future waiters**, even if an
   observer throws during settlement, and preserves physical loan cleanup
   before state-storage zeroization.
+
+### Trusted ActorRuntime turn bridge (new, still host-only)
+
+The runtime now mints `ActorRuntime.NeuronActorTurnProof` only from an
+**admitted physical shared-actor activation or mailbox command**. Its witness
+binds the exact `ActorRef`, carrier/execution context, and an actor-owned
+monotonic message-scope epoch. The epoch advances for startup and every
+mailbox/continuation envelope, **including multiple messages in one throughput
+batch**. A captured proof is invalid at the next message, off-carrier, after
+STOP, or when another actor attempts to use it. The epoch fails closed on
+overflow. The proof retains **no mailbox payload** or sender references, and
+the fast path allocates no additional per-envelope identity object.
+
+The package-private `NeuronActorScalarTurnStateV0` is an opt-in trusted host
+bridge, not a guest or public supervisor API. Construction requires a live
+neuron turn proof, and the state generation is derived from the runtime-minted
+`ActorRef.generation()`, never a caller-supplied epoch. Each scope read/write
+revalidates the exact actor turn before asking the scalar arbiter to access
+its private fields. `tryRead()` / `tryWrite()` use **nonparking** immediate
+loans and return `null` on fair queue contention; no actor carrier joins an
+unresolved Future or sleeps on a reader/writer lock. A retained scope from a
+previous message cannot be reused, and loan cleanup is allowed after the
+physical turn has exited.
+
+`NeuronActorTurnProofRuntimeTest` and `NeuronActorScalarTurnStateV0Test`
+add four tests against the **real** `ActorRuntime` (not a mocked actor):
+startup proof minting, same-batch message fencing, off-carrier/cross-actor
+denial, stable actor-derived generation, read/write initialization and the
+expected host scalar arithmetic result `2 * 3 + 1 = 7`. This result is
+**HOST-ONLY**, not compiled `.atto` inference and not an AOT receipt.
+
+**Critical missing integration:** the compiler does not yet emit this bridge,
+and the actor lifecycle does not yet automatically retire its
+`NeuronActorScalarTurnStateV0` when STOP, restart or force cancellation wins.
+A host must currently call `close()` and wait for all physical loans to
+drain before zeroization. A physical STOP racing an individual scalar
+read/write also needs a unified lifecycle/state-operation linearization
+proof before guest execution is permitted. These boundaries remain blocked
+by `NEURON_STATE_MIR_UNSUPPORTED`. Do not treat turn-proof tests as a
+guest compiler or deterministic memory-reclamation result.
+
+The targeted suite now has **51 committed JUnit methods** across six test
+classes, including the four real-runtime host tests. At the time of this
+edit the exact-head GitHub-hosted test admission remains at
+`steps=null`; source tests are not executed receipts.
 
 ### Guest/compiler next implementation slice
 
