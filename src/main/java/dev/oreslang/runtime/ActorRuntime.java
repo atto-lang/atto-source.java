@@ -3019,6 +3019,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRef<M> ref;
         private ActorPhysicalHotRouteIngressFence.Permit permit;
         private final AtomicReference<Object> logicalOwner = new AtomicReference<>();
+        /** Captures every already-accepted raw physical message at route claim. */
+        private volatile OresFuture<Void> preclaimDirectDrain;
 
         private HotRoutePhysical(ActorRef<M> ref) {
             this.ref = Objects.requireNonNull(ref, "physical ActorRef");
@@ -3043,6 +3045,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
+        public boolean preclaimDirectMailDrained() {
+            OresFuture<Void> drain = preclaimDirectDrain;
+            return drain != null && drain.isDone()
+                    && !drain.isCompletedExceptionally();
+        }
+
+        @Override
         public boolean readyForPublication() {
             ActorCell<?> cell = actors.get(ref.id());
             if (cell == null || cell.ref != ref) return false;
@@ -3051,7 +3060,8 @@ public final class ActorRuntime implements AutoCloseable {
                         && !permit.retired() && !cell.stopped.get()
                         && !cell.finalized && !cell.forceKillFenced
                         && ref.readyFuture.isDone()
-                        && !ref.readyFuture.isCompletedExceptionally();
+                        && !ref.readyFuture.isCompletedExceptionally()
+                        && preclaimDirectMailDrained();
             }
         }
 
@@ -3113,6 +3123,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
             endpoint.bind(cell.hotRouteIngress.claim());
         }
+        // The ingress seal linearized under the actor cell monitor above;
+        // no new raw send can enter. Capture the already-admitted physical
+        // mailbox watermark AFTER claim, outside that monitor to avoid
+        // guest/user Future callbacks under a lifecycle lock. A failed
+        // barrier leaves the actor permanently sealed, never falsely safe.
+        endpoint.preclaimDirectDrain = ref.drain();
         return endpoint;
     }
 
