@@ -63,6 +63,8 @@ final class ActorManagedPrimitiveRegionCodeWorkerTest {
                         var region = ctx.createManagedPrimitiveStateRegion(8, 2)
                                 .orElseThrow(() -> new AssertionError(
                                         "structured code worker needs managed region"));
+                        assertTrue(ctx.createManagedPrimitiveStateRegion(8, 2).isEmpty(),
+                                "one initialization cannot mint a second mutable field layout");
                         var field = region.declareOwnerLongField("balance", 5L);
                         var state = new CodeState(ctx.self().id(), region, field);
                         stateRef.set(state);
@@ -75,6 +77,8 @@ final class ActorManagedPrimitiveRegionCodeWorkerTest {
                             ActorRuntime.ActorContext<Object> ctx) {
                         var state = assertInstanceOf(CodeState.class, raw);
                         assertEquals(ctx.self().id(), state.ownerActorId());
+                        assertTrue(ctx.createManagedPrimitiveStateRegion(8, 2).isEmpty(),
+                                "mailbox turns must not mint a new shared field layout");
                         switch (mail.value().toString()) {
                             case "read" -> observed.set(
                                     state.region().readOwnerLongField(state.balance()));
