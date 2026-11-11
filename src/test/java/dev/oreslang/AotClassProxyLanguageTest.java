@@ -288,6 +288,26 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void rejectsTargetEscapeHiddenBehindTypeAliases() {
+        Ast.TypeAliasDecl alias = new Ast.TypeAliasDecl("AliasFoo", List.of(),
+                Ast.TypeRef.simple("Foo"));
+        Ast.TypeRef nested = new Ast.TypeRef("Option",
+                List.of(Ast.TypeRef.simple("AliasFoo")), false);
+        for (Ast.TypeRef result : List.of(Ast.TypeRef.simple("AliasFoo"), nested)) {
+            Ast.MethodDecl method = proxySurfaceMethod(result, List.of(), List.of());
+            Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(),
+                    List.of(), List.of(method));
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("first", List.of(alias, klass))));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of("Foo")));
+            assertTrue(error.getMessage().contains("ownership/borrow"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void rejectsTargetIdentityEscapeViaDirectAndNestedReturnTypes() {
         Ast.TypeRef target = Ast.TypeRef.simple("Foo");
         Ast.TypeRef nested = new Ast.TypeRef("Option", List.of(target), false);
