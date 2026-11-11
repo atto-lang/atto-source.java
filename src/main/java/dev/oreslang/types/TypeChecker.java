@@ -171,9 +171,8 @@ public final class TypeChecker {
                 }
                 if (declaration instanceof Ast.StandaloneActorDecl actor) {
                     throw new IllegalArgumentException(
-                            "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: '" + actor.name()
-                                    + "' parsed with receiver binding '" + actor.receiverName()
-                                    + "' but requires checked actor context, mailbox dispatch, "
+                            "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: declared actor '" + actor.name()
+                                    + "' requires checked actor context, mailbox dispatch, "
                                     + "state ownership and generation-fenced runtime lowering");
                 }
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
