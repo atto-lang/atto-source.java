@@ -1760,10 +1760,23 @@ public final class Parser {
     private boolean looksLikeDeclaredActorHead() {
         if (!isContextualIdentifier("declare")) return false;
         int candidate = current + 1;
-        while (candidate < tokens.size()
-                && (tokens.get(candidate).type() == PUB
-                    || tokens.get(candidate).type() == PRIVATE)) {
-            candidate++;
+        // Route malformed actor-modifier combinations through the actor gate
+        // rather than through the unrelated 'declare type' forward parser.
+        // This is a LOOKAHEAD ONLY; parseModifiers still validates duplicates.
+        while (candidate < tokens.size()) {
+            Token token = tokens.get(candidate);
+            if (token.type() == PUB || token.type() == PRIVATE
+                    || token.type() == ASYNC || token.type() == SUSPENDS
+                    || token.type() == GENERATOR || token.type() == NLEX
+                    || token.type() == TRAP || token.type() == STATIC
+                    || token.type() == ABSTRACT || token.type() == UNTRUSTED
+                    || (token.type() == IDENT
+                        && (token.lexeme().equals("shared")
+                            || token.lexeme().equals("structural")))) {
+                candidate++;
+            } else {
+                break;
+            }
         }
         return candidate < tokens.size() && tokens.get(candidate).type() == ACTOR;
     }
