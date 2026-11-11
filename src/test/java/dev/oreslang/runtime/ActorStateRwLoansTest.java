@@ -644,4 +644,15 @@ final class ActorStateRwLoansTest {
         }
     }
 
+
+    @Test
+    void rawStateRwArbiterConstructionIsNotPublicGuestAuthority() {
+        var constructors = ActorStateRwLoans.class.getDeclaredConstructors();
+        assertEquals(2, constructors.length);
+        for (var ctor : constructors) {
+            assertFalse(java.lang.reflect.Modifier.isPublic(ctor.getModifiers()),
+                    "only trusted runtime-package code may construct a physical RW arbiter");
+        }
+    }
+
 }
