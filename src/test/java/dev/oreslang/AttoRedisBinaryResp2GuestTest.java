@@ -292,11 +292,11 @@ final class AttoRedisBinaryResp2GuestTest {
                     command("GET", b),
                     command("QUIT")));
             expect(client, cat(
-                    ascii("+OK\\r\\n"), ascii("+OK\\r\\n"),
+                    ascii("+OK\r\n"), ascii("+OK\r\n"),
                     bulk(ascii("a")), bulk(ascii("bb")),
-                    ascii(":1\\r\\n"), bulk(ascii("bb")),
-                    ascii("+OK\\r\\n"), bulk(ascii("ccc")),
-                    bulk(ascii("bb")), ascii("+OK\\r\\n")),
+                    ascii(":1\r\n"), bulk(ascii("bb")),
+                    ascii("+OK\r\n"), bulk(ascii("ccc")),
+                    bulk(ascii("bb")), ascii("+OK\r\n")),
                     "fingerprint collisions and recycled slots must not alias binary keys");
             assertClosed(client);
         });
