@@ -97,6 +97,36 @@ final class SupervisorEscrowDataAdmissionRaceStandalone {
         reject(() -> overflow.beginDataAdmission(2, 1),
                 "exhausted counter permitted more DATA");
 
+        // Atomic inherited child publication: the pure ledger may revoke
+        // ONLY a never-published child with no terminal, DATA or descendants.
+        var publication = new SupervisorFailureEscrowV1();
+        publication.registerRoot(1, 1);
+        publication.registerChild(2, 1, 1);
+        publication.registerChild(3, 2, 1);
+        publication.rollbackUnpublishedChild(3, 2, 1);
+        require(!publication.snapshot().containsKey(3L),
+                "aborted child reservation remained visible");
+        require(!publication.mayAdmit(3, 1),
+                "an aborted child acquired stale DATA authority");
+        publication.registerChild(4, 2, 1);
+        publication.registerChild(5, 4, 1);
+        reject(() -> publication.rollbackUnpublishedChild(4, 2, 1),
+                "registered descendant did not prevent parent rollback");
+        require(publication.snapshot().containsKey(4L)
+                        && publication.snapshot().containsKey(5L),
+                "failed parent rollback silently erased a registered descendant");
+        publication.rollbackUnpublishedChild(5, 4, 1);
+        publication.rollbackUnpublishedChild(4, 2, 1);
+        require(!publication.snapshot().containsKey(4L)
+                        && !publication.snapshot().containsKey(5L),
+                "bottom-up unpublished child rollback left CONTROL nodes");
+        publication.registerChild(6, 2, 1);
+        publication.fail(6);
+        reject(() -> publication.rollbackUnpublishedChild(6, 2, 1),
+                "failed actor terminal CONTROL notice erased by rollback");
+        require(publication.pendingCount() == 1,
+                "failed actor terminal CONTROL notice not retained");
+
         final int rounds = 16;
         final int workers = 8;
         final int perWorker = 512;
