@@ -66,6 +66,7 @@ final class PackageNamespaceBuildTest {
         assertEquals("src/shop/cart.atto", build.sourceUnits().getFirst());
         var key = new ActorMethodIndex.ActorKey("shop-app@0.1.0", "shop", "Cart");
         assertTrue(build.actorMethods().hasActor(key));
+        assertTrue(build.actorMethods().actor(key).publicNominalWitness());
         assertEquals("src/shop/cart.atto", build.actorMethods().declaringUnit(key));
         var method = build.actorMethods().method(new ActorMethodIndex.MethodKey(key, "count", 0));
         assertNotNull(method);
@@ -181,6 +182,21 @@ final class PackageNamespaceBuildTest {
         assertTrue(index.hasActor(other));
         assertFalse(index.hasActor(shop));
         assertNull(index.method(new ActorMethodIndex.MethodKey(shop, "count", 0)));
+    }
+
+    @Test
+    void privateActorCannotBeClaimedAsPublicNominalContractWitness() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        write(root, "src/other/private.atto", """
+                namespace other;
+                define actor PrivateWorker as
+                  pub count(): int { return 1; }
+                end
+                """);
+        var index = compiler.build().actorMethods();
+        var actor = new ActorMethodIndex.ActorKey("shop-app@0.1.0", "other", "PrivateWorker");
+        assertTrue(index.hasActor(actor));
+        assertFalse(index.actor(actor).publicNominalWitness());
     }
 
     @Test
