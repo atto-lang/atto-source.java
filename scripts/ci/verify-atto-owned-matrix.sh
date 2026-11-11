@@ -9,7 +9,7 @@ check_ledger() {
   [[ -f "$file" && ! -L "$file" ]] || { reject "missing exit for $label/$entry"; return 1; }
   [[ "$(cat "$file")" == "$expected_rc" ]] || { reject "wrong exit for $label/$entry"; return 1; }
   for suffix in stdout stderr; do
-    [[ -f "$d/$label-$entry.$suffix" && ! -L "$d/$label-$entry.$suffix" ]] ||
+    [[ -f "$d/$entry-$label.$suffix" && ! -L "$d/$entry-$label.$suffix" ]] ||
       { reject "missing output stream for $label/$entry"; return 1; }
   done
 }
@@ -17,17 +17,18 @@ check_cases() {
   local d="$1" demo="$2" rc out err name file entry pattern
   [[ -d "$d" && ! -L "$d" ]] || { reject "receipt directory absent"; return 1; }
   [[ -f "$d/cases.tsv" && ! -L "$d/cases.tsv" ]] || { reject "case ledger absent"; return 1; }
-  local expected
-  expected="$(printf 'case\tphase\texit\tverdict\n'
+  # Byte-exact comparison, including final newline. Command substitution
+  # strips trailing newlines and otherwise admits an appended blank ledger row.
+  cmp -s "$d/cases.tsv" <(
+    printf 'case\tphase\texit\tverdict\n'
     for name in linked-function linked-module-class ownership-valid; do
       printf '%s\tcheck\t0\tPASS\n' "$name"
       printf '%s\tguest\t0\tPASS\n' "$name"
     done
     for name in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
       printf '%s\tcheck\t1\tPASS\n' "$name"
-    done)"
-  [[ "$(cat "$d/cases.tsv")" == "$expected" ]] ||
-    { reject "case ledger missing, duplicate, reordered or forged status"; return 1; }
+    done
+  ) || { reject "case ledger missing, duplicate, reordered or forged status"; return 1; }
   for name in linked-function linked-module-class ownership-valid; do
     check_ledger "$d" "$name" check 0 || return 1
     check_ledger "$d" "$name" guest 0 || return 1
