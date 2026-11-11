@@ -134,10 +134,11 @@ public final class PackageNamespaceBuild {
         roots.sort((a, b) -> a.toString().compareTo(b.toString()));
         for (Path declared : roots) {
             Path lexical = declared.toAbsolutePath().normalize();
-            if (!lexical.startsWith(projectRoot) || Files.isSymbolicLink(lexical)) {
+            if (!lexical.startsWith(projectRoot)) {
                 throw new IllegalArgumentException(
                         "source root escapes package or is a symlink: " + declared);
             }
+            assertNoSymbolicSegments(lexical);
             if (!Files.isDirectory(lexical, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("source root is not an ordinary directory: " + declared);
             }
@@ -196,7 +197,13 @@ public final class PackageNamespaceBuild {
         LinkedHashMap<String, String> result = new LinkedHashMap<>();
         long total = 0;
         for (Map.Entry<String, Path> source : discovered.entrySet()) {
+            assertNoSymbolicSegments(source.getValue());
+            if (!source.getValue().toRealPath().startsWith(projectRoot)) {
+                throw new IllegalArgumentException(
+                        "package source resolves outside manifest project: " + source.getKey());
+            }
             byte[] bytes = boundedRead(source.getValue());
+            assertNoSymbolicSegments(source.getValue());
             total += bytes.length;
             if (total > MAX_PACKAGE_SOURCE_BYTES) {
                 throw new IllegalArgumentException("package source byte quota exceeded");
@@ -220,6 +227,21 @@ public final class PackageNamespaceBuild {
             return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
         } catch (java.security.NoSuchAlgorithmException unavailable) {
             throw new IllegalStateException("SHA-256 required for manifest binding", unavailable);
+        }
+    }
+
+    private void assertNoSymbolicSegments(Path target) {
+        Path normalized = target.toAbsolutePath().normalize();
+        if (!normalized.startsWith(projectRoot)) {
+            throw new IllegalArgumentException("path escapes package source root: " + target);
+        }
+        Path cursor = projectRoot;
+        for (Path part : projectRoot.relativize(normalized)) {
+            cursor = cursor.resolve(part);
+            if (Files.isSymbolicLink(cursor)) {
+                throw new IllegalArgumentException(
+                        "symlinked package source path component: " + cursor);
+            }
         }
     }
 
