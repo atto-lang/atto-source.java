@@ -25,6 +25,25 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Explicit AttoLang strict-v1 *front-end* admission for AOT build pipelines.
+     * It emits a checked AST, not native code or a guest-AOT proof. The caller
+     * must still use an AOT backend and verify a program-specific executable.
+     */
+    public static Ast.Program parseAndTypeCheckStrictAtto(String source) {
+        Ast.Program program = Parser.parseStrictAtto(source);
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program, true);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /** Strict source-profile front end for closed-world build optimization. */
+    public static TreeShaker.Result compileForBuildStrictAtto(
+            String source, BuildOptions options) {
+        return TreeShaker.shake(parseAndTypeCheckStrictAtto(source), options);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
