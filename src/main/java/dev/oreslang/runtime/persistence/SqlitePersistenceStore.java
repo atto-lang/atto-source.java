@@ -126,8 +126,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         if(checkpoint>0) {
             boolean witnessed=false;
             try(PreparedStatement q=db.prepareStatement(
-                    "SELECT schema,length(payload),substr(payload,1,1048577) " +
-                    "FROM ops WHERE tenant=? AND actor=? AND slot=? " +
+                    "SELECT schema,length(payload),substr(payload,1,1048577)," +
+                    "epoch,expected FROM ops WHERE tenant=? AND actor=? AND slot=? " +
                     "AND kind=1 AND version=?")) {
                 bindKey(q,id);q.setLong(4,checkpoint);
                 try(ResultSet row=q.executeQuery()) {
@@ -136,6 +136,7 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                         byte[] original=row.getBytes(3);
                         witnessed=row.getInt(1)==snapSchema &&
                                   size==snap.length && original!=null &&
+                                  row.getLong(4)>0 && row.getLong(5)==checkpoint-1 &&
                                   Arrays.equals(original,snap) && !row.next();
                     }
                 }
@@ -437,8 +438,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             // Its exact schema/BLOB must match the original durable operation.
             boolean matched=false;
             try(PreparedStatement q=db.prepareStatement(
-                    "SELECT schema,length(payload),substr(payload,1,1048577) " +
-                    "FROM ops WHERE tenant=? AND actor=? AND slot=? AND kind=1 AND version=?")) {
+                    "SELECT schema,length(payload),substr(payload,1,1048577)," +
+                    "epoch,expected FROM ops WHERE tenant=? AND actor=? AND slot=? AND kind=1 AND version=?")) {
                 bindKey(q,id);q.setLong(4,snapshotVersion);
                 try(ResultSet r=q.executeQuery()){
                     if(r.next()) {
@@ -446,6 +447,7 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                         byte[] original=r.getBytes(3);
                         matched=r.getInt(1)==snapshotSchema &&
                                 size==snapshot.length && original!=null &&
+                                r.getLong(4)>0 && r.getLong(5)==snapshotVersion-1 &&
                                 Arrays.equals(original,snapshot) && !r.next();
                     }
                 }
@@ -455,7 +457,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         List<Event> events=new ArrayList<>();
         try(PreparedStatement q=db.prepareStatement(
             "SELECT e.version,e.schema,length(e.payload),substr(e.payload,1,1048577)," +
-            "o.schema,length(o.payload),substr(o.payload,1,1048577) " +
+            "o.schema,length(o.payload),substr(o.payload,1,1048577)," +
+            "o.epoch,o.expected " +
             "FROM events e LEFT JOIN ops o ON " +
             "o.tenant=e.tenant AND o.actor=e.actor AND o.slot=e.slot " +
             "AND o.version=e.version AND o.kind=2 " +
@@ -480,7 +483,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     long opSize=r.getLong(6);
                     byte[] opPayload=r.getBytes(7);
                     if(r.getInt(5)!=eventSchema || opSize!=eventLength ||
-                       opPayload==null || !Arrays.equals(opPayload,payload))
+                       opPayload==null || r.getLong(8)<1 ||
+                       r.getLong(9)!=next-1 || !Arrays.equals(opPayload,payload))
                         throw new SQLException("UNVERIFIED_ACTOR_EVENT");
                     replayBytes+=payload.length;
                     events.add(new Event(next,eventSchema,payload));
