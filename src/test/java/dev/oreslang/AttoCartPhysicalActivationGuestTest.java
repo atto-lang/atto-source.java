@@ -25,7 +25,7 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -72,7 +72,7 @@ final class AttoCartPhysicalActivationGuestTest {
     private static final class CompiledCartTurn implements AutoCloseable {
         private final Context context;
         private final Value unit;
-        private int quantity;
+        private long quantity;
 
         CompiledCartTurn(String canonicalAtto) throws Exception {
             // Use the production parser + static checker, not a Java numeric
@@ -95,11 +95,11 @@ final class AttoCartPhysicalActivationGuestTest {
             }
         }
 
-        int apply(int delta) {
+        long apply(long delta) {
             // The value comes from executing checked AttoLang bytecode/Truffle,
             // NOT a Java quantity += delta operation.
             quantity = unit.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
-                    "cart_step", quantity, delta).asInt();
+                    "cart_step", quantity, delta).asLong();
             return quantity;
         }
 
@@ -138,9 +138,9 @@ final class AttoCartPhysicalActivationGuestTest {
                         "obtaining a logical address must not start a physical worker");
 
                 AtomicReference<CompiledCartTurn> firstGuest = new AtomicReference<>();
-                AtomicInteger firstLastOutput = new AtomicInteger(-1);
+                AtomicLong firstLastOutput = new AtomicLong(-1);
                 assertEquals(1L, group.reserveNextVirtualActorGeneration(logical));
-                ActorRuntime.ActorRef<Integer> first = group.spawnWorker(
+                ActorRuntime.ActorRef<Long> first = group.spawnWorker(
                         ActorRuntime.ActorKind.SHARED,
                         IsolatePolicy.developer(),
                         actorContext -> {
@@ -150,10 +150,10 @@ final class AttoCartPhysicalActivationGuestTest {
                         });
                 first.getReady().get(5, TimeUnit.SECONDS);
                 group.bindVirtualActorIdentity(first, logical, 1L);
-                first.send(2);
-                first.send(5);
+                first.send(2L);
+                first.send(5L);
                 first.drain().get(5, TimeUnit.SECONDS);
-                assertEquals(7, firstLastOutput.get(),
+                assertEquals(7L, firstLastOutput.get(),
                         "real .atto cart_step must run inside the first physical actor");
                 assertEquals(first.id(), directory.inspect(grant, session, logical)
                         .orElseThrow().physicalActorId().orElseThrow());
@@ -165,9 +165,9 @@ final class AttoCartPhysicalActivationGuestTest {
                         directory.inspect(grant, session, logical).orElseThrow().lifecycle());
 
                 AtomicReference<CompiledCartTurn> secondGuest = new AtomicReference<>();
-                AtomicInteger secondLastOutput = new AtomicInteger(-1);
+                AtomicLong secondLastOutput = new AtomicLong(-1);
                 assertEquals(2L, group.reserveNextVirtualActorGeneration(logical));
-                ActorRuntime.ActorRef<Integer> second = group.spawnWorker(
+                ActorRuntime.ActorRef<Long> second = group.spawnWorker(
                         ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
                         actorContext -> {
                             var guest = new CompiledCartTurn(source);
@@ -184,12 +184,12 @@ final class AttoCartPhysicalActivationGuestTest {
                 assertEquals(second.id(), directory.inspect(grant, session, logical)
                         .orElseThrow().physicalActorId().orElseThrow());
                 assertFalse(group.isCurrentVirtualActorGeneration(logical, 1L));
-                assertThrows(IllegalStateException.class, () -> first.send(99),
+                assertThrows(IllegalStateException.class, () -> first.send(99L),
                         "retired physical actor ref cannot target the new activation");
 
-                second.send(3);
+                second.send(3L);
                 second.drain().get(5, TimeUnit.SECONDS);
-                assertEquals(3, secondLastOutput.get(),
+                assertEquals(3L, secondLastOutput.get(),
                         "guest state was not restored: only stable ID survives this slice");
                 second.gracefulStop().get(5, TimeUnit.SECONDS);
                 second.getDone().get(5, TimeUnit.SECONDS);
@@ -223,7 +223,7 @@ final class AttoCartPhysicalActivationGuestTest {
     void cartGuestCheckedOverflowCannotWrapIntoNewActorState() throws Exception {
         String source = fixture("cart_ops.atto");
         try (CompiledCartTurn cart = new CompiledCartTurn(source)) {
-            assertEquals(Integer.MAX_VALUE, cart.apply(Integer.MAX_VALUE));
+            assertEquals(Long.MAX_VALUE, cart.apply(Long.MAX_VALUE));
             assertThrows(RuntimeException.class, () -> cart.apply(1),
                     "AttoLang checked integer addition must reject overflow");
         }
