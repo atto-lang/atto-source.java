@@ -91,6 +91,34 @@ final class DeclaredActorHardeningTest {
     }
 
     @Test
+    void unmarkedInitCannotClaimCanonicalActorLifecycleSlot() {
+        assertTrue(bindError("declare actor Vault;"
+                + "define mtd (Vault v) init(): void { return; }")
+                .contains("ACTOR_EXTERNAL_REQUIRED"));
+    }
+
+    @Test
+    void unmarkedReceiveCannotClaimCanonicalActorMailboxIngress() {
+        assertTrue(bindError("declare actor Vault;"
+                + "define mtd (Vault v) receive(ActorMail<int> mail): void { return; }")
+                .contains("ACTOR_EXTERNAL_REQUIRED"));
+    }
+
+    @Test
+    void legacyActorDeclarationPreservesUnmarkedReceiveDuringMigration() {
+        Ast.Program program = Parser.parse("define actor Vault as receiver;"
+                + "define mtd (Vault receiver) receive(ActorMail<int> mail): void { return; }");
+        assertEquals(1, ActorReceiverBinder.bind(program).size());
+    }
+
+    @Test
+    void ordinaryUnmarkedMethodsRemainStaticMetadataOnDeclaredActors() {
+        Ast.Program program = Parser.parse("declare actor Vault;"
+                + "define mtd (Vault v) get_status(): int { return 1; }");
+        assertEquals(1, ActorReceiverBinder.bind(program).size());
+    }
+
+    @Test
     void runtimeInitCannotUseUnverifiedStateTypeAsBuilderToken() {
         assertTrue(bindError("declare actor Vault;"
                 + "define external mtd (Vault v) init(): state { return v; }")
