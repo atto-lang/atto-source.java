@@ -329,7 +329,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                         answer=new Receipt(command.opId(),Status.VERSION_CONFLICT,-1,version,0,false,null);
                     } else if (!replayCapacityAvailable(id,command.events.size(),
                                    command.events.stream().mapToLong(e->e.length).sum())) {
-                        throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+                        answer=new Receipt(command.opId(),Status.REPLAY_LIMIT_EXCEEDED,
+                                           -1,version,0,false,null);
                     } else {
                         long first=version+1,last=version+command.events.size();
                         try (PreparedStatement insert=db.prepareStatement(
