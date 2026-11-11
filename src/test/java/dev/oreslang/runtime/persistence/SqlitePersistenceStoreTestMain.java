@@ -82,9 +82,19 @@ public final class SqlitePersistenceStoreTestMain {
                 check(eventOnly.version()==1 && eventOnly.snapshotVersion()==0 &&
                     eventOnly.snapshot().length==0 && eventOnly.events().size()==1 &&
                     eventOnly.events().get(0).payload()[0]==99,"event-first replay invented snapshot");
-                store.grantEpoch("tenant-a","a",1);store.grantEpoch("tenant-a","b",1);
-                var mixed=store.commit(List.of(write("a","conflict",1,0,Kind.SNAPSHOT,1),write("b","first",1,0,Kind.SNAPSHOT,9)));
-                check(mixed.get(0).status()==Status.VERSION_CONFLICT && mixed.get(1).durable(),"cross-actor isolation failure");
+                // a999 already has stream version 2 under epoch 2. A fresh
+                // actor 'a' would not conflict here, so test the established
+                // writer and an unrelated new writer in the SAME batch.
+                store.grantEpoch("tenant-a","b",1);
+                var mixed=store.commit(List.of(
+                    write("a999","conflict",2,0,Kind.SNAPSHOT,1),
+                    write("b","first",1,0,Kind.SNAPSHOT,9)));
+                check(mixed.get(0).status()==Status.VERSION_CONFLICT && mixed.get(1).durable(),
+                    "cross-actor isolation failure");
+                check(store.loadFenced(new Identity("tenant-a","a999","main"),2).version()==2,
+                    "failed writer changed previous actor state");
+                check(store.loadFenced(new Identity("tenant-a","b","main"),1).version()==1,
+                    "independent writer was lost after peer conflict");
             }
             // Corrupt the journal deliberately: never silently restore a
             // partial committed event stream as if it were complete state.
