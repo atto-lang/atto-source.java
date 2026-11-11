@@ -4109,9 +4109,16 @@ public final class ActorRuntime implements AutoCloseable {
                 if (supervisorEscrowBindings.containsKey(ref.id())) {
                     throw new IllegalStateException("actor already has CONTROL authority");
                 }
-                bridge.registerFromRuntime(ref, nodeId, parentId);
-                supervisorEscrowBindings.put(
-                        ref.id(), new SupervisorEscrowBinding(bridge, nodeId, ref.generation()));
+                // The ledger, coordinator ref and runtime binding share one
+                // publish/rollback boundary against supervisor failure.
+                // Returning from registerFromRuntime means all three are visible.
+                bridge.registerFromRuntime(ref, nodeId, parentId, () -> {
+                    SupervisorEscrowBinding value =
+                            new SupervisorEscrowBinding(bridge, nodeId, ref.generation());
+                    if (supervisorEscrowBindings.putIfAbsent(ref.id(), value) != null) {
+                        throw new IllegalStateException("duplicate runtime CONTROL binding");
+                    }
+                });
             }
         }
     }
