@@ -9,7 +9,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -34,8 +33,8 @@ public final class ActorDescriptorIndex {
     /** A runtime-only ABI slot. Never placed into public method lookup. */
     public record Ingress(String name, int arity, String declaringUnit) {
         public Ingress {
-            if (!(name.equals("init") && arity == 0)
-                    && !(name.equals("receive") && arity == 1)) {
+            if (name == null || (!(name.equals("init") && arity == 0)
+                    && !(name.equals("receive") && arity == 1))) {
                 throw new IllegalArgumentException("unsupported actor runtime ingress ABI");
             }
             if (declaringUnit == null || declaringUnit.isBlank()) {
