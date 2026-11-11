@@ -10,12 +10,18 @@ pub routine main(): void {
   }
   stdio.stdout.write("|");
 
-  // The empty literal borrows the element type from the non-empty arm.
+  // Implicit-tail and explicit-return forms have the same branch-local
+  // result; both arms are typechecked, but only the selected arm executes.
   for id in 1..4 {
-    val successors: Array<int> = id eq 3 ? {
+    val implicit: Array<int> = id eq 3 ? {
       []
     } : {
       [id + 1]
+    };
+    val explicit: Array<int> = id eq 3 ? {
+      return []
+    } : {
+      return [id + 1]
     };
   }
 
@@ -38,10 +44,12 @@ pub routine main(): void {
   stdio.stdout.write(selected);
   stdio.stdout.write("|");
 
-  val scoped: int = {
+  val scoped: int = true ? {
     val x = 20;
     val y = 22;
-    x + y
+    return x + y
+  } : {
+    return 0
   };
   stdio.stdout.write(scoped);
 }
