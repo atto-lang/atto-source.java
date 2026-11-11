@@ -140,6 +140,9 @@ final class VirtualActorTerminalControl {
             notice = new ActorRuntime.VirtualActorTerminalNotice(
                     binding.supervisor(), binding.groupId(), binding.identity(),
                     binding.generation(), actorId, kind, cause.getClass().getName());
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            quarantine(binding);
+            throw fatal;
         } catch (RuntimeException | Error invalidNotice) {
             quarantine(binding);
             return;
@@ -208,6 +211,10 @@ final class VirtualActorTerminalControl {
                     if (!ran) failLane(supervisorId, lane, delivery);
                 }
             });
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            quarantine(delivery.binding);
+            failLane(supervisorId, lane, delivery);
+            throw fatal;
         } catch (RuntimeException | Error admissionFailure) {
             quarantine(delivery.binding);
             failLane(supervisorId, lane, delivery);
@@ -224,6 +231,10 @@ final class VirtualActorTerminalControl {
         try {
             lease = binding.group().beginVirtualActorTerminalDecision(
                     notice.identity(), notice.generation(), notice.actorId());
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            quarantine(binding);
+            finish(supervisorId, lane);
+            throw fatal;
         } catch (RuntimeException | Error rejected) {
             quarantine(binding);
             finish(supervisorId, lane);
@@ -234,6 +245,14 @@ final class VirtualActorTerminalControl {
         try {
             completion = Objects.requireNonNull(
                     binding.handler().apply(notice), "terminal CONTROL handler returned null stage");
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            try {
+                lease.quarantine();
+                lease.close();
+            } finally {
+                finish(supervisorId, lane);
+            }
+            throw fatal;
         } catch (RuntimeException | Error handlerFailure) {
             try {
                 lease.quarantine();
