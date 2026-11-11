@@ -2,7 +2,6 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -19,10 +18,10 @@ import java.util.Set;
  * This proof MUST run before incremental cache reuse, so deleting the
  * last actor witness cannot retain previously accepted namespace state.
  */
-public final class NamespaceContractChecker {
+final class NamespaceContractChecker {
     private NamespaceContractChecker() { }
 
-    public static void validate(Map<String, Ast.Program> sourceUnits) {
+    static void validate(Map<String, Ast.Program> sourceUnits) {
         Map<String, Map<String, Ast.Program>> grouped = namespaces(sourceUnits);
         for (Map.Entry<String, Map<String, Ast.Program>> entry : grouped.entrySet()) {
             validateGroup(entry.getKey(), entry.getValue());
@@ -191,7 +190,7 @@ public final class NamespaceContractChecker {
         }
     }
 
-    public static Map<String, Set<String>> addNamespaceDependencies(
+    static Map<String, Set<String>> addNamespaceDependencies(
             Map<String, Ast.Program> units, Map<String, Set<String>> original) {
         Map<String, Set<String>> result = new LinkedHashMap<>();
         for (Map.Entry<String, Set<String>> entry : original.entrySet()) {

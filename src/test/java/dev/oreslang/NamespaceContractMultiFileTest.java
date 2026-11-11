@@ -2,7 +2,6 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
-import dev.oreslang.compiler.NamespaceContractChecker;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -37,6 +36,7 @@ final class NamespaceContractMultiFileTest {
     private static final String FUNCTION = """
             namespace shop;
             pub fnc tick(int amount): int { return amount; }
+            pub fnc main(): int { return 42; }
             """;
 
     private static Map<String, String> complete() {
@@ -250,6 +250,56 @@ final class NamespaceContractMultiFileTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(sources));
         assertTrue(error.getMessage().contains("supports only actor and fnc requirements"));
+    }
+
+    @Test
+    void ordinaryClassCannotImpersonateNominalActorAcrossFiles() {
+        Map<String, String> sources = complete();
+        sources.put("shop/cart.atto", """
+                namespace shop;
+                pub define class Cart as
+                end
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("missing public non-generic actor"));
+    }
+
+    @Test
+    void namespaceActorAndFieldWithSamePublicNameCannotCoexist() {
+        Map<String, String> sources = complete();
+        sources.put("shop/field.atto", """
+                namespace shop;
+                pub val int Cart = 1;
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("duplicate runtime value"));
+    }
+
+    @Test
+    void changedPublicFunctionParameterTypeInvalidatesContract() {
+        Map<String, String> sources = complete();
+        sources.put("shop/tick.atto", FUNCTION.replace(
+                "tick(int amount)", "tick(String amount)")
+                .replace("return amount;", "return 42;"));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("incompatible parameter"));
+    }
+
+    @Test
+    void ordinaryModuleCannotProvideNamespaceRootFunction() {
+        Map<String, String> sources = complete();
+        sources.put("shop/tick.atto", """
+                namespace shop;
+                define module actions as
+                  pub fnc tick(int amount): int { return amount; }
+                end
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(sources));
+        assertTrue(error.getMessage().contains("missing compatible public fnc"));
     }
 
     @Test
