@@ -61,9 +61,10 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
   scoped `Loan` handles **with no data reference**. Cancelling a pending
   exposed future cancels its physical waiter; a late, undeliverable
   successful loan is closed rather than retained forever.
-- Actor STOP seals admission, revokes unredeemed grants and closes each
-  region's arbiter **outside `ActorCell.lifecycleLock`** so synchronous
-  Future subscribers cannot run while holding the actor lifecycle lock.
+- Actor STOP first seals descendant admission, then revokes unredeemed
+  grants and closes each region's arbiter **outside `ActorCell.lifecycleLock`**
+  so a synchronous, potentially blocked Future subscriber cannot delay
+  descendant STOP protection or run under the actor lifecycle lock.
   `finalizeStopLocked` directly checks every registered region's
   `physicallyRetired()` before calling the existing external
   `stateLoanRetired` predicate or releasing the actor's memory slice.
