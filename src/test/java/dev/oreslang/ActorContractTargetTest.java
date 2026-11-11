@@ -184,13 +184,30 @@ final class ActorContractTargetTest {
                 define contract FooContract for actor as
                   mtd tear_down(): void;
                 end
-                pub define actor Foo implements FooContract as
-                  pub tear_down(): void { return; }
-                end
                 """;
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
         assertTrue(error.getMessage().contains("reserved lifecycle/control/receive hook"));
+    }
+
+    @Test
+    void lifecycleTeardownCannotBePublicEvenWithoutAnActorContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub define actor Foo as
+                          pub tear_down(): void { return; }
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("tear_down is a runtime-only lifecycle hook"));
+    }
+
+    @Test
+    void privateTeardownHookRemainsAdmittedForSupervisorExecution() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub define actor Foo as
+                  tear_down(): void { return; }
+                end
+                """)));
     }
 
     @Test
