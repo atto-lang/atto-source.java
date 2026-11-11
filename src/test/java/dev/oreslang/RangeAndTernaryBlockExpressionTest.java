@@ -220,6 +220,22 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void rejectsNestedBorrowEscapingTernaryArmInCollection() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("""
+                        val Array<int> numbers = new Array<int>();
+                        val escaped = true ? {
+                          [rt borrow numbers]
+                        } : {
+                          [rt borrow numbers]
+                        };
+                        """))));
+        assertTrue(failure.getMessage().contains("nested borrows"),
+                failure::getMessage);
+    }
+
+    @Test
     void rejectsSuspensionInsideDirectlyInvokedTernaryThunks() {
         IllegalArgumentException unsafeThunk = assertThrows(
                 IllegalArgumentException.class,
