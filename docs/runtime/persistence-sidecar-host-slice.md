@@ -344,3 +344,23 @@ Cross-backend source-of-truth: Node conformance now explicitly
 stores `operations.origin_epoch` to reconstruct the same historical
 operation digest. Older Node records missing this epoch are
 quarantined until independently verified migration, not guessed.
+
+### Verified legacy duplicates after checkpoint compaction (2026-11-10)
+
+The JDBC legacy provider now distinguishes missing history from history
+safely compacted behind an authenticated snapshot. Duplicate receipts for
+older events or superseded snapshots require an exact original operation
+identity, a covering snapshot version and verification of the active
+snapshot plus complete post-checkpoint journal in the SAME transaction.
+Missing uncheckpointed or altered still-present events fail closed.
+
+An actor reactivated under a newer fenced epoch may retry the same
+logical operation and receive its historical durable receipt; a stale
+activation cannot. MemoryStore now follows the same logical epoch
+deduplication but NEVER authorizes a durable ACK.
+
+The source JDBC tests cover event compaction, epoch-two dedup,
+superseded snapshots, wrong retry payload, a corrupted active
+checkpoint and MemoryStore parity. The exact-head strict JDK21
+workflow includes the new MemoryStore fixture. These tests are
+AUTHORED / NOT EXECUTED in source CI; brace checks are not compilation.
