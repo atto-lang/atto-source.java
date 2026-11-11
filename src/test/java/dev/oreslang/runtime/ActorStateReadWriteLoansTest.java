@@ -476,6 +476,8 @@ final class ActorStateReadWriteLoansTest {
             assertTrue(second.isCancelled());
             assertEquals(0, state.activeCount(),
                     "cancellation must revoke a reserved loan without waiting for publisher");
+            assertEquals(0, state.pendingPublicationCount(),
+                    "cancelled reserved notification must not remain queued");
             assertEquals(0, state.pendingCount());
             allowPublisher.countDown();
             publisher.join(5_000);
@@ -494,6 +496,51 @@ final class ActorStateReadWriteLoansTest {
 
     @Test void cancellingReservedWriterReleasesCapabilityBeforePublication() throws Exception {
         exerciseCancelOfUnpublishedReservation(true);
+    }
+
+    @Test void cancelledReservationsCannotAccumulatePublicationClosures() throws Exception {
+        long generation = 208L;
+        var state = new ActorStateReadWriteLoans(generation, 2, 1,
+                java.util.List.of("weight"));
+        var firstWriter = state.acquireWriteAsync(new Object(), generation).join();
+        var firstRead = state.acquireReadAsync(new Object(), generation);
+        var firstStarted = new CountDownLatch(1);
+        var releasePublisher = new CountDownLatch(1);
+        firstRead.whenCompleteRuntime((granted, failure) -> {
+            assertNull(failure);
+            granted.close();
+            firstStarted.countDown();
+            try {
+                assertTrue(releasePublisher.await(5, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+
+        Thread publisher = Thread.ofPlatform().start(firstWriter::close);
+        try {
+            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+            for (int iteration = 0; iteration < 256; iteration++) {
+                var exclusive = state.acquireWriteAsync(new Object(), generation).join();
+                var queued = state.acquireReadAsync(new Object(), generation);
+                assertFalse(queued.isDone());
+                exclusive.close(); // reader reserved, but publication globally stalled
+                assertEquals(1, state.activeCount());
+                assertTrue(queued.cancel(false));
+                assertEquals(0, state.activeCount());
+                assertEquals(0, state.pendingPublicationCount(),
+                        "cancelled queued publications cannot accumulate");
+            }
+        } finally {
+            releasePublisher.countDown();
+            publisher.join(5_000);
+            state.close();
+        }
+        assertFalse(publisher.isAlive());
+        assertEquals(0, state.pendingCount());
+        assertEquals(0, state.pendingPublicationCount());
+        assertEquals(0, state.activeCount());
     }
 
     @Test void retirementDuringPublicationNeverReleasesUnpublishedGrantToGuest() throws Exception {
