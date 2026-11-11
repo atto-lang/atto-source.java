@@ -10,7 +10,7 @@ fi
 printf 'SUPERVISOR_TESTED_COMMIT=%s\n' "$actual_head"
 java -version 2>&1 | head -n 3
 javac -version 2>&1
-mvn -version | head -n 4
+mvn -version
 
 verify_blob() {
   local path="$1" expected="$2" actual
