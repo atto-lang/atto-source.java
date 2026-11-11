@@ -1,8 +1,9 @@
-name: Actor ingress exact-head JDK25 JUnit and inline guest gate
+name: Actor ingress and opt-in stateless declare JDK25 JVM gate
 
 # No private-source export, carrier mirror, pull_request_target or write token.
-# This checks static actor declaration + inline mailbox guest execution.
-# It NEVER certifies executable 'declare actor' lowering or backend parity.
+# This checks static declarations, inline mailbox guest execution, and an
+# explicit stateless declared-actor guest prototype. It does not certify
+# stateful/cross-file actor lowering, Native Image or backend parity.
 on:
   pull_request:
     paths:
@@ -68,6 +69,9 @@ jobs:
           printf 'RECEIPT actor_external_pom_blob=%s\n' "$(git hash-object pom.xml)"
           printf 'RECEIPT actor_external_parser_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/parser/Parser.java)"
           printf 'RECEIPT actor_external_binder_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/types/ActorReceiverBinder.java)"
+          printf 'RECEIPT stateless_declared_lowerer_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/compiler/StatelessDeclaredActorLowerer.java)"
+          printf 'RECEIPT actor_source_lifecycle_gate_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/ActorSourceLifecycleGate.java)"
+          printf 'RECEIPT actor_runtime_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java)"
           test "$(git hash-object src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java)" = '74e43e03e7a7b4220279dfd146553deee58714a6'
           test "$(git hash-object src/test/java/dev/oreslang/ActorReceiveIngressGuestExecutionTest.java)" = 'f2e008869c9652dc6beab5461f716e2d487f127e'
           printf 'RECEIPT imported_exact_init_gate_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java)"
