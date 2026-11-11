@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Read-only, source-free GitHub Actions runner-admission evidence collector.
-# Usage: ./diagnose-private-actions-admission.sh OWNER/REPO RUN_ID
+# Usage: bash scripts/diagnose-private-actions-admission.sh OWNER/REPO RUN_ID
 # Requires local `gh auth login` with Actions read permission; org-level
 # policy/runner endpoints additionally require authorized administrator access.
 set -euo pipefail
