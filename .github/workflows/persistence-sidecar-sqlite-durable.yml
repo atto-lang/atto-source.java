@@ -30,7 +30,10 @@ jobs:
           javac -Xlint:all -Werror -d target/persistence-test \
             src/main/java/dev/oreslang/runtime/persistence/BatchPersistenceSidecar.java \
             src/main/java/dev/oreslang/runtime/persistence/SqlitePersistenceStore.java \
-            src/test/java/dev/oreslang/runtime/persistence/SqlitePersistenceStoreTestMain.java
+            src/main/java/dev/oreslang/runtime/persistence/SqliteCommandPersistence.java \
+            src/test/java/dev/oreslang/runtime/persistence/SqlitePersistenceStoreTestMain.java \
+            src/test/java/dev/oreslang/runtime/persistence/SqliteCommandIdentityTestMain.java \
+            src/test/java/dev/oreslang/runtime/persistence/SqliteCommandPersistenceTestMain.java
       - name: Run 1000 actor commits, journal restore, epochs, abrupt halt
         run: |
           set -euo pipefail
@@ -39,3 +42,7 @@ jobs:
           sha256sum "$JDBC" "$SLF4J"
           java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
             dev.oreslang.runtime.persistence.SqlitePersistenceStoreTestMain
+          java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
+            dev.oreslang.runtime.persistence.SqliteCommandIdentityTestMain
+          java -ea -cp "target/persistence-test:$JDBC:$SLF4J" \
+            dev.oreslang.runtime.persistence.SqliteCommandPersistenceTestMain
