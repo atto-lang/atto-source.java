@@ -47,7 +47,7 @@ final class TenantIsolateManagerTest {
     @Test
     void actualSourceActorsRunInIndependentTenantContexts() throws Exception {
         try (TenantIsolateManager manager = new TenantIsolateManager(3, 4096)) {
-            var a = manager.open_trusted_tenant("tenant-a", IsolatePolicy.developer());
+            TenantIsolateManager.TenantHandle a = manager.open_trusted_tenant_vm("tenant-a", IsolatePolicy.developer());
             var b = manager.open_trusted_tenant("tenant-b", IsolatePolicy.developer());
             assertEquals(2, manager.tenant_count());
             Source guest = source(TWO_ACTORS, "tenant-counters.ores");
