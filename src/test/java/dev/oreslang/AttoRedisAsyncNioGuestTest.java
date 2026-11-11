@@ -83,19 +83,19 @@ final class AttoRedisAsyncNioGuestTest {
                 }
             }
             assertNotNull(client, "real Atto guest failed to bind NIO2 listener");
-            try (client) {
-                client.setSoTimeout(8000);
+            try (Socket connectedClient = client) {
+                connectedClient.setSoTimeout(8000);
                 byte[] binaryKey = {0, (byte) 0xff, '\r', '\n'};
                 byte[] binaryValue = {0, (byte) 0xfd, 1, '\n', '\r'};
                 byte[] missing = command(ascii("GET"), binaryKey);
-                client.getOutputStream().write(missing);
-                assertArrayEquals(ascii("$-1\r\n"), client.getInputStream().readNBytes(5));
+                connectedClient.getOutputStream().write(missing);
+                assertArrayEquals(ascii("$-1\r\n"), connectedClient.getInputStream().readNBytes(5));
 
                 byte[] insert = command(ascii("SET"), binaryKey, binaryValue);
-                client.getOutputStream().write(insert, 0, 7);
-                client.getOutputStream().flush();
+                connectedClient.getOutputStream().write(insert, 0, 7);
+                connectedClient.getOutputStream().flush();
                 Thread.sleep(30); // Deliberately fragment request at header boundary.
-                client.getOutputStream().write(insert, 7, insert.length - 7);
+                connectedClient.getOutputStream().write(insert, 7, insert.length - 7);
 
                 // Pipeline the remaining commands while the actual Atto actor
                 // owns all Map mutation and message sequencing.
@@ -108,8 +108,8 @@ final class AttoRedisAsyncNioGuestTest {
                         command(ascii("PING")),
                         command(ascii("WAT")),
                         command(ascii("QUIT")));
-                client.getOutputStream().write(pipeline);
-                client.getOutputStream().flush();
+                connectedClient.getOutputStream().write(pipeline);
+                connectedClient.getOutputStream().flush();
 
                 byte[] expected = concat(
                         ascii("+OK\r\n"),
@@ -119,7 +119,7 @@ final class AttoRedisAsyncNioGuestTest {
                         ascii("+PONG\r\n"),
                         ascii("-ERR unsupported command\r\n"),
                         ascii("+OK\r\n"));
-                byte[] replies = client.getInputStream().readNBytes(expected.length);
+                byte[] replies = connectedClient.getInputStream().readNBytes(expected.length);
                 assertArrayEquals(expected, replies,
                         "Atto actor RESP2 binary SET/GET/DEL, missing vs empty, pipeline and QUIT");
             }
