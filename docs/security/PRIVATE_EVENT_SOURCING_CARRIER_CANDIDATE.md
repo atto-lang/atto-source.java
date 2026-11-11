@@ -24,12 +24,12 @@
 - Java host persistence:
   `ores-truffle-oreslang/oreslang-source.java` draft PR #2757.
   Proposed exact SHA when written:
-  `539b8c0d222314b0b071be57926c44971ced7ac5`.
+  `1d918648ffa3b9aba9ad9d72f81c2ca6e24a142f` (tree `cef75701afdd635fbee41cc4d922cd66945828b5`).
   It is a fast-moving draft; re-read the head and tree after any approval.
 - Node host SQLite reference:
   `ores-truffle-oreslang/oreslang-platform-conformance` draft PR #668.
   Proposed exact SHA when written:
-  `fb0ca9ec2c3f0b31620ffdc251d960adb06656cb`.
+  `1c57e1e579f2128bf5800053841f0a09059376f6` (tree `8e5a80f72a06d5082d9eeb124d7da14623cf217e`).
   Also refresh at actual handoff.
 
 Only a **source-owned, approved** publisher may enumerate the source tree,
