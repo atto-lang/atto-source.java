@@ -153,7 +153,8 @@ final class NeuronScalarMirHostModelTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             if (failure.get() != null)
                 throw new AssertionError("host scalar MIR execution model failed", failure.get());
-            assertEquals(7.0, result.get());
+            assertNotNull(result.get(), "host-model forward receipt missing");
+            assertEquals(7.0, result.get().doubleValue());
             assertThrows(SecurityException.class, stateRef.get()::tryRead,
                     "host thread cannot mint a post-STOP actor loan");
             assertTrue(stateRef.get().tryClearAfterQuiescence());
