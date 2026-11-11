@@ -144,7 +144,7 @@ final class SelectBorrowLifetimeTest {
                   }
                   return;
                 }
-                """, "nb select continuation cannot capture borrowed value 'view'");
+                """, "deferred task/continuation cannot capture borrowed value 'view'");
     }
 
     @Test
