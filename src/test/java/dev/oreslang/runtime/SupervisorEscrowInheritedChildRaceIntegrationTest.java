@@ -90,6 +90,82 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
     }
 
     @Test
+    void hostChildAttachmentRaceWithAncestorPanicNeverLosesCONTROLHandle()
+            throws Exception {
+        // Raced host attachment used to publish the ledger node before the
+        // cancellation coordinator had the corresponding physical ActorRef.
+        // A losing attach must not leave a ghost CONTROL node.
+        for (int trial = 0; trial < 12; trial++) {
+            try (ActorRuntime runtime = new ActorRuntime();
+                 ExecutorService control = Executors.newSingleThreadExecutor();
+                 ExecutorService contestants = Executors.newFixedThreadPool(2)) {
+                var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+                var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                        runtime, bridge, control, ref -> false);
+                ActorRuntime.ActorRef<String> parent = runtime.spawnPrivate(
+                        ignored -> (message, turn) -> {
+                            throw new IllegalStateException("racing supervisor PANIC");
+                        });
+                ActorRuntime.ActorRef<String> child = runtime.spawnPrivate(
+                        ignored -> (message, turn) -> { });
+                long parentNode = recovery.attach(parent, null);
+                parent.getReady().get(5, TimeUnit.SECONDS);
+                var raceStart = new java.util.concurrent.CountDownLatch(1);
+                var attachResult = contestants.submit(() -> {
+                    raceStart.await();
+                    try {
+                        recovery.attach(child, parent);
+                        return true;
+                    } catch (IllegalStateException denied) {
+                        return false;
+                    }
+                });
+                var crashResult = contestants.submit(() -> {
+                    raceStart.await();
+                    parent.send("panic");
+                    return null;
+                });
+                raceStart.countDown();
+                crashResult.get(5, TimeUnit.SECONDS);
+                boolean attached = attachResult.get(5, TimeUnit.SECONDS);
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> parent.done().get(5, TimeUnit.SECONDS));
+                int expectedNodes = attached ? 3 : 2;
+                assertEquals(expectedNodes, bridge.snapshot().size(),
+                        "failed host attach left a ghost CONTROL node");
+                if (attached) {
+                    assertTrue(child.awaitTermination(5, TimeUnit.SECONDS),
+                            "attached host child escaped supervisor shutdown");
+                    assertEquals(1, bridge.snapshot().values().stream()
+                            .filter(n -> n.parentId() == parentNode).count());
+                }
+                assertNull(recovery.controlFault(),
+                        "ancestor cancellation saw CONTROL without a registered ActorRef");
+            }
+        }
+    }
+
+    @Test
+    void rejectLateRecoveryInstallationAndDuplicateHostAttachment()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            bridge.attach(actor, null);
+            assertEquals(2, bridge.snapshot().size());
+            assertThrows(IllegalStateException.class, () -> bridge.attach(actor, null));
+            assertEquals(2, bridge.snapshot().size(),
+                    "duplicate host CONTROL registration left a ghost ledger node");
+            assertThrows(IllegalStateException.class,
+                    () -> new SupervisorEscrowSubtreeRecoveryV1(
+                            runtime, bridge, control, ref -> false),
+                    "late recovery coordinator must not inherit untracked actors");
+        }
+    }
+
+    @Test
     void staleAncestorGenerationCannotReserveAChild() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              ExecutorService control = Executors.newSingleThreadExecutor()) {
