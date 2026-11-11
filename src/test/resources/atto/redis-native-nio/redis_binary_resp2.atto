@@ -5,23 +5,10 @@
 // 256 distinct live keys, one loopback client, no persistence or supervision.
 // Binary values/keys use List<int> (0..255); owned Bytes still needs a runtime type.
 
-define class KvCommand as
-  pub final int kind = 0;
-  pub final List<int> key = [];
-  pub final List<int> value = [];
-end
-
-define class KvReply as
-  pub final int kind = 0;
-  pub final List<int> value = [];
-end
-
-define class KvEntry as
-  pub final List<int> key = [];
-  pub final List<int> value = [];
-  pub final bool live = false;
-end
-
+// Source-local actors cannot depend on sibling nominal classes without
+// explicit imports. Use compiler-checked built-in tuples as the initial
+// mailbox wire ABI: Tuple<int, List<int>, List<int>> (command), and
+// Tuple<int, List<int>> (reply). Nominal cross-module contracts follow.
 define class RespReader as
   pub let int phase = 0;
   pub let int argc = 0;
@@ -185,72 +172,103 @@ pub fnc reset_resp2(borrow mut RespReader r): void {
 // immutable byte snapshots is the interim storage index until the real
 // owned Bytes hashing primitive replaces this O(256) scan.
 define actor BinaryKvActor as
-  let mut List<KvEntry> entries;
+  let mut List<List<int>> keys;
+  let mut List<List<int>> values;
+  let mut List<bool> live;
+
   on_start(): void {
-    self.entries = [];
+    self.keys = [];
+    self.values = [];
+    self.live = [];
     return;
   }
 
-  receive(ActorMail<KvCommand> mail): void {
-    val cmd = mail.value;
-    if cmd.kind == 5; do self.end(); return; fi
-    if cmd.kind == 1; do
-      self.send(new KvReply(5, []));
-      return;
-    fi
-    if cmd.kind == 0; do
-      self.send(new KvReply(6, []));
-      return;
-    fi
+  // Actor methods are actor-local and need no ambient file-level helpers.
+  bytes_equal(borrow List<int> left, borrow List<int> right): bool {
+    if left.size != right.size then return false; fi
+    let int i = 0;
+    loop {
+      if i == left.size then return true; fi
+      if left.get(i) != right.get(i) then return false; fi
+      i = i + 1;
+    }
+  }
+
+  clone_bytes(borrow List<int> source): List<int> {
+    let mut List<int> out = [];
+    let int i = 0;
+    loop {
+      if i == source.size then return out; fi
+      out.add(source.get(i));
+      i = i + 1;
+    }
+  }
+
+  emit_reply(int kind, List<int> value): void {
+    self.send((kind, value));
+    return;
+  }
+
+  receive(ActorMail<Tuple<int,List<int>,List<int>>> mail): void {
+    val tuple = mail.value;
+    val int kind = tuple[0];
+    val List<int> key = tuple[1];
+    val List<int> value = tuple[2];
+    if kind == 5; do self.end(); return; fi
+    if kind == 1; do self.emit_reply(5, []); return; fi
+    if kind == 0; do self.emit_reply(6, []); return; fi
 
     let int match_index = -1;
     let int free_index = -1;
     let int i = 0;
     loop {
-      if i == self.entries.size then break; fi
-      val entry = self.entries.get(i);
-      if !entry.live && free_index == -1 then free_index = i; fi
-      if same_bytes(rt borrow entry.key, rt borrow cmd.key); do
+      if i == self.keys.size then break; fi
+      if !self.live.get(i) && free_index == -1 then free_index = i; fi
+      val stored_key = self.keys.get(i);
+      if self.bytes_equal(rt borrow stored_key, rt borrow key); do
         match_index = i;
         break;
       fi
       i = i + 1;
     }
 
-    if cmd.kind == 2; do
-      if match_index == -1; do self.send(new KvReply(0, [])); return; fi
-      val found = self.entries.get(match_index);
-      if !found.live; do self.send(new KvReply(0, [])); return; fi
-      self.send(new KvReply(2, copy_bytes(rt borrow found.value)));
+    if kind == 2; do
+      if match_index == -1; do self.emit_reply(0, []); return; fi
+      if !self.live.get(match_index); do self.emit_reply(0, []); return; fi
+      val stored = self.values.get(match_index);
+      self.emit_reply(2, self.clone_bytes(rt borrow stored));
       return;
     fi
 
-    if cmd.kind == 3; do
-      val replacement = new KvEntry(copy_bytes(rt borrow cmd.key), copy_bytes(rt borrow cmd.value), true);
-      if match_index >= 0; do
-        self.entries.set(match_index, replacement);
-      elseif free_index >= 0; do
-        self.entries.set(free_index, replacement);
-      elseif self.entries.size < 256; do
-        self.entries.add(replacement);
+    if kind == 3; do
+      let int slot = match_index;
+      if slot == -1 then slot = free_index; fi
+      if slot >= 0; do
+        self.keys.set(slot, self.clone_bytes(rt borrow key));
+        self.values.set(slot, self.clone_bytes(rt borrow value));
+        self.live.set(slot, true);
+      elseif self.keys.size < 256; do
+        self.keys.add(self.clone_bytes(rt borrow key));
+        self.values.add(self.clone_bytes(rt borrow value));
+        self.live.add(true);
       else
-        self.send(new KvReply(6, []));
+        self.emit_reply(6, []);
         return;
       fi
-      self.send(new KvReply(1, []));
+      self.emit_reply(1, []);
       return;
     fi
 
-    if cmd.kind == 4; do
-      if match_index == -1; do self.send(new KvReply(4, [])); return; fi
-      val existing = self.entries.get(match_index);
-      if !existing.live; do self.send(new KvReply(4, [])); return; fi
-      self.entries.set(match_index, new KvEntry(copy_bytes(rt borrow existing.key), [], false));
-      self.send(new KvReply(3, []));
+    if kind == 4; do
+      if match_index == -1; do self.emit_reply(4, []); return; fi
+      if !self.live.get(match_index); do self.emit_reply(4, []); return; fi
+      self.live.set(match_index, false);
+      self.values.set(match_index, []);
+      self.emit_reply(3, []);
       return;
     fi
 
-    self.send(new KvReply(6, []));
+    self.emit_reply(6, []);
     return;
   }
 end
@@ -292,13 +310,13 @@ pub fnc encode_bulk(borrow List<int> value): List<int> {
   return out;
 }
 
-pub fnc encode_reply(KvReply reply): List<int> {
-  if reply.kind == 0 then return [36, 45, 49, 13, 10]; fi
-  if reply.kind == 1 then return [43, 79, 75, 13, 10]; fi
-  if reply.kind == 2 then return encode_bulk(rt borrow reply.value); fi
-  if reply.kind == 3 then return [58, 49, 13, 10]; fi
-  if reply.kind == 4 then return [58, 48, 13, 10]; fi
-  if reply.kind == 5 then return [43, 80, 79, 78, 71, 13, 10]; fi
+pub fnc encode_reply(Tuple<int,List<int>> reply): List<int> {
+  if reply[0] == 0 then return [36, 45, 49, 13, 10]; fi
+  if reply[0] == 1 then return [43, 79, 75, 13, 10]; fi
+  if reply[0] == 2 then return encode_bulk(rt borrow reply[1]); fi
+  if reply[0] == 3 then return [58, 49, 13, 10]; fi
+  if reply[0] == 4 then return [58, 48, 13, 10]; fi
+  if reply[0] == 5 then return [43, 80, 79, 78, 71, 13, 10]; fi
   return [45, 69, 82, 82, 32, 117, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100, 13, 10];
 }
 
@@ -313,7 +331,7 @@ pub async routine main(): void {
     if chunk.size == 0; do
       await socket.close_async();
       await listener.close_async();
-      worker.send(new KvCommand(5, [], []));
+      worker.send((5, [], []));
       await worker.get_done();
       return;
     fi
@@ -326,7 +344,7 @@ pub async routine main(): void {
         await socket.write_bytes_async([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]);
         await socket.close_async();
         await listener.close_async();
-        worker.send(new KvCommand(5, [], []));
+        worker.send((5, [], []));
         await worker.get_done();
         return;
       fi
@@ -336,7 +354,7 @@ pub async routine main(): void {
           await socket.write_bytes_async([43, 79, 75, 13, 10]);
           await socket.close_async();
           await listener.close_async();
-          worker.send(new KvCommand(5, [], []));
+          worker.send((5, [], []));
           await worker.get_done();
           return;
         fi
@@ -344,7 +362,7 @@ pub async routine main(): void {
         let List<int> value = [];
         if reader.args.size >= 2 then val selected_key = reader.args.get(1); key = copy_bytes(rt borrow selected_key); fi
         if reader.args.size >= 3 then val selected_value = reader.args.get(2); value = copy_bytes(rt borrow selected_value); fi
-        worker.send(new KvCommand(kind, key, value));
+        worker.send((kind, key, value));
         val output = (await worker.outputs.next()).value.unwrap();
         await socket.write_bytes_async(encode_reply(output.value));
         reset_resp2(rt mut borrow reader);
