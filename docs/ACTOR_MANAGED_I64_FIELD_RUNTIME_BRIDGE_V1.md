@@ -1,6 +1,6 @@
 # AttoLang managed actor `i64` state — first physical field bridge V1
 
-**Status: Java/Graal runtime and source evaluator DRAFT. The 99 focused tests
+**Status: Java/Graal runtime and source evaluator DRAFT. The 100 focused tests
 are authored, not executed. This is a narrow experimental first slice,
 not general source-level actor/supervisor shared-memory support.**
 
@@ -53,6 +53,8 @@ existing tests but is **not used as the source i64 field backing**.
    no source loops and no `tear_down`.
 3. Each declared `i64` slot was initialized before actor READY and
    its value is an **exactly representable signed 64-bit integer**.
+4. The actor is **not UNTRUSTED**; structured untrusted tenants remain
+   isolate-only and receive no process-shared primitive field region.
 
 ...the code executor obtains a region via the restricted
 `ActorContext.createManagedPrimitiveStateRegion` initialization hook,
@@ -66,7 +68,10 @@ then go through that adapter. Bound `i64` members read/update the
 fields keep their preexisting actor-confined layout. `put` takes one
 exclusive owner loan for the entire mutation and returns the actual
 old value. `entrySet` emits a by-value snapshot, not a mutable
-typed-field reference.
+typed-field reference. All bound `i64` values in that snapshot are
+read **under one physical owner READ loan**, not separately between
+competing supervisor writes; entries preserve the original declaration
+order for deterministic AOT layouts and diagnostics.
 
 There is no implicit numeric truncation: `Long`, `Integer`,
 `Short`, `Byte` and `BigInteger.longValueExact()` are accepted;
@@ -96,16 +101,16 @@ Surefire XML counts with zero errors, failures or skips:
 | `ActorStateContainerOwnershipCompilerTest` | 13 |
 | `ActorStateBorrowReturnFenceTest` | 7 |
 | `ActorStateFieldBorrowBoundaryTest` | 9 |
-| `ActorManagedPrimitiveRegionCodeWorkerTest` | 2 |
+| `ActorManagedPrimitiveRegionCodeWorkerTest` | 3 |
 | `ActorManagedI64FieldMapTest` | 1 |
-| **Total authored** | **99** |
+| **Total authored** | **100** |
 
 The new tests exercise actual named canonical storage read by both
 owner and CONTROL; read-only write denial; a foreign-region field
 handle; stale CONTROL view; STOP while an owner updater is physically
 active; exclusive admission for *field registration*; duplicate names;
-structured `ActorCodeExecutor` code-image and manager checks; a free
-code actor denied the managed region; the exact evaluator field
+structured `ActorCodeExecutor` code-image and manager checks; free
+and **untrusted** code actors denied the managed region; the exact evaluator field
 adapter without an old map copy; an overflowing `BigInteger` write
 rejected without changing the cell; and a real `.atto` fixed-width
 `i64` guest program that executes under the legacy unstructured path.
@@ -119,7 +124,7 @@ and root Git tree. `steps=null` is **NOT_EXECUTED**.
 
 ## Next production gates
 
-- Execute all 99 exact-head JUnit/Graal tests; perform a **real
+- Execute all 100 exact-head JUnit/Graal tests; perform a **real
   structured-source-evaluator** end-to-end integration (the two
   structured-worker tests currently use a host code executor or
   package-private evaluator adapter, not a full user-generated
