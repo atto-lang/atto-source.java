@@ -32,6 +32,7 @@ pub define actor Cart;
 // shop/tick.atto
 namespace shop;
 pub fnc tick(int count): int { return count; }
+pub fnc main(): int { return 42; }
 ```
 
 All three files must be included in one
