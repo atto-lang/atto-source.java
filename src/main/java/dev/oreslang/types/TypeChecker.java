@@ -5640,38 +5640,61 @@ public final class TypeChecker {
 
 
     /**
-     * Contextually type an immediately invoked value-pipe lambda. Its single
-     * parameter inherits the EXACT upstream type; it cannot silently mutate,
-     * erase a readonly/borrow capability, or replace the pipeline's type with
-     * Unknown. This is an ordinary lambda invocation, not Future lifting or
-     * actor transport, and all existing effect/ownership passes still run.
+     * Pipeline inputs remain a SINGLE value. A one-parameter lambda binds that
+     * entire value (even if it is a tuple). Two or more parameters explicitly
+     * destructure one statically known Tuple[T1,...,Tn], never a List/Array,
+     * a FixedArray or an implicit multi-value function return. Exact arity and
+     * slot types are checked before the lambda can be invoked.
      */
     private Type inferValuePipelineLambda(
             Ast.LambdaExpr lambda, Type upstream,
             Env parent, Set<String> generics, Type self) {
-        if (lambda.parameters().size() != 1) {
+        final int arity = lambda.parameters().size();
+        if (arity < 1) {
             throw new IllegalArgumentException(
-                    "inline pipeline lambda must accept exactly one parameter");
+                    "inline pipeline lambda must accept at least one parameter");
         }
-        if (upstream == Unknown.INSTANCE) {
+        if (containsUnknown(upstream)) {
             throw new IllegalArgumentException(
                     "inline pipeline lambda requires a statically known upstream type");
         }
-        Ast.Param parameter = lambda.parameters().getFirst();
-        if (parameter.mutable() || parameter.structural()) {
+        final List<Type> inputs;
+        if (arity == 1) {
+            inputs = List.of(upstream);
+        } else if (upstream instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
+            if (tuple.elements().size() != arity) {
+                throw new IllegalArgumentException(
+                        "pipeline tuple arity mismatch: expected " + arity
+                                + " element(s), got " + tuple.elements().size());
+            }
+            inputs = tuple.elements();
+        } else {
             throw new IllegalArgumentException(
-                    "inline pipeline lambda cannot request mutable or structural input");
+                    "multi-parameter pipeline lambda requires a statically known Tuple "
+                            + "of matching arity; received " + upstream);
         }
-        Type declared = parameter.type().name().equals("$infer$")
-                ? upstream : resolveParam(parameter, generics, self);
-        requireReadonlyCapabilityPreserved(upstream, declared, "pipeline lambda input");
-        requireAssignable(upstream, declared, "pipeline lambda input");
-        requireAssignable(declared, upstream, "pipeline lambda input");
 
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
         Env bodyEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
-        bodyEnv.define(parameter.name(), declared, Ast.BindingKind.VAL);
-        defineImplicitArguments(bodyEnv, List.of(declared));
+        List<Type> checkedInputs = new ArrayList<>(arity);
+        for (int i = 0; i < arity; i++) {
+            Ast.Param parameter = lambda.parameters().get(i);
+            if (parameter.mutable() || parameter.structural()) {
+                throw new IllegalArgumentException(
+                        "pipeline lambda parameter " + (i + 1)
+                                + " cannot request mutable or structural input");
+            }
+            Type actual = inputs.get(i);
+            Type declared = parameter.type().name().equals("$infer$")
+                    ? actual : resolveParam(parameter, generics, self);
+            requireReadonlyCapabilityPreserved(
+                    actual, declared, "pipeline lambda input " + (i + 1));
+            requireAssignable(actual, declared, "pipeline lambda input " + (i + 1));
+            requireAssignable(declared, actual, "pipeline lambda input " + (i + 1));
+            checkedInputs.add(declared);
+            bodyEnv.define(parameter.name(), declared, Ast.BindingKind.VAL);
+        }
+        defineImplicitArguments(bodyEnv, checkedInputs);
 
         Map<Env.Binding, Set<String>> initialized = parent.initializationSnapshot();
         Ast.ClassDecl previousClassOwner = currentClassOwner;
