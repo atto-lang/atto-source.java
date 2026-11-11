@@ -86,7 +86,7 @@ pub async routine main(): void {
       // No second mailbox wait for VALUE; status and payload share one turn.
       val output = (await worker.outputs.next()).value.unwrap();
       // Explicitly preserve the typed mailbox payload before tuple indexing.
-      const Tuple<string,string> reply = output.value;
+      const Tuple[string,string] reply = output.value;
       await socket.write_resp2_hex_async(reply[0], reply[1]);
     fi
   }
