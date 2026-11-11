@@ -16,7 +16,13 @@ pinned=verification/otel/pinned
 guest="$pinned/tests/smoke.ores"
 oracle="$pinned/tools/telemetry-check/Cargo.toml"
 output="target/otel/$mode"
+# A caller-supplied local target symlink can silently redirect guest capture
+# outside the checkout; Git status ignores build outputs, so fence it explicitly.
+test ! -L target
+test ! -L target/otel
+test ! -L "$output"
 mkdir -p "$output"
+test ! -L "$output"
 # Candidate output must be produced by THIS invocation, never by a stale run.
 rm -f -- "$output/guest.stdout.jsonl" "$output/guest.stderr.txt" \
   "$output/receipt.txt" "$output/build-info.json"
@@ -60,7 +66,9 @@ case "$mode" in
     java_bin="$JAVA_HOME/bin/java"
     test -x "$java_bin"
     test -s target/classpath.txt
+    test ! -L target/classpath.txt
     test -s target/oreslang-source-0.1.0-SNAPSHOT.jar
+    test ! -L target/oreslang-source-0.1.0-SNAPSHOT.jar
     # Compiler classes and dependency classpath are independent build outputs;
     # hashing the JDK's java launcher does not identify the Oreslang compiler.
     compiler_jar_before="$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)"
@@ -75,6 +83,7 @@ case "$mode" in
     ;;
   aot)
     test -x target/ores-aot
+    test ! -L target/ores-aot
     executable=target/ores-aot
     ( ulimit -f 64; timeout --signal=TERM --kill-after=3s 10s \
       "$executable" --build-info ) > "$output/build-info.json"
@@ -99,9 +108,12 @@ fi
 # The original Rust oracle rejects missing/extra records, malformed JSON,
 # duplicate fields, corruption, all control chars, i64 and span relationships.
 test -s "$output/guest.stdout.jsonl"
+test ! -L "$output/guest.stdout.jsonl"
 test "$(wc -c < "$output/guest.stdout.jsonl")" -le 1048576
+stdout_digest_before="$(sha256sum "$output/guest.stdout.jsonl" | cut -d' ' -f1)"
 cargo +1.95.0 run --quiet --locked --manifest-path "$oracle" -- \
   --check-smoke-output "$output/guest.stdout.jsonl"
+test "$(sha256sum "$output/guest.stdout.jsonl" | cut -d' ' -f1)" = "$stdout_digest_before"
 # Record hashes only. Synthetic guest stdout, not compiler sources, may be
 # retained as a short-lived artifact for independent verifier review.
 {
@@ -119,7 +131,7 @@ cargo +1.95.0 run --quiet --locked --manifest-path "$oracle" -- \
   else
     printf 'native_image_no_fallback=true\n'
   fi
-  printf 'guest_stdout_sha256=%s\n' "$(sha256sum "$output/guest.stdout.jsonl" | cut -d' ' -f1)"
+  printf 'guest_stdout_sha256=%s\n' "$stdout_digest_before"
   printf 'guest_exit=0\n'
   printf 'rust_oracle_exit=0\n'
   printf 'independently_certified=false\n'
