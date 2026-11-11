@@ -157,6 +157,38 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
     }
 
     /**
+     * Enforce replay's hard 10,000-event/16 MiB bounds BEFORE admitting new
+     * command events. Both backends' SQLite writers use BEGIN IMMEDIATE, so
+     * there is no read/insert race across separate JDBC connections.
+     */
+    private boolean replayCapacityAvailable(Identity id,int newEvents,long newBytes)
+            throws SQLException {
+        if(newEvents<1 || newEvents>10000 || newBytes<0 || newBytes>16_777_216L)
+            return false;
+        long checkpoint=0;
+        try(PreparedStatement s=db.prepareStatement(
+                "SELECT snapshot_version FROM state WHERE tenant=? AND actor=? AND slot=?")) {
+            bindId(s,id);
+            try(ResultSet row=s.executeQuery()) {
+                if(row.next()) checkpoint=row.getLong(1);
+            }
+        }
+        if(checkpoint<0)throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        try(PreparedStatement s=db.prepareStatement(
+                "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
+                "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
+            bindId(s,id);s.setLong(4,checkpoint);
+            try(ResultSet row=s.executeQuery()) {
+                if(!row.next())throw new SQLException("ACTOR_JOURNAL_COUNT_UNAVAILABLE");
+                long count=row.getLong(1), bytes=row.getLong(2);
+                if(count<0 || bytes<0)throw new SQLException("INVALID_ACTOR_JOURNAL");
+                return count<=10000L-newEvents &&
+                       bytes<=16_777_216L-newBytes;
+            }
+        }
+    }
+
+    /**
      * Cross-epoch logical-command receipts may outlive compacted event BLOBs,
      * but only behind a *verified* durable snapshot barrier. Never trust the
      * state row's snapshot bytes merely because its version is present.
@@ -295,6 +327,9 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                         answer=new Receipt(command.opId(),Status.VERSION_CONFLICT,-1,version,0,false,null);
                     } else if (command.events.size()>Long.MAX_VALUE-version) {
                         answer=new Receipt(command.opId(),Status.VERSION_CONFLICT,-1,version,0,false,null);
+                    } else if (!replayCapacityAvailable(id,command.events.size(),
+                                   command.events.stream().mapToLong(e->e.length).sum())) {
+                        throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
                     } else {
                         long first=version+1,last=version+command.events.size();
                         try (PreparedStatement insert=db.prepareStatement(
