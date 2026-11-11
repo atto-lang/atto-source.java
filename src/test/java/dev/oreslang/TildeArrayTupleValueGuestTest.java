@@ -22,9 +22,12 @@ final class TildeArrayTupleValueGuestTest {
     void tildeValuesUseExactExistingListAndTupleAstNodes() {
         Ast.ListExpr oldArray = assertInstanceOf(Ast.ListExpr.class, initializer("arr[1, 2, 3]"));
         Ast.ListExpr tildeArray = assertInstanceOf(Ast.ListExpr.class, initializer("~array(1, 2, 3)"));
+        Ast.ListExpr bare = assertInstanceOf(Ast.ListExpr.class, initializer("[1, 2, 3]"));
         assertEquals(oldArray.elements(), tildeArray.elements());
-        assertFalse(oldArray.explicitArrayConstructor());
+        assertEquals(oldArray.elements(), bare.elements());
+        assertTrue(oldArray.explicitArrayConstructor());
         assertTrue(tildeArray.explicitArrayConstructor());
+        assertFalse(bare.explicitArrayConstructor());
         assertEquals(initializer("tuple(1, \"hi\")"), initializer("~tuple(1, \"hi\")"));
         assertInstanceOf(Ast.ListExpr.class, initializer("~array()"));
         assertInstanceOf(Ast.TupleExpr.class, initializer("~tuple()"));
