@@ -72,6 +72,7 @@ final class NeuronActorV0Test {
                 "define neuron isoactor X as end",
                 "define http neuron actor X as end",
                 "define neuron tcp actor X as end",
+                "define neuron untrusted actor X as state { let float weight; } end",
                 "define actor X as state { let float weight; } end",
                 "define neuron actor X as pub forward(float x): float { return x; } state { let float weight; } end"
         };
@@ -106,6 +107,17 @@ final class NeuronActorV0Test {
                 neuron.genericParameters(), neuron.parents(), neuron.interfaces(),
                 neuron.fields(), neuron.constructor(), neuron.methods(),
                 neuron.actorConcurrency(), java.util.List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                neuron.name(), neuron.visibility(), true, neuron.actorKind(),
+                neuron.genericParameters(), neuron.parents(), neuron.interfaces(),
+                neuron.fields(), neuron.constructor(), neuron.methods(),
+                neuron.actorConcurrency(), neuron.stateFields()));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                neuron.name(), neuron.visibility(), false, Ast.ActorKind.UNTRUSTED,
+                neuron.genericParameters(), neuron.parents(), neuron.interfaces(),
+                neuron.fields(), neuron.constructor(), neuron.methods(),
+                neuron.actorConcurrency(), neuron.stateFields()));
+
         Ast.FieldDecl exposed = new Ast.FieldDecl("weight", Ast.Visibility.PUBLIC,
                 Ast.BindingKind.LET, Ast.TypeRef.simple("float"), (Ast.Expr) null);
         assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
