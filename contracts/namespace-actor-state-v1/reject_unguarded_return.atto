@@ -1,5 +1,5 @@
 namespace foo;
-pub declare actor Foo;
+declare pub actor Foo;
 define state on actor Foo as {
     let int x: 5;
 }
