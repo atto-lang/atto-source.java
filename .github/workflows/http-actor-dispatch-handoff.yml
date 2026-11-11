@@ -1,0 +1,45 @@
+name: HTTP actor dispatch-handoff exact-head runtime regression
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - ".github/workflows/http-actor-dispatch-handoff.yml"
+permissions:
+  contents: read
+jobs:
+  http-actor-dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head without stored credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source and clean repository
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "HTTP_ACTOR_DISPATCH_EXACT_SHA=$EXPECTED_SHA"
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+          cache: maven
+      - name: Execute native HTTP host and actor handoff regressions
+        run: |
+          mvn -B -ntp -Dtest=NativeHttpTest test
+      - name: Print Surefire result inventory (never synthesize success)
+        if: always()
+        run: |
+          if test -d target/surefire-reports; then
+            find target/surefire-reports -maxdepth 1 -name 'TEST-*.xml' -print
+          fi
