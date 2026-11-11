@@ -1261,12 +1261,12 @@ public final class Parser {
         // mailbox ownership or supervisor CONTROL rights. Reserve these names
         // at the declaration boundary until the trusted intrinsic protocol
         // registry is integrated with source-visible diagnostic bounds.
-        if (kind == TRAIT && java.util.Set.of(
+        if ((kind == TRAIT || kind == INTERFACE) && java.util.Set.of(
                 "Sendable", "Shareable", "Copy", "Drop",
                 "Receives", "Supervisor", "ActorLifecycle").contains(declaration.name())) {
             throw error(previous(),
-                    "trait '" + declaration.name()
-                    + "' is compiler/runtime-owned; guest trait implementations cannot grant safety authority");
+                    "protocol '" + declaration.name()
+                    + "' is compiler/runtime-owned; guest declarations cannot grant safety authority");
         }
         interfaceKinds.put(declaration, kind);
         return declaration;
