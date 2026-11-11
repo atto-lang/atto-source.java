@@ -317,6 +317,14 @@ public final class ActorReceiverBinder {
                                 + method.actorName() + "'");
             }
             if (target instanceof Ast.ClassDecl klass) {
+                // The local binder has no proven inherited slot linearization.
+                // Fail closed rather than shadowing a parent actor's mailbox method.
+                if (!klass.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "external receiver binding on inherited actor '"
+                                    + module.name() + "." + klass.name()
+                                    + "' requires inherited actor slot coherence");
+                }
                 if (!klass.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "external receiver method on generic actor '"
@@ -355,6 +363,14 @@ public final class ActorReceiverBinder {
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
         String name = method.name();
+        // init is a privileged, one-shot actor bootstrap operation. An external
+        // attachment cannot manufacture a pre-publication state permit, nor
+        // return a raw actor identity through an ordinary callable slot.
+        if (name.equals("init")) {
+            throw new IllegalArgumentException(
+                    "external actor init is reserved for one-shot actor-owned initialization; "
+                            + "namespace receiver methods cannot implement init");
+        }
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
             throw new IllegalArgumentException(
@@ -370,6 +386,8 @@ public final class ActorReceiverBinder {
                     || !method.parameters().getFirst().type().name().equals("ActorMail")
                     || method.parameters().getFirst().type().arguments().size() != 1
                     || method.parameters().getFirst().type().inferArguments()
+                    || method.parameters().getFirst().type().arguments().getFirst().isBorrow()
+                    || method.parameters().getFirst().type().arguments().getFirst().isClosedAggregateType()
                     || !isVoid(method.returnType())) {
                 throw new IllegalArgumentException(
                         "external receive must be private and accept one "
