@@ -33,7 +33,7 @@ final class NeuronActorScalarTurnStateV0Test {
                 ActorRuntime.TurnExecutor.direct())) {
             var actor = runtime.<Integer>spawnShared(() -> {
                 var owned = NeuronActorScalarTurnStateV0.createOnCurrentTurn(
-                        11, 4, 2, List.of("weight", "bias"));
+                        4, 2, List.of("weight", "bias"));
                 stateRef.set(owned);
                 return (message, context) -> {
                     try {
@@ -83,6 +83,8 @@ final class NeuronActorScalarTurnStateV0Test {
             if (failed.get() != null)
                 throw new AssertionError("neuron host initialization failed", failed.get());
             assertNotNull(stateRef.get());
+            assertEquals(actor.generation(), stateRef.get().generation(),
+                    "state epoch must derive from the actual ActorRef");
 
             assertThrows(SecurityException.class, stateRef.get()::tryRead,
                     "host code outside the admitted actor cannot borrow its state");
@@ -90,7 +92,8 @@ final class NeuronActorScalarTurnStateV0Test {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             if (failed.get() != null)
                 throw new AssertionError("neuron envelope-state fencing failed", failed.get());
-            assertEquals(7.0, observed.get());
+            assertNotNull(observed.get());
+            assertEquals(7.0, observed.get().doubleValue());
 
             var state = stateRef.get();
             assertThrows(SecurityException.class, state::tryRead);
@@ -112,7 +115,7 @@ final class NeuronActorScalarTurnStateV0Test {
                 ActorRuntime.TurnExecutor.direct())) {
             var first = runtime.<Integer>spawnShared(() -> {
                 var owned = NeuronActorScalarTurnStateV0.createOnCurrentTurn(
-                        21, 4, 2, List.of("weight"));
+                        4, 2, List.of("weight"));
                 stateRef.set(owned);
                 return (message, context) -> {
                     try {
@@ -132,7 +135,7 @@ final class NeuronActorScalarTurnStateV0Test {
             });
             var second = runtime.<Integer>spawnShared(() -> (message, context) -> {
                 try {
-                    assertEquals(2, message);
+                    assertEquals(Integer.valueOf(2), message);
                     assertNotNull(stateRef.get());
                     assertThrows(SecurityException.class, stateRef.get()::tryRead,
                             "shared actors cannot borrow a sibling's state");
@@ -147,6 +150,7 @@ final class NeuronActorScalarTurnStateV0Test {
             assertTrue(ready.await(5, TimeUnit.SECONDS));
             if (failure.get() != null)
                 throw new AssertionError("owner setup failed", failure.get());
+            assertEquals(first.generation(), stateRef.get().generation());
             second.send(2);
             assertTrue(checked.await(5, TimeUnit.SECONDS));
             assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
