@@ -1,0 +1,224 @@
+package dev.oreslang.compiler;
+
+import dev.oreslang.config.OresProjectConfig;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.ast.Ast;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+
+/**
+ * Manifest-backed, closed-source-set namespace compilation.
+ *
+ * This entrypoint is opt-in in stage one; legacy compile(Map) remains a
+ * caller-supplied ephemeral source-set build. The package build is the only
+ * entrypoint that can make a claim about filesystem/manifest completeness.
+ *
+ * A single instance is tied to one resolved manifest and project root, so
+ * incremental cache state cannot be shared with another package. Source
+ * discovery always rescans the trusted roots before using the cache.
+ */
+public final class PackageNamespaceBuild {
+    public static final int MAX_SOURCE_FILES = 4096;
+    public static final long MAX_FILE_BYTES = 16L * 1024 * 1024;
+    public static final long MAX_PACKAGE_SOURCE_BYTES = 256L * 1024 * 1024;
+
+    private final OresProjectConfig config;
+    private final Path projectRoot;
+    private final String packageIdentity;
+    private final IncrementalCompiler compiler = new IncrementalCompiler();
+
+    public PackageNamespaceBuild(OresProjectConfig config) throws IOException {
+        this.config = java.util.Objects.requireNonNull(config, "project configuration");
+        Path manifest = config.manifestPath().orElseThrow(() ->
+                new IllegalArgumentException(
+                        "namespace package build requires an explicit .atto.pkg.toml manifest"));
+        if (Files.isSymbolicLink(manifest)
+                || !Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("package manifest must be an ordinary file");
+        }
+        Path resolved = config.projectRoot().toAbsolutePath().normalize();
+        if (!Files.isDirectory(resolved, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(resolved)) {
+            throw new IllegalArgumentException("package root must be a non-symlink directory");
+        }
+        projectRoot = resolved.toRealPath();
+        String name = config.projectName().orElseThrow(() ->
+                new IllegalArgumentException("namespace package requires project.name"));
+        String version = config.projectVersion().orElseThrow(() ->
+                new IllegalArgumentException("namespace package requires project.version"));
+        if (!name.matches("[A-Za-z][A-Za-z0-9._-]*")
+                || version.isBlank() || version.indexOf('/') >= 0 || version.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException("invalid manifest package identity");
+        }
+        packageIdentity = name + "@" + version;
+    }
+
+    public String packageIdentity() { return packageIdentity; }
+
+    public synchronized Result build() throws IOException {
+        config.requireStdJavaBackend();
+        Map<String, String> sources = readCompleteSourceSet();
+        if (sources.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "package '" + packageIdentity + "' has no .atto/.ores source files");
+        }
+        // The same parsed source set feeds the registry and the compilation.
+        // No ambient package globals, cross-org classloader state or runtime
+        // actor receiver rights are created by this index.
+        Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            parsed.put(entry.getKey(), Parser.parse(entry.getValue()));
+        }
+        ActorMethodIndex index = ActorMethodIndex.collect(packageIdentity, parsed);
+        IncrementalCompiler.BuildResult compiled = compiler.compile(sources);
+        return new Result(packageIdentity, sources.keySet().stream().sorted().toList(),
+                index, compiled);
+    }
+
+    public record Result(
+            String packageIdentity,
+            List<String> sourceUnits,
+            ActorMethodIndex actorMethods,
+            IncrementalCompiler.BuildResult compilation) {
+        public Result {
+            sourceUnits = List.copyOf(sourceUnits);
+            java.util.Objects.requireNonNull(actorMethods, "actor method index");
+            java.util.Objects.requireNonNull(compilation, "package compilation");
+        }
+    }
+
+    /**
+     * Returns project-relative unit IDs. Never draws witnesses from ambient
+     * ORESLANG_PATH/import_paths or a different manifest; these are imports,
+     * not source owners for the namespace's closed-world proof.
+     */
+    private Map<String, String> readCompleteSourceSet() throws IOException {
+        TreeMap<String, Path> discovered = new TreeMap<>();
+        Map<String, String> foldedIds = new LinkedHashMap<>();
+        ArrayList<Path> roots = new ArrayList<>(config.sourceRoots());
+        roots.sort((a, b) -> a.toString().compareTo(b.toString()));
+        for (Path declared : roots) {
+            Path lexical = declared.toAbsolutePath().normalize();
+            if (!lexical.startsWith(projectRoot) || Files.isSymbolicLink(lexical)) {
+                throw new IllegalArgumentException(
+                        "source root escapes package or is a symlink: " + declared);
+            }
+            if (!Files.isDirectory(lexical, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("source root is not an ordinary directory: " + declared);
+            }
+            if (!lexical.toRealPath().startsWith(projectRoot)) {
+                throw new IllegalArgumentException("source root resolves outside package: " + declared);
+            }
+            Files.walkFileTree(lexical, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (attrs.isSymbolicLink() || Files.isSymbolicLink(dir)
+                            || !dir.toAbsolutePath().normalize().startsWith(projectRoot)) {
+                        throw new IllegalArgumentException(
+                                "symlinked/outside package source directory: " + dir);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isSymbolicLink() || Files.isSymbolicLink(file)) {
+                        throw new IllegalArgumentException(
+                                "symlinked package source entry is forbidden: " + file);
+                    }
+                    String leaf = file.getFileName().toString();
+                    if (!leaf.endsWith(".atto") && !leaf.endsWith(".ores")) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    if (!attrs.isRegularFile() || attrs.size() > MAX_FILE_BYTES) {
+                        throw new IllegalArgumentException(
+                                "package source is not a bounded regular file: " + file);
+                    }
+                    Path relative = projectRoot.relativize(file.toAbsolutePath().normalize());
+                    String id = relative.toString().replace('\\', '/');
+                    if (id.isBlank() || id.startsWith("../")) {
+                        throw new IllegalArgumentException("invalid package source unit ID: " + id);
+                    }
+                    String folded = id.toLowerCase(java.util.Locale.ROOT);
+                    String previousCase = foldedIds.putIfAbsent(folded, id);
+                    if (previousCase != null && !previousCase.equals(id)) {
+                        throw new IllegalArgumentException(
+                                "case-insensitive source unit collision: " + previousCase + " and " + id);
+                    }
+                    Path previous = discovered.putIfAbsent(id, file);
+                    if (previous != null) {
+                        throw new IllegalArgumentException(
+                                "overlapping package source roots include the same unit twice: " + id);
+                    }
+                    if (discovered.size() > MAX_SOURCE_FILES) {
+                        throw new IllegalArgumentException("too many package source files");
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        }
+
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        long total = 0;
+        for (Map.Entry<String, Path> source : discovered.entrySet()) {
+            byte[] bytes = boundedRead(source.getValue());
+            total += bytes.length;
+            if (total > MAX_PACKAGE_SOURCE_BYTES) {
+                throw new IllegalArgumentException("package source byte quota exceeded");
+            }
+            try {
+                CharBuffer decoded = StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .decode(ByteBuffer.wrap(bytes));
+                result.put(source.getKey(), decoded.toString());
+            } catch (CharacterCodingException invalid) {
+                throw new IllegalArgumentException(
+                        "invalid UTF-8 in package source " + source.getKey(), invalid);
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static byte[] boundedRead(Path source) throws IOException {
+        if (Files.isSymbolicLink(source)
+                || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("source changed to symlink/non-regular file: " + source);
+        }
+        try (var channel = Files.newByteChannel(source,
+                Set.<java.nio.file.OpenOption>of(
+                        java.nio.file.StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+             var input = java.nio.channels.Channels.newInputStream(channel);
+             var result = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[16 * 1024];
+            long size = 0;
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                size += count;
+                if (size > MAX_FILE_BYTES) {
+                    throw new IllegalArgumentException("package source byte quota exceeded: " + source);
+                }
+                result.write(buffer, 0, count);
+            }
+            return result.toByteArray();
+        }
+    }
+}
