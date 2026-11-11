@@ -1,0 +1,9 @@
+// Static typed MIR contract only; runtime virtual actor lowering remains disabled.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    handle_state(critical-write |s| -> {
+      s.quantity = s.quantity + n;
+    });
+  end
+end
