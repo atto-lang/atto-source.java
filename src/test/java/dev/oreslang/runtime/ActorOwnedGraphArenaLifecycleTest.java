@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
@@ -34,6 +36,41 @@ final class ActorOwnedGraphArenaLifecycleTest {
         assertEquals(3, drops.get());
         assertEquals(1, callbacks.get());
         assertThrows(IllegalStateException.class, () -> graph.borrow(reused));
+    }
+
+    @Test
+    void reverseConstructionOrderSurvivesPhysicalSlotReuse() {
+        var drops = new ArrayList<Integer>();
+        var graph = new ActorOwnedGraphArena<AutoCloseable>(4, 2, () -> {}, g -> {});
+        var first = graph.add(() -> () -> drops.add(1));
+        var second = graph.add(() -> () -> drops.add(2));
+        var third = graph.add(() -> () -> drops.add(3));
+        graph.link(first, third);
+        graph.link(third, first);
+        graph.erase(second);
+        assertEquals(List.of(2), drops, "explicit erase happens exactly once");
+        var newest = graph.add(() -> () -> drops.add(4));
+        assertEquals(second.slot(), newest.slot(),
+                "the test must prove physical slot reuse");
+        graph.close();
+        graph.close();
+        assertEquals(List.of(2, 4, 3, 1), drops,
+                "actor retirement must drop reverse construction, not physical slot order");
+    }
+
+    @Test
+    void leaseDelayedTeardownPreservesReverseOrder() {
+        var drops = new ArrayList<Integer>();
+        var graph = new ActorOwnedGraphArena<AutoCloseable>(3, 1, () -> {}, g -> {});
+        var first = graph.add(() -> () -> drops.add(10));
+        graph.add(() -> () -> drops.add(20));
+        var lease = graph.borrow(first);
+        graph.retireFromActor();
+        assertTrue(drops.isEmpty(), "live host lease must delay physical drop");
+        lease.close();
+        assertEquals(List.of(20, 10), drops);
+        graph.close();
+        assertEquals(List.of(20, 10), drops, "retirement cannot double drop owners");
     }
 
     @Test
