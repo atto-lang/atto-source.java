@@ -6,6 +6,9 @@ import dev.oreslang.types.ActorReceiverBinder;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -77,6 +80,19 @@ final class NamespaceActorStateAttachmentTest {
                 units(ACTOR, NS + "pub mtd (Foo f) bar(): void { return; }"));
         assertEquals(1, methods.size());
         assertEquals("bar", methods.keySet().iterator().next().name());
+    }
+
+    @Test
+    void physicalThreeFileCorpusParsesAndAttachesToOneNominalActor() throws IOException {
+        Path root = Path.of("contracts", "namespace-actor-state-v1");
+        Map<String, Ast.Program> source = new LinkedHashMap<>();
+        for (String name : new String[] {"actor.atto", "state.atto", "methods.atto"}) {
+            source.put("src/foo/" + name, Parser.parse(Files.readString(root.resolve(name))));
+        }
+        var methodBindings = ActorReceiverBinder.bindSourceSet("demo@1.0.0", source);
+        assertEquals(1, methodBindings.size());
+        assertEquals("Foo", methodBindings.keySet().iterator().next().actor());
+        assertEquals("bar", methodBindings.keySet().iterator().next().name());
     }
 
     @Test
