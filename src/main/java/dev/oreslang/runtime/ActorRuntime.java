@@ -369,6 +369,32 @@ public final class ActorRuntime implements AutoCloseable {
         return proof;
     }
 
+    /**
+     * Bind the one private scalar state region during an authenticated actor
+     * initialization. Guest source cannot call this package-private bridge.
+     * It never uses a user-selected ActorId or fabricated generation.
+     */
+    static void registerNeuronScalarState(
+            NeuronActorTurnProof proof, NeuronActorScalarTurnStateV0 state) {
+        Objects.requireNonNull(proof, "neuron actor turn proof");
+        Objects.requireNonNull(state, "neuron state");
+        if (!proof.validOnCurrentTurn() || !state.matchesOwner(proof)) {
+            throw new SecurityException("neuron state binding requires its actual actor owner");
+        }
+        ActorCell<?> cell = proof.runtime().currentActor.get();
+        if (cell == null) throw new SecurityException("no current neuron actor cell");
+        synchronized (cell.lifecycleLock) {
+            if (!proof.validOnCurrentTurn()
+                    || cell.behavior != null || cell.codeActorState != null) {
+                throw new SecurityException(
+                        "neuron protected state may only attach during actor activation");
+            }
+            if (cell.neuronScalarState != null)
+                throw new IllegalStateException("actor already owns a protected neuron state");
+            cell.neuronScalarState = state;
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
@@ -8474,6 +8500,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** One monotonic scope for activation, then each mailbox command.
          *  Reuse cannot authorize a stale neuron critical-state loan. */
         private long neuronScopeEpoch;
+        /** Opt-in host scalar state: never a guest or supervisor memory reference. */
+        private NeuronActorScalarTurnStateV0 neuronScalarState;
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
@@ -9181,6 +9209,22 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                     return;
                 }
+            }
+            // This host-only scalar bridge never admits queued Futures; it
+            // acquires only immediate loans. Retirement cannot publish guest
+            // callbacks under lifecycleLock. Never zeroize while any holder
+            // still owes its physical close. Incomplete cleanup quarantines
+            // actor state instead of falsely reporting successful reclamation.
+            if (neuronScalarState != null) {
+                neuronScalarState.close();
+                if (!neuronScalarState.tryClearAfterQuiescence()) {
+                    sourceStopCleanupAborted = true;
+                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                            "neuron state loan not physically quiescent at actor finalization"));
+                    lifecycleLock.notifyAll();
+                    return;
+                }
+                neuronScalarState = null;
             }
             finalized = true;
             sourceScheduler = null;
