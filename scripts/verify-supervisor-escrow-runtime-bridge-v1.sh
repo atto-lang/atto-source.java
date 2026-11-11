@@ -11,11 +11,11 @@ verify_blob() {
   fi
 }
 verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java 3cab55b6afcd01377d6f59adf232c29e6f74deaf
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java 5804f70c1e00920c1e09c40693975c35d36ef034
-verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java 58362d91aee2edfb62547ead4dfa5c4f6addb008
-verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java b7a3e71ab15b172a216088d1f98f2fea5bb2d64d
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java ee0c4d9b48fc7664e6985e84e07e2f77a6cec818
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 79c8bf1ec6245ff1f45de04accfc6d8832a7a1e5
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java eb84fea8ce35f786bdae3de8626c784f03cbfbe8
+verify_blob src/main/java/dev/oreslang/runtime/ActorRuntime.java b307f5cbd8c9a460aedd5fd2fbe162784d2fcfbd
+verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java e6849c0d825f8af4b1ac140e5ac65822e49ee1da
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java 6233dcd41db2ee166665b36179e707f149a11064
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 09f2060a6697db2a8af02ea725140b588acb80c8
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 9eb87ba39008840c7a4704e561b2fd94a7dd1fbd
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java 52ba83a7122b74696dc52d00da729403031f769f
 
@@ -25,7 +25,7 @@ bash scripts/verify-supervisor-failure-escrow-v1.sh
 # Compile the actual full ActorRuntime source tree and run real JUnit tests.
 mvn -B -q -Dtest=SupervisorFailureEscrowRuntimeIntegrationTest,SupervisorEscrowSubtreeRecoveryIntegrationTest,SupervisorEscrowAdmissionLinearizationIntegrationTest -DfailIfNoTests=true test
 
-for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:4' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:6'; do
+for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:4' 'SupervisorEscrowSubtreeRecoveryIntegrationTest:5' 'SupervisorEscrowAdmissionLinearizationIntegrationTest:6'; do
   suite="${spec%%:*}"
   count="${spec##*:}"
   report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
@@ -34,4 +34,4 @@ for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowS
     grep -Fq "$metric" "$report" || { echo "BAD_SUREFIRE_METRIC: $suite $metric" >&2; exit 4; }
   done
 done
-echo 'PASS exact-source supervisor runtime bridge: 13 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
+echo 'PASS exact-source supervisor runtime bridge: 15 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
