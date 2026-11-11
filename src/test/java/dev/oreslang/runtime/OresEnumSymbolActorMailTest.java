@@ -136,4 +136,23 @@ final class OresEnumSymbolActorMailTest {
         assertSame(first, ActorRuntime.freeze(first));
     }
 
+
+    @Test void untrustedActorIngressRejectsDirectAndNestedEnumMailBeforeAdmission()
+            throws Exception {
+        OresEnumSymbol red = OresEnumSymbol.declare(UNIT, "Light", CASES).caseNamed("Red");
+        try (var runtime = new ActorRuntime()) {
+            var untrusted = runtime.<Object>spawnUntrusted(
+                    context -> (mail, actorContext) -> { });
+            untrusted.ready().get(5, TimeUnit.SECONDS);
+            assertThrows(SecurityException.class, () -> untrusted.send(red));
+            assertThrows(SecurityException.class,
+                    () -> untrusted.send(List.of(Map.of("signal", red))),
+                    "nested enum symbols must not bypass tenant export policy");
+            untrusted.send("ordinary-data");
+            untrusted.stop();
+            assertTrue(untrusted.awaitTermination(5, TimeUnit.SECONDS),
+                    "failed admissions must not consume all mailbox/lifecycle credit");
+        }
+    }
+
 }
