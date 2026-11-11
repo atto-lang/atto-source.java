@@ -7622,6 +7622,13 @@ public final class TypeChecker {
         }
         if (noCallback) {
             if (operation.equals("ok")) return new Named("Option", List.of(input));
+            // An unbound None/Ok/Err constructor cannot become a published
+            // nested ADT return type through transpose or flatten. Generic
+            // type variables remain admissible; erased Unknown slots do not.
+            if (containsUnknown(sum)) {
+                throw new IllegalArgumentException(kind + "." + operation
+                        + " requires fully resolved nested ADT type arguments");
+            }
             if (option) {
                 if (operation.equals("flatten")) {
                     if (input instanceof Named inner && inner.name().equals("Option")
