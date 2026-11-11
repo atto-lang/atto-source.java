@@ -4223,7 +4223,8 @@ public final class TypeChecker {
                 // expose Unknown result parameters and bypass direct-call
                 // inference, allowing unsound generic widening.
                 if (Set.of("map", "map_err", "and_then", "or_else",
-                           "filter", "ok_or_else", "unwrap_or_else", "ok_or").contains(member.member())) {
+                           "filter", "ok_or_else", "unwrap_or_else", "ok_or",
+                           "transpose", "flatten").contains(member.member())) {
                     throw new IllegalArgumentException(
                             "Option/Result combinators require a direct call; "
                             + "first-class extraction is not yet type-safe");
