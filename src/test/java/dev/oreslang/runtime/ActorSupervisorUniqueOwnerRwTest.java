@@ -99,4 +99,68 @@ final class ActorSupervisorUniqueOwnerRwTest {
         assertTrue(region.acquireWriteAsync(supervisor).isCompletedExceptionally(),
                 "retired child backing cannot be re-owned by supervisor");
     }
+
+    @Test
+    void sameCarrierSlotCannotAdmitTwoLiveLogicalExecutions() {
+        var first = actor(31, 40, 42, 7);
+        var replacement = actor(32, 40, 42, 7);
+        try (var region = new ActorStateRwLoans(3)) {
+            var held = region.acquireReadAsync(first).join();
+            assertTrue(region.acquireReadAsync(replacement).isCompletedExceptionally(),
+                    "a different logical task may not reuse an occupied physical slot");
+            assertEquals(1, region.activeReaderCount());
+            held.close();
+
+            var second = region.acquireWriteAsync(replacement).join();
+            assertTrue(second.heldBy(replacement));
+            assertEquals(1, region.activeWriterCount());
+            second.close();
+        }
+    }
+
+    @Test
+    void boundedQueueRejectsBargingWithoutDisplacingWaitingWriter() {
+        var reader = actor(41, 51, 42, 7);
+        var writer = actor(42, 52, 42, 7);
+        var lateReader = actor(43, 53, 42, 7);
+        try (var region = new ActorStateRwLoans(1)) {
+            var held = region.acquireReadAsync(reader).join();
+            var waitingWriter = region.acquireWriteAsync(writer);
+            assertFalse(waitingWriter.isDone());
+            assertEquals(1, region.pendingCount());
+
+            var full = region.acquireReadAsync(lateReader);
+            assertTrue(full.isCompletedExceptionally(),
+                    "a full wait queue must not allow a new reader to barge");
+            assertEquals(1, region.pendingCount());
+            held.close();
+
+            var exclusive = waitingWriter.join();
+            assertTrue(exclusive.heldBy(writer));
+            assertEquals(1, region.activeWriterCount());
+            assertEquals(0, region.activeReaderCount());
+            exclusive.close();
+
+            var retry = region.acquireReadAsync(lateReader).join();
+            assertTrue(retry.heldBy(lateReader),
+                    "failed admission must not retain a phantom slot reservation");
+            retry.close();
+        }
+    }
+
+    @Test
+    void priorActorIncarnationNeverAuthorizesNewGeneration() {
+        var original = actor(51, 61, 42, 7);
+        var restarted = actor(52, 62, 42, 8);
+        try (var region = new ActorStateRwLoans(2)) {
+            var first = region.acquireWriteAsync(original).join();
+            first.close();
+            assertTrue(region.acquireReadAsync(restarted).isCompletedExceptionally());
+            assertTrue(region.acquireWriteAsync(restarted).isCompletedExceptionally(),
+                    "the same actor ID with a new epoch is a different allocation authority");
+            var stillOriginal = region.acquireReadAsync(original).join();
+            assertTrue(stillOriginal.heldBy(original));
+            stillOriginal.close();
+        }
+    }
 }
