@@ -84,39 +84,74 @@ public final class ActorMethodIndex {
     public Map<ActorKey, ActorDeclaration> actors() { return declaredActors; }
     public Map<MethodKey, MethodSignature> methods() { return methodSlots; }
 
+    /**
+     * Both in-class actor methods and manifest-bound namespace mtd have
+     * the same nominal method selector. This index is static metadata;
+     * it never certifies the HIR/MIR execution of an external method.
+     */
     static ActorMethodIndex collect(String packageId, Map<String, Ast.Program> units) {
+        return collect(packageId, units,
+                dev.oreslang.types.ActorReceiverBinder.bindSourceSet(packageId, units));
+    }
+
+    static ActorMethodIndex collect(
+            String packageId, Map<String, Ast.Program> units,
+            Map<dev.oreslang.types.ActorReceiverBinder.SourceSlot,
+                    dev.oreslang.types.ActorReceiverBinder.SourceBinding> external) {
         if (packageId == null || packageId.isBlank()) {
-            throw new IllegalArgumentException("actor method index requires a package identity");
+            throw new IllegalArgumentException("actor method index requires package identity");
         }
         Map<ActorKey, ActorDeclaration> actors = new LinkedHashMap<>();
         Map<MethodKey, MethodSignature> slots = new LinkedHashMap<>();
+
+        // Actor identity is indexed before method implementation; source-file
+        // order does not grant or revoke an external receiver method.
         for (Map.Entry<String, Ast.Program> entry : new TreeMap<>(units).entrySet()) {
             Ast.Program program = entry.getValue();
-            if (program.namespace() == null) continue; // no ambient root namespace
+            if (program.namespace() == null) continue;
+            for (Ast.ModuleDecl module : program.modules()) {
+                if (!Parser.ROOT_MODULE.equals(module.name())) continue;
+                for (Ast.Decl decl : module.declarations()) {
+                    ActorKey key;
+                    ActorDeclaration declaration;
+                    if (decl instanceof Ast.DeclaredActorDecl actor) {
+                        key = new ActorKey(packageId, program.namespace(), actor.name());
+                        declaration = new ActorDeclaration(
+                                entry.getKey(), actor.visibility(), false, actor.actorKind());
+                    } else if (decl instanceof Ast.ClassDecl klass
+                            && klass.actorKind() != Ast.ActorKind.NONE) {
+                        key = new ActorKey(packageId, program.namespace(), klass.name());
+                        declaration = new ActorDeclaration(
+                                entry.getKey(), klass.visibility(),
+                                !klass.genericParameters().isEmpty(), klass.actorKind());
+                        if (klass.standaloneBinding() != null) {
+                            throw new IllegalArgumentException(
+                                    "unlowered standalone actor cannot enter actor method index");
+                        }
+                    } else {
+                        continue;
+                    }
+                    if (actors.putIfAbsent(key, declaration) != null) {
+                        throw new IllegalArgumentException(
+                                "ambiguous nominal actor '" + key.actorName()
+                                        + "' in namespace '" + key.namespace() + "'");
+                    }
+                }
+            }
+        }
+
+        for (Map.Entry<String, Ast.Program> entry : new TreeMap<>(units).entrySet()) {
+            Ast.Program program = entry.getValue();
+            if (program.namespace() == null) continue;
             for (Ast.ModuleDecl module : program.modules()) {
                 if (!Parser.ROOT_MODULE.equals(module.name())) continue;
                 for (Ast.Decl decl : module.declarations()) {
                     if (!(decl instanceof Ast.ClassDecl klass)
                             || klass.actorKind() == Ast.ActorKind.NONE) continue;
-                    ActorKey actor = new ActorKey(
-                            packageId, program.namespace(), klass.name());
-                    ActorDeclaration actorDeclaration = new ActorDeclaration(
-                            entry.getKey(), klass.visibility(),
-                            !klass.genericParameters().isEmpty(), klass.actorKind());
-                    if (actors.putIfAbsent(actor, actorDeclaration) != null) {
-                        throw new IllegalArgumentException(
-                                "ambiguous nominal actor '" + klass.name()
-                                        + "' in namespace '" + program.namespace()
-                                        + "' across source units");
-                    }
-                    if (klass.standaloneBinding() != null) {
-                        throw new IllegalArgumentException(
-                                "unlowered standalone actor binding cannot enter method index: "
-                                        + klass.name());
-                    }
+                    ActorKey actor = new ActorKey(packageId, program.namespace(), klass.name());
                     for (Ast.MethodDecl method : klass.methods()) {
                         if (method.isStatic() || CONTROL_METHOD_NAMES.contains(method.name())) {
-                            continue; // lifecycle/CONTROL is not a callable receiver slot
+                            continue;
                         }
                         MethodKey key = new MethodKey(actor, method.name(), method.arity());
                         MethodSignature signature = new MethodSignature(
@@ -131,11 +166,38 @@ public final class ActorMethodIndex {
                                 !method.effects().isEmpty(), method.isAbstract());
                         if (slots.putIfAbsent(key, signature) != null) {
                             throw new IllegalArgumentException(
-                                    "duplicate actor method slot '" + klass.name() + "."
-                                            + method.name() + "' with arity " + method.arity());
+                                    "duplicate actor method slot '" + key + "'");
                         }
                     }
                 }
+            }
+        }
+
+        for (var entry : external.entrySet()) {
+            var sourceKey = entry.getKey();
+            var origin = entry.getValue();
+            ActorKey actor = new ActorKey(sourceKey.packageIdentity(),
+                    sourceKey.namespace(), sourceKey.actor());
+            if (!packageId.equals(actor.packageId()) || !actors.containsKey(actor)) {
+                throw new IllegalArgumentException(
+                        "external method lacks locally proven actor identity: " + sourceKey);
+            }
+            Ast.ExternalActorMethodDecl method = origin.nominalBinding().method();
+            if (CONTROL_METHOD_NAMES.contains(method.name())) {
+                // Runtime/CONTROL hooks never count as a public API witness.
+                continue;
+            }
+            MethodKey key = new MethodKey(actor, method.name(), method.parameters().size());
+            MethodSignature signature = new MethodSignature(
+                    origin.methodUnit(), method.visibility(),
+                    method.parameters().stream().map(Ast.Param::type).toList(),
+                    method.parameters().stream().map(Ast.Param::mutable).toList(),
+                    method.returnType(), false, false, false,
+                    method.parameters().stream().anyMatch(Ast.Param::structural),
+                    false, false);
+            if (slots.putIfAbsent(key, signature) != null) {
+                throw new IllegalArgumentException(
+                        "external actor method overlaps in-class method slot: " + key);
             }
         }
         return new ActorMethodIndex(actors, slots);
