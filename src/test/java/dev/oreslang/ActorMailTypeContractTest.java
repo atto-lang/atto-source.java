@@ -16,7 +16,7 @@ final class ActorMailTypeContractTest {
                     // Mailbox envelopes are read-only; retain that capability
                     // when projecting a payload rather than creating a mutable alias.
                     const String value = mail.value;
-                    val int sequence = mail.sequence;
+                    const int sequence = mail.sequence;
                     const ActorId recipient = mail.recipient;
                     const Option<ActorId> sender = mail.sender;
                     stdio.println(value);
