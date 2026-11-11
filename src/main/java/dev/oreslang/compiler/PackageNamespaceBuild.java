@@ -38,6 +38,7 @@ import java.util.TreeMap;
  */
 public final class PackageNamespaceBuild {
     public static final int MAX_SOURCE_FILES = 4096;
+    public static final int MAX_MANIFEST_BYTES = 1024 * 1024;
     public static final int MAX_VISITED_ENTRIES = 131072;
     public static final int MAX_SOURCE_DEPTH = 64;
     public static final long MAX_FILE_BYTES = 16L * 1024 * 1024;
@@ -61,7 +62,7 @@ public final class PackageNamespaceBuild {
             throw new IllegalArgumentException("package manifest must be an ordinary file");
         }
         manifestPath = manifest.toAbsolutePath().normalize();
-        manifestFingerprint = digest(boundedRead(manifestPath));
+        manifestFingerprint = digest(readManifestBounded(manifestPath));
         Path resolved = config.projectRoot().toAbsolutePath().normalize();
         if (!Files.isDirectory(resolved, LinkOption.NOFOLLOW_LINKS)
                 || Files.isSymbolicLink(resolved)) {
@@ -90,7 +91,7 @@ public final class PackageNamespaceBuild {
         if (Files.isSymbolicLink(manifestPath)
                 || !Files.isRegularFile(manifestPath, LinkOption.NOFOLLOW_LINKS)
                 || !java.util.Arrays.equals(manifestFingerprint,
-                        digest(boundedRead(manifestPath)))) {
+                        digest(readManifestBounded(manifestPath)))) {
             throw new IllegalArgumentException(
                     "package manifest changed during incremental build; reload project configuration");
         }
@@ -112,7 +113,7 @@ public final class PackageNamespaceBuild {
         }
         validatePackageImportProvenance(parsed);
         if (!java.util.Arrays.equals(manifestFingerprint,
-                digest(boundedRead(manifestPath)))) {
+                digest(readManifestBounded(manifestPath)))) {
             throw new IllegalArgumentException(
                     "package manifest changed while reading actor source set");
         }
@@ -368,6 +369,15 @@ public final class PackageNamespaceBuild {
             }
         }
         return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(result));
+    }
+
+    private static byte[] readManifestBounded(Path manifest) throws IOException {
+        byte[] bytes = boundedRead(manifest);
+        if (bytes.length > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException(
+                    "package manifest exceeds 1 MiB hard limit: " + manifest);
+        }
+        return bytes;
     }
 
     private static byte[] digest(byte[] bytes) {
