@@ -2,7 +2,6 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
-import dev.oreslang.compiler.NamespaceContractChecker;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
