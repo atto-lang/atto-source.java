@@ -77,8 +77,23 @@ jobs:
               echo "::error::Nonzero failures/errors in $suite"
               exit 1
             fi
+            # Skipped or disabled suites are NOT executed evidence.
+            if grep -Eq '<testsuite[^>]*skipped="[1-9][0-9]*"' "$report"; then
+              echo "::error::Skipped tests in required suite $suite"
+              exit 1
+            fi
+            if grep -Eq '<skipped([ >])' "$report"; then
+              echo "::error::Skipped test case in required suite $suite"
+              exit 1
+            fi
             printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
           done
+          dispatch_report=target/surefire-reports/TEST-dev.oreslang.AotDispatchGuestV1Test.xml
+          # Two named methods must be present: JIT and JIT-disabled.
+          # A suite with only one executed method is not equivalent evidence.
+          grep -Fq 'name="baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified"' "$dispatch_report"
+          grep -Fq 'name="sameFixtureRunsWithGuestJitDisabledByProfile"' "$dispatch_report"
+          echo 'RECEIPT dispatch_jvm_jit_and_disabled_named_cases=EXECUTED'
           echo 'RECEIPT guest_42=asserted_by_AttoSourceAdmissionTest_and_AttoCacheShapeAdmissionTest'
           echo 'RECEIPT dispatch_virtual_override=asserted_by_AotDispatchGuestV1Test stdout_expected=121020'
           echo 'RECEIPT dispatch_jit_disabled_profile=asserted_by_AotDispatchGuestV1Test'
