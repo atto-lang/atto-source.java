@@ -1312,7 +1312,12 @@ public final class Parser {
                             "interface-member annotations are not represented by the current AST; "
                                     + "only @structural is accepted here and unsupported annotations must not be silently discarded");
                 }
-                String memberName = consumeCallableName("expected interface function name");
+                // Newable may declare an explicitly named factory contract.
+                // Keep `new` reserved as a local identifier and constructor
+                // keyword; only declaration-member names admit this token.
+                String memberName = match(NEW)
+                        ? "new"
+                        : consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
