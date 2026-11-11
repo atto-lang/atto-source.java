@@ -680,7 +680,7 @@ public final class Parser {
         consume(AS, "expected 'as' before actor state fields");
         consume(LBRACE, "expected '{' for attached actor state schema");
         List<Ast.AttachedActorStateField> fields = new ArrayList<>();
-        Set<String> seen = new java.util.HashSet<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
         while (!check(RBRACE) && !check(EOF)) {
             if (!match(LET, VAL)) {
                 throw error(peek(), "attached actor state fields require let or val (no public fields)");
