@@ -8354,6 +8354,9 @@ public final class TypeChecker {
             return left != null && left.equals(right) ? left : null;
         }
         if (expr instanceof Ast.CallExpr call && call.callee() instanceof Ast.NameExpr fn) {
+            // An in-scope callable binding shadows any same-named module function.
+            // Never assign its erased result the global function's scalar width.
+            if (env.lookup(fn.name()) != null) return null;
             Ast.FunctionDecl target = findFunction(fn.name(), call.arguments().size());
             return target == null || !target.genericParameters().isEmpty()
                     ? null : strictNumericName(target.returnType());
