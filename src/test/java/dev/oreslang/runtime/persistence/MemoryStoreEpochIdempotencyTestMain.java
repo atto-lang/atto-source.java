@@ -15,7 +15,7 @@ public final class MemoryStoreEpochIdempotencyTestMain {
     private static Write event(Identity id,String op,long epoch,long expected,int n) {
         return new Write(id,op,epoch,expected,1,Kind.EVENT,new byte[]{(byte)n});
     }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         Identity id=new Identity("t-memory","actor","ledger");
         var memory=new BatchPersistenceSidecar.MemoryStore();
         memory.grantEpoch(id.tenant(),id.actor(),1);
