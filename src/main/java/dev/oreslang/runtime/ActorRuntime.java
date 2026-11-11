@@ -391,6 +391,17 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (cell.neuronScalarState != null)
                 throw new IllegalStateException("actor already owns a protected neuron state");
+            state.installPhysicalDrainListener(() -> {
+                // The final loan close invokes this only AFTER releasing
+                // its own state monitor. Reenter STOP finalization on the
+                // lifecycle monitor without running any guest continuation.
+                synchronized (cell.lifecycleLock) {
+                    if (cell.stopped.get() && cell.activeTurns == 0) {
+                        cell.finalizeStopLocked();
+                    }
+                    cell.lifecycleLock.notifyAll();
+                }
+            });
             cell.neuronScalarState = state;
         }
     }
@@ -9210,17 +9221,14 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
-            // This host-only scalar bridge never admits queued Futures; it
-            // acquires only immediate loans. Retirement cannot publish guest
-            // callbacks under lifecycleLock. Never zeroize while any holder
-            // still owes its physical close. Incomplete cleanup quarantines
-            // actor state instead of falsely reporting successful reclamation.
+            // This host-only bridge admits only immediate loans, with no
+            // queued Future callbacks. STOP retires admission monotonically.
+            // A physical loan outliving the turn delays zeroization/finalize;
+            // its close() notifies us OUTSIDE the state monitor and retries
+            // this lifecycle gate. Never force-release actor-owned memory.
             if (neuronScalarState != null) {
                 neuronScalarState.close();
                 if (!neuronScalarState.tryClearAfterQuiescence()) {
-                    sourceStopCleanupAborted = true;
-                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
-                            "neuron state loan not physically quiescent at actor finalization"));
                     lifecycleLock.notifyAll();
                     return;
                 }
