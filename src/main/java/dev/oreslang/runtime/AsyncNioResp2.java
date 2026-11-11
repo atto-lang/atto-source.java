@@ -105,11 +105,15 @@ final class AsyncNioResp2 {
                         .toUpperCase(Locale.ROOT);
                 args.add(opcode);
             } else {
+                // Measure the temporary byte[] + hex conversion independently of
+                // RESP header scanning. This exposes the cost of the non-Bytes ABI.
+                long hexStarted = CorePerf.start();
                 byte[] payload = new byte[len];
                 ByteBuffer source = bytes.duplicate();
                 source.position(pos);
                 source.get(payload);
                 args.add(HEX.formatHex(payload));
+                CorePerf.end(CorePerf.REDIS_RESP_HEX, hexStarted);
             }
             pos += len + 2;
         }
