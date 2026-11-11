@@ -194,6 +194,80 @@ final class NeuronActorV0Test {
         }
     }
 
+    private static Ast.Program replaceNeuronMethod(Ast.ClassDecl base, Ast.MethodDecl alternate) {
+        java.util.List<Ast.MethodDecl> revised = new java.util.ArrayList<>(base.methods());
+        int replaced = -1;
+        for (int i = 0; i < revised.size(); i++) {
+            if (revised.get(i).name().equals(alternate.name())) {
+                replaced = i;
+                revised.set(i, alternate);
+                break;
+            }
+        }
+        assertTrue(replaced >= 0, "must replace an existing neuron hook");
+        Ast.ClassDecl mutated = new Ast.ClassDecl(
+                base.name(), base.visibility(), base.isAbstract(), base.actorKind(),
+                base.genericParameters(), base.parents(), base.interfaces(),
+                base.fields(), base.constructor(), revised, base.actorConcurrency(), base.stateFields());
+        return new Ast.Program(java.util.List.of(
+                new Ast.ModuleDecl(Parser.ROOT_MODULE, java.util.List.of(mutated))));
+    }
+
+    private static Ast.MethodDecl rewriteHook(
+            Ast.MethodDecl source, Ast.TypeRef receiver, java.util.List<Ast.Param> parameters) {
+        return new Ast.MethodDecl(
+                source.name(), source.visibility(), source.isStatic(), source.isAbstract(),
+                source.async(), source.suspends(), source.structural(), receiver,
+                source.genericParameters(), parameters, source.returnType(),
+                source.annotations(), source.body(), source.effects());
+    }
+
+    @Test void linkedNeuronSignaturesCannotBypassLocalMirAdmission() {
+        Ast.ClassDecl protectedActor = firstActor(BASE);
+        Ast.Program ordinaryClient = Parser.parse("""
+                pub routine main(): void { return; }
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        ordinaryClient,
+                        java.util.Map.of("LinearNeuron", protectedActor),
+                        java.util.Map.of()));
+        assertTrue(failure.getMessage().contains("NEURON_STATE_LINK_UNSUPPORTED"),
+                failure::getMessage);
+    }
+
+    @Test void forgedHookReceiversAndMutableOrStructuralParametersAreRejected() {
+        Ast.ClassDecl base = firstActor(BASE);
+        Ast.MethodDecl forward = base.methods().stream()
+                .filter(m -> m.name().equals("forward")).findFirst().orElseThrow();
+        Ast.MethodDecl receive = base.methods().stream()
+                .filter(m -> m.name().equals("receive")).findFirst().orElseThrow();
+
+        var explicitForward = rewriteHook(forward,
+                Ast.TypeRef.simple("LinearNeuron"), forward.parameters());
+        var mutableInput = rewriteHook(forward, null,
+                java.util.List.of(new Ast.Param(Ast.TypeRef.simple("float"),
+                        "input", false, true)));
+        var structuralInput = rewriteHook(forward, null,
+                java.util.List.of(new Ast.Param(Ast.TypeRef.simple("float"),
+                        "input", true, false)));
+        var explicitReceive = rewriteHook(receive,
+                Ast.TypeRef.simple("LinearNeuron"), receive.parameters());
+        var mutableMail = rewriteHook(receive, null,
+                java.util.List.of(new Ast.Param(
+                        new Ast.TypeRef("ActorMail",
+                                java.util.List.of(Ast.TypeRef.simple("float")), false),
+                        "mail", false, true)));
+
+        for (Ast.MethodDecl bad : java.util.List.of(
+                explicitForward, mutableInput, structuralInput, explicitReceive, mutableMail)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(replaceNeuronMethod(base, bad)));
+            assertTrue(failure.getMessage().contains(bad.name()), failure::getMessage);
+        }
+    }
+
     @Test void existingOrdinaryActorAndContextualIdentifierStillParse() {
         Ast.ClassDecl ordinary = firstActor("""
                 define actor Ordinary as
