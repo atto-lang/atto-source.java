@@ -1,4 +1,4 @@
-name: Real Java/GraalVM OTel guest smoke (JVM + no-fallback AOT)
+name: Real Java/GraalVM OTel guest smoke (JVM + Native Image ELF host)
 
 on:
   pull_request:
@@ -102,7 +102,7 @@ jobs:
           retention-days: 7
 
   otel-native-image:
-    name: Full GraalVM Native Image --no-fallback actual Oreslang guest
+    name: GraalVM native ELF host running original Oreslang guest
     needs: otel-source-only-guardrails
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -142,9 +142,9 @@ jobs:
           cache: maven
       - name: Select immutable Rust toolchain for original source-owned checker
         run: rustup toolchain install 1.95.0 --profile minimal
-      - name: Execute real compiler's no-fallback Native Image Maven profile
+      - name: Build actual GraalVM Native Image host from the existing Maven AOT profile
         run: mvn -B -ntp -Pnative-aot -DskipTests package
-      - name: Execute original Oreslang OTel guest in real no-fallback native image
+      - name: Execute original Oreslang OTel guest in genuine ELF Native Image host
         env:
           EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bash verification/otel/execute-pinned-smoke.sh aot
@@ -160,5 +160,8 @@ jobs:
             target/otel/aot/guest.stdout.jsonl
             target/otel/aot/receipt.txt
             target/otel/aot/build-info.json
+            target/otel/aot/native-image-version.txt
+            target/otel/aot/elf-header.txt
+            target/otel/aot/elf-dynamic.txt
           if-no-files-found: error
           retention-days: 7
