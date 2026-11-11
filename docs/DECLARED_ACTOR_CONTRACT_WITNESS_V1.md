@@ -8,8 +8,8 @@ actor code generation, permission to dispatch messages, or five-backend parity.
 ~~~atto
 // contract.atto
 namespace foo;
-define pub interface ActorXYZ as
-  fnc bar(int x): int;
+define pub contract ActorXYZ for actor as
+  mtd bar(int x): int;
 end
 
 // actor.atto
@@ -39,8 +39,9 @@ A bodyless define actor Foo; is invalid.
 - ActorReceiverBinder binds exact (package,namespace,actor,method,arity)
   identities and source-file provenance. Duplicated names or slots fail.
 - ActorContractWitness.linkSourceSet checks every contract claimed by a
-  declaration-only actor. ActorXYZ must be a local, ordinary non-module
-  interface. It is distinct from a module-wide define contract.
+  declaration-only actor. ActorXYZ must be a local `define contract
+  ActorXYZ for actor` target. A module-level `define contract` and a
+  structural `define interface` are NOT equivalent actor contracts.
 - The first-stage type contract is deliberately simple: interfaces without
   generic parameters, inheritance, fields, structural parameters or checked
   effects; exact int/bool/string argument and int/bool/string/void return
@@ -82,7 +83,7 @@ scanner is a static development API, not a secure process sandbox.
 4. Execute Java/GraalVM guest/compiler tests and Native Image, followed by
    LLVM, .NET Native AOT, Wasm and Forge parity. No cross-backend execution
    is claimed in this draft.
-5. Run the 26 authored DeclaredActorContractWitnessTest JUnit methods and
+5. Run the 27 authored DeclaredActorContractWitnessTest JUnit methods and
    existing actor suites on an admitted JDK25 runner. Require actual test
    reports, no skipping and exact source/fixture blob receipt. Prior Actions
    runs in source org failed before job steps; CI failure badges are not
@@ -95,3 +96,25 @@ Additional defensive tests reject a manifest whose files contain no
 `declare actor` witness and invalid UTF-8 source bytes. The manifest builder
 fails rather than issuing an empty success receipt or silently replacing
 invalid bytes.
+
+## Follow-on mandatory compiler path (#2896 child integration)
+
+The `PackageNamespaceBuild` API from the staged package-index branch now
+shares one strict source scanner with the former `ManifestActorContractBuild`
+wrapper. `auditDeclaredActors()` returns a static proof and a unified
+`ActorMethodIndex` for external receivers. The ordinary `build()` path
+**requires** that witness to pass and then still fails with
+`DECLARED_ACTOR_CODEGEN_UNSUPPORTED` until checked actor-owned method dispatch
+and state loans are lowered. Raw `IncrementalCompiler.compile(Map)` cannot
+pretend to attest caller-selected paths; it fails before ABI caching with
+`DECLARED_ACTOR_MANIFEST_GATE_REQUIRED`.
+
+An actor-target interface remains tagged in AST, incremental public ABI, and
+export interface serialization, rather than silently converting to a normal
+structural interface. Full inline actors with direct concrete methods can
+satisfy the explicit actor target; `declare actor` external methods require
+the additional manifest witness.
+
+This is an **admission gate**, NOT executable `declare actor` support. Source
+provenance is bounded by a non-adversarial stable filesystem snapshot: the
+scan is not a race-free proof against a malicious concurrent writer.
