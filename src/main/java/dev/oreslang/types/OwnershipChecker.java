@@ -1104,6 +1104,16 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // An actor owns its state for the entire incarnation,
+                    // including a primitive Copy field. Explicit rt take is
+                    // a move/revocation operation; treating a copied value
+                    // as a movable field would bypass runtime-owned state
+                    // slot lifetime and compiler projection tracking.
+                    // A scalar snapshot is read via self.field, not rt take.
+                    if (isRootedAtActorSelf(argument, scope)) {
+                        throw error("rt take cannot transfer actor-owned state out of its mailbox turn; "
+                                + "read a Copy snapshot or delegate a scoped supervisor loan");
+                    }
                     if (argument instanceof Ast.IndexExpr) {
                         throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
                     }
