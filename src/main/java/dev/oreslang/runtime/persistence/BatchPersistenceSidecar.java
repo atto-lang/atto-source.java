@@ -12,7 +12,7 @@ import java.util.function.BiConsumer;
 /** Trusted host adapter; NOT exposed to untrusted guests or an OS sandbox. */
 public final class BatchPersistenceSidecar implements AutoCloseable {
     public enum Kind { SNAPSHOT, EVENT }
-    public enum Status { COMMITTED, DUPLICATE, STALE_EPOCH, VERSION_CONFLICT, OP_ID_CONFLICT }
+    public enum Status { COMMITTED, DUPLICATE, STALE_EPOCH, VERSION_CONFLICT, OP_ID_CONFLICT, REPLAY_LIMIT_EXCEEDED }
     public record Identity(String tenant, String actor, String state) {
         public Identity { validId(tenant); validId(actor); validId(state); }
     }
