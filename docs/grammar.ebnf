@@ -70,11 +70,10 @@ external_actor_method_decl
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
 
 (* Header-only nominal actors use 'declare', never 'define actor Foo;'.
-   A declaration is not an actor allocation or contract-conformance proof.
-   At most one pub/private visibility modifier may appear before or after
-   the contextual 'declare'. *)
+   A declaration is not actor allocation or contract-conformance proof.
+   Visibility MUST follow 'declare'. 'pub declare actor' is a syntax error. *)
 declared_actor_decl
-                = visibility "declare" visibility "actor" IDENT
+                = "declare" visibility "actor" IDENT
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ] ";" ;
 
 (* Static-only sealed per-activation schema. Body-free nominal actor
