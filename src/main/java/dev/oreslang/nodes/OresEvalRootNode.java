@@ -10236,10 +10236,14 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            // Box identity must not override numeric value semantics (NaN is
-            // unequal even when both operands are the same boxed instance).
+            // Keep the normal identity fast-path for class and scalar values,
+            // but recursively compare sums and generator steps even when the
+            // two references are identical. Some(NaN) and Ok(NaN) must not
+            // become equal merely because the outer wrapper is reused.
             if (left == right) {
-                return !(left instanceof Number n) || NumericValueEquality.equals(n, n);
+                if (left instanceof Number n) return NumericValueEquality.equals(n, n);
+                if (!(left instanceof OptionValue || left instanceof ResultValue
+                        || left instanceof GeneratorRuntime.Step<?>)) return true;
             }
             if (left == null || right == null) return false;
 
