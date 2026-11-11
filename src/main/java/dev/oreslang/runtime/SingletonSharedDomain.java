@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,6 +79,11 @@ public final class SingletonSharedDomain {
     // Protected by the values monitor. Checked compiler publications must never
     // silently reuse a declaration whose resolved schema has changed.
     private final Map<Key, String> compiledSchemas = new HashMap<>();
+    // Protected by values. Exactly one producer (normal completion or cycle
+    // poison) may claim a pending registry cell. Claiming under this monitor,
+    // but completing the future outside it, avoids a success-vs-poison race
+    // without ever invoking completion observers while holding a registry lock.
+    private final Set<Key> undecidedSnapshots = new HashSet<>();
     private final int maxSnapshots;
 
     public SingletonSharedDomain() { this(4096); }
@@ -162,12 +168,17 @@ public final class SingletonSharedDomain {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("singleton declaration schema mismatch"));
                 }
-                if (!existing.isDone()) {
+                if (!existing.isDone() && undecidedSnapshots.contains(key)) {
                     try {
                         initializerDependencies.dependOn(key);
                     } catch (IllegalStateException dependencyFailure) {
                         if ("singleton initializer cycle".equals(dependencyFailure.getMessage())) {
-                            cycleFailure = dependencyFailure;
+                            // The winner is selected under the same lock as
+                            // the initializer's successful publication claim.
+                            // Future completion happens after monitor release.
+                            if (undecidedSnapshots.remove(key)) {
+                                cycleFailure = dependencyFailure;
+                            }
                         } else {
                             return CompletableFuture.failedFuture(dependencyFailure);
                         }
@@ -187,6 +198,7 @@ public final class SingletonSharedDomain {
                 }
                 created = new CompletableFuture<>();
                 values.put(key, created);
+                undecidedSnapshots.add(key);
                 if (compilerFingerprint != null) {
                     compiledSchemas.put(key, compilerFingerprint);
                 }
@@ -205,17 +217,34 @@ public final class SingletonSharedDomain {
             return existing.copy();
         }
         final CompletableFuture<Object> published = created;
-        initializerDependencies.begin(key);
+        boolean entered = false;
         try {
+            // A depth-limit exception must complete the just-created cell.
+            // Never leave an unresolved future behind after begin() rejects.
+            initializerDependencies.begin(key);
+            entered = true;
             Object produced = initialize.get();
             if (produced instanceof java.util.concurrent.CompletionStage<?>) {
                 throw new IllegalStateException("async singleton initializer is not supported");
             }
-            published.complete(freeze(produced));
+            Object frozen = freeze(produced);
+            boolean canPublish;
+            synchronized (values) {
+                canPublish = undecidedSnapshots.remove(key);
+            }
+            if (canPublish) {
+                published.complete(frozen);
+            }
         } catch (Throwable error) {
-            published.completeExceptionally(error);
+            boolean canFail;
+            synchronized (values) {
+                canFail = undecidedSnapshots.remove(key);
+            }
+            if (canFail) {
+                published.completeExceptionally(error);
+            }
         } finally {
-            initializerDependencies.finish(key);
+            if (entered) initializerDependencies.finish(key);
         }
         return published.copy();
     }
