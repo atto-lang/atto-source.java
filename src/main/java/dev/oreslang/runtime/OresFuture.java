@@ -227,8 +227,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> fromCallback(
             Consumer<? super Callback<T>> registrar) {
+        return fromCallback(registrar, () -> { });
+    }
+
+    /**
+     * External async operation adapter with an exact-once physical
+     * cancellation hook. A NIO socket operation closes the owning channel
+     * when its future is cancelled, rather than leaving a dangling read/write.
+     * Late completion is ignored by the same single-shot callback gate.
+     */
+    public static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar, Runnable cancelHook) {
         Objects.requireNonNull(registrar, "registrar");
-        OresFuture<T> future = new OresFuture<>();
+        Objects.requireNonNull(cancelHook, "cancelHook");
+        OresFuture<T> future = new OresFuture<>(cancelHook);
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
         Callback<T> completion = new Callback<>() {
