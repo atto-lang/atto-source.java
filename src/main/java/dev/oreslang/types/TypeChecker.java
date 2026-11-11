@@ -8207,6 +8207,19 @@ public final class TypeChecker {
         if (expression instanceof Ast.BlockValueExpr block) {
             return isEmptyListValue(block.value());
         }
+        // A statically known, immediately invoked lambda with a sole final
+        // return of [] is another proven empty-list value. Do not infer this
+        // from arbitrary functions, calls, callbacks, or unknown values: a
+        // contextual branch must not erase an unchecked element type.
+        if (expression instanceof Ast.CallExpr call
+                && !call.typeArgumentsPresent()
+                && call.callee() instanceof Ast.LambdaExpr lambda
+                && lambda.parameters().size() == call.arguments().size()
+                && lambda.expressionBody() == null
+                && lambda.blockBody().size() == 1
+                && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned) {
+            return isEmptyListValue(returned.value());
+        }
         return false;
     }
 
