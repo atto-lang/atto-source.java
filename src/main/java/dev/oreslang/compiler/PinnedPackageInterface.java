@@ -30,6 +30,29 @@ public final class PinnedPackageInterface {
     private static final Pattern DIGEST = Pattern.compile("[0-9a-f]{64}");
     private static final Pattern INSTANCE = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._/@#:+-]{0,255}");
 
+    /**
+     * Reject ambiguous public symbol spellings before making metadata
+     * addressable by any future native linker. Preserve normal Unicode
+     * identifiers; forbid path separators and formatting/control disguises.
+     */
+    private static boolean safePublicName(String value) {
+        if (value == null || value.isEmpty()) return false;
+        for (int i = 0; i < value.length();) {
+            int cp = value.codePointAt(i);
+            if (cp == '/' || cp == '\\' || cp <= 0x1f
+                    || (cp >= 0x7f && cp <= 0x9f)
+                    || cp == 0x00ad || cp == 0x061c || cp == 0x180e
+                    || (cp >= 0x200b && cp <= 0x200f)
+                    || (cp >= 0x2028 && cp <= 0x202e)
+                    || (cp >= 0x2060 && cp <= 0x206f)
+                    || cp == 0xfeff || (cp >= 0xe0020 && cp <= 0xe007f)) {
+                return false;
+            }
+            i += Character.charCount(cp);
+        }
+        return true;
+    }
+
     /** One digest-pinned public-interface envelope per declared namespace. */
     public record NamespacePin(String namespace, String interfaceSha256) {
         public NamespacePin {
@@ -161,6 +184,13 @@ public final class PinnedPackageInterface {
                 throw new IllegalArgumentException("package interface profile/namespace mismatch");
             }
 
+            // A matching self-reported digest is not enough to make unsafe
+            // metadata names into addressable compiler/linker symbols.
+            for (ExportInterfaceCodec.Entry entry : decoded.entries()) {
+                if (!safePublicName(entry.module()) || !safePublicName(entry.name())) {
+                    throw new IllegalArgumentException("unsafe public interface symbol name");
+                }
+            }
             Set<String> publicModules = new HashSet<>();
             for (ExportInterfaceCodec.Entry entry : decoded.entries()) {
                 if (entry.kind() == ExportInterfaceCodec.Kind.MODULE) {
