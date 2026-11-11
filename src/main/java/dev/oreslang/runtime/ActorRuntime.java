@@ -3018,6 +3018,7 @@ public final class ActorRuntime implements AutoCloseable {
             implements ActorRouteCoordinatorV1.PhysicalRouteWitness {
         private final ActorRef<M> ref;
         private ActorPhysicalHotRouteIngressFence.Permit permit;
+        private final AtomicReference<Object> logicalOwner = new AtomicReference<>();
 
         private HotRoutePhysical(ActorRef<M> ref) {
             this.ref = Objects.requireNonNull(ref, "physical ActorRef");
@@ -3062,6 +3063,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private ActorRuntime owningRuntime() { return ActorRuntime.this; }
+
+        @Override
+        public void bindToCoordinator(Object coordinator) {
+            Objects.requireNonNull(coordinator, "logical coordinator identity");
+            if (!logicalOwner.compareAndSet(null, coordinator)) {
+                throw new SecurityException(
+                        "physical actor route was already bound to a different logical ActorRef");
+            }
+        }
 
         @Override
         public void retireFromLogicalRoute() {
