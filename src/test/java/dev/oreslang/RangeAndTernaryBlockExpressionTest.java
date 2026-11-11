@@ -169,6 +169,33 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void thunkAndTypedLambdaTernaryArraysHaveCorrectElements() throws Exception {
+        String source = wrap("""
+                for id in 1..4 {
+                  val thunked: Array<int> = id eq 3 ? || -> {
+                    return []
+                  } : || -> {
+                    return [id + 1]
+                  };
+                  val called: Array<int> = id eq 3 ? (|int v| -> {
+                    return []
+                  })(3) : (|int g| -> {
+                    return [id + 1]
+                  })(5);
+                  stdio.stdout.write(thunked.size);
+                  stdio.stdout.write(called.size);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(id eq 3 ? 0 : thunked[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(id eq 3 ? 0 : called[0]);
+                  stdio.stdout.write("|");
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("11:2:2|11:3:3|00:0:0|", run(source));
+    }
+
+    @Test
     void ordinaryLambdaValuesStayLazyUnlessCalled() throws Exception {
         String source = wrap("""
                 val f = || -> {
