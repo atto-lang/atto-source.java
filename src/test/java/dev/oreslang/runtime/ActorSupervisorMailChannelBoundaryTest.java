@@ -76,14 +76,14 @@ final class ActorSupervisorMailChannelBoundaryTest {
             assertNotNull(rejected.getCause(),
                     "the pending producer must receive a terminal failure");
 
-            // An unrelated actor still makes progress while the cancelled
-            // actor's physical handler has not yet exited its held turn.
-            sibling.send(99);
-            assertTrue(siblingProcessed.await(5, TimeUnit.SECONDS));
-
+            // The host fixture intentionally held a physical carrier.
+            // Release it before checking sibling progress: a blocking host
+            // callback is NOT a valid cooperative scheduler-liveness test.
             release.countDown();
             assertTrue(busy.awaitTermination(5, TimeUnit.SECONDS),
                     "physical retirement must eventually join the held turn");
+            sibling.send(99);
+            assertTrue(siblingProcessed.await(5, TimeUnit.SECONDS));
             assertEquals(0, laterMessagesProcessed.get(),
                     "cancelled queued USER mail must not execute");
             sibling.stop();
