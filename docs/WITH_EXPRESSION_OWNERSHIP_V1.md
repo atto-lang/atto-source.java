@@ -1,26 +1,37 @@
-# AttoLang `with` immutable field updates: ownership and compiler contract v1
+# AttoLang immutable `with` updates: ownership and executable contract v1
 
-Status: **P0 grammar and AST only** on the Java compiler branch. **Not executable**.
-The Java type checker, ownership checker, and evaluator intentionally reject updates
-until type-directed reconstruction, object layout and all required ownership
-proofs are implemented and tested. No other backend is claimed to support this.
+Status: **Java/Truffle executable, narrowly gated** (draft PR #2832).
+Parser, type checker, ownership checker, evaluator and actual guest `.atto`
+fixtures are implemented for (1) readonly structural records whose complete
+layout is statically `Copy`, and (2) fully immutable, ctorless, non-generic,
+non-inherited, non-actor classes of primitive scalar fields under **explicit**
+`rt copy` or `rt take`. This does **not** certify full class, struct or
+multi-backend support.
 
-## Syntax and explicit return
+## Canonical AttoLang syntax and explicit returns
 
 ```atto
 define class Point as
-    x: int;
-    y: int;
+    pub final int x: 10;
+    pub final int y: 20;
 
-    incr_x(): Point {
+    pub incr_x(): Point {
         return rt copy self with { x => self.x + 1 };
     }
 end
+
+pub routine main(): void {
+    const Point point = new Point();
+    const Point next = point.incr_x();
+    stdio.stdout.write(point.x);
+    stdio.stdout.write(next.x);
+    return;
+}
 ```
 
-AttoLang's current canonical instance receiver is `self`. `this` as an alias
-is not admitted by this feature. `return` is **always explicit**; `with`
-produces a value, never an implicit callable return.
+The instance receiver is always `self`, **never `this`** as a special
+receiver alias. `return` is **explicit**: `with` returns an expression
+value but never returns implicitly from its containing callable.
 
 Grammar:
 
@@ -29,79 +40,91 @@ with_update := unary_expression ("with" "{" field_update ("," field_update)* ","
 field_update := identifier "=>" expression
 ```
 
-`with` is contextual; `with(foo)` may still be an identifier call. Nested paths,
-index updates, method setters, empty updates and overriding one field twice are
-not admitted by the P0 parser. Binding power is weaker than unary `rt copy`
-and `rt take`, but stronger than multiplication: `rt copy p with {...}`
-means `(rt copy p) with {...}`, *not* `rt copy (p with {...})`.
+`with` is contextual, not a globally reserved word; `with(foo)` remains a
+callable reference. Only direct statically named fields are supported. Empty
+updates, duplicates, nested paths, index paths and setter dispatch are not
+admitted. Operator precedence is intentional: `rt copy p with {...}`
+means `(rt copy p) with {...}`, not `rt copy (p with {...})`.
 
-## Intended ownership behavior (requires P1–P3 implementation)
+## Ownership rules
 
-| Source | Meaning | Valid only if |
+| Source | Meaning | Current Java v1 admission |
 | --- | --- | --- |
-| `rt copy p with {x => v}` | Produce independent updated value, preserve `p` | `rt copy` has a verified Copy/copy-contract implementation |
-| `(rt take p) with {x => v}` | Consume `p`, reconstruct updated value | No live loans, exclusive ownership and valid field moves |
-| `p with {x => v}` | Preserve `p` | Compiler proves `Copy`; otherwise error |
-| `rt borrow p with {...}` | Not an owned receiver | **Always error** |
-| `actor_ref with {...}` | Would bypass actor-state admission | **Always error** |
+| `rt copy record with {x => v}` | Preserve original record; build a fresh readonly result | Yes when every field is certified `Copy` |
+| `record with {x => v}` | Implicit value copy | Yes for certified readonly `Copy` records only |
+| `(rt take record) with {x => v}` | Consume source binding, reconstruct result | Yes for certified readonly `Copy` records |
+| `rt copy self with {x => v}` | Fresh independent nominal object | Yes for eligible immutable scalar-field product classes |
+| `rt copy object with {x => v}` | Same, from a non-actor class binding | Yes for eligible immutable scalar-field product classes |
+| `(rt take object) with {x => v}` | Move source binding into new nominal value | Yes for eligible immutable scalar-field product classes |
+| `object with {x => v}` | Implicit class copy | **Rejected**; classes remain move-only by default |
+| `rt borrow value with {...}` | A borrow is not an owned receiver | **Rejected** |
+| actor-owned `self`, mutable class/struct, class with constructor, inherited or generic class | Unsafe or unproven reconstruction | **Rejected** |
 
-Do **not** introduce implicit heap deep clones, copy elision that changes
-identity, or an untyped `clone` fallback. Copying user-defined classes needs
-a statically resolved copy contract, and copying an owning handle must never
-duplicate its exclusive release authority. The current Java ownership checker
-already refuses `rt copy` on move-only values pending the copy-contract
-lowering. This restriction must remain in force.
+The nominal derived copy contract has a deliberately narrow static proof:
+no constructor, inheritance, generics, abstract class or actor semantics;
+at least one statically declared field; each field must be non-rebindable
+(`val`, `const`, `final` equivalent slot policy), non-mutable referent, and
+a non-borrowed builtin `int`, `bool`, `float`, `string` or `String` type.
+Shadowing these builtin names with a local nominal type disqualifies the
+class. This explicit `rt copy` creates a new object, **not** an implicit
+`Copy` trait for arbitrary nominal values. Do not extend it to an
+owning handle, ordinary heap resource, mutex guard or actor state.
 
-For a consumed receiver, unchanged non-Copy fields may move into the new
-value exactly once, subject to drop/panic/exception-safe cleanup. Field
-replacements must be checked for type, visibility, readonly capability,
-ownership, generic substitution and any constructor invariants. If an old
-field is replaced, cleanup/drop belongs to the old owning value, once only.
-Reconstruction must not publish a partially initialized object or bypass
-class validation. Methods and inherited layouts require statically proven
-field views; this is not dynamic dictionary assignment.
+The compiler ownership pass enforces use-after-take and borrow invalidation.
+The runtime independently verifies eligible nominal layout and initialized
+fields before constructing another class object. No actor-state authority
+is introduced.
 
-## Evaluation and effects
+## Evaluation, isolation and effects
 
-* Evaluate the receiver exactly once.
-* Each field expression evaluates exactly once, in source order.
-* RHS reads of `self.x` or `p.x` see the **original** value (a frozen logical
-  snapshot), not earlier replacements.
-* All RHS values must be computed and type/ownership checked before the
-  updated result is published. Failure must not leave an externally visible
-  partially mutated instance. If the receiver is consumed, unwind and drop
-  obligations must be verified before enabling an in-place optimization.
-* Returning a borrow, guard, actor self-capability or an unverified shared
-  mutable alias from `with` is forbidden.
-* `await`, `select`, and other suspension points in RHS require proof that
-  receiver loans survive across suspension; default to rejecting them.
-* In-place lowering is only a permitted optimization under non-observable
-  identity, uniqueness, exception-safety and alias proofs. The syntax does
-  **not** promise zero allocations.
+* Evaluate the receiver once, then replacement RHS expressions once each,
+  left-to-right. They read the original receiver, not previous replacements.
+* Validate field existence, lexical visibility, type, readonly capability and
+  ownership. No duplicate field names and no computed/dynamic setter path.
+* Assemble a fresh readonly record or class object **after** RHS evaluation
+  completes; never mutate a published original. Failed RHS computation must
+  not partially publish a value.
+* V1 restricts RHSs to conservatively non-suspending, effect-safe expressions.
+  `await`, channel operations, assignments, unchecked calls and other
+  unproven effect boundaries are rejected. Full effect and exception-path
+  summaries remain future work.
+* No allocation-free guarantee. The Java interpreter currently constructs
+  fresh nominal objects for `rt copy` and `with`; eliminating redundant
+  copies requires independently verified uniqueness and alias proofs.
+* Guest `.atto` programs are actual fixture files under
+  `src/test/resources/with/`, not embedded substitutes.
 
-## Compiler rollout and evidence
+## CI evidence and limits
 
-- **P0 (this branch):** contextual grammar, `Ast.WithExpr` with distinct
-  field replacements and deterministic order, Java parser boundary tests,
-  explicit checker/evaluator fail-closed errors. No success fixtures execute.
-- **P1:** implement checked `Copy` contract (or certified structural Copy)
-  with copy ownership proof; reject non-Copy plain receivers, borrows and
-  actor state; add positive/negative TypeChecker and OwnershipChecker tests.
-- **P2:** implement immutable value reconstruction for records/structs and
-  nominal classes, preserving object layout, constructor invariants, drop
-  semantics, inheritance and RHS snapshot. Execute positive guest `.atto`
-  fixtures on the Java interpreter and GraalVM Native Image.
-- **P3:** publish the portable lowering contract and execute *identical*
-  conformance fixtures in LLVM, .NET AOT, Wasm, Forge and Java; report each
-  backend and SHA separately. An AST parse check is not backend parity.
+- **PASS:** [private exact-source-subset runner #42955154263](https://github.com/voxletra/voxletra-e2e/actions/runs/42955154263)
+  compiled 258 Java source files and 2 selected JUnit classes with Java 21,
+  executed 14 JUnit tests with 0 failures, errors or skips, and verified all
+  340 mirrored Git blob hashes before running.
+- **Source PR head:** `5ff64d450c8067e7c313aba69bbdee8a39fda95b`
+  at this checkpoint. Exact changed feature sources/fixtures are mirrored;
+  the carrier's remaining files derive from the explicitly disclosed
+  previous subset. This is **not** an exact full-source-tree build.
+- **NOT EXECUTED:** GraalVM Native Image AOT, LLVM, .NET AOT, Wasm, Forge,
+  full release/conformance matrix, sanitizer matrix and formal ownership
+  proof. Source-org GitHub Actions jobs failed before running steps; their
+  red status is not evidence about the compiler feature.
 
-Minimum negative tests: move-only receiver without `rt take`; `rt copy`
-without a checked implementation; live mutable/immutable loans during
-move; copy of owning resource; partial move; unauthorized private/final
-field; actor sealed state; unknown fields; duplicate fields; wrong field
-type; borrow-typed replacement; RHS exception cleanup; RHS suspension;
-self-return without explicit `return`; and alias visibility after update.
+## Required next milestones
 
-**Execution evidence:** GitHub-hosted tests not yet confirmed at creation time.
-The JUnit parser/AST checks are not a substitute for compiler-checked
-execution of guest `.atto` source.
+1. Add independent negative fixtures for private access, mixed ownership
+   fields, guard/borrow lifetime, class invariants and arbitrary non-Copy
+   classes, plus property tests for immutable alias preservation.
+2. Add true field-wise affine reconstruction for mutable structs and
+   move-only class fields only after exception-safe drop/cleanup and
+   per-field ownership receipts exist; never silently deep-clone a heap.
+3. Generalize nominal copying using an explicit user-authored copy contract
+   with audited effects and layout, rather than broadening the derived
+   scalar class eligibility.
+4. Publish an exact portable MIR/HIR `WithExpr` contract and execute
+   identical `.atto` fixtures on all supported backends, including full AOT.
+5. Ensure the formatter round-trips `self`, `rt copy`, `rt take`,
+   canonical `with`, and explicit `return` without changing precedence.
+
+Leave draft PR #2832 unmerged until broader safety and compiler evidence is
+reviewed. Passing Java guest fixtures does **not** establish cross-backend
+parity or generalized ownership-safe class copying.
