@@ -180,6 +180,27 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
     /**
+     * A compacted legacy operation can still be a durable duplicate only if
+     * a newer authenticated checkpoint covers its committed version. The
+     * complete remaining stream is re-verified within the SAME transaction;
+     * absence without a checkpoint always denies the receipt.
+     */
+    private boolean coveredByVerifiedCheckpoint(Identity id,long archivedVersion)
+            throws SQLException {
+        long checkpoint=0;
+        try(PreparedStatement q=db.prepareStatement(
+                "SELECT snapshot_version FROM state WHERE tenant=? AND actor=? AND slot=?")) {
+            bindKey(q,id);
+            try(ResultSet row=q.executeQuery()) {
+                if(row.next())checkpoint=row.getLong(1);
+            }
+        }
+        if(archivedVersion<1 || checkpoint<archivedVersion)return false;
+        verifyPriorJournalBeforeSnapshot(id,version(id));
+        return true;
+    }
+
+    /**
      * Executed with the caller's SQLite transaction already established.
      * The original operation row alone cannot prove that the matching
      * event or active snapshot bytes still exist after corruption/compaction.
@@ -192,7 +213,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     "FROM events WHERE tenant=? AND actor=? AND slot=? AND version=?")) {
                 bindKey(q,id);q.setLong(4,version);
                 try (ResultSet row=q.executeQuery()) {
-                    if(!row.next())return false;
+                    if(!row.next())
+                        return coveredByVerifiedCheckpoint(id,version);
                     long size=row.getLong(2);
                     byte[] persisted=row.getBytes(3);
                     return row.getInt(1)==write.schemaVersion() &&
@@ -209,9 +231,12 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
             bindKey(q,id);
             try (ResultSet row=q.executeQuery()) {
                 if(!row.next())return false;
+                long activeVersion=row.getLong(1);
+                if(activeVersion>version)
+                    return coveredByVerifiedCheckpoint(id,version);
                 long size=row.getLong(3);
                 byte[] persisted=row.getBytes(4);
-                return row.getLong(1)==version &&
+                return activeVersion==version &&
                        row.getInt(2)==write.schemaVersion() &&
                        size==write.ownedPayload().length &&
                        persisted!=null &&
@@ -265,7 +290,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     try(ResultSet r=q.executeQuery()){
                         if(r.next()){
                             int kind=w.kind()==Kind.SNAPSHOT?1:2;
-                            boolean same=r.getLong(1)==w.epoch()&&r.getLong(2)==w.expectedVersion()&&
+                            long originEpoch=r.getLong(1);
+                            boolean same=originEpoch>0 && originEpoch<=w.epoch() &&
+                                r.getLong(2)==w.expectedVersion()&&
                                 r.getInt(3)==kind&&r.getInt(4)==w.schemaVersion()&&
                                 Arrays.equals(r.getBytes(5),w.ownedPayload());
                             long committedVersion=r.getLong(6);
@@ -350,7 +377,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     try (ResultSet row=q.executeQuery()) {
                         if (row.next()) {
                             int kind = write.kind() == Kind.SNAPSHOT ? 1 : 2;
-                            valid = row.getLong(1) == write.epoch()
+                            valid = row.getLong(1) > 0
+                                    && row.getLong(1) <= write.epoch()
                                     && row.getLong(2) == write.expectedVersion()
                                     && row.getInt(3) == kind
                                     && row.getInt(4) == write.schemaVersion()
