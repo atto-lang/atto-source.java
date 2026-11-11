@@ -1224,16 +1224,19 @@ public final class Parser {
     private Ast.StandaloneActorDecl parseDeclaredActor(
             List<Ast.Annotation> annotations, Modifiers before) {
         validateOnlyVisibilityModifiers(before, "declared actors");
+        // Canonical modifier order matches "declare pub type": the visibility
+        // belongs to the declaration after the contextual "declare" token.
+        // Never silently accept "pub declare actor" as an alias.
+        if (before.visibilitySeen) {
+            throw error(peek(), "actor declaration visibility must follow 'declare'; "
+                    + "write 'declare pub actor Foo;' instead of 'pub declare actor Foo;'");
+        }
         rejectCallableStructuralAnnotation(annotations, "declared actors");
         rejectDiscardedDeclarationAnnotations(annotations, "declared actors");
         consumeContextualIdentifier("declare", "expected declared actor");
         Modifiers after = parseModifiers();
         validateOnlyVisibilityModifiers(after, "declared actors");
-        if (before.visibilitySeen && after.visibilitySeen) {
-            throw error(previous(), "duplicate/conflicting actor declaration visibility");
-        }
-        Ast.Visibility visibility =
-                after.visibilitySeen ? after.visibility : before.visibility;
+        Ast.Visibility visibility = after.visibility;
         consume(ACTOR, "expected actor after declare");
         String name = consumeTypeDeclarationName("expected nominal actor name");
         if (check(LT)) {
