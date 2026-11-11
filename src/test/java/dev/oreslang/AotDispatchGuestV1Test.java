@@ -39,7 +39,7 @@ final class AotDispatchGuestV1Test {
 
     private static void checkFixture(ExecutionProfile profile) throws Exception {
         String source = Files.readString(
-                Path.of("tests/fixtures/dispatch/known_and_virtual_v1.atto"),
+                Path.of("contracts/dispatch-v1/virtual_override_121020.atto"),
                 StandardCharsets.UTF_8);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
