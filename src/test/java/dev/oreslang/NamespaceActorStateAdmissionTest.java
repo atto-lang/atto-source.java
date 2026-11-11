@@ -74,9 +74,17 @@ final class NamespaceActorStateAdmissionTest {
                 + "\npub mtd (Foo f) read(): int { return 5; }");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(program));
-        assertTrue(error.getMessage().contains("LO WAY") == false);
         assertTrue(error.getMessage().contains("LOWERING_UNSUPPORTED"),
                 error.getMessage());
+    }
+
+    @Test
+    void stateOnlyProgramIsExplicitlyRejectedByExecutionGate() {
+        var program = parse(state());
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains(
+                "ATTACHED_ACTOR_STATE_CRITICAL_LOWERING_UNSUPPORTED"), error.getMessage());
     }
 
     @Test
