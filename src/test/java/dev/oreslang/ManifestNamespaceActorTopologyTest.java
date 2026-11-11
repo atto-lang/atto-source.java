@@ -102,7 +102,10 @@ final class ManifestNamespaceActorTopologyTest {
         assertNotNull(get);
         assertEquals("int", get.returnType().name());
         assertEquals("src/foo/methods.atto", get.declaringUnit());
-        assertTrue(get.declarationEligible());
+        // Source metadata is not a verified contract witness: the method
+        // body still requires full typed lowering and effect checking.
+        assertTrue(get.unloweredExternal());
+        assertFalse(get.declarationEligible());
         assertNotNull(methods.method(new ActorMethodIndex.MethodKey(key("Counter"), "increment", 0)));
         assertNull(methods.method(new ActorMethodIndex.MethodKey(key("Counter"), "init", 0)));
         assertNull(methods.method(new ActorMethodIndex.MethodKey(key("Counter"), "receive", 1)));
