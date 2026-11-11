@@ -7401,6 +7401,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.WithExpr) {
+                throw new IllegalStateException(
+                        "with expression reached guest evaluator without checked reconstruction lowering");
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
