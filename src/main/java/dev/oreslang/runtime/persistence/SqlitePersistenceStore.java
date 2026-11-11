@@ -215,8 +215,11 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                     out.add(new Result(w.operationId(),Status.VERSION_CONFLICT,before,false));continue;
                 }
                 if(w.kind()==Kind.EVENT &&
-                   !replayCapacityAvailable(id,w.ownedPayload().length))
-                    throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
+                   !replayCapacityAvailable(id,w.ownedPayload().length)) {
+                    out.add(new Result(w.operationId(),Status.REPLAY_LIMIT_EXCEEDED,
+                                       before,false));
+                    continue;
+                }
                 long next=before+1;
                 try(PreparedStatement q=db.prepareStatement("INSERT INTO state(tenant,actor,slot,version,snapshot_version,snapshot_schema,snapshot) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant,actor,slot) DO UPDATE SET version=excluded.version,snapshot_version=CASE WHEN ?=1 THEN excluded.snapshot_version ELSE state.snapshot_version END,snapshot_schema=CASE WHEN ?=1 THEN excluded.snapshot_schema ELSE state.snapshot_schema END,snapshot=CASE WHEN ?=1 THEN excluded.snapshot ELSE state.snapshot END")) {
                     bindKey(q,id);q.setLong(4,next);q.setLong(5,w.kind()==Kind.SNAPSHOT?next:0);q.setInt(6,w.kind()==Kind.SNAPSHOT?w.schemaVersion():0);
