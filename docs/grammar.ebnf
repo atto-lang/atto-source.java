@@ -335,9 +335,13 @@ pipeline_stage  = IDENT [ call_suffix ]
                 | pipe_lambda
                 | "nlex" pipe_lambda ;
 (* Stages are existing callables, including existing |x| -> expr lambdas.
-   No separate |> (name) binding syntax. An unparenthesized inline lambda
-   body ends before the next top-level |>, which begins the NEXT stage;
-   parenthesize (x |> inner) for a nested pipeline in its body.
+   No separate |> (name) binding syntax. A single lambda parameter receives
+   the entire upstream value, including Tuple[T1,...,TN]. Two or more lambda
+   parameters destructure ONE statically typed, exact-arity Tuple of the same
+   length; they do not turn non-tuples or ordinary named calls into variadic
+   arguments. Tuple-valued stage results remain a single typed value.
+   An unparenthesized inline lambda body ends before the next top-level |>,
+   which begins the NEXT stage; parenthesize (x |> inner) for nesting.
    Option.* and Result.* stages lower to receiver combinators, all other
    stages receive the upstream value as argument 1. Value is evaluated once,
    stages associate leftwards, and actor 'pipe' remains a distinct operator. *)
