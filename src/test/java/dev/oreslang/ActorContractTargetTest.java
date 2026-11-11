@@ -179,6 +179,72 @@ final class ActorContractTargetTest {
     }
 
     @Test
+    void lifecycleTeardownCannotBecomePublicActorContractMethod() {
+        String source = """
+                define contract FooContract for actor as
+                  mtd tear_down(): void;
+                end
+                pub define actor Foo implements FooContract as
+                  pub tear_down(): void { return; }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("reserved lifecycle/control/receive hook"));
+    }
+
+    @Test
+    void compilerOwnedStateLoanCannotBeARequiredPublicMethod() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define contract FooContract for actor as
+                          mtd handle_state(): void;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("reserved lifecycle/control/receive hook"));
+    }
+
+    @Test
+    void receiveHandlerRequiresDedicatedTypedActorMessageContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define contract FooContract for actor as
+                          mtd receive(): void;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("reserved lifecycle/control/receive hook"));
+    }
+
+    @Test
+    void suspendingActorMethodCannotSilentlyFulfillSynchronousContract() {
+        String source = """
+                define contract FooContract for actor as
+                  mtd abc(): void;
+                end
+                pub define actor Foo implements FooContract as
+                  pub suspends abc(): void { return; }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("unsupported execution effects/generics"));
+    }
+
+    @Test
+    void abstractOrUndeclaredActorMethodCannotBeAContractWitness() {
+        String source = """
+                define contract FooContract for actor as
+                  mtd abc(): void;
+                end
+                pub define actor Foo implements FooContract as
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("directly declared public mailbox method"));
+    }
+
+    @Test
     void actualAttoCorpusReachesParserAndTypeChecker() throws IOException {
         Path root = Path.of("contracts", "actor-contract-target-v1");
         String positive = Files.readString(root.resolve("accept_actor_contract.atto"));
