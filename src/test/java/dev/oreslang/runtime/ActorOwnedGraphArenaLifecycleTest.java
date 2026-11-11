@@ -91,6 +91,50 @@ final class ActorOwnedGraphArenaLifecycleTest {
     }
 
     @Test
+    void backingCannotReclaimBeforeEveryObjectDestructor() {
+        var sequence = new ArrayList<String>();
+        var graph = new ActorOwnedGraphArena<AutoCloseable>(3, 1, () -> {},
+                g -> {
+                    assertFalse(g.fullyClosed(),
+                            "physical backing release cannot be published early");
+                    sequence.add("backing-release");
+                });
+        graph.add(() -> () -> sequence.add("drop-oldest"));
+        graph.add(() -> () -> sequence.add("drop-middle"));
+        graph.add(() -> () -> sequence.add("drop-newest"));
+        graph.close();
+        graph.close();
+        assertEquals(List.of("drop-newest", "drop-middle", "drop-oldest",
+                        "backing-release"), sequence,
+                "drop glue must execute before backing native memory is retired");
+        assertTrue(graph.fullyClosed());
+    }
+
+    @Test
+    void lastLeaseDrainsAllDropsBeforeBackingReclaimEvenIfDropThrows() {
+        var sequence = new ArrayList<String>();
+        var graph = new ActorOwnedGraphArena<AutoCloseable>(2, 1, () -> {},
+                g -> sequence.add("backing-release"));
+        var first = graph.add(() -> () -> sequence.add("drop-oldest"));
+        graph.add(() -> () -> {
+            sequence.add("drop-newest");
+            throw new IllegalStateException("deliberate drop failure");
+        });
+        var loan = graph.borrow(first);
+        graph.retireFromActor();
+        assertFalse(graph.fullyClosed());
+        assertTrue(sequence.isEmpty(), "active read loan must postpone all cleanup");
+        loan.close();
+        assertEquals(List.of("drop-newest", "drop-oldest", "backing-release"),
+                sequence, "a failing destructor must not skip later owners or release early");
+        assertEquals("deliberate drop failure",
+                graph.cleanupFailure().orElseThrow().getMessage());
+        assertTrue(graph.fullyClosed());
+        loan.close();
+        assertEquals(3, sequence.size(), "loan release must remain idempotent");
+    }
+
+    @Test
     void failedRetirementCallbackCannotSkipDropsAndFailuresStayVisible() {
         AtomicInteger drops = new AtomicInteger();
         var graph = new ActorOwnedGraphArena<Payload>(2, 1, () -> {},
