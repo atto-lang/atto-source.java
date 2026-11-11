@@ -3248,6 +3248,22 @@ public final class TypeChecker {
                 requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
                 return Primitive.VOID;
             }
+            // Actor receive is owned by the scheduler, never an implicitly
+            // callable method. Resolve the enclosing actor rather than
+            // denying unrelated lexical functions also named receive.
+            if (call.callee() instanceof Ast.NameExpr bareReceive
+                    && bareReceive.name().equals("receive")
+                    && env.lookup(bareReceive.name()) == null
+                    && currentActorKind != Ast.ActorKind.NONE
+                    && currentClassOwner != null
+                    && findMethodsByName(
+                            currentClassOwner, "receive", new LinkedHashSet<>()).stream()
+                            .anyMatch(method -> !method.isStatic())) {
+                throw new IllegalArgumentException(
+                        "actor mailbox handler '" + currentClassOwner.name()
+                                + ".receive' is runtime-only and cannot be called directly; "
+                                + "send an owned message through ActorRef.send(...)");
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -4138,6 +4154,17 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
+                        // Receiver aliases and inherited actor types must not
+                        // bypass mailbox ingress. Check the resolved method
+                        // owner, not only a lexical spelling of 'self'.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && !method.isStatic()
+                                && method.name().equals("receive")) {
+                            throw new IllegalArgumentException(
+                                    "actor mailbox handler '" + klass.name()
+                                            + ".receive' is runtime-only and cannot be called directly; "
+                                            + "send an owned message through ActorRef.send(...)");
+                        }
                         requireSuspendableCall(method.suspends(), "method '" + method.name() + "'");
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
@@ -4534,6 +4561,16 @@ public final class TypeChecker {
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (!methods.isEmpty()) {
+                        // A method value can escape and be invoked after the
+                        // actor-local lifecycle boundary. Reject capture even
+                        // when the receiver was imported or renamed.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && member.member().equals("receive")) {
+                            throw new IllegalArgumentException(
+                                    "actor mailbox handler '" + klass.name()
+                                            + ".receive' is runtime-only and cannot be captured; "
+                                            + "send an owned message through ActorRef.send(...)");
+                        }
                         throw new IllegalArgumentException(
                                 "instance method '" + klass.name() + "." + member.member()
                                         + "' is direct-call-only and cannot be used as a first-class callable value; "
