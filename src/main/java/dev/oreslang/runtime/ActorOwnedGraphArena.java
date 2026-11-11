@@ -64,7 +64,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
 
         @Override public void close() {
             if (!released.compareAndSet(false, true)) return;
-            List<T> cleanup = null;
+            boolean detached = false;
             synchronized (ActorOwnedGraphArena.this) {
                 int slot = id.slot;
                 if (loans[slot] <= 0) {
@@ -72,9 +72,12 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
                 }
                 loans[slot]--;
                 activeLoans--;
-                if (retiring && activeLoans == 0) cleanup = detachAll();
+                if (retiring && activeLoans == 0) {
+                    detachAll();
+                    detached = true;
+                }
             }
-            finishRetirement(cleanup);
+            if (detached) finishRetirement();
         }
     }
 
@@ -82,6 +85,10 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
     private final Runnable ownerGuard;
     private final Consumer<ActorOwnedGraphArena<T>> onRetired;
     private final Object[] values;
+    // Reserved at construction, not per-retirement. Cleanup must not depend
+    // on allocating a Java ArrayList during STOP or an OOM failure path.
+    private final Object[] pendingDrops;
+    private int pendingDropCount;
     private final long[] generations;
     private final int[] loans;
     private final List<NodeId>[] edges;
@@ -109,6 +116,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         this.ownerGuard = Objects.requireNonNull(ownerGuard);
         this.onRetired = Objects.requireNonNull(onRetired);
         this.values = new Object[capacity];
+        this.pendingDrops = new Object[capacity];
         this.generations = new long[capacity];
         this.loans = new int[capacity];
         this.edges = (List<NodeId>[]) new List<?>[capacity];
@@ -233,13 +241,16 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
 
     /** Called only by the owning actor memory slice after actor finalization. */
     void retireFromActor() {
-        List<T> cleanup = null;
+        boolean detached = false;
         synchronized (this) {
             if (retiring) return;
             retiring = true;
-            if (activeLoans == 0) cleanup = detachAll();
+            if (activeLoans == 0) {
+                detachAll();
+                detached = true;
+            }
         }
-        finishRetirement(cleanup);
+        if (detached) finishRetirement();
     }
 
     private void unlinkOrder(int slot) {
@@ -252,13 +263,14 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         older[slot] = newer[slot] = -1;
     }
 
-    private List<T> detachAll() {
-        List<T> cleanup = new ArrayList<>(size);
+    private void detachAll() {
         // Reverse *construction* order, not reverse slot order. Previously
         // replacing a deleted slot silently reordered destructor callbacks.
+        // The bounded pendingDrops array is allocated at arena creation, so
+        // STOP, panic and the last-lease release need no list allocation.
         for (int i = newest; i >= 0;) {
             int previous = older[i];
-            cleanup.add(payload(i));
+            pendingDrops[pendingDropCount++] = values[i];
             values[i] = null;
             edges[i].clear();
             older[i] = newer[i] = -1;
@@ -269,7 +281,6 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         size = 0;
         // Detaching revokes authority first. The onRetired callback may
         // release backing actor storage; never call it BEFORE destructors.
-        return cleanup;
     }
 
     private void runDrop(T value) {
@@ -280,13 +291,18 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         }
     }
 
-    private void finishRetirement(List<T> cleanup) {
-        // A null list means an external lease is still live. An empty (but
-        // non-null) list still requires exactly one backing-release callback.
-        if (cleanup == null) return;
-        // Execute every user destructor while the actor backing still exists.
+    @SuppressWarnings("unchecked")
+    private void finishRetirement() {
+        // Called exactly once by the thread detaching the final live loan.
+        // An empty graph must still invoke its backing-release callback.
+        // Execute every destructor while the actor backing still exists.
         // Failures are accumulated so one bad owner cannot skip later drops.
-        for (T value : cleanup) runDrop(value);
+        for (int i = 0; i < pendingDropCount; ++i) {
+            T value = (T) pendingDrops[i];
+            pendingDrops[i] = null;
+            runDrop(value);
+        }
+        pendingDropCount = 0;
         try {
             onRetired.accept(this);
         } catch (Throwable failure) {
