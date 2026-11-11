@@ -71,11 +71,45 @@ public final class NeuronScalarMirV0 {
                 throw new IllegalArgumentException("neuron scalar MIR instruction budget");
             if (returnsScalar != (mode == GuardMode.CRITICAL_READ))
                 throw new IllegalArgumentException("critical read returns scalar; write returns void");
+            // Descriptors can be constructed directly by compiler passes and
+            // extensions. Do not treat a trusted source preflight as authority
+            // for a later, potentially malformed stack program.
+            int depth = 0;
+            int stores = 0;
             for (Instruction instruction : body) {
-                if (mode == GuardMode.CRITICAL_READ
-                        && instruction.opcode() == Opcode.STORE_STATE_F64)
-                    throw new IllegalArgumentException("critical read cannot write state");
+                switch (instruction.opcode()) {
+                    case CONST_F64, LOAD_STATE_F64 -> depth++;
+                    case LOAD_INPUT_F64 -> {
+                        if (mode != GuardMode.CRITICAL_READ)
+                            throw new IllegalArgumentException(
+                                    "critical write cannot read inference input");
+                        depth++;
+                    }
+                    case NEG_F64 -> {
+                        if (depth < 1)
+                            throw new IllegalArgumentException("scalar MIR unary stack underflow");
+                    }
+                    case ADD_F64, SUB_F64, MUL_F64 -> {
+                        if (depth < 2)
+                            throw new IllegalArgumentException("scalar MIR binary stack underflow");
+                        depth--;
+                    }
+                    case STORE_STATE_F64 -> {
+                        if (mode != GuardMode.CRITICAL_WRITE)
+                            throw new IllegalArgumentException("critical read cannot write state");
+                        if (depth < 1)
+                            throw new IllegalArgumentException("scalar MIR store stack underflow");
+                        depth--;
+                        stores++;
+                    }
+                }
+                if (depth > 256)
+                    throw new IllegalArgumentException("scalar MIR stack depth exceeds 256");
             }
+            if (depth != (returnsScalar ? 1 : 0) ||
+                    (mode == GuardMode.CRITICAL_WRITE && stores == 0))
+                throw new IllegalArgumentException(
+                        "scalar MIR does not leave its declared result shape");
         }
     }
 
@@ -90,6 +124,43 @@ public final class NeuronScalarMirV0 {
                     || initialization.mode() != GuardMode.CRITICAL_WRITE
                     || forward.mode() != GuardMode.CRITICAL_READ) {
                 throw new IllegalArgumentException("mismatched neuron MIR actor or guard modes");
+            }
+            // Recheck ALL symbolic operations after constructing the immutable
+            // scopes: a separately constructed Plan must not be able to read an
+            // undeclared field, read before write or write one field twice.
+            java.util.Set<String> initialized = new java.util.HashSet<>();
+            for (Instruction op : initialization.body()) {
+                switch (op.opcode()) {
+                    case LOAD_STATE_F64 -> {
+                        if (!initialized.contains(op.symbol()))
+                            throw new IllegalArgumentException(
+                                    "neuron MIR initialization reads a field before its first write");
+                    }
+                    case STORE_STATE_F64 -> {
+                        if (!layout.floatFields().contains(op.symbol())
+                                || !initialized.add(op.symbol()))
+                            throw new IllegalArgumentException(
+                                    "neuron MIR writes an unknown or duplicate field");
+                    }
+                    case LOAD_INPUT_F64 -> throw new IllegalArgumentException(
+                            "neuron initialization cannot access inference input");
+                    default -> { }
+                }
+            }
+            if (initialized.size() != layout.floatFields().size())
+                throw new IllegalArgumentException(
+                        "neuron MIR must initialize every declared field exactly once");
+            String inferredInput = null;
+            for (Instruction op : forward.body()) {
+                if (op.opcode() == Opcode.LOAD_STATE_F64
+                        && !initialized.contains(op.symbol()))
+                    throw new IllegalArgumentException("neuron MIR reads an unknown field");
+                if (op.opcode() == Opcode.LOAD_INPUT_F64) {
+                    if (inferredInput == null) inferredInput = op.symbol();
+                    else if (!inferredInput.equals(op.symbol()))
+                        throw new IllegalArgumentException(
+                                "neuron MIR references multiple inference inputs");
+                }
             }
         }
     }
