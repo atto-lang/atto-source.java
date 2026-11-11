@@ -71,3 +71,19 @@ closure, unique emitted-symbol assignment, precise ABI checks, and the
 bounds from common-source #265. Java's Truffle guest evaluator dispatch
 is not machine-code NativeAOT specialization. The tests in
 `CheckedDispatchPlanIntegrationV1Test` assert the generic exclusion.
+
+### Canonical scalar generic runtime-parity fixture
+
+`tests/fixtures/dispatch/generic_i64_reuse_v1.atto` executes two explicit
+`identity<int>` calls, expecting stdout `2022`. The exact checked-AST
+integration test requires **no** direct-symbol plan for either generic call
+until the Java compiler actually emits a concrete, closed specialization.
+`AotDispatchGuestV1Test` exercises the fixture with Java guest JIT
+enabled and with the guest JIT-disabled execution profile.
+
+This is a **semantic compatibility gate**, not Java NativeAOT generic
+machine-code emission. The LLVM branch independently introduces a
+precompiled `int`-only specialization. The Java backend must not consume
+or trust a fabricated LLVM emitted symbol without its own code-generation,
+signature and source-identity checks. Current Java tests are committed
+but require an admitted JUnit runner at the exact PR head.
