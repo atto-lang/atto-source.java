@@ -60,12 +60,6 @@ final class TreeShakerHttpActorPolicyTest {
                     receive(ActorMail<int> mail): void { return; }
                 end
                 """, BuildOptions.library(Map.of()));
-        assertTrue(result.retained("root.Endpoint") ||
-                result.retained("service.Endpoint") ||
-                result.program().modules().stream()
-                    .flatMap(module -> module.declarations().stream())
-                    .anyMatch(Ast.ClassDecl.class::isInstance),
-                "the public actor must remain in the optimized module");
         Ast.ClassDecl kept = result.program().modules().stream()
                 .flatMap(module -> module.declarations().stream())
                 .filter(Ast.ClassDecl.class::isInstance)
