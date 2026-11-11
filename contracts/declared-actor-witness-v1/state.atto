@@ -1,0 +1,5 @@
+namespace foo;
+define state on actor Foo as {
+    let int x : 5;
+    val bool ready : true;
+}
