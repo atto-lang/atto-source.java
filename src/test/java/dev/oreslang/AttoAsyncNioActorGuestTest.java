@@ -56,6 +56,8 @@ final class AttoAsyncNioActorGuestTest {
                     context.eval(Source.newBuilder(OresLanguage.ID, source,
                             "atto-nio2-spawned-actor-binary-echo.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
                 }
             });
             boolean echoed = false;
