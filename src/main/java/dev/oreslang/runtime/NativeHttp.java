@@ -477,6 +477,9 @@ public final class NativeHttp implements AutoCloseable {
                     return;
                 }
                 State state = null;
+                // Registered requests own the permit until State.release,
+                // even if another thread removes them during publication.
+                boolean registered = false;
                 try {
                     validateRequest(raw);
                     state = new State(this, raw);
@@ -487,6 +490,7 @@ public final class NativeHttp implements AutoCloseable {
                         denied = stopped;
                         if (!denied) {
                             active.add(state);
+                            registered = true;
                             accepted.incrementAndGet();
                             State timed = state;
                             long scheduled = CorePerf.start();
@@ -515,10 +519,10 @@ public final class NativeHttp implements AutoCloseable {
                     publishOutsideMonitor(this, acceptToComplete, acceptedExchange);
                 } catch (IllegalArgumentException invalid) {
                     int status = "body too large".equals(invalid.getMessage()) ? 413 : 400;
-                    if (state != null && active.contains(state)) state.abort(status);
+                    if (registered) state.abort(status);
                     else { admission.release(); reject(raw, status); }
                 } catch (RuntimeException failure) {
-                    if (state != null && active.contains(state)) state.abort(500);
+                    if (registered) state.abort(500);
                     else { admission.release(); raw.close(); }
                 }
             } finally {
