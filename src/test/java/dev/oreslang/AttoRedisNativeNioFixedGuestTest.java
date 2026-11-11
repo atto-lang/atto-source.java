@@ -41,6 +41,8 @@ final class AttoRedisNativeNioFixedGuestTest {
                     context.eval(Source.newBuilder(OresLanguage.ID, code,
                                     "redis_native_nio_fixed.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
                 }
             });
             try (Socket client = connect(guest)) {
