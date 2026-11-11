@@ -160,6 +160,9 @@ public final class TypeChecker {
         // Validate external receiver coherence before the still-mandatory
         // executable-lowering rejection. This pass confers no actor authority.
         ActorReceiverBinder.bind(program);
+        // Report the more specific external-receiver lowering blocker no matter
+        // whether the actor was declared before or after its implementation.
+        // Merely swapping source declaration order must never alter the gate.
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ExternalActorMethodDecl method) {
@@ -169,6 +172,10 @@ public final class TypeChecker {
                                     + "' requires actor-context authority, mailbox dispatch "
                                     + "and activation-generation fencing");
                 }
+            }
+        }
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.StandaloneActorDecl actor) {
                     throw new IllegalArgumentException(
                             "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: declared actor '" + actor.name()
