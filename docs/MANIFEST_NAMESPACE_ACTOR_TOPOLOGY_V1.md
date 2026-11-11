@@ -87,6 +87,13 @@ source IDs. A declared actor and an inline actor cannot be made into one
 state layout. Lifecycle ingress `external mtd init/receive` is validated but
 **never** indexed as a public method.
 
+Each source unit additionally carries a SHA-256 digest of its exact decoded
+UTF-8 bytes. A source edit invalidates that receipt on the next scan; the
+manifest digest is checked before and after inventory reads. These receipts
+support reproducible review, not protection against a concurrent filesystem
+race. Out-of-line methods remain **ineligible as actor-contract witnesses**
+until their actual bodies pass type/effect checking.
+
 The result maps are immutable metadata, and deliberately contain no callable
 method body, heap pointer, actor ref or runtime permit. An ordinary invocation
 still encounters `STANDALONE_ACTOR_LOWERING_UNSUPPORTED` or
@@ -96,7 +103,7 @@ actor-targeted signature/type/effect verification from #2792.
 
 ## Inventory rejection tests
 
-The new `ManifestNamespaceActorTopologyTest` authors 17 JUnit checks for:
+The new `ManifestNamespaceActorTopologyTest` authors 21 JUnit checks for:
 manifest-bound source inventory and separate source provenance, unexposed
 init/receive, TypeChecker's no-guest-execution fence, actor deletion and
 out-of-root replacement, duplicate/wrong-namespace state and receiver
