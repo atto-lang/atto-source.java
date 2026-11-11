@@ -153,11 +153,16 @@ public final class NeuronScalarScopeV0 {
                     || !(field.receiver() instanceof Ast.NameExpr owner)
                     || !owner.name().equals(alias)
                     || !layout.floatFields().contains(field.member())
-                    || !initialized.add(field.member())) {
+                    || initialized.contains(field.member())) {
                 throw unsupported("write scope requires one assignment per declared scalar field");
             }
+            // Validate the RHS BEFORE declaring this slot initialized.
+            // Otherwise 's.weight = s.weight + 1.0' reads uninitialized
+            // memory on its first assignment even though the pass "saw"
+            // a write to that slot.
             verifyScalarExpr(assignment.value(), alias, null, layout,
                     initialized, reads, 0);
+            initialized.add(field.member());
             writes.add(field.member());
         }
         if (initialized.size() != layout.floatFields().size()) {
