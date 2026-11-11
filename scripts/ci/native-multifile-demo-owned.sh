@@ -59,9 +59,11 @@ esac
 for sha in "$ATTO_EXPECTED_POLICY_SHA" "$ATTO_EXPECTED_COMPILER_SHA" "$ATTO_EXPECTED_DEMO_SHA"; do
   valid_sha "$sha" || fail "invalid source SHA"
 done
-for cmd in git java mvn timeout sha256sum cmp find sort; do
+for cmd in git java mvn timeout sha256sum cmp find sort sudo unshare setpriv stat; do
   command -v "$cmd" >/dev/null || fail "missing prerequisite $cmd"
 done
+: "${JAVA_HOME:?JDK 25 JAVA_HOME is required}"
+[[ -x "$JAVA_HOME/bin/java" ]] || fail "missing pinned JDK java launcher"
 for dir in "$ATTO_POLICY_DIR" "$ATTO_COMPILER_DIR" "$ATTO_DEMO_DIR" "$ATTO_RECEIPT_DIR"; do
   [[ "$dir" =~ ^[A-Za-z0-9_./-]+$ ]] || fail "unsafe path"
   [[ ! -L "$dir" && -d "$dir" ]] || fail "symlinked or missing directory"
@@ -70,6 +72,11 @@ policy="$(cd "$ATTO_POLICY_DIR" && pwd -P)"
 compiler="$(cd "$ATTO_COMPILER_DIR" && pwd -P)"
 demo="$(cd "$ATTO_DEMO_DIR" && pwd -P)"
 receipt="$(cd "$ATTO_RECEIPT_DIR" && pwd -P)"
+# The workflow may have created this before the runner script set umask=077.
+# Ensure child processes running as UID 65534 cannot read/write receipts.
+chmod 0700 -- "$receipt"
+[[ "$(stat -c '%a' -- "$receipt")" == 700 ]] ||
+  fail "receipt directory is not private to the trusted runner"
 
 verify_checkout() {
   local path="$1" expected="$2"
@@ -109,6 +116,8 @@ done
   printf 'demo_tree=%s\n' "$(git -C "$demo" rev-parse 'HEAD^{tree}')"
   printf 'backend=java-graalvm\nprofile=server-jit\n'
   printf 'no_stitch=true\nprivate_source_export=false\n'
+  printf 'guest_uid=65534\nguest_network_namespace=true\nguest_no_new_privileges=true\n'
+  printf 'guest_environment_scrub=true\nreceipt_directory_mode=700\n'
   printf 'compiler_pom_sha256=%s\n' "$(sha256sum "$compiler/pom.xml" | cut -d ' ' -f1)"
 } > "$receipt/identity.txt"
 find "$demo/native-multifile" -type f -name '*.atto' -print0 |
@@ -147,12 +156,21 @@ sed -i 's/^status=NOT_EXECUTED$/status=GUEST_FAILED/' "$receipt/identity.txt"
 invoke() {
   local label="$1" rc=0
   shift
+  # Open stdout/stderr as the trusted parent. The child UID cannot open the
+  # parent-owned 0700 receipt directory, and receives no inherited workflow
+  # environment/secrets. Its network namespace has no host network routes.
+  # Fail closed if the hosted runner cannot create the sandbox.
   (
     ulimit -f 8192
-    env -u ORESLANG_PATH -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS \
-        -u JDK_JAVA_OPTIONS -u CLASSPATH \
-      timeout --signal=TERM --kill-after=5s 120s \
-      java -cp "$runtime_cp" dev.oreslang.launcher.OresMain "$@"
+    sudo -n env -i \
+      "JAVA_HOME=$JAVA_HOME" "PATH=$JAVA_HOME/bin:/usr/bin:/bin" \
+      HOME=/nonexistent TMPDIR=/tmp LANG=C.UTF-8 \
+      /usr/bin/unshare --net -- \
+      /usr/bin/setpriv --reuid=65534 --regid=65534 \
+        --clear-groups --no-new-privs \
+      /usr/bin/timeout --signal=TERM --kill-after=5s 120s \
+      "$JAVA_HOME/bin/java" -cp "$runtime_cp" \
+      dev.oreslang.launcher.OresMain "$@"
   ) > "$receipt/$label.stdout" 2> "$receipt/$label.stderr" || rc=$?
   printf '%s\n' "$rc" > "$receipt/$label.exit"
   return "$rc"
