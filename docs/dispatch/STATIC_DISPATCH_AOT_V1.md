@@ -1,7 +1,8 @@
 # AttoLang static dispatch / full-AOT admission contract (v1)
 
-Status: **staged compiler policy and guest regression fixture, not an implemented native guest AOT optimizer**.
-The Java planner in this change is a pure classifier/oracle; it is **not yet wired into guest IR lowering**. Its host JUnit tests and the new guest fixture are **NOT EXECUTED** in this change unless an independently recorded CI run supplies evidence.
+Status: **Java reference evaluator integration staged; native guest AOT optimizer NOT IMPLEMENTED**.
+Java `TypeChecker` now calls `AotDispatchPlannerV1.classify` after successful callable resolution, attaches identity-bound `CheckedDispatchPlansV1` metadata to free/static/instance calls, and publishes an immutable per-program plan snapshot after type validation. `OresEvalRootNode.Evaluator` verifies the snapshot against its exact linked code image *once*, before exposing it to actor carriers, and consumes it without a global registry lock on guest calls. Only same-code-image free functions, qualified static methods, or instance receivers with the **exact checked runtime class** can skip ordinary lookup; polymorphic subclasses, reloaded generations and foreign code keep the existing slot/binding lookup. Calls containing argument spreads do not receive plans.
+This is an interpreter-side binding optimization, **not** evidence of native guest LLVM/Native Image/Native AOT dispatch lowering or performance gain. Its new host JUnit tests and guest fixture are **NOT EXECUTED** unless an independently recorded run supplies evidence.
 
 ## Core invariant
 
@@ -33,7 +34,8 @@ Prefer statically resolved calls whenever the checked program proves their targe
 
 ## Promotion gates
 
-- [ ] Implement a typed/resolved call-plan IR after macro expansion and ownership/type/effect validation. Make every backend reject unresolved or unsupported call forms before emitting executable output.
+- [x] **Java-only staging:** emit checked free/static/instance `CallPlan` metadata after macro expansion and type validation; bind it to an exact checked program and verify the source symbol/slot once at evaluator creation. Ownership admission remains mandatory before execution. This is **not** a general native-IR call plan.
+- [ ] Promote these typed call plans to the native backend IR after ownership/effect validation; enforce fail-closed rejection of unresolved or unsupported emission forms in every backend.
 - [ ] Wire the plan to Java guest lowering and LLVM, .NET, Wasm and Forge native lowering; record per-backend supported strategies separately.
 - [ ] Add closed-world + exact-receiver proofs and invalidation against module generation/hot reload; open-world virtual override must still return child behavior through a base-typed receiver.
 - [ ] Capture IR/assembly evidence: direct calls contain no avoidable per-call hash/vtable lookup; indirect calls retain typed slot and bounds/identity checks.
@@ -44,4 +46,4 @@ Prefer statically resolved calls whenever the checked program proves their targe
 
 ## Next implementation ordering
 
-Java parser/typechecker/IR -> LLVM guest AOT lowering -> .NET Native AOT -> Wasm real guest module -> Forge native. Canonicalize the *semantics* first; separate backend capability flags from claims of tested parity. Propose compiler diagnostic `--emit-dispatch-plan` (not yet implemented) for each call site's strategy, proof and generation.
+Java identity-bound interpreter proof (this PR; awaiting executable tests) -> checked native call-plan IR -> LLVM guest AOT lowering -> .NET Native AOT -> Wasm real guest module -> Forge native. Canonicalize the *semantics* first; separate backend capability flags from claims of tested parity. Propose compiler diagnostic `--emit-dispatch-plan` (not yet implemented) for each call site's strategy, proof and generation.
