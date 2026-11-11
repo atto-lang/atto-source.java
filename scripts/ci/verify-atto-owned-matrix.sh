@@ -78,8 +78,17 @@ verify() {
     { reject 'missing/invalid GitHub Actions job-attempt identity'; return 1; }
   [[ -f "$receipt/identity.txt" && ! -L "$receipt/identity.txt" ]] ||
     { reject "missing identity receipt"; return 1; }
-  [[ $(grep -Ec '^status=' "$receipt/identity.txt") -eq 1 ]] ||
-    { reject 'ambiguous receipt status'; return 1; }
+  # Require exactly one entry per provenance key; grep -Fxq alone could
+  # otherwise accept an identity receipt containing both a good and bad SHA.
+  [[ $(wc -c < "$receipt/identity.txt") -le 16384 ]] ||
+    { reject 'oversized identity receipt'; return 1; }
+  local key count
+  for key in status policy_head github_run_id github_run_attempt github_job \
+             demo_head compiler_head positive_cases negative_cases; do
+    count="$(grep -Ec "^$key=" "$receipt/identity.txt" || true)"
+    [[ "$count" == 1 ]] ||
+      { reject "missing or duplicate provenance key: $key"; return 1; }
+  done
   grep -Fxq 'status=PASS' "$receipt/identity.txt" ||
     { reject 'guest matrix did not finish'; return 1; }
   grep -Fxq "demo_head=$demo_sha" "$receipt/identity.txt" ||
@@ -214,6 +223,14 @@ self_test() {
        ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
        verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
     reject 'tampered hash receipt accepted'; exit 1
+  fi
+  reject_count=$((reject_count+1))
+  # Both a correct and a forged SHA in one receipt must be rejected.
+  printf 'demo_head=%s\n' "$compiler_sha" >> "$t/identity.txt"
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'duplicate forged provenance key accepted'; exit 1
   fi
   reject_count=$((reject_count+1))
   echo "ATTO_OWNED_MATRIX_RECEIPT_HOST_SELF_TEST_PASS accepts=1 rejects=$reject_count NOT_EXECUTED"
