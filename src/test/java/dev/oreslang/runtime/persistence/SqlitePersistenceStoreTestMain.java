@@ -215,6 +215,31 @@ public final class SqlitePersistenceStoreTestMain {
                     check(rejected,"malformed persisted actor state was published: "+actor);
                 }
             }
+            // A future event row beyond the durable head is also a
+            // corruption signal. Never interpret COUNT(*) as spare capacity
+            // or advance the actor head around the forged version.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","future-row",1);
+                check(store.commit(List.of(write("future-row","event-1",
+                        1,0,Kind.EVENT,4))).get(0).durable(),
+                        "future-row setup failed");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "INSERT INTO events(tenant,actor,slot,version,schema,payload) " +
+                    "VALUES('tenant-a','future-row','main',3,1,x'09')")==1,
+                    "future-row corruption injection failed");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                boolean denied=false;
+                try {store.commit(List.of(write("future-row","event-2",
+                        1,1,Kind.EVENT,5)));}
+                catch(java.sql.SQLException expected) {
+                    denied=expected.toString().contains("INCOMPLETE_ACTOR_JOURNAL");
+                }
+                check(denied,"future-version event row bypassed replay admission");
+            }
             Process child=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),
                 "-cp",System.getProperty("java.class.path"),SqlitePersistenceStoreTestMain.class.getName(),"child",file.toString())
                 .redirectErrorStream(true).start();
