@@ -62,7 +62,7 @@ pub async routine main(): void {
   await worker.get_ready();
   val listener = await network.listen_async("127.0.0.1", 16398);
   val socket = await listener.accept_async();
-  let List<int> frame = [];
+  let mut List<int> frame = [];
   loop {
     val bytes = await socket.read_bytes_async(1024);
     if bytes.size == 0; do
