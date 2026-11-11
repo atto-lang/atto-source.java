@@ -409,6 +409,11 @@ public final class IncrementalCompiler {
         // Attached actor state changes private physical layout and public actor
         // method witnesses. Without a verified multi-file package fingerprint,
         // omitting this AST node from ABI hashing could reuse stale code.
+        if (decl instanceof Ast.DeclaredActorDecl actor) {
+            throw new IllegalArgumentException(
+                    "DECLARED_ACTOR_ABI_UNSUPPORTED: '" + actor.name()
+                            + "' requires a verified package-level contract/slot/layout witness");
+        }
         if (decl instanceof Ast.ActorStateAttachmentDecl state) {
             throw new IllegalArgumentException(
                     "ACTOR_STATE_ATTACHMENT_ABI_UNSUPPORTED: '" + state.actorName()
