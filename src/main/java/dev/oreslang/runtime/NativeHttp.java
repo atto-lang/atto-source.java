@@ -22,7 +22,7 @@ public final class NativeHttp implements AutoCloseable {
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
-    private boolean closed;
+    private volatile boolean closed;
     private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
 
     public NativeHttp(OresContext context) {
@@ -134,6 +134,11 @@ public final class NativeHttp implements AutoCloseable {
                "sun.net.httpserver.nodelay", "true").forEach((key, value) -> System.getProperties().putIfAbsent(key, value));
     }
 
+    /** A preflight predicate, not a physical carrier quiescence receipt. */
+    static boolean mayBeginDispatch(boolean runtimeClosed, boolean listenerStopping) {
+        return !runtimeClosed && !listenerStopping;
+    }
+
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
@@ -169,6 +174,7 @@ public final class NativeHttp implements AutoCloseable {
         public synchronized long created() { supervisor(); return created; }
         public synchronized long reused() { supervisor(); return reused; }
         private synchronized Worker worker() {
+            if (closed) throw new IllegalStateException("HTTP runtime closed");
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
@@ -199,11 +205,22 @@ public final class NativeHttp implements AutoCloseable {
         public void dispatch(Exchange exchange) {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
-            synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
+            synchronized (exchange.state) {
+                exchange.checkOwner();
+                if (!mayBeginDispatch(closed, exchange.state.server.stopped)) {
+                    throw new IllegalStateException("HTTP runtime or listener is closing");
+                }
+                exchange.state.spawnNanos = System.nanoTime();
+            }
             if (workers != null) {
                 try {
                     Worker worker = worker();
                     synchronized (exchange.state) {
+                        // Repeat under exchange ownership after selecting/spawning
+                        // the worker; a concurrent listener stop must be visible.
+                        if (!mayBeginDispatch(closed, exchange.state.server.stopped)) {
+                            throw new IllegalStateException("HTTP runtime or listener closed during dispatch");
+                        }
                         exchange.state.poolWorker = worker;
                         worker.requests.add(exchange.state);
                         // Reused workers have no per-request startup. Do not retain
@@ -233,6 +250,9 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
+                if (!mayBeginDispatch(closed, exchange.state.server.stopped)) {
+                    throw new IllegalStateException("HTTP runtime or listener closed during actor startup");
+                }
                 actor.send(exchange.moveTo(actor));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
@@ -272,7 +292,8 @@ public final class NativeHttp implements AutoCloseable {
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
-        private boolean stopped, transportStopped;
+        private volatile boolean stopped;
+        private boolean transportStopped;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
 
