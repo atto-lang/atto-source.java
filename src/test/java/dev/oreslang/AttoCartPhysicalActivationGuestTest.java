@@ -160,6 +160,8 @@ final class AttoCartPhysicalActivationGuestTest {
                 first.gracefulStop().get(5, TimeUnit.SECONDS);
                 first.getDone().get(5, TimeUnit.SECONDS);
                 firstGuest.get().close();
+                assertThrows(IllegalStateException.class, () -> firstGuest.get().apply(9L),
+                        "closed physical guest context must not accept stale invocations");
 
                 assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
                         directory.inspect(grant, session, logical).orElseThrow().lifecycle());
