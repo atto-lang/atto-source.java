@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.runtime.CorePerf;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.InetAddress;
@@ -262,6 +263,28 @@ final class AttoRedisNioThroughputTest {
             guest.get(15, TimeUnit.SECONDS);
         }
         System.out.println("ATTO_NATIVE_NIO_FRAMED_REAL_ACTOR_BINARY_PIPELINE=PASS");
+    }
+
+    /**
+     * Dedicated core/stdlib flight-recorder diagnostic. Never print or block
+     * from the guest request path. The CorePerf JSONL flush happens at JVM exit.
+     * Kept separate from the uninstrumented Redis-vs-Atto throughput comparison.
+     */
+    @Test
+    @Timeout(value = 120, unit = TimeUnit.SECONDS)
+    void profileRealAttoFramedNioUsingCorePerf() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_PROFILE_ENABLED")),
+                "opt-in diagnostic: real Atto guest + CorePerf bounded ring");
+        CorePerf.configure(true);
+        try {
+            double rate = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed_coreperf");
+            assertTrue(rate > 0 && Double.isFinite(rate));
+            System.out.printf("ATTO_REDIS_CORE_PROFILE=PASS rate=%.1f phase_export=JVM_SHUTDOWN_JSONL%n",
+                    rate);
+        } finally {
+            // Recording is disabled; the core dump retains already captured rows.
+            CorePerf.configure(false);
+        }
     }
 
     @Test
