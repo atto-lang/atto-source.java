@@ -217,6 +217,60 @@ final class AttoRedisBinaryResp2GuestTest {
         System.out.println("ATTO_REDIS_RESP2_NONCANONICAL_FAIL_CLOSED=PASS");
     }
 
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void distinctBinaryKeysEmptyKeyAndLargeBinaryPayloadSurviveReadFragmentation()
+            throws Exception {
+        byte[] keyA = new byte[] {0};
+        byte[] keyB = new byte[] {0, 0};
+        byte[] empty = new byte[0];
+        byte[] payload = new byte[1024];
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) (i & 255);
+        }
+        runGuest(client -> {
+            // Fragmentation is inevitable for a 1024-byte read limit, and
+            // responses also require reassembly when they exceed one read.
+            client.getOutputStream().write(cat(
+                    command("SET", keyA, payload),
+                    command("SET", keyB, keyA),
+                    command("SET", empty, empty),
+                    command("GET", keyA),
+                    command("GET", keyB),
+                    command("GET", empty),
+                    command("DEL", keyA),
+                    command("GET", keyB),
+                    command("QUIT")));
+            client.getOutputStream().flush();
+            expect(client, cat(
+                    ascii("+OK\\r\\n"), ascii("+OK\\r\\n"), ascii("+OK\\r\\n"),
+                    bulk(payload), bulk(keyA), bulk(empty),
+                    ascii(":1\\r\\n"), bulk(keyA), ascii("+OK\\r\\n")),
+                    "binary identity, zero-length key, and 1024-byte bulk length");
+            assertClosed(client);
+        });
+        System.out.println("ATTO_REDIS_BINARY_1024_PAYLOAD_ZERO_KEY=PASS");
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void rejectNegativeBulkAndIncorrectBulkTrailers() throws Exception {
+        runGuest(client -> {
+            client.getOutputStream().write(ascii("*2\\r\\n$3\\r\\nGET\\r\\n$-1\\r\\n"));
+            client.getOutputStream().flush();
+            expect(client, ascii("-ERR protocol\\r\\n"), "no null bulk requests");
+            assertClosed(client);
+        });
+        runGuest(client -> {
+            client.getOutputStream().write(ascii("*1\\r\\n$4\\r\\nPING\\rX"));
+            client.getOutputStream().flush();
+            expect(client, ascii("-ERR protocol\\r\\n"), "bad bulk trailer");
+            assertClosed(client);
+        });
+        System.out.println("ATTO_REDIS_BINARY_BAD_TRAILER_NEGATIVE_BULK=PASS");
+    }
+
     @Test
     void staticTypesRejectUnsafeActorMailAndSynchronousSocketRegression()
             throws Exception {
