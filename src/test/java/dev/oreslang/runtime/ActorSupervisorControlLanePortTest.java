@@ -207,4 +207,36 @@ final class ActorSupervisorControlLanePortTest {
         assertEquals(1, root.snapshot().acknowledged());
     }
 
+    @Test
+    void deliveryTicketOverflowDoesNotDequeueOrLoseTheControlNotice()
+            throws Exception {
+        var lane = new ActorSupervisorControlLane(1);
+        var child = ActorRuntime.ActorId.create();
+        lane.reserve(child, 47);
+        assertTrue(lane.publish(notice(child, 47, 100)));
+
+        // Force an exceptional poll attempt before the delivery lease is
+        // allocated. Ticket overflow must leave the notice in the original
+        // queue; the same rule applies to failed receipt allocation.
+        var ticketField = ActorSupervisorControlLane.class
+                .getDeclaredField("nextDeliveryTicket");
+        ticketField.setAccessible(true);
+        ticketField.setLong(lane, Long.MAX_VALUE);
+
+        var before = lane.snapshot();
+        assertThrows(ArithmeticException.class, lane::poll);
+        var after = lane.snapshot();
+        assertEquals(before.pending(), after.pending());
+        assertEquals(before.reserved(), after.reserved());
+        assertEquals(before.inFlight(), after.inFlight());
+        assertEquals(before.published(), after.published());
+
+        ticketField.setLong(lane, 0L);
+        var delivery = lane.poll().orElseThrow();
+        assertEquals(child, delivery.notice().actor());
+        assertEquals(100, delivery.notice().sequence());
+        lane.ack(delivery);
+        assertEquals(0, lane.snapshot().reserved());
+    }
+
 }
