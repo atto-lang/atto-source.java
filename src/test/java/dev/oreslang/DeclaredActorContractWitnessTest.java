@@ -23,7 +23,7 @@ final class DeclaredActorContractWitnessTest {
     private static final String NS = "namespace foo;\n";
     private static final String DECL = NS + "declare pub actor Foo implements ActorXYZ;";
     private static final String CONTRACT = NS
-            + "define pub interface ActorXYZ as fnc bar(int x): int; end";
+            + "define pub contract ActorXYZ for actor as mtd bar(int x): int; end";
     private static final String METHOD = NS
             + "pub mtd (Foo f) bar(int x): int { return x; }";
     private static final String STATE = NS
@@ -144,22 +144,22 @@ final class DeclaredActorContractWitnessTest {
 
     @Test
     void declaredActorCannotExportPrivateInterface() {
-        reject(DECL, NS + "define interface ActorXYZ as fnc bar(int x): int; end",
+        reject(DECL, NS + "define contract ActorXYZ for actor as mtd bar(int x): int; end",
                 METHOD, "public actor exposes private actor contract");
     }
 
     @Test
     void duplicateContractMethodSelectorsCannotBeDisambiguatedByTypes() {
         reject(DECL,
-                NS + "define pub interface ActorXYZ as fnc bar(int x): int;"
-                        + " fnc bar(bool x): int; end",
+                NS + "define pub contract ActorXYZ for actor as mtd bar(int x): int;"
+                        + " mtd bar(bool x): int; end",
                 METHOD, "ambiguous duplicate actor contract slot");
     }
 
     @Test
     void interfaceFieldsCannotBeMadePublicByMethodWitness() {
-        reject(DECL, NS + "define pub interface ActorXYZ as int x; end",
-                METHOD, "method-only members");
+        reject(DECL, NS + "define pub contract ActorXYZ for actor as int x; end",
+                METHOD, "actor contracts accept only mtd signatures");
     }
 
     @Test
@@ -172,7 +172,7 @@ final class DeclaredActorContractWitnessTest {
     @Test
     void borrowLikeAndGenericPayloadContractsNeedRealOwnershipProof() {
         reject(DECL, NS
-                + "define pub interface ActorXYZ as fnc bar(Map<int, int> x): int; end",
+                + "define pub contract ActorXYZ for actor as mtd bar(Map<int, int> x): int; end",
                 METHOD, "requires exact scalar");
     }
 
@@ -197,7 +197,7 @@ final class DeclaredActorContractWitnessTest {
     void untrustedImportCannotSupplyAContractOrActorMethod() {
         reject(DECL,
                 "namespace foo;\nimport interface ActorXYZ from \"foreign.atto\";"
-                        + "define pub interface ActorXYZ as fnc bar(int x): int; end",
+                        + "define pub contract ActorXYZ for actor as mtd bar(int x): int; end",
                 METHOD, "forbids imports");
     }
 
