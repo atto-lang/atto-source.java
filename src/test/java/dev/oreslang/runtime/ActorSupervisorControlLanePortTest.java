@@ -161,6 +161,9 @@ final class ActorSupervisorControlLanePortTest {
         };
         Thread one = new Thread(aToB, "control-a-to-b");
         Thread two = new Thread(bToA, "control-b-to-a");
+        // A lock-order regression must fail the test, not pin the JVM forever.
+        one.setDaemon(true);
+        two.setDaemon(true);
         one.start();
         two.start();
         go.countDown();
