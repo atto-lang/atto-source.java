@@ -1906,6 +1906,11 @@ public final class TypeChecker {
                     expected,
                     "initializer for module binding " + field.name());
             requireAssignable(actual, expected, "initializer for " + field.name());
+            if (strictAttoEquality) {
+                requireStrictNumericSourceAssignment(field.type(),
+                        field.initializer(), new Env(null),
+                        "module initializer for " + field.name());
+            }
         }
     }
 
@@ -2145,6 +2150,10 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
+            if (strictAttoEquality && binding.declaredType() != null) {
+                requireStrictNumericSourceAssignment(binding.declaredType(),
+                        binding.initializer(), env, "initializer for " + binding.name());
+            }
 
             // Resolve CONST selector metadata before defining the new binding so
             // an initializer alias refers to the lexical source, not to the just-
@@ -2626,6 +2635,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
+            if (strictAttoEquality) {
+                requireStrictNumericSourceAssignment(
+                        strictSourceRef(assignment.target(), env),
+                        assignment.value(), env, "assignment");
+            }
             Type targetType;
             List<Type> dynamicFixedSlots = List.of();
             String initializedIndexedField = null;
@@ -3128,6 +3142,9 @@ public final class TypeChecker {
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                    if (strictAttoEquality) {
+                        checkStrictNumericCallArguments(target, call.arguments(), env);
+                    }
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -8326,6 +8343,71 @@ public final class TypeChecker {
         // Unknown / polymorphic / effectful scalar origins cannot prove width
         // merely because the erased type checker currently says INT or FLOAT.
         return null;
+    }
+
+    /**
+     * Narrow strict-mode scalar flow gate. Literal specialization is checked
+     * against the declared width, never treated as a widening conversion of
+     * an already typed source value. Legacy numeric assignment is untouched.
+     */
+    private void requireStrictNumericSourceAssignment(
+            Ast.TypeRef expectedType, Ast.Expr value, Env env, String where) {
+        if (!strictAttoEquality) return;
+        String expected = strictNumericName(expectedType);
+        if (expected == null) return;
+        if (value instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long n
+                && Set.of("i8", "i16", "i32", "i64", "u8", "u16",
+                        "u32", "u64", "int", "uint", "bigint").contains(expected)) {
+            boolean inRange = switch (expected) {
+                case "i8" -> n >= Byte.MIN_VALUE && n <= Byte.MAX_VALUE;
+                case "i16" -> n >= Short.MIN_VALUE && n <= Short.MAX_VALUE;
+                case "i32" -> n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE;
+                case "u8" -> n >= 0 && n <= 0xffL;
+                case "u16" -> n >= 0 && n <= 0xffffL;
+                case "u32" -> n >= 0 && n <= 0xffffffffL;
+                case "u64", "uint" -> n >= 0;
+                default -> true; // i64 / int / bigint, limited to parsed Long literals
+            };
+            if (inRange) return;
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE: "
+                    + n + " does not fit " + expected + " in " + where);
+        }
+        if (value instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Double number
+                && Set.of("f32", "f64", "float").contains(expected)) {
+            if (!expected.equals("f32")
+                    || (Double.isFinite(number)
+                        && Double.doubleToLongBits((double) number.floatValue())
+                                == Double.doubleToLongBits(number))) return;
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE: "
+                    + number + " cannot be represented exactly as f32 in " + where);
+        }
+        String actual = strictNumericSource(value, env);
+        if (actual == null) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_UNRESOLVED_NUMERIC_WIDTH: " + where
+                    + " needs exact " + expected + " source provenance");
+        }
+        if (!expected.equals(actual)) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES: "
+                    + "numeric source " + actual + " cannot flow to " + expected
+                    + " in " + where + " without an explicit conversion");
+        }
+    }
+
+    private void checkStrictNumericCallArguments(
+            Ast.FunctionDecl target, List<Ast.Expr> arguments, Env env) {
+        if (!strictAttoEquality || !target.genericParameters().isEmpty()
+                || target.parameters().size() != arguments.size()) return;
+        for (int i = 0; i < arguments.size(); i++) {
+            requireStrictNumericSourceAssignment(
+                    target.parameters().get(i).type(), arguments.get(i), env,
+                    "argument " + (i + 1) + " to " + target.name());
+        }
     }
 
     private void requireStrictNumericEqualitySourceTypes(
