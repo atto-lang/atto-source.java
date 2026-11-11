@@ -2793,7 +2793,23 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
-            Type joined = commonType(left, right);
+            Type joined;
+            // An empty literal has no independent element type. Preserve the
+            // fully checked other branch's element type, but ONLY when the AST
+            // proves the empty side is a literal (not an unknown dynamic value).
+            if (isEmptyListValue(conditional.whenTrue())
+                    && left instanceof ListType
+                    && right instanceof ListType typedRight
+                    && typedRight.element() != Unknown.INSTANCE) {
+                joined = typedRight;
+            } else if (isEmptyListValue(conditional.whenFalse())
+                    && right instanceof ListType
+                    && left instanceof ListType typedLeft
+                    && typedLeft.element() != Unknown.INSTANCE) {
+                joined = typedLeft;
+            } else {
+                joined = commonType(left, right);
+            }
             // Unknown is assignable everywhere, so returning it for mismatched arms would
             // let a String pass as an int. Their union is checked at each use instead.
             if (joined == Unknown.INSTANCE && !containsUnknown(left) && !containsUnknown(right)) {
@@ -8184,6 +8200,14 @@ public final class TypeChecker {
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Types.unionOf(a, b);
+    }
+
+    private static boolean isEmptyListValue(Ast.Expr expression) {
+        if (expression instanceof Ast.ListExpr list) return list.elements().isEmpty();
+        if (expression instanceof Ast.BlockValueExpr block) {
+            return isEmptyListValue(block.value());
+        }
+        return false;
     }
 
     private Type commonType(Type a, Type b) {
