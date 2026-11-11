@@ -3,6 +3,15 @@ package dev.oreslang;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.TestFactory;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+import java.util.stream.Collectors;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -95,5 +104,85 @@ final class AttoHpcTileGuestTest {
                 """;
         assertEquals(Double.doubleToRawLongBits(0.0), f64Bits(program),
                 "Two-tile result must match fixed tile grouping, not single-stream grouping");
+    }
+
+    // Exact same reviewed Atto source is used by LLVM's Rust/Clang observer.
+    // The LLVM variant invokes tile_reduce8 through the native i64 ABI;
+    // here each generated main() calls tile_reduce8 through the Graal guest.
+    private static final String PARAMETERIZED_SOURCE =
+            "/atto/hpc-reduction-v1/i64-parameterized-tiles.atto";
+    private static final String PARAMETERIZED_BLOB =
+            "88795ff752006d020ea08c6585a8b3b03bf641c7";
+    private static final int RANDOM_CASES = 96;
+
+    private static long oracle(long[] v) {
+        assertEquals(8, v.length);
+        long first = 0L;
+        long second = 0L;
+        for (int i = 0; i < 4; ++i) first = Math.addExact(first, v[i]);
+        for (int i = 4; i < 8; ++i) second = Math.addExact(second, v[i]);
+        return Math.addExact(first, second);
+    }
+
+    private static List<long[]> vectors() {
+        List<long[]> rows = new ArrayList<>();
+        rows.add(new long[]{0, 0, 0, 0, 0, 0, 0, 0});
+        rows.add(new long[]{1, 2, 3, 4, 5, 6, 7, 8});
+        rows.add(new long[]{-1, -2, -3, -4, -5, -6, -7, -8});
+        rows.add(new long[]{Long.MAX_VALUE, -Long.MAX_VALUE, 10, -5,
+                Long.MIN_VALUE, Long.MAX_VALUE, 2, 3});
+        rows.add(new long[]{Long.MIN_VALUE, Long.MAX_VALUE, Long.MAX_VALUE,
+                -Long.MAX_VALUE, 7, -7, 0, 0});
+        rows.add(new long[]{Long.MAX_VALUE, 0, 0, 0, -Long.MAX_VALUE, 0, 0, 0});
+        rows.add(new long[]{Long.MIN_VALUE, 1, 0, 0, Long.MAX_VALUE, -1, 0, 0});
+        rows.add(new long[]{10_000_000_000_000_000L, 1, -10_000_000_000_000_000L, 1,
+                -10_000_000_000_000_000L, 1, 10_000_000_000_000_000L, 1});
+        rows.add(new long[]{5_000_000_000L, 4_000_000_000L, -3_000_000_000L, 7,
+                -9, 10, 0, 0});
+        rows.add(new long[]{255, 1, 1, 1, 1, 1, 1, 1});
+        rows.add(new long[]{Long.MAX_VALUE, -1, 0, 0, -Long.MAX_VALUE, 1, 0, 0});
+        long state = 0x5EED_F00D_BADC_0FFEL;
+        for (int k = 0; k < RANDOM_CASES; ++k) {
+            long[] v = new long[8];
+            for (int i = 0; i < 8; ++i) {
+                state ^= state << 13;
+                state ^= state >>> 7;
+                state ^= state << 17;
+                v[i] = Long.remainderUnsigned(state, 1_000_001L) - 500_000L;
+            }
+            rows.add(v);
+        }
+        return List.copyOf(rows);
+    }
+
+    @TestFactory
+    Stream<DynamicTest> signedI64ParameterizedGuestMatchesCheckedOracle() throws IOException {
+        byte[] bytes;
+        try (InputStream input = AttoHpcTileGuestTest.class.getResourceAsStream(PARAMETERIZED_SOURCE)) {
+            assertNotNull(input, "Missing exact shared parameterized Atto guest source");
+            bytes = input.readAllBytes();
+        }
+        assertEquals(PARAMETERIZED_BLOB, gitBlob(bytes), "Parameterized source drifted across backends");
+        String original = new String(bytes, StandardCharsets.UTF_8);
+        assertEquals(1, original.split("return 42;", -1).length - 1,
+                "Only one reviewed main return may be replaced with runtime case literals");
+        List<long[]> rows = vectors();
+        assertEquals(107, rows.size(), "Keep Java cases aligned with LLVM Rust 107-case matrix");
+        return IntStream.range(0, rows.size()).mapToObj(index ->
+                DynamicTest.dynamicTest("hpc-i64-differential-" + index, () -> {
+                    long[] row = rows.get(index);
+                    long expected = oracle(row);
+                    String arguments = Arrays.stream(row)
+                            .mapToObj(Long::toString)
+                            .collect(Collectors.joining(", "));
+                    String compiledAtto = original.replace("return 42;",
+                            "return tile_reduce8(" + arguments + ");");
+                    try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+                        Value observed = evaluate(context, compiledAtto);
+                        assertTrue(observed.fitsInLong(), "Guest result must fit i64 for case " + index);
+                        assertEquals(expected, observed.asLong(),
+                                "Graal i64 tile mismatch case " + index + " inputs=" + Arrays.toString(row));
+                    }
+                }));
     }
 }
