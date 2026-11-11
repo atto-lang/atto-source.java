@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.SingletonCheckOnly;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -138,6 +139,55 @@ final class SingletonCheckOnlyTest {
         reject("import module common from \"common.ores\";\n"
                         + "define singleton Settings as end",
                 "ORES-SINGLETON-CHECKONLY");
+    }
+
+
+    @Test
+    void manuallyConstructedAstCannotBypassFieldIdentityOrBudget() {
+        Ast.SingletonDecl parsed =
+                OresCompiler.checkSingletonDeclarationsOnly(IMMUTABLE).getFirst();
+        Ast.SingletonField first = parsed.fields().getFirst();
+        Ast.SingletonDecl duplicate = new Ast.SingletonDecl("Settings",
+                Ast.Visibility.PRIVATE, List.of(first, first), 1, 1);
+        Ast.Program repeated = new Ast.Program(List.of(
+                new Ast.ModuleDecl("app", List.of(duplicate))));
+        IllegalArgumentException duplicateError = assertThrows(
+                IllegalArgumentException.class, () -> SingletonCheckOnly.check(repeated));
+        assertTrue(duplicateError.getMessage().contains("ORES-SINGLETON-DUPLICATE"),
+                duplicateError.getMessage());
+
+        Ast.SingletonDecl oversized = new Ast.SingletonDecl("Settings",
+                Ast.Visibility.PRIVATE, java.util.Collections.nCopies(65, first), 1, 1);
+        Ast.Program tooMany = new Ast.Program(List.of(
+                new Ast.ModuleDecl("app", List.of(oversized))));
+        IllegalArgumentException limit = assertThrows(
+                IllegalArgumentException.class, () -> SingletonCheckOnly.check(tooMany));
+        assertTrue(limit.getMessage().contains("ORES-SINGLETON-FIELD-BUDGET"),
+                limit.getMessage());
+    }
+
+    @Test
+    void forgedNonfiniteDoubleCannotBePublishedAsImmutableConstant() {
+        Ast.SingletonDecl parsed = OresCompiler.checkSingletonDeclarationsOnly(
+                "define singleton Settings as const double pi = 3.14; end").getFirst();
+        Ast.SingletonField position = parsed.fields().getFirst();
+        Ast.FieldDecl previous = position.declaration();
+        for (double nonfinite : new double[]{Double.POSITIVE_INFINITY,
+                Double.NEGATIVE_INFINITY, Double.NaN}) {
+            Ast.FieldDecl unsafe = new Ast.FieldDecl(previous.name(), previous.visibility(),
+                    previous.bindingKind(), previous.type(), previous.annotations(),
+                    new Ast.LiteralExpr(nonfinite), previous.mutableReferent());
+            Ast.SingletonDecl forged = new Ast.SingletonDecl(parsed.name(),
+                    parsed.visibility(), List.of(new Ast.SingletonField(
+                            unsafe, position.line(), position.column())),
+                    parsed.line(), parsed.column());
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("app", List.of(forged))));
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class, () -> SingletonCheckOnly.check(program));
+            assertTrue(denied.getMessage().contains("ORES-SINGLETON-INIT-EFFECT"),
+                    denied.getMessage());
+        }
     }
 
     @Test
