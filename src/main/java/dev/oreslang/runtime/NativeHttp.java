@@ -239,30 +239,61 @@ public final class NativeHttp implements AutoCloseable {
             workers[slot] = worker;
             created++;
             Worker attached = worker;
-            worker.actor.done().whenCompleteRuntime((ignored, failure) ->
-                    HttpResponseCleanupDispatcher.dispatch(io, () -> {
-                try {
-                    // Actor DONE callbacks may be invoked under the actor's
-                    // lifecycle monitor. Socket cleanup and listener failure
-                    // publication must execute on a separate host carrier.
-                    for (State state : List.copyOf(attached.requests)) {
-                        try { state.abort(500, false); }
-                        catch (RuntimeException abortFailure) {
-                            state.server.failDrain(abortFailure);
+            worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
+                // DONE may publish while the last carrier is still executing
+                // finalization callbacks. Stop any fresh worker reservation
+                // NOW, but only detach historical listener tracking after
+                // actual physical cleanup has crossed its final boundary.
+                attached.admission.seal();
+                HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                    try {
+                        for (State state : List.copyOf(attached.requests)) {
+                            try { state.abort(500, false); }
+                            catch (RuntimeException abortFailure) {
+                                state.server.failDrain(abortFailure);
+                            }
                         }
+                    } finally {
+                        retireWorkerWhenPhysicallyExited(attached);
                     }
-                } finally {
-                    // Actor DONE follows physical carrier finalization.
-                    // Unlink the listener/worker association at retirement.
-                    for (Server server : List.copyOf(attached.served)) {
-                        server.pooledWorkers.remove(attached);
-                    }
-                    attached.served.clear();
-                    attached.requests.clear();
-                }
-            }));
+                });
+            });
             return worker;
         }
+
+        private void retireWorkerWhenPhysicallyExited(Worker attached) {
+            // Actor finalization Future publication and actual ThreadLocal
+            // carrier exit are separate boundaries. Removing the listener's
+            // worker generation before BOTH are complete can make shutdown
+            // observe an empty set and claim a false successful drain.
+            final boolean canRetire;
+            try {
+                canRetire = attached.admission.quiescent()
+                        && context.actors().httpCarrierQuiescent(attached.actor);
+            } catch (RuntimeException observationFailure) {
+                // Fail closed: preserve the listener's tracked generation.
+                for (Server server : List.copyOf(attached.served)) {
+                    server.failDrain(observationFailure);
+                }
+                return;
+            }
+            if (!canRetire) {
+                try {
+                    timers.schedule(() -> retireWorkerWhenPhysicallyExited(attached),
+                            10L, TimeUnit.MILLISECONDS);
+                } catch (RejectedExecutionException timerClosed) {
+                    // Listener close/forced shutdown will explicitly detach
+                    // worker references. Never detach early on timer failure.
+                }
+                return;
+            }
+            for (Server server : List.copyOf(attached.served)) {
+                server.pooledWorkers.remove(attached);
+                attached.served.remove(server);
+            }
+            attached.requests.clear();
+        }
+
         private void stopPool() {
             Worker[] snapshot;
             synchronized (this) { snapshot = workers.clone(); }
