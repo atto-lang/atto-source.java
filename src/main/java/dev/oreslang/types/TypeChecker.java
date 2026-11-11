@@ -6085,6 +6085,13 @@ public final class TypeChecker {
             }
             case "NioConnection" -> {
                 switch (name) {
+                    case "read_resp2_hex_async" -> {
+                        result = new ListType(Primitive.STRING); parameters = List.of();
+                    }
+                    case "write_resp2_hex_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
                     case "read_bytes_async" -> {
                         result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
                     }
