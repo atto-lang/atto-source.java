@@ -29,6 +29,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Install pinned JDK for source-free receipt validation
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
       - name: Validate runner and synthetic-negative oracle (no guest)
         shell: bash
         env:
@@ -37,7 +42,17 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           bash -n scripts/ci/native-multifile-demo-owned.sh
+          bash -n scripts/ci/atto-runtime-classpath-audit.sh
+          bash -n scripts/ci/test-atto-runtime-classpath-audit.sh
+          bash -n scripts/ci/verify-atto-owned-matrix.sh
           bash scripts/ci/native-multifile-demo-owned.sh --self-test
+          bash scripts/ci/test-atto-runtime-classpath-audit.sh
+          bash scripts/ci/verify-atto-owned-matrix.sh --self-test
+          mkdir -p "$RUNNER_TEMP/atto-seven-junit-verifier"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-seven-junit-verifier" \
+            scripts/ci/AttoDemoSevenReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-seven-junit-verifier" \
+            AttoDemoSevenReceiptVerifier --self-test
           echo 'SOURCE_FREE_ONLY: compiler guest NOT_EXECUTED'
 
   java-linked-guest:
@@ -48,7 +63,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      ATTO_EXPECTED_DEMO_SHA: 30eb32297c1a9f496d15adab6198052e884b19e0
+      ATTO_EXPECTED_DEMO_SHA: 62e6466bedac2633ba9234b2789a9ee6a74ede91
       ATTO_EXPECTED_COMPILER_SHA: 6d8eb70048eafc9a84c5aebe9c1bb06104f16e76
       ATTO_EXPECTED_POLICY_SHA: ${{ github.sha }}
       ATTO_POLICY_DIR: ${{ github.workspace }}/policy
