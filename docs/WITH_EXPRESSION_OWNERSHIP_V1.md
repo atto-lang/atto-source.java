@@ -65,8 +65,8 @@ no constructor, inheritance, generics, abstract class or actor semantics;
 at least one statically declared field; each field must be non-rebindable
 (`val`, `const`, `final` equivalent slot policy), non-mutable referent, and
 a non-borrowed builtin `int`, `bool`, `float`, `string` or `String` type.
-Shadowing these builtin names with a local nominal type disqualifies the
-class. This explicit `rt copy` creates a new object, **not** an implicit
+Shadowing these builtin names with a local nominal type **or type alias** disqualifies the
+class; the type checker also proves their resolved types are builtin scalars. This explicit `rt copy` creates a new object, **not** an implicit
 `Copy` trait for arbitrary nominal values. Do not extend it to an
 owning handle, ordinary heap resource, mutex guard or actor state.
 
@@ -84,9 +84,12 @@ is introduced.
 * Assemble a fresh readonly record or class object **after** RHS evaluation
   completes; never mutate a published original. Failed RHS computation must
   not partially publish a value.
-* V1 restricts RHSs to conservatively non-suspending, effect-safe expressions.
-  `await`, channel operations, assignments, unchecked calls and other
-  unproven effect boundaries are rejected. Full effect and exception-path
+* V1 restricts replacement RHSs **and receiver sources** to
+  conservatively non-suspending, effect-safe expressions.
+  `rt copy`/`rt take` wrappers and nested `with` updates are traversed,
+  preventing them from hiding `await`, unverified calls, channel operations
+  or assignments. The guest evaluator's source-task scanner independently
+  traverses all `WithExpr` children. Full effect and exception-path
   summaries remain future work.
 * No allocation-free guarantee. The Java interpreter currently constructs
   fresh nominal objects for `rt copy` and `with`; eliminating redundant
@@ -96,14 +99,21 @@ is introduced.
 
 ## CI evidence and limits
 
-- **PASS:** [private exact-source-subset runner #42955154263](https://github.com/voxletra/voxletra-e2e/actions/runs/42955154263)
+- **PASS:** [private exact-source-subset runner #42958096906](https://github.com/voxletra/voxletra-e2e/actions/runs/42958096906)
   compiled 258 Java source files and 2 selected JUnit classes with Java 21,
-  executed 14 JUnit tests with 0 failures, errors or skips, and verified all
-  340 mirrored Git blob hashes before running.
-- **Source PR head:** `5ff64d450c8067e7c313aba69bbdee8a39fda95b`
+  executed 19 JUnit tests with 0 failures, errors or skips, and verified all
+  348 mirrored Git blob hashes before running.
+- **Source PR head:** `6bf579d6d2fbed3a764ef96cf2e876eaa4451875`
   at this checkpoint. Exact changed feature sources/fixtures are mirrored;
   the carrier's remaining files derive from the explicitly disclosed
   previous subset. This is **not** an exact full-source-tree build.
+- **Audit coverage:** 23 real guest `.atto` fixtures cover unchanged
+  original values, original-RHS evaluation order, aliased type names, private
+  fields, inherited classes, effects in receiver and RHS, borrowed `self`,
+  live-loan moves, move-only resources and mutable classes/structs.
+- **Carrier scope:** exactly 30 feature-related files match source commit Git
+  blob SHAs. The source Git tree contains 1,910 blobs; the carrier mirrors a
+  verified 348-file subset only. A complete source HEAD build is **not** claimed.
 - **NOT EXECUTED:** GraalVM Native Image AOT, LLVM, .NET AOT, Wasm, Forge,
   full release/conformance matrix, sanitizer matrix and formal ownership
   proof. Source-org GitHub Actions jobs failed before running steps; their
