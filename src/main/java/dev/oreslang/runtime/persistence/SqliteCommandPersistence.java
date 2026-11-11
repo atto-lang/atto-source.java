@@ -34,6 +34,8 @@ public final class SqliteCommandPersistence implements AutoCloseable {
     private static final int MAX_EVENT_COUNT = 256;
     private static final int MAX_COMMAND_BYTES = 1 << 20;
     private static final int MAX_REPLAY_EVENTS = 65536;
+    private static final long MAX_REPLAY_BYTES = 64L * 1024 * 1024;
+    private final long replayByteLimit;
     private final Connection db;
     private final String tenant;
     private final ExecutorService worker;
@@ -101,6 +103,14 @@ public final class SqliteCommandPersistence implements AutoCloseable {
     }
 
     public SqliteCommandPersistence(Path trustedAbsoluteDatabase, String tenant) throws SQLException {
+        this(trustedAbsoluteDatabase, tenant, MAX_REPLAY_BYTES);
+    }
+    /** Bounded replay byte budget (1..64 MiB); checked before materializing BLOBs. */
+    public SqliteCommandPersistence(Path trustedAbsoluteDatabase, String tenant, long replayByteLimit)
+            throws SQLException {
+        if (replayByteLimit < 1 || replayByteLimit > MAX_REPLAY_BYTES)
+            fail("INVALID_CONFIG");
+        this.replayByteLimit = replayByteLimit;
         Objects.requireNonNull(trustedAbsoluteDatabase);
         if (!trustedAbsoluteDatabase.isAbsolute() || trustedAbsoluteDatabase.toString().indexOf('\0') >= 0)
             throw new IllegalArgumentException("trusted absolute SQLite path required");
@@ -266,10 +276,10 @@ public final class SqliteCommandPersistence implements AutoCloseable {
         begin();
         try {
             if (epoch(id)!=epoch) fail("STALE_EPOCH");
-            long version=head(id),cursor=0;
+            long version=head(id),cursor=0,replayedBytes=0;
             ArrayList<Event> events=new ArrayList<>();
             try (PreparedStatement q=db.prepareStatement(
-                    "SELECT e.version,e.op_id,e.schema,e.payload,d.digest "
+                    "SELECT e.version,e.op_id,e.schema,e.payload,d.digest,length(e.payload) "
                     + "FROM command_v2_events e LEFT JOIN command_v2_event_digests d "
                     + "ON d.tenant=e.tenant AND d.actor=e.actor AND d.slot=e.slot "
                     + "AND d.version=e.version "
@@ -284,11 +294,18 @@ public final class SqliteCommandPersistence implements AutoCloseable {
                         // Every replayed event must have one durable command receipt.
                         String op=rows.getString(2);
                         if (!receiptCovers(id,op,next)) fail("UNINDEXED_JOURNAL");
+                        long length=rows.getLong(6);
+                        if (rows.wasNull() || length < 0 ||
+                                length > replayByteLimit-replayedBytes)
+                            fail("REPLAY_BYTES_LIMIT_EXCEEDED");
+                        // Check SQLite's length() before materializing the
+                        // untrusted BLOB into a new Java byte[].
                         byte[] payload=rows.getBytes(4);
                         String recorded=rows.getString(5);
-                        if (payload==null || recorded==null ||
+                        if (payload==null || payload.length!=length || recorded==null ||
                                 !recorded.equals(eventDigest(id,next,op,rows.getInt(3),payload)))
                             fail("CORRUPT_JOURNAL_PAYLOAD");
+                        replayedBytes+=length;
                         events.add(new Event(next,rows.getInt(3),op,payload));
                         cursor=next;
                     }

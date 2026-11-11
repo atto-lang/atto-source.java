@@ -151,6 +151,25 @@ public final class SqliteCommandPersistenceTestMain {
                 sql(legacy,"DELETE FROM command_v2_event_digests");
                 fails("CORRUPT_JOURNAL_PAYLOAD",()->p.loadFenced(id(),1));
             }
+            // A bounded stream may contain valid, individually sized
+            // events whose aggregate replay exceeds the configured budget.
+            // Rejection must not mutate durable receipts or the journal.
+            Path bounded=dir.resolve("bounded-replay.sqlite");
+            try(SqliteCommandPersistence p=new SqliteCommandPersistence(bounded,"tenant-a",4)){
+                p.grantEpoch("bank-1",1);
+                p.append(deposit("first",1,0,100)); // 4 bytes: +100
+                check(p.loadFenced(id(),1).events().size()==1,"budget boundary failed");
+                p.append(deposit("second",1,1,2)); // 2 more bytes, > 4
+                fails("REPLAY_BYTES_LIMIT_EXCEEDED",()->p.loadFenced(id(),1));
+                check(p.verify(id(),"second",1,bytes("deposit:2"))!=null,
+                    "replay byte guard destroyed durable command proof");
+            }
+            fails("INVALID_CONFIG",()->{
+                try(SqliteCommandPersistence invalid=
+                        new SqliteCommandPersistence(dir.resolve("bad-budget.sqlite"),"tenant-a",0)) {
+                    throw new AssertionError("invalid replay configuration accepted");
+                }
+            });
             System.out.println("PASS "+checks+" Java SQLite v2 command integration checks");
         }finally{
             try(var stream=Files.walk(dir)){
