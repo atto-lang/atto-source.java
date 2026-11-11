@@ -85,6 +85,30 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         return nodeId;
     }
 
+    /**
+     * Invoked exclusively by the owning runtime while escrow's monitor is
+     * held and before a spawned child is visible in the actors registry.
+     * Does not execute guest callbacks or schedule CONTROL work.
+     */
+    void registerSpawnedChildFromRuntime(long nodeId, ActorRuntime.ActorRef<?> ref) {
+        synchronized (lock) {
+            if (controlFault.get() != null) {
+                throw new IllegalStateException("CONTROL coordinator is faulted");
+            }
+            if (refs.putIfAbsent(nodeId, ref) != null) {
+                throw new IllegalStateException("duplicate registered child CONTROL node");
+            }
+        }
+    }
+
+    void rollbackSpawnedChildFromRuntime(long nodeId, ActorRuntime.ActorRef<?> ref) {
+        synchronized (lock) {
+            if (!refs.remove(nodeId, ref)) {
+                throw new IllegalStateException("CONTROL child rollback lost its registration");
+            }
+        }
+    }
+
     /** Called only from the already-fenced runtime failure publication path. */
     void failedFromRuntime(long failedNode) {
         boolean submit = false;
