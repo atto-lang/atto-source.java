@@ -40,11 +40,17 @@ final class ActorManagedI64FieldMapTest {
                         String actorTypeName, ActorRuntime.ActorContext<Object> ctx) {
                     var region = ctx.createManagedPrimitiveStateRegion(8, 2).orElseThrow();
                     var field = region.declareOwnerLongField("balance", 3L);
+                    var delta = region.declareOwnerLongField("delta", 4L);
                     var backing = new LinkedHashMap<String,Object>();
                     backing.put("label", "owned");
                     rawBacking.set(backing);
+                    var slots = new LinkedHashMap<
+                            String, ActorStateSupervisorLoans.LongField>();
+                    slots.put("balance", field);
+                    slots.put("delta", delta);
                     mapped.set(new OresEvalRootNode.ActorManagedI64Fields(
-                            region, backing, Map.of("balance", field)));
+                            region, backing, slots,
+                            java.util.List.of("balance", "label", "delta")));
                     return ctx.self()::id;
                 }
 
@@ -56,8 +62,13 @@ final class ActorManagedI64FieldMapTest {
                     switch (mail.value().toString()) {
                         case "read" -> {
                             assertTrue(fields.containsKey("balance"));
-                            assertEquals(2, fields.size());
-                            assertEquals(2, fields.entrySet().size());
+                            assertEquals(3, fields.size());
+                            assertEquals(3, fields.entrySet().size());
+                            assertEquals(java.util.List.of("balance", "label", "delta"),
+                                    fields.entrySet().stream()
+                                            .map(Map.Entry::getKey).toList(),
+                                    "the original actor declaration order must be stable");
+                            assertEquals(4L, fields.get("delta"));
                             latest.set(((Number) fields.get("balance")).longValue());
                         }
                         case "write" -> {
@@ -84,6 +95,7 @@ final class ActorManagedI64FieldMapTest {
                 actor.ready().get(5, TimeUnit.SECONDS);
                 assertFalse(rawBacking.get().containsKey("balance"),
                         "the guest object's plain map must not retain an i64 mirror");
+                assertFalse(rawBacking.get().containsKey("delta"));
                 assertThrows(SecurityException.class,
                         () -> mapped.get().get("balance"),
                         "untrusted host cannot read the actor's typed field");
