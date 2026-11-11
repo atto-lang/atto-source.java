@@ -134,7 +134,12 @@ jobs:
           guest_report=target/surefire-reports/TEST-dev.oreslang.AotDispatchGuestV1Test.xml
           grep -Fq 'name="baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified"' "$guest_report"
           grep -Fq 'name="sameFixtureRunsWithGuestJitDisabledByProfile"' "$guest_report"
+          grep -Fq 'name="scalarGenericIntReuseRunsWithAndWithoutGuestJit"' "$guest_report"
+          corpus_report=target/surefire-reports/TEST-dev.oreslang.DispatchV1CorpusCompilerTest.xml
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithJitEnabled"' "$corpus_report"
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithGuestJitDisabled"' "$corpus_report"
           echo 'DISPATCH_GUEST_JVM_JIT_AND_NO_JIT=EXECUTED_EXPECTED_STDOUT_121020'
+          echo 'DISPATCH_CORPUS_DIRECT_INSTANCE_STATIC_JVM_GUEST=EXECUTED_EXPECTED_EXIT_42_BOTH_PROFILES'
           echo 'DISPATCH_NATIVE_GUEST_AOT=NOT_EXECUTED'
 
       - name: Optional real GraalVM Native Image build
