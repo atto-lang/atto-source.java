@@ -3650,6 +3650,11 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (receiver instanceof Named map && map.name().equals("Map")
+                            && (member.member().equals("set")
+                                    || member.member().equals("delete"))) {
+                        requireMapMutablePlace(member.receiver(), env, member.member());
+                    }
                     if (!(collectionBuiltin instanceof Function builtin)) {
                         throw new IllegalArgumentException(
                                 "collection member '" + member.member() + "' is not callable");
@@ -4198,6 +4203,13 @@ public final class TypeChecker {
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
+            if (collectionMember != null
+                    && sumReceiver instanceof Named map && map.name().equals("Map")
+                    && (member.member().equals("set") || member.member().equals("delete"))) {
+                throw new IllegalArgumentException(
+                        "Map." + member.member() + " is direct-call-only: "
+                                + "mutable Map method values cannot be captured or transported");
+            }
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
@@ -4368,17 +4380,7 @@ public final class TypeChecker {
                     && findClass("Map") == null) {
                 Type mapKey = typedMap.arguments().get(0);
                 Type mapValue = typedMap.arguments().get(1);
-                boolean stringKey = mapKey == Primitive.STRING;
-                boolean symbolKey = mapKey instanceof Named symbol
-                        && symbol.name().equals("$builtin$Symbol")
-                        && symbol.arguments().isEmpty();
-                boolean scalarValue = mapValue == Primitive.INT
-                        || mapValue == Primitive.BOOL
-                        || mapValue == Primitive.STRING
-                        || mapValue instanceof Named symbol
-                        && symbol.name().equals("$builtin$Symbol")
-                        && symbol.arguments().isEmpty();
-                if (!(stringKey || symbolKey) || !scalarValue) {
+                if (!closedScalarMapDomains(typedMap)) {
                     throw new IllegalArgumentException(
                             "Map indexed read requires a proven String/Symbol key and copyable scalar value");
                 }
@@ -8117,14 +8119,65 @@ public final class TypeChecker {
                 where + " requires SelectCase values; got " + value);
     }
 
+    /**
+     * Closed scalar Map domain shared by indexed reads and method admission.
+     * A mere nominal Map<K,V> annotation does not prove a safe guest Map:
+     * otherwise unreachable generic parameters could open mutable host paths.
+     */
+    private boolean closedScalarMapDomains(Named mapType) {
+        if (!mapType.name().equals("Map") || mapType.arguments().size() != 2
+                || findClass("Map") != null) return false;
+        Type key = mapType.arguments().get(0);
+        Type value = mapType.arguments().get(1);
+        boolean keyOk = key == Primitive.STRING
+                || key instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+        boolean valueOk = value == Primitive.INT || value == Primitive.BOOL
+                || value == Primitive.STRING
+                || value instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+        return keyOk && valueOk;
+    }
+
+    /**
+     * Narrow, fail-closed writable-place admission until an owner-capability
+     * backed Map receiver is available. Do not allow a function parameter,
+     * const binding, temporary, borrow or arbitrary expression to mutate a
+     * map; the callable must be a direct invocation on a writable owner.
+     */
+    private void requireMapMutablePlace(Ast.Expr target, Env env, String operation) {
+        if (target instanceof Ast.NameExpr variable) {
+            Env.Binding binding = env.lookup(variable.name());
+            if (binding != null && binding.kind() == Ast.BindingKind.LET) return;
+        } else if (target instanceof Ast.MemberExpr field
+                && field.receiver() instanceof Ast.NameExpr selfName
+                && selfName.name().equals("self")
+                && currentClassOwner != null
+                && currentClassOwner.actorKind() != Ast.ActorKind.NONE) {
+            for (Ast.FieldDecl owned : currentClassOwner.fields()) {
+                if (owned.name().equals(field.member())
+                        && owned.bindingKind() == Ast.BindingKind.LET) return;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Map." + operation + " requires a directly owned writable let binding "
+                        + "or a writable actor self field; mutable Map receiver "
+                        + "loans, const/val and captured method values are not admitted");
+    }
+
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
         if (receiver instanceof Named named && named.name().equals("Map")
-                && named.arguments().size() == 2) {
-            // Closed scalar map domains are already checked by the typed
-            // literal constructor. Admit explicit owned mutations only for
-            // these witnessed Map<K,V> types; runtime validates key/value
-            // domains and quota again. This does not authorize transport.
+                && named.arguments().size() == 2 && findClass("Map") == null) {
+            if (!closedScalarMapDomains(named)) {
+                throw new IllegalArgumentException(
+                        "Map member requires a proven String/Symbol key "
+                                + "and copyable scalar value domain");
+            }
+            // Restrict all Map methods to the same closed witness as reads.
+            // Runtime revalidates domains, quota and atomic mutation.
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "set" -> new Function(
