@@ -83,19 +83,27 @@ final class StrictAttoNumericFlowTest {
     }
 
     @Test
-    void floatLiteralMustFitDeclaredFixedPrecisionExactly() {
-        rejects("""
-                pub fnc bad(): bool {
+    void floatingLiteralsAllowIeeeRoundingButRejectOverflow() {
+        // Untyped 0.1 becomes the nearest representable f32; it is not
+        // required to be exactly representable as a binary float.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto("""
+                pub fnc good(): bool {
                   val f32 value = 0.1;
                   return value eq value;
                 }
-                """, "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE");
+                """));
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto("""
                 pub fnc good(): bool {
                   val f32 value = 0.5;
                   return value eq value;
                 }
                 """));
+        rejects("""
+                pub fnc bad(): bool {
+                  val f32 value = 1.0e40;
+                  return value eq value;
+                }
+                """, "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE");
     }
 
     @Test
