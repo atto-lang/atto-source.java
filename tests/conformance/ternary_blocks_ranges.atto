@@ -10,6 +10,15 @@ pub routine main(): void {
   }
   stdio.stdout.write("|");
 
+  // The empty literal borrows the element type from the non-empty arm.
+  for id in 1..4 {
+    val successors: Array<int> = id eq 3 ? {
+      []
+    } : {
+      [id + 1]
+    };
+  }
+
   val result: int = true ? {
     val base = 40;
     base + 2
