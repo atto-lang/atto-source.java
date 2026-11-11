@@ -143,6 +143,49 @@ final class ActorCarrierQuiescencePollingTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(10)
+    void gracefulStopSealsActorMessagesAndAwaitsHeldCarrierExit() throws Exception {
+        var processed = new CountDownLatch(1);
+        var carrierHeld = new CountDownLatch(1);
+        var releaseCarrier = new CountDownLatch(1);
+        var first = new AtomicBoolean();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (processed.getCount() == 0 && first.compareAndSet(false, true)) {
+                carrierHeld.countDown();
+                try {
+                    if (!releaseCarrier.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("graceful-stop carrier gate deadline");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16), executor)) {
+            ActorRuntime.ActorRef<Integer> worker = runtime.spawnShared(() ->
+                    (message, context) -> processed.countDown());
+            try {
+                worker.send(1);
+                assertTrue(carrierHeld.await(5, TimeUnit.SECONDS));
+                var done = worker.gracefulStop();
+                assertFalse(done.isDone(), "logical drain is not physical exit");
+                assertFalse(runtime.httpCarrierQuiescent(worker));
+                assertThrows(RuntimeException.class, () -> worker.send(2),
+                        "worker must reject new sends once gracefully sealed");
+                releaseCarrier.countDown();
+                assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+                eventuallyQuiescent(runtime, worker);
+                assertTrue(done.isDone(), "graceful stop must publish terminal receipt");
+            } finally {
+                releaseCarrier.countDown();
+            }
+        }
+    }
+
     @Test
     void cannotObserveForeignRuntimeActor() throws Exception {
         try (ActorRuntime first = new ActorRuntime(
