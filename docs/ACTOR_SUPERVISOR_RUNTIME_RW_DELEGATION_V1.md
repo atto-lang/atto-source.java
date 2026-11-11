@@ -29,6 +29,10 @@ owner actor turn**. That factory checks:
   `StateRegionMint`**. Constructor rejects caller-invented
   `ExecutionContext.AllocationDomain` values without the matching opaque
   mint. Allocation records are names, not bearer capabilities.
+- The older raw `ActorStateRwLoans` constructors are now package-private,
+  preventing external callers from creating their own arbiter from an
+  arbitrary owner record. The focused arbiter suite includes a regression
+  verifying constructor visibility. 
 - At most 32 such regions are registered per actor incarnation; the
   underlying RW arbiter bounds pending requests to 8,192 and readers to
   65,536, with configured lower per-region limits.
@@ -86,7 +90,7 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
 12. STOP fails queued grants while retaining active physical writer pins.
 
 The focused exact-head workflow runs BOTH this suite and the existing
-**25-case `ActorStateRwLoansTest`** (37 authored cases minimum),
+**26-case `ActorStateRwLoansTest`** (38 authored cases minimum),
 requires real Surefire XML with zero failed, errored, or skipped cases,
 and uploads the two XML reports. Runner assignment with **nonzero
 executed steps** is required. Until that happens classify Java JUnit,
