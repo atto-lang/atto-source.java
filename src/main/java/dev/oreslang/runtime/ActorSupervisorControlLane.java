@@ -44,6 +44,9 @@ final class ActorSupervisorControlLane {
         }
     }
 
+    /** Serializes two-lane handovers before acquiring either lane monitor. */
+    private static final Object TRANSFER_COORDINATOR = new Object();
+
     private final int capacity;
     private final Map<ActorRuntime.ActorId, Slot> slots = new HashMap<>();
     private Slot head;
@@ -146,41 +149,69 @@ final class ActorSupervisorControlLane {
      * reservations stay local because their child generations are still alive.
      * Failed target publication leaves the source slot untouched.
      */
-    synchronized void transferPublishedTo(ActorSupervisorControlLane root) {
+    void transferPublishedTo(ActorSupervisorControlLane root) {
         Objects.requireNonNull(root, "root");
         if (root == this) {
             throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
         }
 
-        for (var iterator = slots.values().iterator(); iterator.hasNext();) {
-            Slot slot = iterator.next();
-            if (slot.inFlight) {
-                if (!root.publish(slot.notice)) {
-                    throw new IllegalStateException(
-                            "duplicate root CONTROL publication for " + slot.child);
-                }
-                iterator.remove();
-                slot.inFlight = false;
-                inFlight = 0;
-                transferred++;
-                break; // single-flight invariant means at most one
-            }
-        }
+        // Never nest lane monitors without acquiring the shared transfer lock:
+        // two concurrent opposite-direction transfers would otherwise ABBA
+        // deadlock while publishing into each other's destination.
+        synchronized (TRANSFER_COORDINATOR) {
+            synchronized (this) {
+                synchronized (root) {
+                    // A single missing/stale/occupied destination reservation
+                    // must reject the *entire* handover before its first
+                    // publication. Partial migration could otherwise lose the
+                    // parent's ability to account for already-transferred
+                    // failures after a later root admission rejection.
+                    for (Slot slot : slots.values()) {
+                        if (slot.notice == null) continue;
+                        Slot reserved = root.required(slot.child, slot.generation);
+                        if (reserved.notice != null || reserved.queued || reserved.inFlight) {
+                            throw new IllegalStateException(
+                                    "root CONTROL reservation already contains a notice for "
+                                            + slot.child);
+                        }
+                    }
 
-        while (head != null) {
-            Slot slot = head;
-            if (!root.publish(slot.notice)) {
-                throw new IllegalStateException(
-                        "duplicate root CONTROL publication for " + slot.child);
+                    // A published in-flight notice is still owned until the
+                    // destination has accepted the exact generation. The
+                    // parent may have at most one such lease.
+                    for (var iterator = slots.values().iterator(); iterator.hasNext();) {
+                        Slot slot = iterator.next();
+                        if (!slot.inFlight) continue;
+                        if (!root.publish(slot.notice)) {
+                            throw new IllegalStateException(
+                                    "duplicate root CONTROL publication for " + slot.child);
+                        }
+                        iterator.remove();
+                        slot.inFlight = false;
+                        inFlight = 0;
+                        transferred++;
+                        break;
+                    }
+
+                    // Preserve the parent's FIFO terminal notice order when
+                    // moving queued events into the pre-reserved root queue.
+                    while (head != null) {
+                        Slot slot = head;
+                        if (!root.publish(slot.notice)) {
+                            throw new IllegalStateException(
+                                    "duplicate root CONTROL publication for " + slot.child);
+                        }
+                        head = slot.next;
+                        slot.next = null;
+                        slot.queued = false;
+                        pending--;
+                        slots.remove(slot.child);
+                        transferred++;
+                    }
+                    tail = null;
+                }
             }
-            head = slot.next;
-            slot.next = null;
-            slot.queued = false;
-            pending--;
-            slots.remove(slot.child);
-            transferred++;
         }
-        tail = null;
     }
 
     synchronized int pendingCount() {
