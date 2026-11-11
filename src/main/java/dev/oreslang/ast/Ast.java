@@ -200,7 +200,8 @@ public final class Ast {
     public record ExternalActorMethodDecl(
             String actorName, String receiverName, String name,
             Visibility visibility, List<Param> parameters,
-            TypeRef returnType, List<Stmt> body) implements Decl {
+            TypeRef returnType, List<Stmt> body,
+            boolean runtimeIngress) implements Decl {
         public ExternalActorMethodDecl {
             if (actorName == null || actorName.isBlank()
                     || receiverName == null || receiverName.isBlank()
@@ -212,6 +213,19 @@ public final class Ast {
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
             body = List.copyOf(body);
+        }
+
+        /**
+         * Compatibility for the existing source receiver syntax, which is
+         * NOT an actor runtime-controlled ingress capability by default.
+         * The contextual 'external mtd' marker must be carried explicitly.
+         */
+        public ExternalActorMethodDecl(
+                String actorName, String receiverName, String name,
+                Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body) {
+            this(actorName, receiverName, name, visibility,
+                    parameters, returnType, body, false);
         }
     }
 
