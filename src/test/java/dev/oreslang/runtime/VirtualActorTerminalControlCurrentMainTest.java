@@ -273,9 +273,8 @@ final class VirtualActorTerminalControlCurrentMainTest {
             throws Exception {
         try (ExecutorService control = Executors.newFixedThreadPool(3);
              ActorRuntime runtime = runtimeWithControl(control)) {
-            var supervisor = runtime.createSupervisor();
-            var blocked = runtime.createActorGroup(supervisor);
-            var independent = runtime.createActorGroup(supervisor);
+            var blocked = runtime.createActorGroup(runtime.createSupervisor());
+            var independent = runtime.createActorGroup(runtime.createSupervisor());
             var blockedId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "blocked");
             var independentId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "independent");
             CountDownLatch blockedEntered = new CountDownLatch(1);
@@ -309,6 +308,50 @@ final class VirtualActorTerminalControlCurrentMainTest {
             blocked.abortVirtualActorGeneration(blockedId, 2L);
             blocked.close();
             independent.close();
+        }
+    }
+
+    @Test
+    @Timeout(40)
+    void distinctGroupsOfOneSupervisorRemainSingleFlightAcrossAwait()
+            throws Exception {
+        try (ExecutorService control = Executors.newFixedThreadPool(3);
+             ActorRuntime runtime = runtimeWithControl(control)) {
+            var supervisor = runtime.createSupervisor();
+            var groupA = runtime.createActorGroup(supervisor);
+            var groupB = runtime.createActorGroup(supervisor);
+            var firstId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "supervised-a");
+            var secondId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "supervised-b");
+            CountDownLatch aEntered = new CountDownLatch(1);
+            CountDownLatch bEntered = new CountDownLatch(1);
+            CompletableFuture<Void> resumeA = new CompletableFuture<>();
+            groupA.installVirtualActorTerminalHandler(notice -> {
+                aEntered.countDown();
+                return resumeA;
+            });
+            groupB.installVirtualActorTerminalHandler(notice -> {
+                bEntered.countDown();
+                return CompletableFuture.completedFuture(null);
+            });
+            var first = failingWorker(groupA);
+            var second = failingWorker(groupB);
+            groupA.reserveVirtualActorGeneration(firstId, 1L);
+            groupB.reserveVirtualActorGeneration(secondId, 1L);
+            groupA.bindVirtualActorIdentity(first, firstId, 1L);
+            groupB.bindVirtualActorIdentity(second, secondId, 1L);
+            failActor(first);
+            assertTrue(aEntered.await(5, TimeUnit.SECONDS));
+            failActor(second);
+            assertFalse(bEntered.await(250, TimeUnit.MILLISECONDS),
+                    "same supervisor must remain nonreentrant across group boundaries");
+            resumeA.complete(null);
+            assertTrue(bEntered.await(5, TimeUnit.SECONDS));
+            assertEquals(2L, awaitNextGeneration(groupA, firstId, 2L));
+            groupA.abortVirtualActorGeneration(firstId, 2L);
+            assertEquals(2L, awaitNextGeneration(groupB, secondId, 2L));
+            groupB.abortVirtualActorGeneration(secondId, 2L);
+            groupA.close();
+            groupB.close();
         }
     }
 
