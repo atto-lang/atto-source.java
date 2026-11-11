@@ -41,8 +41,13 @@ final class ActorRuntimeHotRouteBridgeV1Test {
                     runtime.<Integer>spawnShared(() ->
                             (message, context) -> oldCount.addAndGet(message));
             v1.ready().get(5, TimeUnit.SECONDS);
+            var sealedV1 = runtime.claimPhysicalForHotRoute(v1);
+            assertThrows(SecurityException.class, () -> v1.send(1),
+                    "ordinary physical ActorRef sends must not bypass the logical route");
+            assertThrows(SecurityException.class, () -> v1.sendAsync(1),
+                    "async physical sends must also be fenced");
             try (var route = new ActorRouteCoordinatorV1<>(
-                    83, supervisor, image('a'), state(0), v1,
+                    83, supervisor, image('a'), state(0), sealedV1,
                     32, 32, 1024)) {
                 var stable = route.logicalRef();
                 var transport = ActorRuntimeHotRouteBridgeV1
@@ -73,10 +78,17 @@ final class ActorRuntimeHotRouteBridgeV1Test {
                         runtime.<Integer>spawnShared(() ->
                                 (message, context) -> newCount.addAndGet(message));
                 v2.ready().get(5, TimeUnit.SECONDS);
-                assertTrue(stage.publish(supervisor, state(oldCount.get()), v2));
+                var sealedV2 = runtime.claimPhysicalForHotRoute(v2);
+                assertThrows(SecurityException.class, () -> v2.send(1));
+                assertTrue(stage.publish(supervisor, state(oldCount.get()), sealedV2));
                 assertSame(stable, route.logicalRef());
                 assertEquals(83, stable.id());
-                assertSame(v2, route.current().physicalRoute());
+                assertSame(sealedV2, route.current().physicalRoute());
+                assertThrows(SecurityException.class, () -> v1.send(1));
+                assertThrows(SecurityException.class, () -> v2.send(1));
+                assertThrows(SecurityException.class,
+                        () -> sealedV1.sendTracked(1, null),
+                        "no new physical receipt may be invented for the retired route");
                 assertEquals(2L, route.current().routeEpoch());
                 int nextSubmitted = 0;
                 long nextDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
