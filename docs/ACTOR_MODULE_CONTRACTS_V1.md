@@ -325,6 +325,6 @@ binding methods across files; equal textual module names must never imply
 authority across files, packages, symlinks, or imported actors. Stage 7
 validates module-local declarations in one compilation unit only.
 
-Tests: 21 new Java JUnit methods, six portable .atto fixtures, plus two
+Tests: 25 new Java JUnit methods, six portable .atto fixtures, plus two
 updated predecessor tests. **Not executed** until an exact-head, stepful
 source-local or independently authorized private CI run exists.
