@@ -69,22 +69,33 @@ final class NamespaceActorHeaderAdmissionTest {
     }
 
     @Test
-    void visibilityBeforeOrAfterDeclareHasTheSameNominalMeaning() {
+    void visibilityMustFollowDeclare() {
+        var publicActor = assertInstanceOf(Ast.StandaloneActorDecl.class,
+                parse("declare pub actor Foo;")
+                        .modules().getFirst().declarations().getFirst());
+        assertEquals(Ast.Visibility.PUBLIC, publicActor.visibility());
+
         for (String header : new String[]{
-                "pub declare actor Foo;",
-                "declare pub actor Foo;"}) {
-            var actor = assertInstanceOf(Ast.StandaloneActorDecl.class,
+                "declare actor Foo;", "declare private actor Foo;"}) {
+            var privateActor = assertInstanceOf(Ast.StandaloneActorDecl.class,
                     parse(header).modules().getFirst().declarations().getFirst());
-            assertEquals(Ast.Visibility.PUBLIC, actor.visibility());
+            assertEquals(Ast.Visibility.PRIVATE, privateActor.visibility());
         }
-        assertThrows(IllegalArgumentException.class,
-                () -> parse("pub declare pub actor Foo;"));
+
+        for (String rejected : new String[]{
+                "pub declare actor Foo;", "private declare actor Foo;",
+                "pub declare pub actor Foo;"}) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> parse(rejected));
+            assertTrue(error.getMessage().contains("visibility must follow 'declare'"),
+                    error.getMessage());
+        }
     }
 
     @Test
     void actorContractReferenceDoesNotBypassStaticConformanceOrGuestGate() {
         var program = parse("""
-                pub declare actor Foo implements ActorXYZ;
+                declare pub actor Foo implements ActorXYZ;
                 pub mtd (Foo f) bar(): void { return; }
                 """);
         var error = assertThrows(IllegalArgumentException.class,
@@ -99,8 +110,8 @@ final class NamespaceActorHeaderAdmissionTest {
     @Test
     void twoSemicolonActorsDoNotCollideOnAnImplicitReceiverAlias() {
         var program = parse("""
-                pub declare actor Foo;
-                pub declare actor Bar;
+                declare pub actor Foo;
+                declare pub actor Bar;
                 pub mtd (Foo f) a(): void { return; }
                 pub mtd (Bar b) b(): void { return; }
                 """);
@@ -157,7 +168,7 @@ final class NamespaceActorHeaderAdmissionTest {
     @Test
     void borrowedActorMailPayloadFailsStaticAdmission() {
         var program = parse("""
-                pub declare actor Foo;
+                declare pub actor Foo;
                 define mtd (Foo f) receive(ActorMail<borrow int> mail): void { return; }
                 """);
         var error = assertThrows(IllegalArgumentException.class,
