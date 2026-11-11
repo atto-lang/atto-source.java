@@ -37,6 +37,7 @@ final class ActorSupervisorControlLane {
         Slot next;
         boolean queued;
         boolean inFlight;
+        long deliveryTicket;
 
         Slot(ActorRuntime.ActorId child, long generation) {
             this.child = child;
@@ -53,6 +54,7 @@ final class ActorSupervisorControlLane {
     private Slot tail;
     private int pending;
     private int inFlight;
+    private long nextDeliveryTicket;
     private long published;
     private long acknowledged;
     private long retried;
@@ -96,43 +98,79 @@ final class ActorSupervisorControlLane {
         return true;
     }
 
-    synchronized Optional<ActorRuntime.ActorFailureNotice> poll() {
+    /**
+     * Opaque single-attempt settlement authority. Identity is the exact
+     * source lane, Slot object and monotonic poll ticket; never an actor ID
+     * or guest-manufacturable generation alone.
+     */
+    static final class Delivery {
+        private final ActorSupervisorControlLane owner;
+        private final Slot slot;
+        private final long ticket;
+        private final ActorRuntime.ActorFailureNotice notice;
+
+        private Delivery(ActorSupervisorControlLane owner, Slot slot, long ticket) {
+            this.owner = owner;
+            this.slot = slot;
+            this.ticket = ticket;
+            this.notice = slot.notice;
+        }
+
+        ActorRuntime.ActorFailureNotice notice() {
+            return notice;
+        }
+    }
+
+    synchronized Optional<Delivery> poll() {
         if (inFlight != 0) {
             throw new IllegalStateException("overlapping supervisor CONTROL admissions");
         }
         if (head == null) return Optional.empty();
+        // Overflow rejects before removing anything from the queue. Reusing
+        // a ticket after wraparound would recreate a stale ACK authority.
+        long ticket = Math.addExact(nextDeliveryTicket, 1L);
+        nextDeliveryTicket = ticket;
         Slot slot = head;
         head = slot.next;
         if (head == null) tail = null;
         slot.next = null;
         slot.queued = false;
         slot.inFlight = true;
+        slot.deliveryTicket = ticket;
         inFlight = 1;
         pending--;
-        return Optional.of(slot.notice);
+        return Optional.of(new Delivery(this, slot, ticket));
     }
 
-    synchronized void ack(ActorRuntime.ActorId child, long generation) {
-        Slot slot = required(child, generation);
-        if (!slot.inFlight) {
-            throw new IllegalStateException("CONTROL event is not in flight");
-        }
-        slots.remove(child);
+    synchronized void ack(Delivery delivery) {
+        Slot slot = requiredDelivery(delivery);
+        slots.remove(slot.child);
         slot.inFlight = false;
+        slot.deliveryTicket = 0L;
         slot.notice = null;
         inFlight = 0;
         acknowledged++;
     }
 
-    synchronized void retry(ActorRuntime.ActorId child, long generation) {
-        Slot slot = required(child, generation);
-        if (!slot.inFlight) {
-            throw new IllegalStateException("CONTROL event is not in flight");
-        }
+    synchronized void retry(Delivery delivery) {
+        Slot slot = requiredDelivery(delivery);
         slot.inFlight = false;
+        slot.deliveryTicket = 0L;
         inFlight = 0;
         retried++;
         enqueue(slot);
+    }
+
+    private Slot requiredDelivery(Delivery delivery) {
+        Objects.requireNonNull(delivery, "delivery");
+        Slot slot = delivery.slot;
+        if (delivery.owner != this || slots.get(slot.child) != slot
+                || !slot.inFlight || slot.deliveryTicket != delivery.ticket
+                || slot.notice != delivery.notice) {
+            throw new IllegalStateException(
+                    "stale, foreign or already-settled supervisor CONTROL delivery");
+        }
+        return slot;
     }
 
     synchronized void retireGracefully(ActorRuntime.ActorId child, long generation) {
@@ -188,6 +226,7 @@ final class ActorSupervisorControlLane {
                         }
                         iterator.remove();
                         slot.inFlight = false;
+                        slot.deliveryTicket = 0L;
                         inFlight = 0;
                         transferred++;
                         break;
