@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -53,11 +56,31 @@ final class VirtualActorTerminalControl {
             ActorRuntime.ActorId actorId,
             Function<Notice, CompletionStage<Void>> handler) { }
 
+    private static final class Delivery {
+        final Binding binding;
+        final Notice notice;
+        boolean dispatched;
+
+        Delivery(Binding binding, Notice notice) {
+            this.binding = binding;
+            this.notice = notice;
+        }
+    }
+
+    private static final class Lane {
+        final ArrayDeque<Delivery> waiting = new ArrayDeque<>();
+        boolean active;
+    }
+
     private final Object monitor = new Object();
     private final int capacity;
     private final ActorRuntime.ControlDispatcher dispatcher;
     private final VirtualActorRuntimeGenerationFence fences;
     private final Map<ActorRuntime.ActorId, Binding> bindings = new HashMap<>();
+    private final Map<ActorRuntime.ActorGroupId, Lane> lanes = new HashMap<>();
+    // Bounds queued + executing CONTROL receipts, including suspended stages.
+    private int outstanding;
+    private final ThreadLocal<Boolean> submitting = new ThreadLocal<>();
 
     VirtualActorTerminalControl(
             int capacity,
@@ -109,50 +132,103 @@ final class VirtualActorTerminalControl {
 
     /**
      * Called after exact physical retirement and generation-fence publication.
-     * It only enqueues host CONTROL work; no guest handler executes here.
-     * The registration is removed once, so duplicate retirement never
-     * produces a second handler invocation.
+     * No handler executes here; registrations are consumed exactly once.
+     * A single-flight lane per ActorGroup prevents callback reentrancy across
+     * suspended CompletionStages, while other groups remain independent.
      */
     void onRetired(ActorRuntime.ActorId actorId, Throwable cause) {
         Binding binding;
         synchronized (monitor) {
             binding = bindings.remove(actorId);
         }
-        if (binding == null || cause == null) return; // Normal passivation.
+        if (binding == null || cause == null) return; // Graceful passivation.
         Kind kind = cause instanceof CancellationException
                 ? Kind.CANCELLED : Kind.TERMINAL_FAILURE;
-        Notice notice = new Notice(
-                binding.supervisor(), binding.groupId(), binding.identity(),
-                binding.generation(), actorId, kind, cause.getClass().getName());
-        Thread retiringThread = Thread.currentThread();
+        final Notice notice;
         try {
-            OresFuture<Void> enqueued = Objects.requireNonNull(
+            notice = new Notice(
+                    binding.supervisor(), binding.groupId(), binding.identity(),
+                    binding.generation(), actorId, kind, cause.getClass().getName());
+        } catch (RuntimeException | Error invalidNotice) {
+            quarantine(binding);
+            return;
+        }
+        Lane toSchedule = null;
+        boolean rejected = false;
+        synchronized (monitor) {
+            if (outstanding >= capacity) {
+                rejected = true;
+            } else {
+                Lane lane = lanes.computeIfAbsent(binding.groupId(), ignored -> new Lane());
+                lane.waiting.addLast(new Delivery(binding, notice));
+                outstanding++;
+                if (!lane.active) {
+                    lane.active = true;
+                    toSchedule = lane;
+                }
+            }
+        }
+        if (rejected) quarantine(binding);
+        else if (toSchedule != null) scheduleNext(binding.groupId(), toSchedule);
+    }
+
+    private void scheduleNext(ActorRuntime.ActorGroupId groupId, Lane lane) {
+        Delivery delivery;
+        synchronized (monitor) {
+            if (lanes.get(groupId) != lane) return; // Already failed/quarantined.
+            delivery = lane.waiting.pollFirst();
+            if (delivery == null) {
+                lane.active = false;
+                lanes.remove(groupId, lane);
+                return;
+            }
+        }
+
+        try {
+            submitting.set(Boolean.TRUE);
+            OresFuture<Void> accepted = Objects.requireNonNull(
                     dispatcher.execute(() -> {
-                        // An inline or actor-carrier dispatcher is not a
-                        // CONTROL dispatcher: fail closed, do not invoke policy.
-                        if (Thread.currentThread() == retiringThread
+                        synchronized (monitor) {
+                            delivery.dispatched = true;
+                        }
+                        // A VM CONTROL dispatcher cannot inline the policy on
+                        // the retiring child or calling host's stack.
+                        if (Boolean.TRUE.equals(submitting.get())
                                 || ActorRuntime.isActorCarrierThread()
                                 || ActorRuntime.inActorExecution()) {
-                            quarantine(binding);
+                            quarantine(delivery.binding);
+                            finish(groupId, lane);
                             return;
                         }
-                        executeOnControl(binding, notice);
+                        executeOnControl(groupId, lane, delivery);
                     }), "CONTROL dispatcher returned null Future");
-            enqueued.whenCompleteRuntime((ignored, failure) -> {
-                if (failure != null) quarantine(binding);
+            accepted.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) {
+                    quarantine(delivery.binding);
+                    boolean ran;
+                    synchronized (monitor) { ran = delivery.dispatched; }
+                    if (!ran) failLane(groupId, lane, delivery);
+                }
             });
         } catch (RuntimeException | Error admissionFailure) {
-            quarantine(binding);
+            quarantine(delivery.binding);
+            failLane(groupId, lane, delivery);
+        } finally {
+            submitting.remove();
         }
     }
 
-    private void executeOnControl(Binding binding, Notice notice) {
+    private void executeOnControl(
+            ActorRuntime.ActorGroupId groupId, Lane lane, Delivery delivery) {
+        Binding binding = delivery.binding;
+        Notice notice = delivery.notice;
         VirtualActorRuntimeGenerationFence.TerminalDecisionLease lease;
         try {
             lease = binding.group().beginVirtualActorTerminalDecision(
                     notice.identity(), notice.generation(), notice.actorId());
         } catch (RuntimeException | Error rejected) {
             quarantine(binding);
+            finish(groupId, lane);
             return;
         }
 
@@ -161,19 +237,70 @@ final class VirtualActorTerminalControl {
             completion = Objects.requireNonNull(
                     binding.handler().apply(notice), "terminal CONTROL handler returned null stage");
         } catch (RuntimeException | Error handlerFailure) {
-            lease.quarantine();
-            lease.close();
+            try {
+                lease.quarantine();
+                lease.close();
+            } finally {
+                finish(groupId, lane);
+            }
             return;
         }
         try {
             completion.whenComplete((ignored, error) -> {
-                if (error != null) lease.quarantine();
-                lease.close(); // Generation is fenced until async completion.
+                try {
+                    if (error != null) lease.quarantine();
+                    lease.close();
+                } finally {
+                    finish(groupId, lane);
+                }
             });
-        } catch (RuntimeException | Error registrationFailure) {
-            lease.quarantine();
-            lease.close();
+        } catch (RuntimeException | Error callbackRegistrationFailure) {
+            try {
+                lease.quarantine();
+                lease.close();
+            } finally {
+                finish(groupId, lane);
+            }
         }
+    }
+
+    private void finish(ActorRuntime.ActorGroupId groupId, Lane lane) {
+        boolean more;
+        synchronized (monitor) {
+            if (lanes.get(groupId) != lane) return;
+            if (outstanding < 1)
+                throw new IllegalStateException("terminal CONTROL outstanding accounting underflow");
+            outstanding--;
+            more = !lane.waiting.isEmpty();
+            if (!more) {
+                lane.active = false;
+                lanes.remove(groupId, lane);
+            }
+        }
+        if (more) scheduleNext(groupId, lane);
+    }
+
+    /**
+     * If dispatcher admission itself fails, quarantine every queued receipt
+     * in this group instead of losing notices or incorrectly admitting the
+     * next generation. No callback runs while holding monitor.
+     */
+    private void failLane(
+            ActorRuntime.ActorGroupId groupId, Lane lane, Delivery active) {
+        List<Binding> dropped = new ArrayList<>();
+        synchronized (monitor) {
+            if (lanes.get(groupId) != lane) return;
+            dropped.add(active.binding);
+            for (Delivery queued : lane.waiting) dropped.add(queued.binding);
+            int count = dropped.size();
+            if (count > outstanding)
+                throw new IllegalStateException("terminal CONTROL outstanding accounting underflow");
+            outstanding -= count;
+            lane.waiting.clear();
+            lane.active = false;
+            lanes.remove(groupId, lane);
+        }
+        for (Binding binding : dropped) quarantine(binding);
     }
 
     private void quarantine(Binding binding) {
