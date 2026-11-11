@@ -330,7 +330,8 @@ final class ActorStateSupervisorLoansTest {
             var live = fixture.issue("write");
             var loan = fixture.redeem(region, live).join();
 
-            fixture.worker.stop();
+            assertTrue(fixture.worker.cancel(),
+                    "structured cancellation must seal without awaiting live physical loan");
             assertFalse(fixture.worker.done().isDone(),
                     "STOP cannot reclaim while a physical supervisor write remains live");
             assertFalse(region.physicallyRetired());
@@ -354,7 +355,8 @@ final class ActorStateSupervisorLoansTest {
             assertFalse(queued.isDone());
             assertTrue(queued.cancel(false));
             fixture.release(held);
-            fixture.worker.stop();
+            assertTrue(fixture.worker.cancel(),
+                    "structured cancellation must seal without awaiting live physical loan");
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(region.physicallyRetired());
         }
@@ -450,7 +452,8 @@ final class ActorStateSupervisorLoansTest {
             var queued = fixture.redeem(region, waitingRead);
             assertFalse(queued.isDone());
 
-            fixture.worker.stop();
+            assertTrue(fixture.worker.cancel(),
+                    "structured cancellation must seal without awaiting live physical loan");
             assertTrue(queued.isCompletedExceptionally(),
                     "STOP should fail but physically drain queued host notifications");
             assertFalse(fixture.worker.done().isDone(),
@@ -610,7 +613,8 @@ final class ActorStateSupervisorLoansTest {
             var region = fixture.create();
             var writer = fixture.redeem(region, fixture.issue("write")).join();
             fixture.write(writer, 55L);
-            fixture.worker.stop();
+            assertTrue(fixture.worker.cancel(),
+                    "structured cancellation must seal without awaiting live physical loan");
             assertFalse(fixture.worker.done().isDone());
             assertThrows(SecurityException.class, () -> fixture.read(writer));
             assertThrows(SecurityException.class, () -> fixture.write(writer, 56L));
