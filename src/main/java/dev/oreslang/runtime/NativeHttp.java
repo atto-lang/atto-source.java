@@ -204,12 +204,19 @@ public final class NativeHttp implements AutoCloseable {
         }
         public void dispatch(Exchange exchange) {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
-            synchronized (exchange.state) {
+            // The exchange was accepted earlier and already owns an HTTP
+            // permit. A dispatch denial MUST settle that permit and response;
+            // throwing here leaves cleanup to an unrelated shutdown path.
+            State state = exchange.state;
+            boolean denyDispatch;
+            synchronized (state) {
                 exchange.checkOwner();
-                if (!mayBeginDispatch(closed, exchange.state.server.stopped)) {
-                    throw new IllegalStateException("HTTP runtime or listener is closing");
-                }
-                exchange.state.spawnNanos = System.nanoTime();
+                denyDispatch = !mayBeginDispatch(closed, state.server.stopped);
+                if (!denyDispatch) state.spawnNanos = System.nanoTime();
+            }
+            if (denyDispatch) {
+                state.abort(503, false);
+                return;
             }
             // Preflight can throw before work is admitted; do not leave the
             // HTTP dispatch perf span half-open on rejection.
@@ -217,21 +224,26 @@ public final class NativeHttp implements AutoCloseable {
             if (workers != null) {
                 try {
                     Worker worker = worker();
-                    synchronized (exchange.state) {
+                    boolean denyWorkerDispatch;
+                    synchronized (state) {
                         // Repeat under exchange ownership after selecting/spawning
                         // the worker; a concurrent listener stop must be visible.
-                        if (!mayBeginDispatch(closed, exchange.state.server.stopped)) {
-                            throw new IllegalStateException("HTTP runtime or listener closed during dispatch");
+                        denyWorkerDispatch = !mayBeginDispatch(closed, state.server.stopped);
+                        if (!denyWorkerDispatch) {
+                            state.poolWorker = worker;
+                            worker.requests.add(state);
+                            // Reused workers have no per-request startup.
+                            state.readyNanos = state.spawnNanos;
                         }
-                        exchange.state.poolWorker = worker;
-                        worker.requests.add(exchange.state);
-                        // Reused workers have no per-request startup. Do not retain
-                        // one actor.done callback per completed request.
-                        exchange.state.readyNanos = exchange.state.spawnNanos;
+                    }
+                    if (denyWorkerDispatch) {
+                        state.abort(503, false);
+                        return;
                     }
                     worker.actor.send(exchange.moveTo(worker.actor));
                 } catch (RuntimeException failure) {
-                    exchange.state.abort(500, false);
+                    state.abort(mayBeginDispatch(closed, state.server.stopped)
+                            ? 500 : 503, false);
                 } finally {
                     CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
                 }
@@ -252,13 +264,16 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                if (!mayBeginDispatch(closed, exchange.state.server.stopped)) {
-                    throw new IllegalStateException("HTTP runtime or listener closed during actor startup");
+                if (!mayBeginDispatch(closed, state.server.stopped)) {
+                    actor.cancel();
+                    state.abort(503, false);
+                    return;
                 }
                 actor.send(exchange.moveTo(actor));
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
-                exchange.state.abort(500);
+                state.abort(mayBeginDispatch(closed, state.server.stopped)
+                        ? 500 : 503);
             } finally {
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
