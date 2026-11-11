@@ -1,0 +1,8 @@
+// A canonical container cannot silently coexist with legacy bare actor fields.
+define actor Counter as
+  let int ungrouped;
+  state {
+    let int grouped;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
