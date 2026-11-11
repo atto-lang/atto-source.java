@@ -88,7 +88,7 @@ final class VirtualActorRuntimeGenerationFence {
 
     private static DirectoryEntry directoryEntry(
             VirtualActorActivationRegistry.Identity identity, Slot slot) {
-        DirectoryPhase phase = slot.terminalControlFailed
+        DirectoryPhase phase = slot.terminalControlFailed || slot.physicalCleanupFailed
                 ? DirectoryPhase.QUARANTINED
                 : slot.terminalControlPending || slot.terminalDecisionInFlight
                     ? DirectoryPhase.TERMINAL_PENDING
@@ -96,7 +96,8 @@ final class VirtualActorRuntimeGenerationFence {
                         ? DirectoryPhase.PHYSICAL_OWNERSHIP_HELD
                         : slot.pending != null
                             ? DirectoryPhase.ACTIVATING
-                            : slot.lastRetiredGeneration > 0
+                            : slot.lastRetiredGeneration > 0 &&
+                              slot.lastRetiredGeneration == slot.generation
                                 ? DirectoryPhase.PASSIVATED
                                 : DirectoryPhase.ABORTED;
         return new DirectoryEntry(identity, slot.supervisor, slot.lastGroup,
@@ -165,6 +166,7 @@ final class VirtualActorRuntimeGenerationFence {
         boolean terminalDecisionInFlight;
         boolean terminalControlPending;
         boolean terminalControlFailed;
+        boolean physicalCleanupFailed;
 
         Slot(ActorRuntime.SupervisorId supervisor) {
             this.supervisor = supervisor;
@@ -245,7 +247,7 @@ final class VirtualActorRuntimeGenerationFence {
                     !slot.lastGroupClosed)
                 throw new IllegalStateException(
                         "virtual actor group ownership transfer requires prior group closure");
-            if (slot.physical != null)
+            if (slot.physical != null || slot.physicalCleanupFailed)
                 throw new IllegalStateException("prior virtual actor has not physically retired");
             if (slot.terminalDecisionInFlight || slot.terminalControlPending
                     || slot.terminalControlFailed)
@@ -306,6 +308,7 @@ final class VirtualActorRuntimeGenerationFence {
             slot.terminalDecisionClaimed = false;
             slot.terminalControlPending = false;
             slot.terminalControlFailed = false;
+            slot.physicalCleanupFailed = false;
             slot.pending = null;
             advanceDirectoryRevision();
         }
@@ -509,6 +512,26 @@ final class VirtualActorRuntimeGenerationFence {
             slot.terminalControlFailed = true;
             slot.terminalControlPending = true;
             advanceDirectoryRevision();
+        }
+    }
+
+    /**
+     * A failed host finalization retains the exact physical worker binding.
+     * Inspection must report QUARANTINED, never active or passivated, and
+     * the original identity remains unavailable for a replacement.
+     */
+    void quarantinePhysical(ActorRuntime.ActorId physical) {
+        Objects.requireNonNull(physical, "physical");
+        synchronized (monitor) {
+            var identity = byActor.get(physical);
+            if (identity == null) return; // Ordinary nonvirtual worker.
+            Slot slot = slots.get(identity);
+            if (slot == null || !physical.equals(slot.physical))
+                throw new IllegalStateException("virtual actor cleanup authority mismatch");
+            if (!slot.physicalCleanupFailed) {
+                slot.physicalCleanupFailed = true;
+                advanceDirectoryRevision();
+            }
         }
     }
 
