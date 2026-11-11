@@ -388,6 +388,34 @@ final class ActorStateReadWriteLoansTest {
         }
     }
 
+    @Test void retirementSettlesAllWaitersWhenOneCompletionObserverThrows() {
+        var state = new ActorStateReadWriteLoans(99, 4, 2,
+                java.util.List.of("weight"));
+        var active = state.acquireWriteAsync(new Object(), 99).join();
+        var first = state.acquireReadAsync(new Object(), 99);
+        var second = state.acquireWriteAsync(new Object(), 99);
+        var third = state.acquireReadAsync(new Object(), 99);
+        java.util.concurrent.atomic.AtomicInteger observed =
+                new java.util.concurrent.atomic.AtomicInteger();
+        first.whenCompleteRuntime((loan, failure) -> {
+            observed.incrementAndGet();
+            throw new AssertionError("untrusted completion observer");
+        });
+        second.whenCompleteRuntime((loan, failure) -> observed.incrementAndGet());
+        third.whenCompleteRuntime((loan, failure) -> observed.incrementAndGet());
+        state.close();
+        assertTrue(first.isCompletedExceptionally());
+        assertTrue(second.isCompletedExceptionally());
+        assertTrue(third.isCompletedExceptionally());
+        assertEquals(3, observed.get());
+        assertFalse(state.tryClearRetiredScalarStorage(),
+                "retirement must not erase active writer storage");
+        active.close();
+        assertTrue(state.tryClearRetiredScalarStorage());
+        assertEquals(0, state.activeCount());
+        assertEquals(0, state.pendingCount());
+    }
+
     @Test void staleGenerationAndRetirementFenceEveryActiveLoan() {
         var loans = new ActorStateReadWriteLoans(33, 2);
         Object owner = new Object(), waiting = new Object();
