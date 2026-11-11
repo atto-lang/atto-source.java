@@ -320,4 +320,53 @@ final class ActorRouteCoordinatorV1Test {
             assertEquals(image('c'), c.current().image());
         }
     }
+    @Test void twoConcurrentDispatchersCannotInvertPhysicalFifo() throws Exception {
+        Object seal = new Object();
+        Physical old = new Physical("v1", 1, 0);
+        try (var c = coordinator(seal, old, 4)) {
+            c.logicalRef().send(new byte[]{1});
+            c.logicalRef().send(new byte[]{2});
+            var callbackEntered = new CountDownLatch(1);
+            var finishFirst = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            Thread first = new Thread(() -> {
+                try {
+                    assertTrue(c.dispatchNext(seal, (route, envelope, receipt) -> {
+                        callbackEntered.countDown();
+                        try {
+                            if (!finishFirst.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("first physical submit stalled");
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(error);
+                        }
+                        route.count += route.stride * envelope.payload()[0];
+                        route.received.add(envelope.messageSequence());
+                        receipt.acknowledge();
+                    }));
+                } catch (Throwable error) { failure.set(error); }
+            });
+            first.setDaemon(true);
+            first.start();
+            assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
+            try {
+                assertEquals(1, c.snapshot().physicalSubmissions());
+                assertEquals(1, c.snapshot().mailbox().queuedMessages());
+                assertEquals(1, c.snapshot().mailbox().outstandingMessages());
+                // This second carrier cannot submit sequence 2 before the
+                // still-running first transport has returned.
+                assertFalse(c.dispatchNext(seal, completed()));
+                assertEquals(List.of(), old.received);
+            } finally {
+                finishFirst.countDown();
+                first.join(5000);
+            }
+            assertFalse(first.isAlive());
+            assertNull(failure.get());
+            assertTrue(c.dispatchNext(seal, completed()));
+            assertEquals(List.of(1L, 2L), old.received);
+            assertEquals(3, old.count);
+        }
+    }
+
 }
