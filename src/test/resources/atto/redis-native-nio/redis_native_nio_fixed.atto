@@ -1,0 +1,125 @@
+// Executable AttoLang native-async NIO2 actor KV vertical slice.
+// Dependency: Java compiler PR #2894 on #2883/#2881; no host KV or pipe bridge.
+// Only exact RESP2 commands: PING, GET answer, SET answer 41, DEL answer, QUIT.
+// One client per run; finite 128-byte prefix framing; no WAL or production claim.
+define actor NativeNioKvActor as
+  let Map<string,string> values;
+  on_start(): void {
+    self.values = ~map<string,string>();
+    return;
+  }
+  receive(ActorMail<string> mail): void {
+    if mail.value == "PING"; do self.send("PONG"); return; fi
+    if mail.value == "SET"; do
+      self.values.set("answer", "41");
+      self.send("OK");
+      return;
+    fi
+    if mail.value == "GET"; do
+      val found = self.values.get_optional("answer");
+      if found.is_none(); do self.send("NIL"); else self.send("VALUE"); fi
+      return;
+    fi
+    if mail.value == "DEL"; do
+      if self.values.delete("answer"); do self.send("ONE"); else self.send("ZERO"); fi
+      return;
+    fi
+    if mail.value == "STOP"; do self.end(); return; fi
+    self.send("ERR");
+    return;
+  }
+end
+
+pub fnc byte_prefix(List<int> partial, List<int> candidate): bool {
+  if partial.size > candidate.size then return false; fi
+  let int i = 0;
+  loop {
+    if i == partial.size then return true; fi
+    if partial.get(i) != candidate.get(i) then return false; fi
+    i = i + 1;
+  }
+}
+
+pub fnc command_code(List<int> frame): int {
+  val ping = [42, 49, 13, 10, 36, 52, 13, 10, 80, 73, 78, 71, 13, 10];
+  val get = [42, 50, 13, 10, 36, 51, 13, 10, 71, 69, 84, 13, 10, 36, 54, 13, 10, 97, 110, 115, 119, 101, 114, 13, 10];
+  val set = [42, 51, 13, 10, 36, 51, 13, 10, 83, 69, 84, 13, 10, 36, 54, 13, 10, 97, 110, 115, 119, 101, 114, 13, 10, 36, 50, 13, 10, 52, 49, 13, 10];
+  val del = [42, 50, 13, 10, 36, 51, 13, 10, 68, 69, 76, 13, 10, 36, 54, 13, 10, 97, 110, 115, 119, 101, 114, 13, 10];
+  val quit = [42, 49, 13, 10, 36, 52, 13, 10, 81, 85, 73, 84, 13, 10];
+  if frame.size > 128 then return -1; fi
+  if frame.size == ping.size && byte_prefix(frame, ping) then return 1; fi
+  if frame.size == get.size && byte_prefix(frame, get) then return 2; fi
+  if frame.size == set.size && byte_prefix(frame, set) then return 3; fi
+  if frame.size == del.size && byte_prefix(frame, del) then return 4; fi
+  if frame.size == quit.size && byte_prefix(frame, quit) then return 5; fi
+  if byte_prefix(frame, ping) || byte_prefix(frame, get) || byte_prefix(frame, set)
+      || byte_prefix(frame, del) || byte_prefix(frame, quit) then return 0; fi
+  return -1;
+}
+
+pub async routine main(): void {
+  val worker = spawn NativeNioKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16398);
+  val socket = await listener.accept_async();
+  let List<int> frame = [];
+  loop {
+    val bytes = await socket.read_bytes_async(1024);
+    if bytes.size == 0; do
+      await socket.close_async();
+      await listener.close_async();
+      worker.send("STOP");
+      await worker.get_done();
+      return;
+    fi
+    let int i = 0;
+    loop {
+      if i == bytes.size then break; fi
+      frame.add(bytes.get(i));
+      val int op = command_code(frame);
+      if op == -1; do
+        await socket.close_async();
+        await listener.close_async();
+        worker.send("STOP");
+        await worker.get_done();
+        return;
+      fi
+      if op > 0; do
+        if op == 5; do
+          await socket.write_bytes_async([43, 79, 75, 13, 10]);
+          await socket.close_async();
+          await listener.close_async();
+          worker.send("STOP");
+          await worker.get_done();
+          return;
+        fi
+        if op == 1 then worker.send("PING"); fi
+        if op == 2 then worker.send("GET"); fi
+        if op == 3 then worker.send("SET"); fi
+        if op == 4 then worker.send("DEL"); fi
+        val reply = (await worker.outputs.next()).value.unwrap();
+        if reply.value == "PONG"; do
+          await socket.write_bytes_async([43, 80, 79, 78, 71, 13, 10]);
+        elseif reply.value == "OK"; do
+          await socket.write_bytes_async([43, 79, 75, 13, 10]);
+        elseif reply.value == "NIL"; do
+          await socket.write_bytes_async([36, 45, 49, 13, 10]);
+        elseif reply.value == "VALUE"; do
+          await socket.write_bytes_async([36, 50, 13, 10, 52, 49, 13, 10]);
+        elseif reply.value == "ONE"; do
+          await socket.write_bytes_async([58, 49, 13, 10]);
+        elseif reply.value == "ZERO"; do
+          await socket.write_bytes_async([58, 48, 13, 10]);
+        else
+          await socket.close_async();
+          await listener.close_async();
+          worker.send("STOP");
+          await worker.get_done();
+          return;
+        fi
+        frame = [];
+      fi
+      i = i + 1;
+    }
+  }
+}
