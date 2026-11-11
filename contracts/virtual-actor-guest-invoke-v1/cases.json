@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "language": "atto",
+  "feature": "guest-typed-virtual-actor-resolve-and-invoke",
+  "status": "SOURCE_AUTHORED_NOT_EXECUTED",
+  "execution_gate": "VIRTUAL_ACTOR_MIR_UNSUPPORTED",
+  "positive": [
+    {
+      "path": "positive/cart_resolve_and_invoke.atto",
+      "stage": "AST_TO_TYPED_INVOCATION_MIR_ONLY"
+    }
+  ],
+  "negative": [
+    {
+      "path": "negative/unawaited_cart.atto",
+      "expected": "VIRTUAL_ACTOR_GUEST_INVOKE_MIR_UNSUPPORTED"
+    },
+    {
+      "path": "negative/wrong_nominal_cart.atto",
+      "expected": "VIRTUAL_ACTOR_GUEST_INVOKE_MIR_UNSUPPORTED"
+    },
+    {
+      "path": "negative/unknown_method_cart.atto",
+      "expected": "VIRTUAL_ACTOR_GUEST_INVOKE_MIR_UNSUPPORTED"
+    }
+  ],
+  "backend_execution": {
+    "java": "NOT_EXECUTED",
+    "llvm": "NOT_EXECUTED",
+    "net": "NOT_EXECUTED",
+    "wasm": "NOT_EXECUTED",
+    "forge": "NOT_EXECUTED"
+  }
+}
