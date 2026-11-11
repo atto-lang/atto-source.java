@@ -67,7 +67,11 @@ public final class CheckedDispatchPlansV1 {
     }
 
     private static final ReferenceQueue<Ast.CallExpr> CLEARED = new ReferenceQueue<>();
-    private static final Map<IdentityKey, Plan> PLANS = new HashMap<>();
+    // A checked target may be its own enclosing FunctionDecl, whose body
+    // includes this CallExpr. A strong Plan value would retain the weak key
+    // through that cycle forever across hot reloads; keep values weak here.
+    // Checked programs instead retain proofs in their scoped snapshots.
+    private static final Map<IdentityKey, WeakReference<Plan>> PLANS = new HashMap<>();
 
     private static final class IdentityKey extends WeakReference<Ast.CallExpr> {
         private final int hash;
@@ -104,7 +108,9 @@ public final class CheckedDispatchPlansV1 {
         }
         expunge();
         IdentityKey key = new IdentityKey(call, CLEARED);
-        Plan previous = PLANS.putIfAbsent(key, plan);
+        WeakReference<Plan> previousRef = PLANS.get(key);
+        Plan previous = previousRef == null ? null : previousRef.get();
+        if (previous == null) PLANS.put(key, new WeakReference<>(plan));
         if (previous != null
                 && (previous.kind() != plan.kind() || previous.strategy() != plan.strategy()
                     || !previous.name().equals(plan.name()) || previous.arity() != plan.arity()
@@ -119,7 +125,8 @@ public final class CheckedDispatchPlansV1 {
     public static synchronized Plan lookup(Ast.CallExpr call) {
         Objects.requireNonNull(call, "call");
         expunge();
-        return PLANS.get(new IdentityKey(call, null));
+        WeakReference<Plan> ref = PLANS.get(new IdentityKey(call, null));
+        return ref == null ? null : ref.get();
     }
 
     // Evaluators receive one immutable identity-indexed snapshot at link time.
