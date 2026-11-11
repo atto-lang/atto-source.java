@@ -117,6 +117,13 @@ public final class SqlitePersistenceStoreTestMain {
                     duplicateBlocked=expected.toString().contains("INCOMPLETE_OPERATION_LEDGER");
                 }
                 check(duplicateBlocked,"missing event received a direct durable duplicate ACK");
+                boolean checkpointBlocked=false;
+                try {store.commit(List.of(write("tampered","unsafe-checkpoint",
+                        1,2,Kind.SNAPSHOT,9)));}
+                catch(java.sql.SQLException expected) {
+                    checkpointBlocked=expected.toString().contains("INCOMPLETE_ACTOR_JOURNAL");
+                }
+                check(checkpointBlocked,"missing event was laundered behind a new checkpoint");
             }
             // A byte-compatible operation record does not prove that the
             // actual event BLOB has not been rewritten after the commit.
@@ -149,6 +156,13 @@ public final class SqlitePersistenceStoreTestMain {
                     replayDenied=expected.toString().contains("UNVERIFIED_ACTOR_EVENT");
                 }
                 check(replayDenied,"same-size rewritten event replayed without operation proof");
+                boolean checkpointBlocked=false;
+                try {store.commit(List.of(write("proof-mutated","unsafe-checkpoint",
+                        1,1,Kind.SNAPSHOT,42)));}
+                catch(java.sql.SQLException expected) {
+                    checkpointBlocked=expected.toString().contains("UNVERIFIED_ACTOR_EVENT");
+                }
+                check(checkpointBlocked,"rewritten event was laundered behind a new checkpoint");
             }
             // A correct-size altered snapshot is also forbidden. Length and
             // stream contiguity alone are not a sufficient recovery witness.
