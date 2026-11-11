@@ -30,6 +30,8 @@ public final class ActorStateSupervisorLoans {
     /** The same actor physical turn must not impersonate multiple borrowers. */
     private Object activeOwnerSegment;
     private boolean revoked;
+    /** Owned primitive proof slot: never return a mutable actor-state alias. */
+    private long protectedScalar;
 
     // Package-private: ActorRuntime is the sole production issuer.
     ActorStateSupervisorLoans(
@@ -78,16 +80,56 @@ public final class ActorStateSupervisorLoans {
      */
     public final class Loan implements AutoCloseable {
         private final ActorStateRwLoans.StateLoan delegate;
-        private Loan(ActorStateRwLoans.StateLoan delegate) {
-            this.delegate = delegate;
+        private final ActorRuntime.ActorSupervisor target;
+        private final ExecutionContext execution;
+        private boolean released;
+
+        private Loan(
+                ActorStateRwLoans.StateLoan delegate,
+                ActorRuntime.ActorSupervisor target, ExecutionContext execution) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.target = Objects.requireNonNull(target, "target");
+            this.execution = Objects.requireNonNull(execution, "execution");
         }
 
         public ActorStateRwLoans.Access access() { return delegate.access(); }
         public long epoch() { return delegate.epoch(); }
 
+        /** No raw reference escapes; read validates live authority atomically. */
+        public long readScalar() {
+            runtime.requireSupervisorStateHostContext(target);
+            synchronized (gate) {
+                requireLiveLocked();
+                return protectedScalar;
+            }
+        }
+
+        /** A read loan never writes even when it has the correct supervisor. */
+        public void writeScalar(long value) {
+            runtime.requireSupervisorStateHostContext(target);
+            synchronized (gate) {
+                requireLiveLocked();
+                if (delegate.access() != ActorStateRwLoans.Access.WRITE) {
+                    throw new SecurityException("protected state mutation requires exclusive writer");
+                }
+                protectedScalar = value;
+            }
+        }
+
+        private void requireLiveLocked() {
+            if (released || !delegate.heldBy(execution)) {
+                throw new SecurityException("state loan was revoked or physically released");
+            }
+        }
+
         @Override
         public void close() {
-            runtime.requireSupervisorStateHostContext();
+            runtime.requireSupervisorStateHostContext(target);
+            synchronized (gate) {
+                if (released) return;
+                released = true;
+            }
+            // Never publish synchronous Future callbacks while holding gate.
             delegate.close();
         }
     }
@@ -128,9 +170,9 @@ public final class ActorStateSupervisorLoans {
      */
     public OresFuture<Loan> redeem(
             Grant grant, ActorRuntime.ActorSupervisor supervisor) {
-        runtime.requireSupervisorStateHostContext();
         Objects.requireNonNull(grant, "grant");
         Objects.requireNonNull(supervisor, "supervisor");
+        runtime.requireSupervisorStateHostContext(supervisor);
         if (grant.getClass() != Grant.class || grant.target != supervisor) {
             throw new SecurityException("delegation was not issued to this supervisor");
         }
@@ -148,7 +190,7 @@ public final class ActorStateSupervisorLoans {
                 grant.access == ActorStateRwLoans.Access.READ
                         ? arbiter.acquireReadAsync(execution)
                         : arbiter.acquireWriteAsync(execution);
-        return wrap(pending);
+        return wrap(pending, supervisor, execution);
     }
 
     /**
@@ -234,12 +276,13 @@ public final class ActorStateSupervisorLoans {
     }
 
     private OresFuture<Loan> wrap(
-            OresFuture<ActorStateRwLoans.StateLoan> pending) {
+            OresFuture<ActorStateRwLoans.StateLoan> pending,
+            ActorRuntime.ActorSupervisor supervisor, ExecutionContext execution) {
         OresFuture<Loan> exposed = new OresFuture<>(() -> pending.cancel(false));
         pending.whenCompleteRuntime((physical, failure) -> {
             if (failure != null) {
                 exposed.failFromRuntime(OresFuture.unwrap(failure));
-            } else if (!exposed.completeFromRuntime(new Loan(physical))) {
+            } else if (!exposed.completeFromRuntime(new Loan(physical, supervisor, execution))) {
                 // Consumer cancelled before delivery. Never leave an
                 // undeliverable successful physical loan pinning STOP.
                 physical.close();
