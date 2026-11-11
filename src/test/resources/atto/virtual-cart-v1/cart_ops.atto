@@ -1,0 +1,5 @@
+// Compiled AttoLang guest transition, independent of host virtual-actor wiring.
+// Immutable scalar input/output: no cross-actor mutable references.
+pub fnc cart_step(current: int, delta: int): int {
+  return current + delta;
+}
