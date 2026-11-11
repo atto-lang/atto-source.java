@@ -185,6 +185,10 @@ public final class Parser {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
                     continue;
                 }
+                if (isAttachedActorStateHead()) {
+                    rootDeclarations.add(parseAttachedActorState(annotations, modifiers));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -439,6 +443,9 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
+            }
+            if (isAttachedActorStateHead()) {
+                throw error(peek(), "attached actor state must be declared at namespace file root, not inside a named module");
             }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
@@ -956,6 +963,73 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
         return parseActorClass(kind, modifiers.visibility, prefix);
+    }
+
+    /**
+     * Contextual spelling: define state on actor Foo as { let int x: 5; }.
+     * The schema only names the actor and contains constant initializers.
+     * It cannot create a mutable guest object or mint critical loan authority.
+     */
+    private boolean isAttachedActorStateHead() {
+        return isContextualIdentifier("state")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("on")
+                && tokens.get(current + 2).type() == ACTOR;
+    }
+
+    private Ast.ActorStateDecl parseAttachedActorState(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "attached actor state");
+        if (modifiers.visibilitySeen) {
+            throw error(peek(), "attached actor state is always private; do not write 'pub' or 'private'");
+        }
+        rejectCallableStructuralAnnotation(annotations, "attached actor state");
+        rejectDiscardedDeclarationAnnotations(annotations, "attached actor state");
+        consumeContextualIdentifier("state", "expected attached actor state declaration");
+        consumeContextualIdentifier("on", "expected 'on' after state");
+        consume(ACTOR, "expected 'actor' after state on");
+        String actorName = consumeTypeDeclarationName("expected nominal actor name after 'state on actor'");
+        consume(AS, "expected 'as' in attached actor state declaration");
+        consume(LBRACE, "expected '{' to start attached actor state");
+        List<Ast.ProtectedStateField> fields = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            consume(LET, "attached actor state fields must begin with 'let'");
+            Ast.TypeRef type = parseTypeRef();
+            if (!type.name().equals("int") || !type.arguments().isEmpty()
+                    || type.isBorrow() || type.inferArguments()) {
+                throw error(previous(), "attached actor state v1 admits only checked signed int fields");
+            }
+            String name = consume(IDENT, "expected attached actor state field name").lexeme();
+            if (name.equals("state") || name.equals("handle_state")) {
+                throw error(previous(), "attached actor state field cannot shadow compiler-owned identifiers");
+            }
+            if (!seen.add(name)) {
+                throw error(previous(), "duplicate attached actor state field '" + name + "'");
+            }
+            consume(COLON, "attached actor state requires ':' followed by a constant initializer");
+            boolean minus = match(MINUS);
+            Token literal = consume(INT, "attached actor state initializer must be a signed integer literal");
+            long checked;
+            try {
+                checked = Long.parseLong((minus ? "-" : "") + literal.lexeme().replace("_", ""));
+            } catch (NumberFormatException invalid) {
+                throw error(literal, "attached actor state int initializer exceeds signed 64-bit range");
+            }
+            consume(SEMICOLON, "attached actor state field requires ';'");
+            fields.add(new Ast.ProtectedStateField(
+                    name, type, new Ast.LiteralExpr(checked)));
+            if (fields.size() > 128) {
+                throw error(previous(), "attached actor state exceeds 128 fields");
+            }
+        }
+        consume(RBRACE, "expected '}' after attached actor state");
+        match(SEMICOLON); // optional terminator after the schema
+        if (fields.isEmpty()) {
+            throw error(previous(), "attached actor state must declare at least one field");
+        }
+        return new Ast.ActorStateDecl(actorName, fields);
     }
 
     /** Preserve first-class syntax; executable lowering stays type-gated. */
