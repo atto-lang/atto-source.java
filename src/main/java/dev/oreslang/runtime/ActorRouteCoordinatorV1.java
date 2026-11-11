@@ -91,6 +91,8 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
     interface PhysicalRouteWitness {
         boolean readyForPublication();
         boolean sameAuthorityDomain(PhysicalRouteWitness other);
+        /** Pre-claim direct ActorRef messages must be processed before V1 retirement. */
+        boolean preclaimDirectMailDrained();
         /** Consumed once; no two logical actor identities may own one physical route. */
         void bindToCoordinator(Object coordinator);
         void retireFromLogicalRoute();
@@ -200,7 +202,9 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
             synchronized (lock) {
                 verifyStage(seal, this);
                 return physicalSubmissions == 0 && generation.livePins() == 0
-                        && mailboxFreeze.drained();
+                        && mailboxFreeze.drained()
+                        && (!(prior.physicalRoute() instanceof PhysicalRouteWitness physical)
+                                || physical.preclaimDirectMailDrained());
             }
         }
 
