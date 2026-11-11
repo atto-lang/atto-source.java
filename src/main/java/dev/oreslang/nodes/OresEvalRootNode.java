@@ -8,6 +8,8 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.ast.CheckedDispatchPlansV1;
+import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -7077,9 +7079,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            CheckedDispatchPlansV1.Plan plan = CheckedDispatchPlansV1.lookup(call);
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
+                // Immutable checked target within this evaluator's code image.
+                // Lexical shadowing wins; imports and other generations retain
+                // ordinary resolution and never share stale declarations.
+                Ast.FunctionDecl direct = plan != null
+                        && plan.kind() == AotDispatchPlannerV1.CallKind.FREE_FUNCTION
+                        && plan.strategy() == AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
+                        && plan.name().equals(directName.name())
+                        && plan.arity() == call.arguments().size()
+                        && declarationModules.containsKey(plan.function())
+                        && !ambiguousFunctions.contains(directName.name())
+                        ? plan.function()
+                        : findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
@@ -7143,8 +7157,21 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
-                    Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
+                    // Only the exact checked class and code owner may avoid
+                    // one virtual-slot lookup. A subclass or hot-loaded
+                    // generation retains the existing vtable dispatch path.
+                    Ast.MethodDecl method = plan != null
+                            && plan.kind() == AotDispatchPlannerV1.CallKind.INSTANCE_METHOD
+                            && plan.strategy() == AotDispatchPlannerV1.Strategy.METHOD_SLOT
+                            && plan.receiverClass() == object.klass
+                            && object.owner == this
+                            && plan.name().equals(methodCall.member())
+                            && plan.arity() == args.size()
+                            && methodOwners.containsKey(plan.method())
+                            ? plan.method()
+                            : object.owner.findMethod(
+                                    object.klass,
+                                    CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7185,8 +7212,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ClassFacade klass) {
-                    Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
+                    Ast.MethodDecl fn = plan != null
+                            && plan.kind() == AotDispatchPlannerV1.CallKind.STATIC_METHOD
+                            && plan.strategy() == AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
+                            && plan.receiverClass() == klass.klass()
+                            && klass.owner() == this
+                            && plan.name().equals(methodCall.member())
+                            && plan.arity() == args.size()
+                            && methodOwners.containsKey(plan.method())
+                            ? plan.method()
+                            : klass.owner().findStaticFunction(
+                                    klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
