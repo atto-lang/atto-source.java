@@ -110,6 +110,7 @@ public final class VirtualActorGuestInvocationMirV1 {
                 VirtualActorLogicalCallMirV1.lower(
                         program.namespace(), module.name(), actor);
         if (main.kind() != Ast.CallableKind.FNC
+                || main.visibility() != Ast.Visibility.PUBLIC
                 || main.actorKind() != Ast.ActorKind.NONE
                 || !(main.async() || main.suspends())
                 || main.generator() || main.structural() || main.nonLexical()
