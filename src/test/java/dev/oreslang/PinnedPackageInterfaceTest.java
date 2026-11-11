@@ -167,7 +167,7 @@ final class PinnedPackageInterfaceTest {
     }
 
     @Test void rejectsMaliciousPublicSymbolNamesEvenWithMatchingDigest() {
-        for (String unsafe : List.of("bad/../escape", "bad\0name", "bad\u202ename")) {
+        for (String unsafe : List.of("bad/../escape", "bad\0name", "bad" + Character.toString(0x202e) + "name")) {
             var forged = ExportInterfaceCodec.encode(
                     new Header("math", COMPILER, TARGET, POLICY),
                     List.of(new Entry("algebra", Kind.MODULE, "algebra", ""),
