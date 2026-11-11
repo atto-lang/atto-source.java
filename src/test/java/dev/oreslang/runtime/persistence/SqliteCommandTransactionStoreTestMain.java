@@ -220,6 +220,36 @@ public final class SqliteCommandTransactionStoreTestMain {
                     }
                 }
             }
+            // The mixed logical-command verifier must also reject forged
+            // original metadata on legacy events and snapshot barriers.
+            Identity meta=new Identity("tenant-command","account-meta","ledger");
+            Identity checkpoint=new Identity("tenant-command","account-checkpoint-meta","ledger");
+            try(SqlitePersistenceStore legacy=new SqlitePersistenceStore(file);
+                SqliteCommandTransactionStore commands=new SqliteCommandTransactionStore(file)) {
+                legacy.grantEpoch(meta.tenant(),meta.actor(),1);
+                legacy.grantEpoch(checkpoint.tenant(),checkpoint.actor(),1);
+                check(legacy.commit(List.of(new Write(meta,"evt-original",1,0,1,
+                        Kind.EVENT,enc(8)))).get(0).durable(),
+                        "mixed legacy epoch fixture");
+                check(legacy.commit(List.of(new Write(checkpoint,"snap-original",1,0,1,
+                        Kind.SNAPSHOT,enc(8)))).get(0).durable(),
+                        "mixed snapshot epoch fixture");
+                try(Connection raw=DriverManager.getConnection("jdbc:sqlite:"+file);
+                    Statement statement=raw.createStatement()) {
+                    check(statement.executeUpdate(
+                        "UPDATE ops SET expected=99 WHERE actor='account-meta' " +
+                        "AND op='evt-original'")==1,
+                        "mixed legacy expected-version corruption fixture");
+                    check(statement.executeUpdate(
+                        "UPDATE ops SET epoch=0 WHERE actor='account-checkpoint-meta' " +
+                        "AND op='snap-original'")==1,
+                        "mixed snapshot epoch corruption fixture");
+                }
+                expectSqlFailure(()->commands.loadVerified(meta,1),
+                                 "CORRUPT_OPERATION_LEDGER");
+                expectSqlFailure(()->commands.loadVerified(checkpoint,1),
+                                 "CORRUPT_SNAPSHOT_PROOF");
+            }
             System.out.println("PASS host SQLite atomic multi-event / epoch retry / compaction / trigger rollback");
         } finally {
             try(var files=Files.walk(root)){
