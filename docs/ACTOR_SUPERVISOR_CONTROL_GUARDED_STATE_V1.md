@@ -37,6 +37,30 @@ that integration is **not yet implemented**. Logical CONTROL migrations
 must resume through a newly authenticated physical turn rather than
 reusing the old thread-local.
 
+## STOP admission and physical-reclamation linearization
+
+A race existed between publishing `ActorCell.stopped=true` and calling the
+region's prior callback-bearing `revokeFromRuntimeStop()`. An authorized
+supervisor writer could still enter the region during that interval.
+
+Now, **while holding `ActorCell.lifecycleLock` and before setting
+`stopped=true`**, STOP calls each region's `sealFromRuntimeStop()`.
+This takes only the region monitor, marks it revoked and clears unredeemed
+grants. It never settles Futures or invokes callbacks. A protected scalar
+write and this seal linearize on the same monitor: the write must finish
+before the seal or be rejected afterward.
+
+After sealing descendant admission, outside `lifecycleLock`, STOP calls
+`revokeFromRuntimeStop()` to close the RW arbiter and publish pending-Future
+notifications. A separate `arbiterClosed` flag ensures that an earlier
+logical seal cannot skip physical shutdown. All physical loan pins and
+notification drains continue to block actor-memory reclamation.
+
+Some existing integration tests called **blocking host** `worker.stop()`
+while a live delegated loan intentionally pinned retirement. They now
+use nonblocking structured `worker.cancel()` and explicitly join
+physical termination after releasing the loan, avoiding a false timeout.
+
 ## Guarded primitive state: no raw reference escapes
 
 `ActorStateSupervisorLoans` now contains one actor-owned primitive
@@ -79,17 +103,19 @@ Focused JUnit files:
 1. `ActorStateRwLoansTest`: 26 authored arbiter tests,
    including bounded/FIFO grants, cancellation, STOP,
    notification drainage, epoch exhaustion and constructor visibility.
-2. `ActorStateSupervisorLoansTest`: 21 authored integration tests
+2. `ActorStateSupervisorLoansTest`: 22 authored integration tests
    against actual `ActorRuntime` and a test CONTROL executor. The
-   eight added in this slice cover unauthenticated host redeem/read/write/
+   nine added in this slice cover unauthenticated host redeem/read/write/
    close, denied write through read grant, same owner/supervisor
    primitive slot, wrong CONTROL principal, stale released loan,
-   nested CONTROL denial, inline dispatch denial, and STOP denying
-   data access while holding the physical loan until valid release.
+   nested CONTROL denial, inline dispatch denial, STOP denying
+   data access while holding the physical loan until valid release,
+   and a paused actor write whose post-STOP commit is rejected
+   specifically with a revoked-region diagnostic (not a timeout).
 
-**47 authored tests are not 47 passing tests.** The exact-head workflow
+**48 authored tests are not 48 passing tests.** The exact-head workflow
 `.github/workflows/actor-state-rw-ownership.yml` requires both suites,
-checks the PR source SHA/tree, checks Surefire XML (`>=26` and `>=21`)
+checks the PR source SHA/tree, checks Surefire XML (`>=26` and `>=22`)
 with zero failures/errors/skips, and retains receipts. GitHub job
 `steps=null` means **NOT_EXECUTED**, not compiler-backed proof.
 
