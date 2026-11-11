@@ -1,0 +1,8 @@
+// A mailbox-owned actor field borrow must not escape via return.
+define actor Counter as
+  state { let int count; }
+  leak(): borrow int {
+    return rt borrow self.count;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
