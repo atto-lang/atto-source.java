@@ -2838,6 +2838,11 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Outlives ActorCell registry retirement and doneFuture publication.
+        // An HTTP shutdown observer must not treat a removed ActorCell as
+        // physically absent while its TurnExecutor wrapper still owns the
+        // RuntimeBlockingGuard/ACTOR_CARRIER exit boundary.
+        private final AtomicBoolean physicalCarrierExitPending = new AtomicBoolean();
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -6347,12 +6352,16 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "HTTP carrier quiescence can only be inspected from host context");
         }
+        // ActorCell may already be removed, and doneFuture may have been
+        // published under finalizeStopLocked before the carrier wrapper has
+        // cleared its ThreadLocal execution authority.
+        if (ref.physicalCarrierExitPending.get()) return false;
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null || cell.ref != ref) {
-            // ActorCell leaves the registry only after physical finalization.
-            return true;
+            return !ref.physicalCarrierExitPending.get();
         }
         synchronized (cell.lifecycleLock) {
+            if (ref.physicalCarrierExitPending.get()) return false;
             if (cell.finalized) return true;
             // A stopped actor may still own source cleanup or child leases
             // even when no guest turn is currently executing.
@@ -9414,6 +9423,12 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     carrierOwnerThread = Thread.currentThread();
                     carrierActive = true;
+                    // Publish before entering Truffle/TurnExecutor, and retain
+                    // across ActorCell removal/done Future callbacks.
+                    if (!ref.physicalCarrierExitPending.compareAndSet(false, true)) {
+                        throw new IllegalStateException(
+                                "actor physical exit receipt already outstanding for " + ref.id());
+                    }
                     carrierEntered = true;
                 }
 
@@ -9512,6 +9527,10 @@ public final class ActorRuntime implements AutoCloseable {
                         RuntimeBlockingGuard.exitActorCarrier();
                         if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
                         else ACTOR_CARRIER.remove();
+                        // This is intentionally AFTER the guest carrier has
+                        // fully returned and its thread-local authority has
+                        // been retired. A failed exit never clears the receipt.
+                        ref.physicalCarrierExitPending.set(false);
                     }
                 }
                 if (reschedule) schedule();
