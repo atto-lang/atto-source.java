@@ -1,0 +1,10 @@
+// Canonical AttoLang generic scalar regression. Both int calls resolve
+// semantically, but a Java guest-evaluator call is NOT native AOT codegen.
+fnc identity<T>(T value): T {
+  return value;
+}
+
+pub routine main(): void {
+  stdio.stdout.write(identity<int>(20));
+  stdio.stdout.write(identity<int>(22));
+}
