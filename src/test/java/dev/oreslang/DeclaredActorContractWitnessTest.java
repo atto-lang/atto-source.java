@@ -116,8 +116,8 @@ final class DeclaredActorContractWitnessTest {
     @Test
     void parameterMutabilityIsPartOfTheContractWitness() {
         reject(DECL,
-                NS + "define pub interface ActorXYZ as "
-                        + "fnc bar(int mut x): int; end",
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "mtd bar(int mut x): int; end",
                 METHOD,
                 "signature mismatch");
     }
@@ -139,6 +139,13 @@ final class DeclaredActorContractWitnessTest {
     @Test
     void missingNominalInterfaceIsNotAnImplicitContract() {
         reject(DECL, NS + "define pub interface Other as fnc bar(int x): int; end",
+                METHOD, "missing nominal actor interface contract");
+    }
+
+    @Test
+    void ordinaryInterfaceCannotImpersonateAnActorContract() {
+        reject(DECL, NS + "define pub interface ActorXYZ as "
+                        + "fnc bar(int x): int; end",
                 METHOD, "missing nominal actor interface contract");
     }
 
