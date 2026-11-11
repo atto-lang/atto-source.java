@@ -8061,9 +8061,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static long enumSymbolLogicalBytes(OresEnumSymbol symbol) {
-        // Conservative per-mail logical quota charge; no new arena allocation.
-        return 96L + 2L * (symbol.declaration().sourceUnitId().length()
-                + symbol.declaration().enumName().length() + symbol.caseName().length());
+        // Charge the entire closed declaration graph per mail, not just the
+        // selected case. Reused immutable schema memory does not grant free
+        // mailbox retention, and cached accounting stays O(1) per send.
+        return symbol.declaration().transportLogicalBytes();
     }
 
     private static long containerBase(long header, long perEntry, int count) {
