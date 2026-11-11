@@ -47,11 +47,16 @@ fi
   fail 'stale successful stdout survived failed subprocess'
 
 # Linux 1 MiB file-size RLIMIT must prevent unbounded stdout on a noisy guest.
-if otel_guardrails_run_guest "$output" /bin/bash -c 'head -c 2097152 /dev/zero'; then
-  fail 'oversized output process admitted as success'
+if otel_guardrails_run_guest "$output" /bin/bash -c 'head -c 2097152 /dev/zero' 2> "$work/flood-control.log"; then
+  fail 'oversized stdout process admitted as success'
 fi
 [[ "$(wc -c < "$output/guest.stdout.jsonl")" -le 1048576 ]] ||
-  fail 'filesystem byte quota failed'
+  fail 'stdout filesystem byte quota failed'
+if otel_guardrails_run_guest "$output" /bin/bash -c 'head -c 2097152 /dev/zero >&2' 2> "$work/flood-control.log"; then
+  fail 'oversized stderr process admitted as success'
+fi
+[[ "$(wc -c < "$output/guest.stderr.txt")" -le 1048576 ]] ||
+  fail 'stderr filesystem byte quota failed'
 
 ln -s "$output" "$work/capture-link"
 if otel_guardrails_run_guest "$work/capture-link" /bin/true; then
