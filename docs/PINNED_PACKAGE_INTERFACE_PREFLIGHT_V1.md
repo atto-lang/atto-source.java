@@ -37,6 +37,7 @@ The following defects/risks were addressed on this draft branch:
 - Added a check that the declared `.oresi` export count is possible within the actual remaining envelope bytes before allocating its decoded symbol table (`ExportInterfaceCodec.decode`).
 - Denied dangerous public symbol spellings containing slash/backslash, C0/C1 controls, bidi overrides, zero-width formatting, or Unicode tag controls. Ordinary Unicode identifiers remain permitted.
 - Enforced 16 MiB per-interface and 64 MiB aggregate package admission limits before cloning or decoding bytes; all consumed inputs are copied into an owned Java snapshot.
-- Expanded `PinnedPackageInterfaceTest` to 14 authored methods, including exact Java/native digest vectors, Unicode acceptance, hostile export names, mixed-case alias rejection, forged count, oversized interface and nominal package isolation.
+- Expanded `PinnedPackageInterfaceTest` to 15 authored methods, including exact Java/native digest vectors, Unicode acceptance, hostile export names, mixed-case alias rejection, forged count, oversized interface and nominal package isolation.
 
 **Evidence status:** tests are committed but current source-org workflow has no executed steps. The test suite has not been run against a JDK25 compiler in an authorized CI environment. External `.oresi` provenance, actual signed package locks, type/layout ABI and guest linking remain unimplemented. Do not promote to executable package parity.
+- Matched the shared reference model's forbidden dependency-alias and namespace identifiers: `constructor`, `prototype`, `__proto__`, and `__root__`.
