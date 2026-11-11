@@ -1,0 +1,33 @@
+// Actual AttoLang guest source: complete v2 actor run, not an actor hot-swap.
+define actor Counter as
+  let int count;
+
+  on_start(): void {
+    self.count = 0;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    if mail.value == "add"; do
+      self.count = self.count + 2;
+      self.send(self.count);
+    elif mail.value == "stop"; do
+      self.end();
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val counter = spawn Counter();
+  await counter.get_ready();
+  counter.send("add");
+  val answer = (await counter.outputs.next()).value.unwrap();
+  if answer.value != 2; do
+    val empty = arr[0];
+    val invalid = empty[99];
+  fi
+  counter.send("stop");
+  await counter.get_done();
+  return;
+}
