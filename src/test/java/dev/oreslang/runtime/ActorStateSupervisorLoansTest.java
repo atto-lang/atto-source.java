@@ -7,6 +7,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -23,7 +28,22 @@ final class ActorStateSupervisorLoansTest {
     }
 
     private static final class Fixture implements AutoCloseable {
-        final ActorRuntime runtime = new ActorRuntime();
+        final ExecutorService controlPool = Executors.newFixedThreadPool(3);
+        final ActorRuntime.ControlDispatcher dispatcher = work -> {
+            var receipt = new OresFuture<Void>();
+            controlPool.execute(() -> {
+                try {
+                    work.run();
+                    receipt.completeFromRuntime(null);
+                } catch (Throwable error) {
+                    receipt.failFromRuntime(error);
+                }
+            });
+            return receipt;
+        };
+        final ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(), dispatcher);
         final ActorRuntime.ActorSupervisor supervisor = runtime.createSupervisor();
         final ActorRuntime.ActorSupervisor foreign = runtime.createSupervisor();
         final ActorRuntime.ActorGroup group = runtime.createActorGroup(supervisor);
@@ -31,6 +51,8 @@ final class ActorStateSupervisorLoansTest {
         final ConcurrentLinkedQueue<ActorStateSupervisorLoans.Grant> grants =
                 new ConcurrentLinkedQueue<>();
         final AtomicInteger ownerReadOperations = new AtomicInteger();
+        final java.util.concurrent.atomic.AtomicLong ownerScalarObserved =
+                new java.util.concurrent.atomic.AtomicLong(-1);
         final AtomicReference<Throwable> denied = new AtomicReference<>();
         final ActorRuntime.ActorRef<String> worker;
 
@@ -56,6 +78,20 @@ final class ActorStateSupervisorLoansTest {
                             case "owner-read" -> {
                                 try {
                                     region.get().withOwnerRead(ownerReadOperations::incrementAndGet);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "scalar-owner-read" -> {
+                                try {
+                                    region.get().withOwnerScalarRead(ownerScalarObserved::set);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "scalar-owner-increment" -> {
+                                try {
+                                    region.get().withOwnerScalarUpdate(value -> value + 1);
                                 } catch (Throwable rejected) {
                                     denied.set(rejected);
                                 }
@@ -104,8 +140,58 @@ final class ActorStateSupervisorLoansTest {
             return grant;
         }
 
+        <T> T asControl(
+                ActorRuntime.ActorSupervisor principal, Callable<T> action) throws Exception {
+            var observed = new CompletableFuture<T>();
+            runtime.dispatchSupervisorStateControl(principal, () -> {
+                try {
+                    observed.complete(action.call());
+                } catch (Throwable failure) {
+                    observed.completeExceptionally(failure);
+                }
+            }).get(5, TimeUnit.SECONDS);
+            try {
+                return observed.get(5, TimeUnit.SECONDS);
+            } catch (ExecutionException rejected) {
+                Throwable cause = rejected.getCause();
+                if (cause instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+                if (cause instanceof Error fatal) throw fatal;
+                throw rejected;
+            }
+        }
+
+        OresFuture<ActorStateSupervisorLoans.Loan> redeem(
+                ActorStateSupervisorLoans active,
+                ActorStateSupervisorLoans.Grant grant) throws Exception {
+            return redeemAs(supervisor, active, grant);
+        }
+
+        OresFuture<ActorStateSupervisorLoans.Loan> redeemAs(
+                ActorRuntime.ActorSupervisor principal,
+                ActorStateSupervisorLoans active,
+                ActorStateSupervisorLoans.Grant grant) throws Exception {
+            return asControl(principal, () -> active.redeem(grant, principal));
+        }
+
+        void release(ActorStateSupervisorLoans.Loan loan) throws Exception {
+            asControl(supervisor, () -> { fixture.release(loan); return null; });
+        }
+
+        long read(ActorStateSupervisorLoans.Loan loan) throws Exception {
+            return asControl(supervisor, loan::readScalar);
+        }
+
+        void write(ActorStateSupervisorLoans.Loan loan, long value) throws Exception {
+            asControl(supervisor, () -> { loan.writeScalar(value); return null; });
+        }
+
         @Override public void close() {
-            try { group.close(); } finally { runtime.close(); }
+            try {
+                group.close();
+            } finally {
+                try { runtime.close(); }
+                finally { controlPool.shutdownNow(); }
+            }
         }
     }
 
@@ -149,7 +235,7 @@ final class ActorStateSupervisorLoansTest {
             var grant = fixture.issue("read");
             assertEquals(1, region.outstandingGrantCount());
             assertThrows(SecurityException.class,
-                    () -> region.redeem(grant, fixture.foreign));
+                    () -> fixture.redeemAs(fixture.foreign, region, grant));
             assertEquals(1, region.outstandingGrantCount(),
                     "rejection by a foreign supervisor must not consume grant");
 
@@ -157,15 +243,15 @@ final class ActorStateSupervisorLoansTest {
             var secondRegion = fixture.region.get();
             assertNotSame(region, secondRegion);
             assertThrows(SecurityException.class,
-                    () -> secondRegion.redeem(grant, fixture.supervisor),
+                    () -> fixture.redeem(secondRegion, grant),
                     "a token from one actor region cannot be replayed into another");
             // A separate region requires an independently minted token.
-            var loan = region.redeem(grant, fixture.supervisor).join();
+            var loan = fixture.redeem(region, grant).join();
             assertEquals(0, region.outstandingGrantCount());
             assertEquals(1, region.activeReaders());
             assertThrows(SecurityException.class,
-                    () -> region.redeem(grant, fixture.supervisor));
-            loan.close();
+                    () -> fixture.redeem(region, grant));
+            fixture.release(loan);
             assertEquals(0, region.activeReaders());
         }
     }
@@ -179,23 +265,23 @@ final class ActorStateSupervisorLoansTest {
             var write = fixture.issue("write");
             var lateRead = fixture.issue("read");
 
-            var r1 = region.redeem(readOne, fixture.supervisor).join();
-            var r2 = region.redeem(readTwo, fixture.supervisor).join();
-            var waitingWrite = region.redeem(write, fixture.supervisor);
-            var waitingRead = region.redeem(lateRead, fixture.supervisor);
+            var r1 = fixture.redeem(region, readOne).join();
+            var r2 = fixture.redeem(region, readTwo).join();
+            var waitingWrite = fixture.redeem(region, write);
+            var waitingRead = fixture.redeem(region, lateRead);
             assertEquals(2, region.activeReaders());
             assertEquals(0, region.activeWriters());
             assertFalse(waitingWrite.isDone());
             assertFalse(waitingRead.isDone());
 
-            r1.close();
+            fixture.release(r1);
             assertFalse(waitingWrite.isDone());
-            r2.close();
+            fixture.release(r2);
             var writer = waitingWrite.join();
             assertEquals(1, region.activeWriters());
             assertFalse(waitingRead.isDone());
-            writer.close();
-            waitingRead.join().close();
+            fixture.release(writer);
+            fixture.release(waitingRead.join());
             assertEquals(0, region.pendingCount());
         }
     }
@@ -205,14 +291,14 @@ final class ActorStateSupervisorLoansTest {
         try (var fixture = new Fixture()) {
             var region = fixture.create();
             var grant = fixture.issue("write");
-            var writer = region.redeem(grant, fixture.supervisor).join();
+            var writer = fixture.redeem(region, grant).join();
             sendAndDrain(fixture.worker, "owner-read");
             assertInstanceOf(IllegalStateException.class, fixture.denied.get(),
                     "owner turn must not park its carrier to await supervisor write");
             assertEquals(0, fixture.ownerReadOperations.get());
             assertEquals(1, region.activeWriters());
 
-            writer.close();
+            fixture.release(writer);
             fixture.denied.set(null);
             sendAndDrain(fixture.worker, "owner-read");
             assertNull(fixture.denied.get());
@@ -242,15 +328,15 @@ final class ActorStateSupervisorLoansTest {
             var region = fixture.create();
             var stale = fixture.issue("read");
             var live = fixture.issue("write");
-            var loan = region.redeem(live, fixture.supervisor).join();
+            var loan = fixture.redeem(region, live).join();
 
             fixture.worker.stop();
             assertFalse(fixture.worker.done().isDone(),
                     "STOP cannot reclaim while a physical supervisor write remains live");
             assertFalse(region.physicallyRetired());
             assertThrows(SecurityException.class,
-                    () -> region.redeem(stale, fixture.supervisor));
-            loan.close();
+                    () -> fixture.redeem(region, stale));
+            fixture.release(loan);
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(region.physicallyRetired());
         }
@@ -263,11 +349,11 @@ final class ActorStateSupervisorLoansTest {
             var region = fixture.create();
             var first = fixture.issue("write");
             var blocked = fixture.issue("read");
-            var held = region.redeem(first, fixture.supervisor).join();
-            var queued = region.redeem(blocked, fixture.supervisor);
+            var held = fixture.redeem(region, first).join();
+            var queued = fixture.redeem(region, blocked);
             assertFalse(queued.isDone());
             assertTrue(queued.cancel(false));
-            held.close();
+            fixture.release(held);
             fixture.worker.stop();
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(region.physicallyRetired());
@@ -324,7 +410,7 @@ final class ActorStateSupervisorLoansTest {
                     if (!start.await(5, TimeUnit.SECONDS)) {
                         throw new AssertionError("host claimants did not start");
                     }
-                    var accepted = region.redeem(grant, fixture.supervisor);
+                    var accepted = fixture.redeem(region, grant);
                     winner.set(accepted);
                     successful.incrementAndGet();
                 } catch (SecurityException expected) {
@@ -348,7 +434,7 @@ final class ActorStateSupervisorLoansTest {
             assertEquals(1, successful.get());
             assertEquals(1, rejected.get());
             assertEquals(0, region.outstandingGrantCount());
-            winner.get().join().close();
+            fixture.release(winner.get().join());
             assertEquals(0, region.activeReaders());
         }
     }
@@ -360,8 +446,8 @@ final class ActorStateSupervisorLoansTest {
             var region = fixture.create();
             var write = fixture.issue("write");
             var waitingRead = fixture.issue("read");
-            var held = region.redeem(write, fixture.supervisor).join();
-            var queued = region.redeem(waitingRead, fixture.supervisor);
+            var held = fixture.redeem(region, write).join();
+            var queued = fixture.redeem(region, waitingRead);
             assertFalse(queued.isDone());
 
             fixture.worker.stop();
@@ -370,7 +456,7 @@ final class ActorStateSupervisorLoansTest {
             assertFalse(fixture.worker.done().isDone(),
                     "the active writer keeps actor memory physically pinned");
             assertFalse(region.physicallyRetired());
-            held.close();
+            fixture.release(held);
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(region.physicallyRetired());
         }
