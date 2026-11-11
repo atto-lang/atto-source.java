@@ -22,7 +22,7 @@ public final class ManifestActorContractBuild {
     public static final long MAX_SOURCE_BYTES =
             PackageNamespaceBuild.MAX_PACKAGE_SOURCE_BYTES;
     public static final int MAX_FILE_BYTES = (int) PackageNamespaceBuild.MAX_FILE_BYTES;
-    public static final int MAX_MANIFEST_BYTES = 1024 * 1024;
+    public static final int MAX_MANIFEST_BYTES = PackageNamespaceBuild.MAX_MANIFEST_BYTES;
     public static final int MAX_VISITED_ENTRIES = PackageNamespaceBuild.MAX_VISITED_ENTRIES;
     public static final int MAX_SOURCE_DEPTH = PackageNamespaceBuild.MAX_SOURCE_DEPTH;
 
