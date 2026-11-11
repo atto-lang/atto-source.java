@@ -11,6 +11,8 @@ on:
       - "src/test/java/dev/oreslang/ActorStateContainerOwnershipCompilerTest.java"
       - "src/test/java/dev/oreslang/ActorStateBorrowReturnFenceTest.java"
       - "src/test/java/dev/oreslang/ActorStateTypedProjectionOwnershipTest.java"
+      - "scripts/ci/actor_state_projection_negative_mutation.py"
+      - "docs/ACTOR_STATE_TYPED_PROJECTION_LOAN_V1.md"
       - "scripts/ci/actor_state_return_borrow_negative_mutation.py"
       - "src/test/resources/ownership/actor-state/**"
       - "src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java"
@@ -98,6 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/ci/actor_state_return_borrow_negative_mutation.py
+          python3 scripts/ci/actor_state_projection_negative_mutation.py
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
           git diff --quiet HEAD
       - name: Preserve machine-readable JUnit receipts for independent review
@@ -113,4 +116,6 @@ jobs:
             target/surefire-reports/TEST-dev.oreslang.ActorStateTypedProjectionOwnershipTest.xml
             target/actor-state-negative-mutation/TEST-MUTATION-ActorStateBorrowReturnFenceTest.xml
             target/actor-state-negative-mutation/negative-mutation-receipt.json
+            target/actor-state-projection-negative-mutation/TEST-MUTATION-ActorStateTypedProjectionOwnershipTest.xml
+            target/actor-state-projection-negative-mutation/negative-mutation-receipt.json
           if-no-files-found: warn
