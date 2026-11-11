@@ -46,7 +46,8 @@ final class ActorCarrierQuiescencePollingTest {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1,1,1,16), turnExecutor)) {
-            var actor = runtime.spawnShared(() -> (Integer message, ActorRuntime.ActorContext context) -> { });
+            ActorRuntime.ActorRef<Integer> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
             try {
                 actor.ready();
                 assertTrue(carrierEntered.await(5, TimeUnit.SECONDS));
