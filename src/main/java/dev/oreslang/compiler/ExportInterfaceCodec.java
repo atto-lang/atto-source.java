@@ -186,6 +186,12 @@ public final class ExportInterfaceCodec {
             int count = in.readInt();
             if (count < 0 || count > ENTRY_LIMIT)
                 throw new IllegalArgumentException("invalid export count");
+            // Module and symbol names are required to be nonempty. Even the
+            // shortest valid entry consumes 15 bytes (name lengths + kind).
+            // Check the remaining envelope before reserving attacker-sized
+            // lists from an untrusted on-disk count field.
+            if (count > in.available() / 15)
+                throw new IllegalArgumentException("impossible export count for interface bytes");
             List<Entry> entries = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
                 String module = get(in);
