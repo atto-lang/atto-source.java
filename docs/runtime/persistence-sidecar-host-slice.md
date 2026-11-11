@@ -282,3 +282,38 @@ execution-admission path but the specific billing/policy/root cause
 is still unknown. Reuse the secure private-source export gate in
 security draft PR #2694: do not mirror sources solely because a
 different private organization's synthetic canary has working minutes.
+
+
+### Journal continuity and snapshot-laundering regression (2026-11-10)
+
+Audit found that post-checkpoint COUNT and SUM checks alone can
+underestimate a damaged journal and permit further writes on a stream
+that cannot replay. Both JDBC writers now require exactly the
+`snapshot_version+1 .. head` interval with COUNT, MIN(version),
+MAX(version) and the 16 MiB/10k limits inside `BEGIN IMMEDIATE`.
+Out-of-head or missing rows cannot create fictitious capacity.
+
+The legacy writer also guards checkpoint creation. To avoid hiding
+pre-existing event corruption behind a new snapshot, it reuses the
+command store's full mixed legacy/command verified recovery logic
+**on the same borrowed JDBC Connection and existing transaction**,
+without starting a second transaction or sending database bytes to a
+second GitHub organization. A legacy-only database without the
+`command_commits` table uses the original strict legacy replay
+verifier. Corrupt event bytes, missing rows, invalid snapshots or
+command event digest mismatches fail BEFORE snapshot publication.
+
+The strict JDK21 JDBC test fixtures now cover: verified checkpoints
+after 10,000 independently witnessed events, missing/same-size
+rewritten legacy events, a corrupt multi-event command before
+checkpoint creation, and forged future events beyond the durable
+stream head. They are **not executed**: source Actions still fails
+before the first job step.
+
+A proposed private carrier with working source-free runner steps is
+documented on source security draft PR #2694. The source and candidate
+destination main branches remain unprotected and source has no active
+approved export destinations. No private code mirror is allowed
+until the exact independent approval/protected-policy prerequisites
+are fulfilled. Success of independent synthetic Actions SQLite
+canaries is NOT JDK compilation or guest execution.
