@@ -162,6 +162,69 @@ final class NeuronActorScalarTurnStateV0Test {
         }
     }
 
+    @Test void concurrentLateCloseCannotDoubleReleaseOrDoubleFinalize() throws Exception {
+        var stateRef = new AtomicReference<NeuronActorScalarTurnStateV0>();
+        var scopeRef = new AtomicReference<NeuronActorScalarTurnStateV0.ReadScope>();
+        var error = new AtomicReference<Throwable>();
+        var stopped = new CountDownLatch(1);
+
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 1, 2),
+                ActorRuntime.TurnExecutor.direct())) {
+            var actor = runtime.<Integer>spawnShared(() -> {
+                var state = NeuronActorScalarTurnStateV0.createOnCurrentTurn(
+                        4, 2, List.of("weight"));
+                stateRef.set(state);
+                return (message, context) -> {
+                    try {
+                        assertEquals(Integer.valueOf(1), message);
+                        var scope = state.tryRead();
+                        assertNotNull(scope);
+                        scopeRef.set(scope);
+                        context.self().stop();
+                    } catch (Throwable problem) {
+                        error.compareAndSet(null, problem);
+                        context.self().stop();
+                    } finally {
+                        stopped.countDown();
+                    }
+                };
+            });
+            actor.send(1);
+            assertTrue(stopped.await(5, TimeUnit.SECONDS));
+            if (error.get() != null) throw new AssertionError("initial actor turn", error.get());
+            assertNotNull(scopeRef.get());
+            assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                    "STOP cannot finalize with the last loan physically held");
+            var start = new CountDownLatch(1);
+            var finished = new CountDownLatch(8);
+            for (int i = 0; i < 8; i++) {
+                Thread.ofPlatform().name("neuron-close-racer-" + i).start(() -> {
+                    try {
+                        assertTrue(start.await(5, TimeUnit.SECONDS));
+                        for (int repeat = 0; repeat < 50; repeat++)
+                            scopeRef.get().close();
+                    } catch (Throwable problem) {
+                        error.compareAndSet(null, problem);
+                    } finally {
+                        finished.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(finished.await(5, TimeUnit.SECONDS),
+                    "all host cleanup racers must exit");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "exactly one physical loan close wakes STOP finalization");
+            if (error.get() != null) throw new AssertionError("scope close race", error.get());
+            assertEquals(0, stateRef.get().activeLoanCount());
+            assertTrue(stateRef.get().tryClearAfterQuiescence());
+            assertThrows(IllegalStateException.class,
+                    () -> scopeRef.get().readFloat("weight"),
+                    "a physically released loan cannot return data after STOP");
+        }
+    }
+
     @Test void differentActorCannotBorrowCapturedProtectedState() throws Exception {
         var stateRef = new AtomicReference<NeuronActorScalarTurnStateV0>();
         var failure = new AtomicReference<Throwable>();
