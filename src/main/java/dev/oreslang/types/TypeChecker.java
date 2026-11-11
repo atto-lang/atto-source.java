@@ -260,6 +260,19 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts, false);
+    }
+
+    /**
+     * Source-profile-aware linked type analysis. Strict equality checks must
+     * survive the full cross-file metadata and annotation-expansion path.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            boolean strictAttoEquality) {
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -279,6 +292,7 @@ public final class TypeChecker {
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
+        checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
