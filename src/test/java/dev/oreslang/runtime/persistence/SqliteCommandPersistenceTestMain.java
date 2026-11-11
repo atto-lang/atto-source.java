@@ -167,7 +167,7 @@ public final class SqliteCommandPersistenceTestMain {
             fails("INVALID_CONFIG",()->{
                 try(SqliteCommandPersistence invalid=
                         new SqliteCommandPersistence(dir.resolve("bad-budget.sqlite"),"tenant-a",0)) {
-                    throw new AssertionError("invalid replay configuration accepted");
+                    throw new AssertionError("invalid replay configuration accepted: "+invalid);
                 }
             });
             System.out.println("PASS "+checks+" Java SQLite v2 command integration checks");
