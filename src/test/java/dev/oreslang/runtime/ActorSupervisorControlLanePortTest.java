@@ -53,11 +53,11 @@ final class ActorSupervisorControlLanePortTest {
         assertEquals(2, root.snapshot().pending());
 
         var first = root.poll().orElseThrow();
-        assertEquals(a, first.actor());
-        root.ack(a, 7);
+        assertEquals(a, first.notice().actor());
+        root.ack(first);
         var second = root.poll().orElseThrow();
-        assertEquals(b, second.actor());
-        root.ack(b, 8);
+        assertEquals(b, second.notice().actor());
+        root.ack(second);
         assertEquals(0, root.snapshot().reserved());
         assertEquals(2, root.snapshot().acknowledged());
     }
@@ -99,20 +99,24 @@ final class ActorSupervisorControlLanePortTest {
         root.reserve(b, 1);
         assertTrue(parent.publish(notice(a, 1, 10)));
         assertTrue(parent.publish(notice(b, 1, 11)));
-        assertEquals(a, parent.poll().orElseThrow().actor());
+        var oldOwnerLease = parent.poll().orElseThrow();
+        assertEquals(a, oldOwnerLease.notice().actor());
 
         parent.transferPublishedTo(root);
         assertEquals(0, parent.snapshot().reserved());
         assertEquals(0, parent.snapshot().inFlight());
         assertEquals(2, parent.snapshot().transferred());
-        assertThrows(IllegalStateException.class, () -> parent.ack(a, 1));
+        assertThrows(IllegalStateException.class, () -> parent.ack(oldOwnerLease));
 
-        assertEquals(a, root.poll().orElseThrow().actor());
-        root.retry(a, 1);
-        assertEquals(b, root.poll().orElseThrow().actor());
-        root.ack(b, 1);
-        assertEquals(a, root.poll().orElseThrow().actor());
-        root.ack(a, 1);
+        var rootFirst = root.poll().orElseThrow();
+        assertEquals(a, rootFirst.notice().actor());
+        root.retry(rootFirst);
+        var rootSecond = root.poll().orElseThrow();
+        assertEquals(b, rootSecond.notice().actor());
+        root.ack(rootSecond);
+        var rootRetry = root.poll().orElseThrow();
+        assertEquals(a, rootRetry.notice().actor());
+        root.ack(rootRetry);
         assertEquals(0, root.snapshot().reserved());
         assertEquals(2, root.snapshot().acknowledged());
     }
@@ -168,4 +172,36 @@ final class ActorSupervisorControlLanePortTest {
         assertEquals(2, a.snapshot().pending() + b.snapshot().pending(),
                 "two immutable notices must remain exactly once");
     }
+    @Test
+    void staleAndForeignSettlementLeasesCannotAckANewerDelivery() {
+        var parent = new ActorSupervisorControlLane(1);
+        var root = new ActorSupervisorControlLane(1);
+        var child = ActorRuntime.ActorId.create();
+        parent.reserve(child, 17);
+        root.reserve(child, 17);
+        assertTrue(parent.publish(notice(child, 17, 1)));
+
+        var first = parent.poll().orElseThrow();
+        parent.retry(first);
+        var second = parent.poll().orElseThrow();
+
+        // A timed-out first callback must not be able to ACK the second
+        // callback's valid retry, even though child+generation are identical.
+        assertThrows(IllegalStateException.class, () -> parent.ack(first));
+        assertThrows(IllegalStateException.class, () -> parent.retry(first));
+        assertThrows(IllegalStateException.class, () -> root.ack(second));
+        assertEquals(1, parent.snapshot().inFlight());
+        assertEquals(0, parent.snapshot().acknowledged());
+
+        parent.transferPublishedTo(root);
+        assertThrows(IllegalStateException.class, () -> parent.ack(second));
+        assertEquals(0, parent.snapshot().reserved());
+        var rootDelivery = root.poll().orElseThrow();
+        assertEquals(1, rootDelivery.notice().sequence());
+        root.ack(rootDelivery);
+        assertThrows(IllegalStateException.class, () -> root.ack(rootDelivery));
+        assertEquals(0, root.snapshot().reserved());
+        assertEquals(1, root.snapshot().acknowledged());
+    }
+
 }
