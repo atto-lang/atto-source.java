@@ -109,6 +109,8 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
                     ignored -> (message, turn) -> { });
             bridge.attach(fresh, null);
             assertThrows(IllegalStateException.class, () -> bridge.attach(fresh, null));
+            assertEquals(2, bridge.snapshot().size(),
+                    "duplicate and rejected host attachment must not leak CONTROL nodes");
             assertEquals(0, bridge.pendingCount());
         }
     }
