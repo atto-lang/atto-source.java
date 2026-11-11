@@ -107,6 +107,39 @@ final class ActorStateContainerOwnershipCompilerTest {
     }
 
     @Test
+    void bareFieldsBeforeStateContainerCannotBypassCanonicalFieldAdmission() throws Exception {
+        var error = rejected("reject-mixed-bare-before-state.atto");
+        assertTrue(error.getMessage().contains("cannot mix bare fields and a state container"),
+                error.getMessage());
+    }
+
+    @Test
+    void bareFieldsAfterStateContainerCannotBypassCanonicalFieldAdmission() throws Exception {
+        var error = rejected("reject-mixed-state-before-bare.atto");
+        assertTrue(error.getMessage().contains("cannot mix a state container and bare fields"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorStateContainerCannotBePublicOrModifierDecorated() throws Exception {
+        var error = rejected("reject-state-container-modifiers.atto");
+        assertTrue(error.getMessage().contains("state container does not accept modifiers"),
+                error.getMessage());
+    }
+
+    @Test
+    void legacyUngroupedActorFieldsStillParseWithoutAContainer() {
+        String legacy = """
+                define actor LegacyCounter as
+                  let int count;
+                  receive(ActorMail<String> mail): void { return; }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(legacy)),
+                "the .ores era field shape remains supported if no canonical state block exists");
+    }
+
+    @Test
     void stateContainerRejectsMethodsAndNestedDeclarations() throws Exception {
         var error = rejected("reject-method-in-state.atto");
         assertTrue(error.getMessage().contains("private fields only"),
