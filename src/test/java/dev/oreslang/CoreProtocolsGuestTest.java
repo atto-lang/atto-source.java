@@ -186,7 +186,7 @@ final class CoreProtocolsGuestTest {
                 "ores.core/../protocols", "ores.core/./protocols",
                 "ores.core/protocols/../numeric", "ores.core/protocols//child",
                 "ores.core/protocols.atto/child", "ores.core/%2e%2e/protocols",
-                "ores.core\\protocols", "ores.core/protocols\u0000",
+                "ores.core\\protocols", ("ores.core/protocols" + (char) 0),
                 "ores.std/protocols", "ores.core/"
         }) {
             assertThrows(IllegalArgumentException.class,
