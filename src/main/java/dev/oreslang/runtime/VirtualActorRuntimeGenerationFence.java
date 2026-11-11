@@ -132,6 +132,9 @@ final class VirtualActorRuntimeGenerationFence {
         if (limit < 1 || limit > 64 || expectedRevision < 0)
             throw new IllegalArgumentException("invalid virtual actor directory page request");
         if (after != null) {
+            if (expectedRevision == 0)
+                throw new IllegalArgumentException(
+                        "directory page continuation requires pinned revision");
             validate(after);
             if (!domain.equals(after.domain()))
                 throw new SecurityException("directory page cursor outside tenant");
