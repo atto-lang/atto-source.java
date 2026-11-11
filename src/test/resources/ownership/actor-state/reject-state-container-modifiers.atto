@@ -1,0 +1,7 @@
+// Public state containers would manufacture an invalid exported capability.
+define actor Counter as
+  pub state {
+    let int count;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
