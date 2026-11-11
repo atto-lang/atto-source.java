@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * True NIO2 socket completions for Atto guest Future/await: no blocking
@@ -134,6 +135,9 @@ public final class AsyncNioTcp {
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean reading = new AtomicBoolean();
         private final AtomicBoolean writing = new AtomicBoolean();
+        // Raw-byte and RESP2 reads are mutually exclusive for each physical socket.
+        private final AtomicInteger readerMode = new AtomicInteger();
+        private ByteBuffer respInput = ByteBuffer.allocate(4096);
 
         private Connection(OresContext context, AsynchronousSocketChannel channel) {
             this.context = context;
@@ -143,6 +147,9 @@ public final class AsyncNioTcp {
         public OresFuture<List<Integer>> readBytesAsync(int maxBytes) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.read_bytes_async");
+            if (!readerMode.compareAndSet(0, 1) && readerMode.get() != 1) {
+                throw new IllegalStateException("cannot mix raw reads and RESP2 framed reads");
+            }
             if (maxBytes < 1 || maxBytes > MAX_BYTES) {
                 throw new IllegalArgumentException("read bytes must be 1..1048576");
             }
@@ -162,7 +169,15 @@ public final class AsyncNioTcp {
                                 return;
                             }
                             if (count == null || count < 0) {
-                                callback.resolve(List.of()); // EOF. No zero-length read request.
+                                callback.resolve(List.of()); // EOF, zero-count never indicates EOF.
+                                return;
+                            }
+                            if (count == 0) {
+                                // NIO2 is permitted to complete a read with zero bytes.
+                                // Re-arm rather than misreporting EOF.
+                                reading.set(true);
+                                channel.read(buffer, IO_TIMEOUT_SECONDS,
+                                        TimeUnit.SECONDS, null, this);
                                 return;
                             }
                             buffer.flip();
@@ -182,6 +197,108 @@ public final class AsyncNioTcp {
             });
         }
 
+        /**
+         * Async RESP2 frame reader, returning ["OP", "hex-key", "hex-value"].
+         * This codec is transport-only: the Atto actor still owns the map.
+         * A zero-length list means clean EOF. Incomplete EOF fails closed.
+         */
+        public OresFuture<List<String>> readResp2HexAsync() {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.read_resp2_hex_async");
+            if (!readerMode.compareAndSet(0, 2) && readerMode.get() != 2) {
+                throw new IllegalStateException("cannot mix framed RESP2 and raw socket reads");
+            }
+            if (closed.get() || !reading.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "closed socket or concurrent RESP2 reader"));
+            }
+            return OresFuture.fromCallback(this::continueRespRead);
+        }
+
+        private void continueRespRead(OresFuture.Callback<List<String>> callback) {
+            if (closed.get()) {
+                reading.set(false);
+                callback.reject(new IOException("socket retired before RESP2 read"));
+                return;
+            }
+            respInput.flip();
+            AsyncNioResp2.Parsed frame;
+            try {
+                frame = AsyncNioResp2.parse(respInput);
+            } catch (IOException invalid) {
+                reading.set(false);
+                closeQuietly();
+                callback.reject(invalid);
+                return;
+            }
+            if (frame != null) {
+                respInput.position(frame.consumed());
+                respInput.compact(); // Preserve bytes of pipelined subsequent frames.
+                reading.set(false);
+                callback.resolve(frame.parts());
+                return;
+            }
+            respInput.compact();
+            if (!respInput.hasRemaining()) {
+                if (respInput.capacity() >= AsyncNioResp2.MAX_FRAME) {
+                    reading.set(false);
+                    closeQuietly();
+                    callback.reject(new IOException("RESP2 frame buffer limit exceeded"));
+                    return;
+                }
+                ByteBuffer enlarged = ByteBuffer.allocate(Math.min(
+                        AsyncNioResp2.MAX_FRAME, respInput.capacity() * 2));
+                respInput.flip();
+                enlarged.put(respInput);
+                respInput = enlarged;
+            }
+            try {
+                channel.read(respInput, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
+                        new CompletionHandler<Integer, Void>() {
+                    @Override public void completed(Integer count, Void ignored) {
+                        if (count == null || count < 0) {
+                            int buffered = respInput.position();
+                            reading.set(false);
+                            if (buffered != 0) {
+                                closeQuietly();
+                                callback.reject(new IOException("truncated RESP2 frame on EOF"));
+                            } else {
+                                callback.resolve(List.of());
+                            }
+                            return;
+                        }
+                        // A zero-byte completion is not EOF, retry without
+                        // reentrant guest code or actor scheduler blocking.
+                        continueRespRead(callback);
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        reading.set(false);
+                        closeQuietly();
+                        callback.reject(failure);
+                    }
+                });
+            } catch (RuntimeException failure) {
+                reading.set(false);
+                closeQuietly();
+                callback.reject(failure);
+            }
+        }
+
+        public OresFuture<Void> writeResp2HexAsync(String status, String hexPayload) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_resp2_hex_async");
+            try {
+                byte[] frame = AsyncNioResp2.encode(status, hexPayload);
+                return writeDetachedAsync(frame);
+            } catch (IOException failure) {
+                return OresFuture.failed(failure);
+            }
+        }
+
+        private void closeQuietly() {
+            try { close(); } catch (IOException ignored) { }
+        }
+
         public OresFuture<Void> writeBytesAsync(List<?> input) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.write_bytes_async");
@@ -199,6 +316,10 @@ public final class AsyncNioTcp {
                 }
                 detached[i] = (byte) ((Number) value).intValue();
             }
+            return writeDetachedAsync(detached);
+        }
+
+        private OresFuture<Void> writeDetachedAsync(byte[] detached) {
             if (closed.get() || !writing.compareAndSet(false, true)) {
                 return OresFuture.failed(new IllegalStateException(
                         "closed socket or concurrent write"));
