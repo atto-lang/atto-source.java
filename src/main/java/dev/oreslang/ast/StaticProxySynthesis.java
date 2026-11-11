@@ -28,6 +28,7 @@ public final class StaticProxySynthesis {
         if (requestedNames.isEmpty()) return program;
         Set<String> requested = Set.copyOf(requestedNames);
         Map<String, Target> found = new LinkedHashMap<>();
+        Set<String> unresolvedTypeAliases = new HashSet<>();
         // Resolution of generated nominal types is not yet namespace-qualified.
         // A declaration in another module must not capture a synthetic name.
         Set<String> occupiedNames = new HashSet<>();
@@ -60,7 +61,10 @@ public final class StaticProxySynthesis {
                 if (declaration instanceof Ast.FunctionDecl fn) occupiedNames.add(fn.name());
                 if (declaration instanceof Ast.FieldDecl field) occupiedNames.add(field.name());
                 if (declaration instanceof Ast.InterfaceDecl iface) occupiedNames.add(iface.name());
-                if (declaration instanceof Ast.TypeAliasDecl alias) occupiedNames.add(alias.name());
+                if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    occupiedNames.add(alias.name());
+                    unresolvedTypeAliases.add(alias.name());
+                }
                 if (declaration instanceof Ast.ClassDecl klass && requested.contains(klass.name())) {
                     if (found.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
                         throw fail("class '" + klass.name()
@@ -89,7 +93,7 @@ public final class StaticProxySynthesis {
                     throw fail("generated class '" + generatedName
                             + "' collides with an existing or generated declaration");
                 }
-                output.add(proxyClass(klass, generatedName));
+                output.add(proxyClass(klass, generatedName, unresolvedTypeAliases));
             }
             modules.add(new Ast.ModuleDecl(
                     module.name(), module.annotations(), module.contracts(), output));
@@ -99,7 +103,8 @@ public final class StaticProxySynthesis {
 
     private record Target(String module, Ast.ClassDecl klass) { }
 
-    private static Ast.ClassDecl proxyClass(Ast.ClassDecl target, String generatedName) {
+    private static Ast.ClassDecl proxyClass(Ast.ClassDecl target, String generatedName,
+                                           Set<String> unresolvedTypeAliases) {
         if (target.actorKind() != Ast.ActorKind.NONE)
             throw fail("actors cannot be wrapped as ordinary class proxies: " + target.name());
         if (target.isAbstract() || !target.parents().isEmpty() || !target.interfaces().isEmpty())
@@ -146,7 +151,7 @@ public final class StaticProxySynthesis {
                 throw fail("ambiguous proxy method slot: " + target.name() + "."
                         + method.name() + "/" + method.arity());
             }
-            if (unsafeSignatureType(method.returnType())) {
+            if (unsafeSignatureType(method.returnType(), unresolvedTypeAliases)) {
                 throw fail("proxy return type needs ownership/borrow lowering: "
                         + target.name() + "." + method.name());
             }
@@ -162,7 +167,7 @@ public final class StaticProxySynthesis {
             List<Ast.Expr> arguments = new ArrayList<>();
             for (Ast.Param parameter : method.parameters()) {
                 if (parameter.structural() || parameter.mutable()
-                        || unsafeSignatureType(parameter.type()))
+                        || unsafeSignatureType(parameter.type(), unresolvedTypeAliases))
                     throw fail("proxy parameter borrows/structural contracts need proven reborrowing: "
                             + target.name() + "." + method.name());
                 arguments.add(new Ast.NameExpr(parameter.name()));
@@ -188,13 +193,17 @@ public final class StaticProxySynthesis {
      * proves the target lifetime, alias rights and closure transport. Recurse
      * through nested generic arguments (e.g. Option<borrow Foo>) as well.
      */
-    private static boolean unsafeSignatureType(Ast.TypeRef type) {
-        if (type.isBorrow() || type.isStructType() || type.inferArguments()
+    private static boolean unsafeSignatureType(Ast.TypeRef type, Set<String> unresolvedTypeAliases) {
+        // An alias can hide the wrapped target, a mutable aggregate or a
+        // borrowed/callable signature. Do not forward until nominal resolution
+        // proves its definition and transitive ownership/effect requirements.
+        if (unresolvedTypeAliases.contains(type.name())
+                || type.isBorrow() || type.isStructType() || type.inferArguments()
                 || type.name().equals("Fnc") || type.name().equals("Function")
                 || type.name().equals("Routine")
                 || type.name().equals("$infer$")) return true;
         for (Ast.TypeRef arg : type.arguments()) {
-            if (unsafeSignatureType(arg)) return true;
+            if (unsafeSignatureType(arg, unresolvedTypeAliases)) return true;
         }
         return false;
     }
