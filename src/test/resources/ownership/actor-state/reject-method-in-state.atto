@@ -1,0 +1,10 @@
+// State container contains fields, not methods or nested declarations.
+define actor Counter as
+  state {
+    let int count;
+    mutate(): void {
+      self.count = 1;
+    }
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
