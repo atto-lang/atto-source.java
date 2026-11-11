@@ -19,6 +19,17 @@ import java.util.TreeMap;
  */
 public final class ActorMethodIndex {
     public record ActorKey(String packageId, String namespace, String actorName) { }
+    public record ActorDeclaration(
+            String declaringUnit,
+            Ast.Visibility visibility,
+            boolean generic,
+            Ast.ActorKind kind) {
+        /** Declaration eligibility only, not actor activation or mailbox authority. */
+        public boolean publicNominalWitness() {
+            return visibility == Ast.Visibility.PUBLIC && !generic
+                    && kind != Ast.ActorKind.NONE;
+        }
+    }
     public record MethodKey(ActorKey actor, String methodName, int arity) { }
     public record MethodSignature(
             String declaringUnit,
@@ -50,11 +61,11 @@ public final class ActorMethodIndex {
             "on_throws", "on_raise", "on_recover", "on_start", "on_stop",
             "on_restart", "receive", "send", "end", "endWithCleanup");
 
-    private final Map<ActorKey, String> declaredActors;
+    private final Map<ActorKey, ActorDeclaration> declaredActors;
     private final Map<MethodKey, MethodSignature> methodSlots;
 
     private ActorMethodIndex(
-            Map<ActorKey, String> declaredActors,
+            Map<ActorKey, ActorDeclaration> declaredActors,
             Map<MethodKey, MethodSignature> methodSlots) {
         this.declaredActors = Map.copyOf(declaredActors);
         this.methodSlots = Map.copyOf(methodSlots);
@@ -64,16 +75,20 @@ public final class ActorMethodIndex {
     public boolean hasActor(ActorKey actor) {
         return declaredActors.containsKey(actor);
     }
-    public String declaringUnit(ActorKey actor) { return declaredActors.get(actor); }
+    public String declaringUnit(ActorKey actor) {
+        ActorDeclaration declaration = declaredActors.get(actor);
+        return declaration == null ? null : declaration.declaringUnit();
+    }
+    public ActorDeclaration actor(ActorKey key) { return declaredActors.get(key); }
     public MethodSignature method(MethodKey key) { return methodSlots.get(key); }
-    public Map<ActorKey, String> actors() { return declaredActors; }
+    public Map<ActorKey, ActorDeclaration> actors() { return declaredActors; }
     public Map<MethodKey, MethodSignature> methods() { return methodSlots; }
 
     static ActorMethodIndex collect(String packageId, Map<String, Ast.Program> units) {
         if (packageId == null || packageId.isBlank()) {
             throw new IllegalArgumentException("actor method index requires a package identity");
         }
-        Map<ActorKey, String> actors = new LinkedHashMap<>();
+        Map<ActorKey, ActorDeclaration> actors = new LinkedHashMap<>();
         Map<MethodKey, MethodSignature> slots = new LinkedHashMap<>();
         for (Map.Entry<String, Ast.Program> entry : new TreeMap<>(units).entrySet()) {
             Ast.Program program = entry.getValue();
@@ -85,7 +100,10 @@ public final class ActorMethodIndex {
                             || klass.actorKind() == Ast.ActorKind.NONE) continue;
                     ActorKey actor = new ActorKey(
                             packageId, program.namespace(), klass.name());
-                    if (actors.putIfAbsent(actor, entry.getKey()) != null) {
+                    ActorDeclaration actorDeclaration = new ActorDeclaration(
+                            entry.getKey(), klass.visibility(),
+                            !klass.genericParameters().isEmpty(), klass.actorKind());
+                    if (actors.putIfAbsent(actor, actorDeclaration) != null) {
                         throw new IllegalArgumentException(
                                 "ambiguous nominal actor '" + klass.name()
                                         + "' in namespace '" + program.namespace()
