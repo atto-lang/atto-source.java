@@ -1,0 +1,44 @@
+name: Java static-dispatch semantics (not Native Image proof)
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/static-dispatch-aot-admission.yml'
+      - 'src/test/java/dev/oreslang/StaticDispatchAotBoundaryTest.java'
+      - 'docs/STATIC_DISPATCH_AOT_PARITY_20261110.md'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  semantic-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record and verify exact source head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          echo "JAVA_STATIC_DISPATCH_HEAD=$EXPECTED_SHA"
+          echo "JAVA_STATIC_DISPATCH_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Run real parser/type checker and JVM method semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=StaticDispatchAotBoundaryTest -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.StaticDispatchAotBoundaryTest.xml
+          echo "JAVA_STATIC_DISPATCH_SEMANTICS=EXECUTED"
+          echo "NATIVE_IMAGE_NOT_TESTED=true"
