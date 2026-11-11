@@ -1,0 +1,9 @@
+define class Pair as
+    pub final int x: 10;
+    pub final int y: 20;
+end
+pub routine main(): int {
+    const Pair pair = new Pair();
+    const Pair next = (rt take pair) with {x => 42};
+    return pair.x;
+}

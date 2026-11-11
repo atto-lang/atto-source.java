@@ -1,0 +1,8 @@
+define class Pair as
+    pub final int x: 10;
+end
+pub routine main(): void {
+    const Pair p = new Pair();
+    const Pair next = p with {x => 5};
+    return;
+}

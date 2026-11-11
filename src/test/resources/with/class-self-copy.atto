@@ -1,0 +1,17 @@
+define class Point as
+    pub final int x: 10;
+    pub final int y: 20;
+
+    pub incr_x(): Point {
+        return rt copy self with {x => self.x + 1};
+    }
+end
+
+pub routine main(): void {
+    const Point point = new Point();
+    const Point next = point.incr_x();
+    stdio.stdout.write(point.x);
+    stdio.stdout.write(next.x);
+    stdio.stdout.write(next.y);
+    return;
+}

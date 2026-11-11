@@ -7,11 +7,24 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class WithExpressionGuestTest {
+
+    private static String readGuest(String filename) {
+        try {
+            return Files.readString(Path.of("src", "test", "resources", "with", filename),
+                    StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
 
     private static String run(String guest) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -34,200 +47,70 @@ final class WithExpressionGuestTest {
 
     @Test
     void copyUpdatePreservesOriginalAndEvaluatesOriginalField() throws Exception {
-        assertEquals("101120", run("""
-                pub routine main(): void {
-                    const point = record{x: 10, y: 20};
-                    const next = rt copy point with {x => point.x + 1};
-                    stdio.stdout.write(point.x);
-                    stdio.stdout.write(next.x);
-                    stdio.stdout.write(next.y);
-                    return;
-                }
-                """));
+        assertEquals("101120", run(readGuest("record-copy-preserves-original.atto")));
     }
 
     @Test
     void plainCopyValueAndChainedUpdateExecuteAsExpressions() throws Exception {
-        assertEquals("104237", run("""
-                pub routine main(): void {
-                    const point = record{x: 10, y: 20};
-                    const next = point with {x => 42} with {y => 37};
-                    stdio.stdout.write(point.x);
-                    stdio.stdout.write(next.x);
-                    stdio.stdout.write(next.y);
-                    return;
-                }
-                """));
+        assertEquals("104237", run(readGuest("record-plain-chained.atto")));
     }
 
     @Test
     void explicitTakeConstructsNewValueAndCannotReadMovedOriginal() throws Exception {
-        assertEquals("912", run("""
-                pub routine main(): void {
-                    const point = record{x: 9, y: 8};
-                    const next = (rt take point) with {y => 12};
-                    stdio.stdout.write(next.x);
-                    stdio.stdout.write(next.y);
-                    return;
-                }
-                """));
-        IllegalArgumentException failure = rejects("""
-                pub routine main(): int {
-                    const point = record{x: 9, y: 8};
-                    const next = (rt take point) with {y => 12};
-                    return point.x;
-                }
-                """);
+        assertEquals("912", run(readGuest("record-take.atto")));
+        IllegalArgumentException failure = rejects(readGuest("record-take-use-after-move.atto"));
         assertTrue(failure.getMessage().contains("moved"), failure::getMessage);
     }
 
     @Test
     void unknownFieldAndWrongReplacementTypeReject() {
-        IllegalArgumentException unknown = rejects("""
-                pub routine main(): int {
-                    const point = record{x: 1};
-                    return (point with {z => 2}).x;
-                }
-                """);
+        IllegalArgumentException unknown = rejects(readGuest("record-unknown-field.atto"));
         assertTrue(unknown.getMessage().contains("unknown with field"), unknown::getMessage);
 
-        IllegalArgumentException wrongType = rejects("""
-                pub routine main(): int {
-                    const point = record{x: 1};
-                    return (point with {x => "invalid"}).x;
-                }
-                """);
+        IllegalArgumentException wrongType = rejects(readGuest("record-wrong-type.atto"));
         assertTrue(wrongType.getMessage().contains("with field"), wrongType::getMessage);
     }
 
     @Test
     void rejectsBorrowAndNonRecordAndSideEffectfulRhs() {
-        IllegalArgumentException borrowed = rejects("""
-                pub routine main(): void {
-                    const point = record{x: 1};
-                    const next = (rt borrow point) with {x => 2};
-                    return;
-                }
-                """);
+        IllegalArgumentException borrowed = rejects(readGuest("record-borrow-rejected.atto"));
         assertTrue(borrowed.getMessage().contains("readonly structural record"),
                 borrowed::getMessage);
 
-        IllegalArgumentException struct = rejects("""
-                pub routine main(): void {
-                    const point = infer struct{x: 1};
-                    const next = (rt take point) with {x => 2};
-                    return;
-                }
-                """);
+        IllegalArgumentException struct = rejects(readGuest("struct-rejected.atto"));
         assertTrue(struct.getMessage().contains("readonly structural record"),
                 struct::getMessage);
 
-        IllegalArgumentException call = rejects("""
-                fnc next_x(int arg): int { return arg; }
-                pub routine main(): void {
-                    const point = record{x: 1};
-                    const next = point with {x => next_x(3)};
-                    return;
-                }
-                """);
+        IllegalArgumentException call = rejects(readGuest("record-effectful-rhs-rejected.atto"));
         assertTrue(call.getMessage().contains("non-suspending, effect-safe"),
                 call::getMessage);
     }
 
     @Test
     void immutableClassSelfCopyReconstructsNewObject() throws Exception {
-        assertEquals("101120", run("""
-                define class Point as
-                    pub final int x: 10;
-                    pub final int y: 20;
-
-                    pub incr_x(): Point {
-                        return rt copy self with {x => self.x + 1};
-                    }
-                end
-
-                pub routine main(): void {
-                    const Point point = new Point();
-                    const Point next = point.incr_x();
-                    stdio.stdout.write(point.x);
-                    stdio.stdout.write(next.x);
-                    stdio.stdout.write(next.y);
-                    return;
-                }
-                """));
+        assertEquals("101120", run(readGuest("class-self-copy.atto")));
     }
 
     @Test
     void explicitTakeOfImmutableClassInvalidatesOriginal() throws Exception {
-        assertEquals("4210", run("""
-                define class Pair as
-                    pub final int x: 10;
-                    pub final int y: 20;
-                end
-
-                pub routine main(): void {
-                    const Pair pair = new Pair();
-                    const Pair next = (rt take pair) with {x => 42};
-                    stdio.stdout.write(next.x);
-                    stdio.stdout.write(next.y);
-                    return;
-                }
-                """));
-        IllegalArgumentException failure = rejects("""
-                define class Pair as
-                    pub final int x: 10;
-                    pub final int y: 20;
-                end
-                pub routine main(): int {
-                    const Pair pair = new Pair();
-                    const Pair next = (rt take pair) with {x => 42};
-                    return pair.x;
-                }
-                """);
+        assertEquals("4220", run(readGuest("class-take.atto")));
+        IllegalArgumentException failure = rejects(readGuest("class-take-use-after-move.atto"));
         assertTrue(failure.getMessage().contains("moved"), failure::getMessage);
     }
 
     @Test
     void nominalUpdatesRejectPlainOrMutableOrBorrowedClass() {
-        IllegalArgumentException plain = rejects("""
-                define class Pair as
-                    pub final int x: 10;
-                end
-                pub routine main(): void {
-                    const Pair p = new Pair();
-                    const Pair next = p with {x => 5};
-                    return;
-                }
-                """);
+        IllegalArgumentException plain = rejects(readGuest("class-implicit-copy-rejected.atto"));
         assertTrue(plain.getMessage().contains("rt copy or rt take"), plain::getMessage);
 
-        IllegalArgumentException mutable = rejects("""
-                define class Counter as
-                    pub let int x = 10;
-                end
-                pub routine main(): void {
-                    const Counter counter = new Counter();
-                    const Counter next = rt copy counter with {x => 12};
-                    return;
-                }
-                """);
+        IllegalArgumentException mutable = rejects(readGuest("class-mutable-copy-rejected.atto"));
         assertTrue(mutable.getMessage().contains("compiler-certified immutable"),
                 mutable::getMessage);
     }
 
     @Test
     void rejectsMoveOnlyRecordContentWithoutCopyContract() {
-        IllegalArgumentException failure = rejects("""
-                define class Box as
-                    pub let int value = 0;
-                end
-
-                pub routine main(): void {
-                    const point = record{x: new Box(), y: 2};
-                    const next = rt copy point with {y => 3};
-                    return;
-                }
-                """);
+        IllegalArgumentException failure = rejects(readGuest("record-move-only-field-rejected.atto"));
         assertTrue(failure.getMessage().contains("rt copy")
                 || failure.getMessage().contains("with v1"),
                 failure::getMessage);

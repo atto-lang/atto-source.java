@@ -1,0 +1,8 @@
+define class Counter as
+    pub let int x = 10;
+end
+pub routine main(): void {
+    const Counter counter = new Counter();
+    const Counter next = rt copy counter with {x => 12};
+    return;
+}

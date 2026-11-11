@@ -1,0 +1,4 @@
+pub routine main(): int {
+    const point = record{x: 1};
+    return (point with {z => 2}).x;
+}

@@ -1,0 +1,5 @@
+pub routine main(): int {
+    const point = record{x: 9, y: 8};
+    const next = (rt take point) with {y => 12};
+    return point.x;
+}

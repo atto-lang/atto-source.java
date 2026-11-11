@@ -1,0 +1,12 @@
+define class Pair as
+    pub final int x: 10;
+    pub final int y: 20;
+end
+
+pub routine main(): void {
+    const Pair pair = new Pair();
+    const Pair next = (rt take pair) with {x => 42};
+    stdio.stdout.write(next.x);
+    stdio.stdout.write(next.y);
+    return;
+}
