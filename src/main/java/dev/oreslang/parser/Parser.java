@@ -2342,7 +2342,7 @@ public final class Parser {
             // Zero-arity tuples are values (~tuple()) and types (Tuple[]).
             // Model the empty intrinsic with the existing finite tuple type
             // rather than allowing an empty sequence shape for every collection.
-            if (name.equals("Tuple") && args.isEmpty() && check(RBRACKET)) {
+            if (name.equals("Tuple") && !infer && args.isEmpty() && check(RBRACKET)) {
                 advance();
                 return Ast.TypeRef.tupleType(List.of());
             }
