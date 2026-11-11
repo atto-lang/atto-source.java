@@ -330,6 +330,12 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
             verifySeal(seal);
             requireOperational();
             if (pending != null) return false;
+            // One unacknowledged physical submission at a time. Reserving FIFO
+            // sequences under a monitor is NOT sufficient: after we release
+            // that monitor, concurrent submit callbacks could run in reverse
+            // order. Serial physical submission also fences async callback
+            // returns until actual completion and transport exit.
+            if (physicalSubmissions != 0) return false;
             route = active;
             // Allocate before dequeuing. OOME must not strand a message.
             completion = new PhysicalCompletion(route);
