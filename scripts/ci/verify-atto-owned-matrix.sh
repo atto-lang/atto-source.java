@@ -84,7 +84,9 @@ verify() {
     { reject 'oversized identity receipt'; return 1; }
   local key count
   for key in status policy_head github_run_id github_run_attempt github_job \
-             demo_head compiler_head positive_cases negative_cases; do
+             demo_head compiler_head positive_cases negative_cases \
+             guest_uid guest_network_namespace guest_no_new_privileges \
+             guest_environment_scrub receipt_directory_mode; do
     count="$(grep -Ec "^$key=" "$receipt/identity.txt" || true)"
     [[ "$count" == 1 ]] ||
       { reject "missing or duplicate provenance key: $key"; return 1; }
@@ -106,6 +108,15 @@ verify() {
     { reject 'positive case count mismatch'; return 1; }
   grep -Fxq 'negative_cases=4' "$receipt/identity.txt" ||
     { reject 'negative case count mismatch'; return 1; }
+  # Source-owner security policy: deny any pre-sandboxed or unsealed receipts.
+  # These are required claims from the pinned trusted runner, not an
+  # independent audit of a running untrusted process.
+  for line in guest_uid=65534 guest_network_namespace=true \
+              guest_no_new_privileges=true guest_environment_scrub=true \
+              receipt_directory_mode=700; do
+    grep -Fxq "$line" "$receipt/identity.txt" ||
+      { reject "missing or false guest isolation claim: ${line%%=*}"; return 1; }
+  done
   for file in fixture-sources.sha256 compiler-artifacts.sha256 compiler-classes.sha256 runtime-dependencies.sha256; do
     [[ -s "$receipt/$file" && ! -L "$receipt/$file" ]] ||
       { reject "missing hash receipt: $file"; return 1; }
@@ -156,7 +167,7 @@ self_test() {
           compiler-classes.sha256 runtime-dependencies.sha256; do
     sha256sum "$t/fake-artifact" > "$t/$hash_receipt"
   done
-  printf 'status=VERIFYING\npolicy_head=%s\ngithub_run_id=4242\ngithub_run_attempt=1\ngithub_job=java-linked-guest\ndemo_head=%s\ncompiler_head=%s\npositive_cases=3\nnegative_cases=4\n' \
+  printf 'status=VERIFYING\npolicy_head=%s\ngithub_run_id=4242\ngithub_run_attempt=1\ngithub_job=java-linked-guest\ndemo_head=%s\ncompiler_head=%s\npositive_cases=3\nnegative_cases=4\nguest_uid=65534\nguest_network_namespace=true\nguest_no_new_privileges=true\nguest_environment_scrub=true\nreceipt_directory_mode=700\n' \
     "$policy_sha" "$demo_sha" "$compiler_sha" > "$t/identity.txt"
   if ! GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
        ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
@@ -164,6 +175,15 @@ self_test() {
     reject 'valid synthetic full receipt rejected'; exit 1
   fi
   local reject_count=0
+  # Each isolation claim must be checked independently of other mutations.
+  sed -i 's/guest_network_namespace=true/guest_network_namespace=false/' "$t/identity.txt"
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'missing network isolation claim accepted'; exit 1
+  fi
+  reject_count=$((reject_count+1))
+  sed -i 's/guest_network_namespace=false/guest_network_namespace=true/' "$t/identity.txt"
   # A forged terminal PASS before independent verification is an invalid input.
   sed -i 's/^status=VERIFYING$/status=PASS/' "$t/identity.txt"
   if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
