@@ -20,7 +20,7 @@ The graph detects **nested requests made through this API**, not arbitrary `Comp
 
 ## Executable regression cases
 
-`SingletonCrossThreadCycleSmoke` uses the real `SingletonSharedDomain`: two- and three-carrier bounded rendezvous cycles must fail with the cycle diagnostic, ignored direct recursion cannot publish successfully, failures must be sticky, threads must drain, and an acyclic three-declaration chain must succeed and retain canonical identity.
+`SingletonCrossThreadCycleSmoke` uses the real `SingletonSharedDomain` through both unchecked host-only and **compiler-fingerprinted checked publication** paths: two- and three-carrier bounded rendezvous cycles must fail with the cycle diagnostic, ignored direct recursion cannot publish successfully, failures must be sticky, threads must drain, and an acyclic three-declaration chain must succeed and retain canonical identity.
 
 `SingletonDependencyGraphSmoke` independently checks same-thread 2/3-node cycles, exactly one cross-thread detected edge when two live references form a cycle, duplicate edges, bounded outstanding edges and cleanup. The helper and standalone graph smoke were **actually compiled** locally with JDK 21 `javac -Xlint:all -Werror` and executed **100 rounds, 800 assertions, no failures**. The compiled helper's Git blob matches the pushed source blob. This is **not** evidence that the fully integrated runtime smoke or Maven/JUnit has executed.
 
