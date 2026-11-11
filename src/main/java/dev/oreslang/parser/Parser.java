@@ -2570,6 +2570,14 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
+        // "maybe" remains a contextual identifier, not a global keyword.
+        // A fallible do-maybe scope must not be parsed as an ordinary "do"
+        // statement before checked Result/Option CFG and cleanup lowering exist.
+        if (check(DO) && checkNext(IDENT)
+                && tokens.get(current + 1).lexeme().equals("maybe")) {
+            throw error(peek(), "'do maybe' requires checked fallible-binding, "
+                    + "definite-return and AOT cleanup lowering; not yet admitted");
+        }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
         // provides an executable replacement; do-select stays procedural.
@@ -2663,6 +2671,15 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            // "return maybe;" and "return maybe + 1;" remain ordinary
+            // identifier expressions. Only the block-shaped contextual
+            // "return maybe <binding> ?= ..." is fenced off until its inner
+            // return targets are modeled as FUNCTION_RETURN rather than the
+            // existing value-match ARM_RESULT.
+            if (check(IDENT) && peek().lexeme().equals("maybe") && checkNext(IDENT)) {
+                throw error(peek(), "'return maybe' requires checked fallible-binding, "
+                        + "function-return/Never typing and AOT cleanup lowering; not yet admitted");
+            }
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
