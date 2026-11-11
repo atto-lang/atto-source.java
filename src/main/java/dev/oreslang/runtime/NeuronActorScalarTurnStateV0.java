@@ -17,6 +17,9 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
     private final ActorRuntime.ActorRef<?> actor;
     private final long generation;
     private final ActorStateReadWriteLoans storage;
+    private volatile boolean retired;
+    /** Host lifecycle callback only; never guest, and never invoked under a loan monitor. */
+    private volatile Runnable physicalLoanDrainListener;
 
     private NeuronActorScalarTurnStateV0(ActorRuntime.NeuronActorTurnProof proof,
                                         ActorStateReadWriteLoans storage) {
@@ -54,6 +57,25 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
         return proof != null && proof.runtime() == runtime
                 && proof.actorRef() == actor
                 && proof.actorRef().generation() == generation;
+    }
+
+    void installPhysicalDrainListener(Runnable callback) {
+        Objects.requireNonNull(callback, "physical loan drain callback");
+        synchronized (this) {
+            if (physicalLoanDrainListener != null)
+                throw new IllegalStateException("neuron state drain listener already registered");
+            physicalLoanDrainListener = callback;
+        }
+    }
+
+    private void onPhysicalLoanRelease() {
+        Runnable callback = physicalLoanDrainListener;
+        // Close happens after the underlying state loan releases its monitor.
+        // Never let an actor finalization callback execute while the scalar
+        // state monitor is held, or STOP could deadlock with a reader.
+        if (retired && storage.activeCount() == 0 && callback != null) {
+            callback.run();
+        }
     }
 
     private ActorRuntime.NeuronActorTurnProof currentOwnerTurn() {
@@ -113,7 +135,11 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
             released = true;
             // Cleanup may execute during actor STOP after the original turn
             // has exited; do not require an active turn to release a loan.
-            loan.close();
+            try {
+                loan.close();
+            } finally {
+                onPhysicalLoanRelease();
+            }
         }
     }
 
@@ -132,7 +158,10 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
     }
 
     /** Must be called by the actor lifecycle after STOP admission is fenced. */
-    @Override public void close() { storage.close(); }
+    @Override public void close() {
+        retired = true;
+        storage.close();
+    }
 
     /**
      * Scalar zeroization is allowed only after this bridge has retired and
