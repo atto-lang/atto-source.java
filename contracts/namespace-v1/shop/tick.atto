@@ -2,3 +2,8 @@ namespace shop;
 pub fnc tick(int amount): int {
   return amount;
 }
+
+// A real guest entry point for future exact-head compiler execution.
+pub fnc main(): int {
+  return 42;
+}
