@@ -90,7 +90,8 @@ final class CoreProtocolsGuestTest {
     @Test
     void canonicalAttoFixturesActuallyExecuteTraitMethods() throws Exception {
         for (String fixture : new String[]{
-                "eq-positive.atto", "ord-inherited-positive.atto"}) {
+                "eq-positive.atto", "ord-inherited-positive.atto",
+                "eq-interface-dispatch-positive.atto"}) {
             Path source = Path.of("tests", "fixtures", "core-protocols-v1", fixture);
             assertTrue(Files.isRegularFile(source), "missing real .atto fixture " + fixture);
             // Admission alone does not prove trait method dispatch.
@@ -107,7 +108,8 @@ final class CoreProtocolsGuestTest {
     void canonicalAttoNegativeFixturesRejectInvalidConformance() {
         for (String fixture : new String[]{
                 "eq-missing-negative.atto", "eq-wrong-signature-negative.atto",
-                "eq-private-method-negative.atto", "ord-inherited-missing-negative.atto"}) {
+                "eq-private-method-negative.atto", "ord-inherited-missing-negative.atto",
+                "eq-interface-impostor-negative.atto"}) {
             Path source = Path.of("tests", "fixtures", "core-protocols-v1", fixture);
             assertTrue(Files.isRegularFile(source), "missing negative .atto fixture " + fixture);
             assertThrows(IllegalArgumentException.class,
