@@ -135,6 +135,10 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (isDeclaredActorHead()) {
+                rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                continue;
+            }
             if (isContextualIdentifier("declare")) {
                 rootForwards.add(parseForwardType(annotations, modifiers));
                 continue;
@@ -407,6 +411,10 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (isDeclaredActorHead()) {
+            throw error(peek(),
+                    "declare actor must be a namespace-root declaration, not a named module member");
+        }
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
@@ -712,6 +720,46 @@ public final class Parser {
         match(SEMICOLON);
         if (fields.isEmpty()) throw error(previous(), "attached actor state requires at least one field");
         return new Ast.ActorStateAttachmentDecl(actorName, fields);
+    }
+
+    /**
+     * Unlike a forward declaration of a type/trait/interface, declare actor
+     * introduces a nominal actor contract whose constituents must be supplied
+     * by an authenticated package source set. It is never an empty ClassDecl.
+     */
+    private boolean isDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int after = current + 1;
+        if (after < tokens.size() &&
+                (tokens.get(after).type() == PUB || tokens.get(after).type() == PRIVATE)) {
+            after++;
+        }
+        return after < tokens.size() && tokens.get(after).type() == ACTOR;
+    }
+
+    private Ast.DeclaredActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        consumeContextualIdentifier("declare", "expected 'declare' before actor");
+        Modifiers modifiers = mergeModifiers(before, parseModifiers());
+        validateOnlyVisibilityModifiers(modifiers, "declare actor");
+        rejectDiscardedDeclarationAnnotations(annotations, "declare actor");
+        consume(ACTOR, "expected actor after declare");
+        String name = consumeTypeDeclarationName("expected declared actor type");
+        if (check(LT)) {
+            throw error(peek(), "declare actor generics require a checked witness linker");
+        }
+        if (check(EXTENDS)) {
+            throw error(peek(), "declare actor inheritance requires hierarchy and slot coherence");
+        }
+        List<Ast.TypeRef> contracts = match(IMPLEMENTS, IMPL)
+                ? parseTypeRefList() : List.of();
+        consume(SEMICOLON, "declare actor must end with ';' and cannot contain a body");
+        try {
+            return new Ast.DeclaredActorDecl(
+                    name, modifiers.visibility, Ast.ActorKind.SHARED, contracts);
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), invalid.getMessage());
+        }
     }
 
     /** Contextual mtd accepts both receiver-first and name-first declarations. */
@@ -1201,16 +1249,12 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
-        // A semicolon declares an empty nominal actor type, not an actor
-        // instance. Preserve its actor contract list for later source-set proof.
+        // A bodyless declaration must not synthesize an executable ClassDecl.
+        // Use the distinct, source-set-bound nominal declaration instead.
         if (match(SEMICOLON)) {
-            if (!generics.isEmpty() || !parents.isEmpty()
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
-                throw error(previous(), "compact actor declarations require a plain actor without inheritance, generics or transport specialization");
-            }
-            return new Ast.ClassDecl(name, visibility, false, actorKind,
-                    generics, parents, interfaces, List.of(), null, List.of(),
-                    new Ast.ActorConcurrency(prefix.transport(), 1, 1));
+            throw error(previous(),
+                    "bodyless actor types use 'declare actor " + name
+                            + "' (not 'define actor " + name + ";')");
         }
 
         // Standalone actor declaration: retain the receiver-binding name in
