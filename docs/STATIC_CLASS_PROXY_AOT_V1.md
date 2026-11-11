@@ -102,6 +102,25 @@ test or standalone Native Image success is claimed. Revalidate the subsequent
 branch commits too. Do not mirror private compiler source to another
 organization without explicit approved carrier terms.
 
+## Wrapped-target escape admission
+
+A public method returning the proxied class itself (`Foo`, `self`, or a
+nested `Option<Foo>`/other generic shape) is currently **unsupported**:
+the runtime could return the wrapped `Foo` identity, bypassing `FooProxy`.
+Method signatures exposing function-valued aliases (`Fnc`/`Function`) also
+reject. This is conservative: a method returning a separate `Foo` may be
+perfectly safe, but v1 has no proof of alias identity or proxy re-wrapping.
+Later compiler passes can permit it with an explicit ownership-checked
+identity-preserving adapter; do not silently expose the inner target.
+
+`AotClassProxyLanguageTest` now defines 13 checks; its constructor-once
+case includes guest execution, not just an AST shape assertion. All checks
+still require executed CI evidence before any passing claim. The source
+repository's private-CI policy requires a reviewed destination allowlist,
+pinned test plan and immutable identity, and verified protected origin before
+any private tree transfer. The user-requested token-free cross-organization
+Git-tree mirror is **not an exemption** from these controls.
+
 ## Required evidence and follow-up
 
 1. Java: execute `AotClassProxyLanguageTest` in hosted CI at the exact PR
