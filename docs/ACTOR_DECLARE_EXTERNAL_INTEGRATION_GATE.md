@@ -55,7 +55,7 @@ the 10-case `ActorInitPublicationGateTest` native host model,
 the 18-case `ActorSourceLifecycleGateTest` actor-cell admission suite,
 and the 14-case `StatelessDeclaredActorExecutionTest` (including a real
 **opt-in stateless** `declare actor` guest program). The exact-head
-workflow now requires at least **120** successful, unskipped Surefire cases,
+workflow now requires at least **176** executed, unskipped Surefire cases (all 11 classes are checked against their exact authored case counts),
 and prints exact source/git tree receipts. This is NOT 120 executed cases
 until a runner starts and Maven finishes.
 
