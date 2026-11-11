@@ -194,13 +194,19 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
         if(checkpoint>0)
             verifySnapshotBarrier(id,checkpoint,snapshotSchema,snapshot);
         try(PreparedStatement s=db.prepareStatement(
-                "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
+                "SELECT COUNT(*),COALESCE(SUM(length(payload)),0)," +
+                "MIN(version),MAX(version) FROM events " +
                 "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
             bindId(s,id);s.setLong(4,checkpoint);
             try(ResultSet row=s.executeQuery()) {
                 if(!row.next())throw new SQLException("ACTOR_JOURNAL_COUNT_UNAVAILABLE");
                 long count=row.getLong(1), bytes=row.getLong(2);
+                long first=row.getLong(3),last=row.getLong(4);
+                long streamHead=head(id);
                 if(count<0 || bytes<0)throw new SQLException("INVALID_ACTOR_JOURNAL");
+                if(count!=streamHead-checkpoint ||
+                   (count>0 && (first!=checkpoint+1 || last!=streamHead)))
+                    throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
                 return count<=10000L-newEvents &&
                        bytes<=16_777_216L-newBytes;
             }
