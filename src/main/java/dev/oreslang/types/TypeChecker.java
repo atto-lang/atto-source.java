@@ -2489,11 +2489,38 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
-        if (expr instanceof Ast.WithExpr) {
-            throw new IllegalArgumentException(
-                    "with expression requires checked immutable field reconstruction, "
-                            + "rt copy/take ownership proof, and backend lowering; "
-                            + "syntax is parsed but execution is not yet enabled");
+        if (expr instanceof Ast.WithExpr update) {
+            Type receiver = typeOf(update.source(), env, generics, self);
+            // First executable slice reconstructs only readonly closed records.
+            // Mutable structs, nominal classes and actor-owned state need
+            // field-wise drop/identity and copy-contract proofs before admission.
+            if (!(receiver instanceof Record record)
+                    || record.kind() != AggregateKind.RECORD || !record.readOnly()) {
+                throw new IllegalArgumentException(
+                        "with v1 requires a readonly structural record; "
+                                + "class, mutable struct, actor and borrowed updates remain disabled");
+            }
+            for (Ast.WithField change : update.changes()) {
+                Type expected = record.members().get(change.name());
+                if (expected == null) {
+                    throw new IllegalArgumentException(
+                            "unknown with field '" + change.name() + "'");
+                }
+                // Until checked RHS effects are lowered to a resumable,
+                // transactionally published reconstruction, keep the accepted
+                // subset deterministic, synchronous and effect-free.
+                if (fieldInitializerMaySuspend(change.value())) {
+                    throw new IllegalArgumentException(
+                            "with field '" + change.name()
+                                    + "' requires a non-suspending, effect-safe value expression");
+                }
+                Type actual = typeOf(change.value(), env, generics, self);
+                requireReadonlyCapabilityPreserved(
+                        actual, expected, "with field '" + change.name() + "'");
+                requireAssignable(actual, expected,
+                        "with field '" + change.name() + "'");
+            }
+            return receiver;
         }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
