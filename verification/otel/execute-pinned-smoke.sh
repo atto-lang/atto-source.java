@@ -90,8 +90,23 @@ case "$mode" in
       "$executable" --build-info ) > "$output/build-info.json"
     grep -Fq '"build_mode":"aot"' "$output/build-info.json"
     grep -Fq '"guest_execution":"interpreter-no-jit"' "$output/build-info.json"
-    # An ELF no-fallback native binary, never a Java-managed fallback.
+    # GraalVM 25.3.4.1 explicitly warns --no-fallback is deprecated with
+    # NO EFFECT. Do not treat its presence in Maven flags as AOT evidence.
+    # Instead validate the produced executable header, forbid JVM launcher
+    # shared-library dependencies, and assert baked-in native build mode.
     test "$(head -c 4 "$executable" | od -An -tx1 | tr -d ' \n')" = 7f454c46
+    command -v readelf >/dev/null
+    readelf -h "$executable" > "$output/elf-header.txt"
+    grep -Eq 'Type:[[:space:]]+(EXEC|DYN)' "$output/elf-header.txt"
+    readelf -d "$executable" > "$output/elf-dynamic.txt"
+    if grep -E 'Shared library: \\[(libjvm|libjli|libjava)\\.so' "$output/elf-dynamic.txt"; then
+      echo 'OTEL_AOT_DENIED: Java VM dynamic dependency' >&2
+      exit 65
+    fi
+    : "${JAVA_HOME:?Require reviewed GraalVM JAVA_HOME}"
+    test -x "$JAVA_HOME/bin/native-image"
+    "$JAVA_HOME/bin/native-image" --version > "$output/native-image-version.txt"
+    grep -q 'GraalVM' "$output/native-image-version.txt"
     aot_binary_before="$(sha256sum "$executable" | cut -d' ' -f1)"
     otel_guardrails_run_guest "$output" "$executable" --mode=aot --platform=linux "$guest"
     ;;
@@ -132,7 +147,10 @@ test "$(sha256sum "$output/guest.stdout.jsonl" | cut -d' ' -f1)" = "$stdout_dige
     printf 'dependency_jars_sha256=%s\n' "$dependency_jars_before"
     printf 'loaded_class_tree_sha256=%s\n' "$classes_before"
   else
-    printf 'native_image_no_fallback=true\n'
+    printf 'native_image_host_elf_verified=true\n'
+    printf 'native_image_jvm_dynamic_deps=none\n'
+    printf 'native_image_toolchain_version_sha256=%s\n' "$(sha256sum "$output/native-image-version.txt" | cut -d' ' -f1)"
+    printf 'native_image_no_fallback_cli_flag_is_not_proof=true\n'
   fi
   printf 'guest_stdout_sha256=%s\n' "$stdout_digest_before"
   printf 'guest_exit=0\n'
