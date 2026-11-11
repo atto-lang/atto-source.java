@@ -131,11 +131,13 @@ public final class PackageNamespaceBuild {
     public record ActorAudit(
             dev.oreslang.types.ActorContractWitness.Result contractWitness,
             ActorMethodIndex actorMethods,
+            ActorDescriptorIndex descriptors,
             Map<String, String> sourceSha256,
             String manifestSha256) {
         public ActorAudit {
             java.util.Objects.requireNonNull(contractWitness);
             java.util.Objects.requireNonNull(actorMethods);
+            java.util.Objects.requireNonNull(descriptors);
             sourceSha256 = java.util.Collections.unmodifiableMap(
                     new LinkedHashMap<>(sourceSha256));
         }
@@ -183,8 +185,18 @@ public final class PackageNamespaceBuild {
             hashes.put(source.getKey(), java.util.HexFormat.of().formatHex(
                     digest(source.getValue().getBytes(StandardCharsets.UTF_8))));
         }
-        return new ActorAudit(witness, index, hashes,
-                java.util.HexFormat.of().formatHex(manifestFingerprint));
+        String manifestSha256 = java.util.HexFormat.of().formatHex(manifestFingerprint);
+        // One descriptor per declared actor, from the EXACT parsed source
+        // snapshot already used for conformance and source receipts.
+        ActorDescriptorIndex descriptors = ActorDescriptorIndex.collect(
+                packageIdentity, snapshot.parsed(), witness, index,
+                hashes, manifestSha256);
+        if (descriptors.actors().size() != witness.actors().size()) {
+            throw new IllegalArgumentException(
+                    "ACTOR_DESCRIPTOR_PROVENANCE_MISMATCH: incomplete descriptor set");
+        }
+        return new ActorAudit(witness, index, descriptors,
+                hashes, manifestSha256);
     }
 
     /**
