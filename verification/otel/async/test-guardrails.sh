@@ -2,9 +2,9 @@
 # SOURCE-FREE harness-control tests. Fake class bytes and harmless shell
 # commands below NEVER count as Oreslang compilation or guest execution.
 set -euo pipefail
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-# shellcheck source=verification/otel/guardrails.sh
-source "$root/verification/otel/guardrails.sh"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+# shellcheck source=verification/otel/async/guardrails.sh
+source "$root/verification/otel/async/guardrails.sh"
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 
