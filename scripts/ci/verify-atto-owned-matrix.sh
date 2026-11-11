@@ -197,6 +197,12 @@ self_test() {
     "$t/native-multifile/negative/missing-helper.atto" > "$t/missing-import-check.stderr"
   if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'control-byte diagnostic accepted'; exit 1; fi
   reject_count=$((reject_count+1))
+  # Restore known-good diagnostic; otherwise the following stale-attempt
+  # and wrong-job negative fixtures would reject for the *previous* mutation.
+  printf '%s:1:1: error: import foo does not resolve to a file\n' \
+    "$t/native-multifile/negative/missing-helper.atto" > "$t/missing-import-check.stderr"
+  check_cases "$t" "$t" ||
+    { reject 'baseline not restored before provenance mutations'; exit 1; }
   # Mutate identity and attestations independently of case contents.
   sed -i 's/github_run_attempt=1/github_run_attempt=2/' "$t/identity.txt"
   if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
@@ -225,6 +231,11 @@ self_test() {
     reject 'tampered hash receipt accepted'; exit 1
   fi
   reject_count=$((reject_count+1))
+  # Restore the known-good hashed bytes before testing identity duplicates.
+  # A stale tampered artifact must not mask a broken duplicate-key guard.
+  printf 'synthetic host-only identity bytes\n' > "$t/fake-artifact"
+  sha256sum --status -c "$t/fixture-sources.sha256" ||
+    { reject 'artifact not restored before duplicate provenance test'; exit 1; }
   # Both a correct and a forged SHA in one receipt must be rejected.
   printf 'demo_head=%s\n' "$compiler_sha" >> "$t/identity.txt"
   if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
