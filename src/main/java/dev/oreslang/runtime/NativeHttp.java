@@ -224,10 +224,12 @@ public final class NativeHttp implements AutoCloseable {
             workers[slot] = worker;
             created++;
             Worker attached = worker;
-            worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
+            worker.actor.done().whenCompleteRuntime((ignored, failure) ->
+                    HttpResponseCleanupDispatcher.dispatch(io, () -> {
                 try {
-                    // One failed socket abort must not strand unrelated
-                    // requests served by the same retired worker.
+                    // Actor DONE callbacks may be invoked under the actor's
+                    // lifecycle monitor. Socket cleanup and listener failure
+                    // publication must execute on a separate host carrier.
                     for (State state : List.copyOf(attached.requests)) {
                         try { state.abort(500, false); }
                         catch (RuntimeException abortFailure) {
@@ -243,7 +245,7 @@ public final class NativeHttp implements AutoCloseable {
                     attached.served.clear();
                     attached.requests.clear();
                 }
-            });
+            }));
             return worker;
         }
         private void stopPool() {
