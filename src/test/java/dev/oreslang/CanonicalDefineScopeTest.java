@@ -30,6 +30,13 @@ final class CanonicalDefineScopeTest {
         }
         assertInstanceOf(Ast.FunctionDecl.class,
                 onlyDeclaration("define routine background(): void { return; }"));
+        for (String spelling : new String[] {
+                "define pub fnc entry(): int { return 7; }",
+                "pub define fnc entry(): int { return 7; }",
+                "pub fnc entry(): int { return 7; }"
+        }) {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(spelling)), spelling);
+        }
     }
 
     @Test
