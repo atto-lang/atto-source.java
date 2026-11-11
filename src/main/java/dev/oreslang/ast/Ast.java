@@ -523,7 +523,8 @@ public final class Ast {
             if (actorConcurrency.role() != ActorRole.NEURON && !stateFields.isEmpty())
                 throw new IllegalArgumentException("only neuron actors may carry a protected state schema");
             if (actorConcurrency.role() == ActorRole.NEURON) {
-                if (actorKind == ActorKind.NONE || !fields.isEmpty() || stateFields.isEmpty()
+                if (actorKind != ActorKind.SHARED || isAbstract
+                        || !fields.isEmpty() || stateFields.isEmpty()
                         || constructor != null || actorConcurrency.requestConcurrency() != 1
                         || actorConcurrency.messageConcurrency() != 1) {
                     throw new IllegalArgumentException(
