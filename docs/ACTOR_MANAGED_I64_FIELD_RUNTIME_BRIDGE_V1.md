@@ -89,6 +89,16 @@ projections, returned actor borrows and unsafe aliases. That is
 intentional until source-level generated scoped CONTROL grants and
 physical field-path borrow lowering exist.
 
+The `ActorContext.createManagedPrimitiveStateRegion` hook is **one-use
+per actor incarnation** and is only available while the source
+`ActorCodeExecutor.initializeActor` callback has not yet returned.
+Additional calls during that initialization, mailbox handler calls
+after READY, free actors and untrusted structured workers all return
+`Optional.empty()`. The one-use flag is burned before region
+allocation, so a failing admission cannot be retried under a different
+layout. Regression tests exercise both duplicate initialization and
+mailbox-turn attempts.
+
 ## Tests (all authored, NOT_EXECUTED)
 
 The source exact-head workflow now demands the following per-class
