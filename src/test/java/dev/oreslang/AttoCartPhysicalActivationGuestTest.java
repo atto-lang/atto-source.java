@@ -18,8 +18,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.LinkOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -46,16 +46,28 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(90)
 final class AttoCartPhysicalActivationGuestTest {
-    private static final String RESOURCE_ROOT = "/atto/virtual-cart-v1/";
+    private static final Path CONTRACT_ROOT = Path.of("contracts", "virtual-actor-cart-v1")
+            .toAbsolutePath().normalize();
     private static final String DOMAIN = "cart-tenant";
     @TempDir Path scratch;
 
-    private static String fixture(String name) throws Exception {
-        try (InputStream stream = AttoCartPhysicalActivationGuestTest.class
-                .getResourceAsStream(RESOURCE_ROOT + name)) {
-            assertNotNull(stream, "missing exact .atto fixture " + name);
-            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+    private static Path contract(String relative) {
+        Path file = CONTRACT_ROOT;
+        for (String component : relative.split("/")) {
+            assertFalse(component.isBlank() || component.equals(".") || component.equals(".."),
+                    "unsafe Cart conformance fixture path");
+            file = file.resolve(component);
+            assertFalse(Files.isSymbolicLink(file),
+                    "symlink in canonical Cart contract: " + relative);
         }
+        assertTrue(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS),
+                "missing canonical Cart contract: " + relative);
+        return file;
+    }
+
+    private static String fixture(String name) throws Exception {
+        String folder = name.equals("virtual_cart_unsupported.atto") ? "negative" : "positive";
+        return Files.readString(contract(folder + "/" + name), StandardCharsets.UTF_8);
     }
 
     private Path stage(String name) throws Exception {
@@ -119,7 +131,10 @@ final class AttoCartPhysicalActivationGuestTest {
         var result = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out, err);
         assertEquals(2, result.units().size());
-        assertEquals("cart|2|7|5", out.toString(StandardCharsets.UTF_8));
+        assertEquals(Files.readString(contract("expected/cart_main.stdout"),
+                        StandardCharsets.UTF_8),
+                out.toString(StandardCharsets.UTF_8),
+                "linked compiled .atto output must match the shared cross-backend vector");
     }
 
     @Test
