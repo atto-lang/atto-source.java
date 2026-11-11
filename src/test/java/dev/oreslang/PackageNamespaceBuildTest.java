@@ -217,6 +217,63 @@ final class PackageNamespaceBuildTest {
     }
 
     @Test
+    void modifiedManifestInvalidatesPreviouslyApprovedPackageBoundary() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        compiler.build();
+        write(root, ".atto.pkg.toml", """
+                schema_version = "1"
+                [project]
+                name = "changed-app"
+                version = "0.2.0"
+                root = "."
+                [source]
+                roots = ["src"]
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                compiler::build);
+        assertTrue(error.getMessage().contains("manifest changed"));
+    }
+
+    @Test
+    void duplicateActorDefinitionAcrossFilesIsNotAnIndexedActor() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        write(root, "src/shop/cart-second.atto", CART);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                compiler::build);
+        assertTrue(error.getMessage().contains("ambiguous nominal actor"));
+    }
+
+    @Test
+    void actorMethodIndexIncludesExplicitNameAndArityOnly() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        write(root, "src/shop/cart.atto", """
+                namespace shop;
+                pub define actor Cart as
+                  pub count(): int { return 42; }
+                  pub count(int value): int { return value; }
+                end
+                """);
+        var index = compiler.build().actorMethods();
+        var actor = new ActorMethodIndex.ActorKey("shop-app@0.1.0", "shop", "Cart");
+        var zero = index.method(new ActorMethodIndex.MethodKey(actor, "count", 0));
+        var one = index.method(new ActorMethodIndex.MethodKey(actor, "count", 1));
+        assertNotNull(zero);
+        assertNotNull(one);
+        assertEquals(1, one.argumentTypes().size());
+        assertEquals("int", one.argumentTypes().getFirst().name());
+        assertNull(index.method(new ActorMethodIndex.MethodKey(actor, "count", 2)));
+    }
+
+    @Test
+    void manifestBackedSourceUnitsAreOrderedLexically() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        write(root, "src/other/z.atto", "namespace other; pub fnc z(): int { return 1; }");
+        write(root, "src/other/a.atto", "namespace other; pub fnc a(): int { return 1; }");
+        var result = compiler.build();
+        assertEquals(result.sourceUnits().stream().sorted().toList(), result.sourceUnits());
+    }
+
+    @Test
     void sourceRootsWithDuplicateOverlappingFilesAreRejected() throws IOException {
         PackageNamespaceBuild compiler = compiler();
         write(root, ".atto.pkg.toml", """
