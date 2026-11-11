@@ -37,7 +37,7 @@ final class NamespaceActorStateAdmissionTest {
     }
 
     private static String actor() {
-        return "pub declare actor Foo;";
+        return "declare pub actor Foo;";
     }
 
     private static String state() {
@@ -212,7 +212,7 @@ final class NamespaceActorStateAdmissionTest {
 
     @Test
     void stateOnActorWithContractDoesNotSatisfyContract() {
-        var source = units("pub declare actor Foo implements ActorXYZ;", state());
+        var source = units("declare pub actor Foo implements ActorXYZ;", state());
         var error = assertThrows(IllegalArgumentException.class,
                 () -> ActorStateBinder.bindSourceSet("demo@1.0.0", source));
         assertTrue(error.getMessage().contains("ACTOR_CONTRACT_WITNESS_UNSUPPORTED"),
