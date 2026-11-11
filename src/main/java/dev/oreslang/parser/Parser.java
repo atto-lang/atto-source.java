@@ -4407,17 +4407,7 @@ public final class Parser {
     }
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
-        if (stage instanceof Ast.NameExpr || stage instanceof Ast.LambdaExpr) return true;
-        if (stage instanceof Ast.MemberExpr member)
-            return isNamedPipelineCallee(member.receiver());
-        return false;
-    }
-
-    private static boolean isNamedPipelineCallee(Ast.Expr callee) {
-        if (callee instanceof Ast.NameExpr) return true;
-        if (callee instanceof Ast.MemberExpr member)
-            return isNamedPipelineCallee(member.receiver());
-        return false;
+        return stage instanceof Ast.NameExpr || stage instanceof Ast.LambdaExpr;
     }
 
     private Ast.Expr parseConditional() {
