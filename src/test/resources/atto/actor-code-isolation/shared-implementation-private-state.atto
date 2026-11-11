@@ -1,0 +1,48 @@
+// Canonical AttoLang executable regression: the same routine is called by
+// two instances of Counter and by root/supervisor bookkeeping. Each actor
+// owns independent mutable fields; code reuse never shares its objects.
+fnc advance(int current, int delta): int {
+  return current + delta;
+}
+
+define actor Counter as
+  let int total;
+
+  on_start(): void {
+    self.total = 0;
+    return;
+  }
+
+  receive(ActorMail<int> mail): void {
+    self.total = advance(self.total, mail.value);
+    self.send(self.total);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val left = spawn Counter();
+  val right = spawn Counter();
+  await left.get_ready();
+  await right.get_ready();
+
+  // Ordered output makes an illicit global/shared counter deterministically
+  // observable (3|10 instead of 3|7).
+  left.send(3);
+  val leftOutput = (await left.outputs.next()).value.unwrap();
+  stdio.stdout.write(leftOutput.value);
+  stdio.stdout.write("|");
+
+  right.send(7);
+  val rightOutput = (await right.outputs.next()).value.unwrap();
+  stdio.stdout.write(rightOutput.value);
+  stdio.stdout.write("|");
+
+  await left.get_done();
+  await right.get_done();
+
+  val int supervisorTotal = advance(40, 2);
+  stdio.stdout.write(supervisorTotal);
+  return;
+}
