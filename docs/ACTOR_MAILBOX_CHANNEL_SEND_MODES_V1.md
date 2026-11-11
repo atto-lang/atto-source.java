@@ -9,15 +9,20 @@ channel admission. Never expose a raw actor inbox channel to guest code.
 
 | Source expression | Immediate completion | When full or no rendezvous reader | Result |
 | --- | --- | --- | --- |
-| `writech channel, value` | yes | Suspend logical task/continuation until admitted | `void` |
+| `writech channel, value` | yes if ready | Logical suspension **target**; current Java actor/root interpreter fails closed on pending write until resumable-task lowering | `void` |
 | `nb writech channel, value` | yes | Register a bounded writer; return without suspending caller | `Future<void>` |
 | `try writech channel, value` | yes | Return `false`; register **nothing** | `bool` |
 | `readch channel` | yes | Suspend logical task until a value arrives | `T` |
 | `nb readch channel` | yes | Return a bounded pending read Future | `Future<T>` |
 | `try readch channel` | yes | Return `None`; register **nothing** | `Option<T>` |
 
-"Blocking" is **cooperative actor suspension**, not OS-thread parking,
-spin-waiting or blocking I/O. Carrier threads must remain available.
+"Blocking" must ultimately mean **cooperative actor suspension**, not OS-thread
+parking, spin-waiting or blocking I/O. **Current Java limitation:** a pending
+plain `writech` / `readch` on an actor/root scheduler turn raises a diagnostic
+instead of suspending, because its interpreter stack is not yet lowered into
+a resumable task. The `nb` Future path and immediate `try` probe are the
+supported nonparking mechanisms today. The transitional host/embedder path
+may join a Future outside scheduler turns. Carrier threads stay available.
 Capacity 0 is a rendezvous channel, not an unbounded channel.
 
 ## ActorRef messaging
@@ -33,9 +38,12 @@ A successful send means **atomic admission to the destination mailbox**,
 not execution, reply or durability. Use `get_done`, `drain`, or explicit
 ack/reply semantics as appropriate to observe later milestones.
 
-`try_send` reports `false` **only** for a full USER queue. Invalid/stale
-references, stop/seal, authorization errors, invalid payloads, and unsupported
-serialization are *errors*, never disguised as capacity. Successful probes
+`try_send` reports `false` **only** when the USER admission capacity is full.
+Authority and stop/seal checks occur before capacity checks. If the mailbox
+is full, capacity rejection may happen *before* expensive payload validation;
+a simultaneous malformed payload is not necessarily inspected on that attempt.
+When capacity is available, malformed payloads and unsupported serialization
+are errors, not `false` outcomes. Successful probes
 reserve and publish exactly once. On failure no delayed delivery is possible.
 The source language must reject capturing actor-ref send methods as
 unvalidated first-class callables; they remain direct-call-only.
@@ -80,4 +88,5 @@ path.
   scenarios. A standalone byte queue or codec is not proof of source parity.
 
 This Java draft intentionally does not claim that the native/backend
-implementations or MessagePack source paths have passed those gates.
+implementations, pending plain `writech` interpreter suspension, or MessagePack
+source paths have passed those gates.
