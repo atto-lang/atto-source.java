@@ -655,4 +655,38 @@ final class ActorStateRwLoansTest {
         }
     }
 
+
+    @Test
+    void logicalStopSealNeverPromotesQueuedBorrowerUntilPhysicalClose() {
+        var loans = new ActorStateRwLoans(OWNER, 4, 2);
+        var owner = actor(9101, 311, 1);
+        var queuedExecution = actor(9102, 312, 1);
+        var writer = loans.acquireWriteAsync(owner).join();
+        var queued = loans.acquireReadAsync(queuedExecution);
+        assertFalse(queued.isDone());
+
+        loans.sealAdmissionsWithoutCallbacks();
+        assertFalse(writer.heldBy(owner),
+                "the logical seal must revoke further protected writes immediately");
+        assertFalse(loans.noOutstandingLoanFor(queuedExecution));
+        assertTrue(loans.acquireReadAsync(actor(9103, 313, 1))
+                .isCompletedExceptionally(),
+                "new acquisition after logical STOP must fail closed");
+
+        writer.close();
+        assertEquals(0, loans.activeWriterCount());
+        assertFalse(queued.isDone(),
+                "writer release during STOP gap must not promote a queued reader");
+        assertEquals(1, loans.pendingCount());
+        assertFalse(writer.readyToSuspend(owner),
+                "sealed owner cannot treat old loan receipt as admission");
+        assertFalse(loans.physicallyRetired());
+
+        loans.close();
+        assertTrue(queued.isCompletedExceptionally(),
+                "physical close eventually settles the queued grant as failed");
+        assertEquals(0, loans.pendingCount());
+        assertTrue(loans.physicallyRetired());
+    }
+
 }
