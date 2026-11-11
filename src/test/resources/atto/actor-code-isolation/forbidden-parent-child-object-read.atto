@@ -1,0 +1,24 @@
+// Negative: parent/supervisor code can spawn, message, and monitor an actor
+// but cannot reach directly into an actor-owned field via ActorRef. The same
+// compiled class/method code does not confer heap-object capabilities.
+define actor Counter as
+  let int total;
+
+  on_start(): void {
+    self.total = 0;
+    return;
+  }
+
+  receive(ActorMail<int> mail): void {
+    self.total = self.total + mail.value;
+    self.end();
+    return;
+  }
+end
+
+pub fnc main(): void {
+  val child = spawn Counter();
+  val unauthorized = child.total;
+  stdio.println(unauthorized);
+  return;
+}
