@@ -216,18 +216,21 @@ public final class NativeHttp implements AutoCloseable {
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
             if (worker != null && !worker.actor.done().isDone()) {
-                if (!context.actors().isAlive(worker.actor)) {
-                    throw new RejectedExecutionException("HTTP worker is stopping");
-                }
-                // Shutdown may seal a generation after it has been selected
-                // but before new work is attached. Only this reservation
-                // permits a later dispatch handoff to the same actor.
+                // FIRST check the admission fence. A worker sealed by another
+                // listener is intentionally stopping and MUST be replaced,
+                // not classified as a generic 500 "worker stopping" error.
+                // A successful reservation prevents a concurrent shutdown
+                // seal from overtaking this dispatch before its handoff.
                 if (worker.admission.tryReserve()) {
+                    if (!context.actors().isAlive(worker.actor)) {
+                        worker.admission.release();
+                        throw new RejectedExecutionException("HTTP worker is stopping");
+                    }
                     reused++;
                     return worker;
                 }
-                // Sealed workers are replaced in the pool slot. Their old
-                // physical-carrier obligations remain with prior listeners.
+                // The sealed generation remains tracked by the old listener;
+                // this handler slot can now point to a fresh incarnation.
             }
             worker = new Worker(context.actors().spawnCodeActor(kind, code, type));
             if (!worker.admission.tryReserve()) {
