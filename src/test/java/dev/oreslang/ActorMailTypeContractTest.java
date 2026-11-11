@@ -172,4 +172,39 @@ final class ActorMailTypeContractTest {
         assertTrue(failure.getMessage().contains("reserved actor lifecycle hook"),
                 failure.getMessage());
     }
+
+    @Test
+    void actorRefTrySendAndSendAsyncUseTheSameTypedMailboxDomain() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void { return; }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val bool accepted = worker.try_send("hello");
+                  val Future<void> pending = worker.send_async("world");
+                  await pending;
+                  return;
+                }
+                """)));
+
+        for (String method : java.util.List.of("try_send", "send_async")) {
+            IllegalArgumentException mismatch = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              receive(ActorMail<String> mail): void { return; }
+                            end
+                            pub routine main(): void {
+                              val worker = spawn Worker();
+                              worker.""" + method + """
+                              (42);
+                              return;
+                            }
+                            """)));
+            assertTrue(mismatch.getMessage().contains("ActorRef." + method + " mailbox value"),
+                    mismatch.getMessage());
+        }
+    }
+
 }
