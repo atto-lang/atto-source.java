@@ -129,8 +129,12 @@ final class ActorSupervisorControlLane {
         // Overflow rejects before removing anything from the queue. Reusing
         // a ticket after wraparound would recreate a stale ACK authority.
         long ticket = Math.addExact(nextDeliveryTicket, 1L);
-        nextDeliveryTicket = ticket;
         Slot slot = head;
+        // Allocate both the opaque delivery lease and its Optional wrapper
+        // before removing the notice from the queue. An allocation failure
+        // must leave the original CONTROL notice reachable and retryable.
+        Optional<Delivery> ready = Optional.of(new Delivery(this, slot, ticket));
+        nextDeliveryTicket = ticket;
         head = slot.next;
         if (head == null) tail = null;
         slot.next = null;
@@ -139,7 +143,7 @@ final class ActorSupervisorControlLane {
         slot.deliveryTicket = ticket;
         inFlight = 1;
         pending--;
-        return Optional.of(new Delivery(this, slot, ticket));
+        return ready;
     }
 
     synchronized void ack(Delivery delivery) {
