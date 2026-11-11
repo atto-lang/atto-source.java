@@ -152,15 +152,23 @@ public final class ActorStateSupervisorLoans {
         return wrap(pending, false);
     }
 
-    public OresFuture<Loan> ownerReadAsync() {
-        return ownerAcquire(ActorStateRwLoans.Access.READ);
+    /**
+     * Lexically scoped owner turn operation. An actor is forbidden to park
+     * a carrier or retain a loan across await/next mailbox turn. Contention
+     * fails fast; future async lowering requires compiler-proven continuation
+     * scope and is not exposed by this host substrate.
+     */
+    public void withOwnerRead(Runnable operation) {
+        withOwnerLoan(ActorStateRwLoans.Access.READ, operation);
     }
 
-    public OresFuture<Loan> ownerWriteAsync() {
-        return ownerAcquire(ActorStateRwLoans.Access.WRITE);
+    public void withOwnerWrite(Runnable operation) {
+        withOwnerLoan(ActorStateRwLoans.Access.WRITE, operation);
     }
 
-    private OresFuture<Loan> ownerAcquire(ActorStateRwLoans.Access access) {
+    private void withOwnerLoan(
+            ActorStateRwLoans.Access access, Runnable operation) {
+        Objects.requireNonNull(operation, "operation");
         runtime.requireStateRegionOwnerTurn(actorId, actorGeneration);
         ExecutionContext execution;
         synchronized (gate) {
@@ -171,7 +179,25 @@ public final class ActorStateSupervisorLoans {
                 access == ActorStateRwLoans.Access.READ
                         ? arbiter.acquireReadAsync(execution)
                         : arbiter.acquireWriteAsync(execution);
-        return wrap(pending, true);
+        if (!pending.isDone()) {
+            // Host actor turns may not park while the scheduler waits for a
+            // supervisor loan. A promotion racing with cancellation must
+            // release its physical loan after delivery, never lose the pin.
+            if (!pending.cancel(false)) {
+                pending.whenCompleteRuntime((loan, failure) -> {
+                    if (loan != null) loan.close();
+                });
+            }
+            throw new IllegalStateException(
+                    "actor-owned state RW operation would suspend its physical turn");
+        }
+        try (ActorStateRwLoans.StateLoan loan = pending.join()) {
+            if (!loan.heldBy(execution)) {
+                throw new IllegalStateException(
+                        "owner state loan was revoked before entering lexical scope");
+            }
+            operation.run();
+        }
     }
 
     private ExecutionContext nextMintedExecutionLocked() {
