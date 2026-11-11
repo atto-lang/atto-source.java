@@ -109,6 +109,59 @@ final class NeuronActorScalarTurnStateV0Test {
         }
     }
 
+    @Test void stopWaitsForOutstandingPhysicalLoanAndFinalizesAfterLateRelease()
+            throws Exception {
+        var ownedState = new AtomicReference<NeuronActorScalarTurnStateV0>();
+        var lateLoan = new AtomicReference<NeuronActorScalarTurnStateV0.ReadScope>();
+        var error = new AtomicReference<Throwable>();
+        var armed = new CountDownLatch(1);
+
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 1, 2),
+                ActorRuntime.TurnExecutor.direct())) {
+            var actor = runtime.<Integer>spawnShared(() -> {
+                var state = NeuronActorScalarTurnStateV0.createOnCurrentTurn(
+                        2, 1, List.of("weight"));
+                ownedState.set(state);
+                return (message, context) -> {
+                    try {
+                        assertEquals(Integer.valueOf(1), message);
+                        var read = state.tryRead();
+                        assertNotNull(read);
+                        lateLoan.set(read);
+                        context.self().stop();
+                    } catch (Throwable failure) {
+                        error.set(failure);
+                        context.self().stop();
+                    } finally {
+                        armed.countDown();
+                    }
+                };
+            });
+
+            try {
+                actor.send(1);
+                assertTrue(armed.await(5, TimeUnit.SECONDS));
+                if (error.get() != null)
+                    throw new AssertionError("loan setup failed", error.get());
+                assertNotNull(ownedState.get());
+                assertNotNull(lateLoan.get());
+                assertFalse(actor.awaitTermination(200, TimeUnit.MILLISECONDS),
+                        "STOP cannot finalize while a physical neuron loan is held");
+                assertFalse(ownedState.get().tryClearAfterQuiescence(),
+                        "logical STOP must not reclaim a live loan");
+            } finally {
+                var loan = lateLoan.get();
+                if (loan != null) loan.close();
+            }
+
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "last physical loan release should wake actor finalization");
+            assertTrue(ownedState.get().tryClearAfterQuiescence());
+            assertEquals(0, ownedState.get().activeLoanCount());
+        }
+    }
+
     @Test void differentActorCannotBorrowCapturedProtectedState() throws Exception {
         var stateRef = new AtomicReference<NeuronActorScalarTurnStateV0>();
         var failure = new AtomicReference<Throwable>();
