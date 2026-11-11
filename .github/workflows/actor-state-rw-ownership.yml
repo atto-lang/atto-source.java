@@ -9,6 +9,7 @@ on:
       - "src/main/java/dev/oreslang/parser/Parser.java"
       - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
       - "src/test/java/dev/oreslang/ActorStateContainerOwnershipCompilerTest.java"
+      - "src/test/java/dev/oreslang/ActorStateBorrowReturnFenceTest.java"
       - "src/test/resources/ownership/actor-state/**"
       - "src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorStateSupervisorLoansTest.java"
@@ -56,8 +57,8 @@ jobs:
           set -euo pipefail
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest -DfailIfNoTests=true test
-      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL and 12 .atto compiler/guest tests)
+            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest,ActorStateBorrowReturnFenceTest -DfailIfNoTests=true test
+      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL, 12 actor-state and 7 return-fence tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -69,6 +70,7 @@ jobs:
               "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
               "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
               "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 12,
+              "dev.oreslang.ActorStateBorrowReturnFenceTest": 7,
           }
           for class_name, minimum in cases.items():
               path = base / f"TEST-{class_name}.xml"
@@ -96,4 +98,5 @@ jobs:
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateRwLoansTest.xml
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateSupervisorLoansTest.xml
             target/surefire-reports/TEST-dev.oreslang.ActorStateContainerOwnershipCompilerTest.xml
+            target/surefire-reports/TEST-dev.oreslang.ActorStateBorrowReturnFenceTest.xml
           if-no-files-found: warn
