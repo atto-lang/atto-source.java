@@ -852,4 +852,54 @@ final class ActorStateSupervisorLoansTest {
         }
     }
 
+
+    @Test
+    void sameSupervisorButDifferentSimultaneousControlTurnCannotBorrowScopedView()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var rejected = new AtomicReference<Throwable>();
+            fixture.scopedRead(region, fixture.issue("read"), scope -> {
+                var anotherHost = Thread.ofPlatform().start(() -> {
+                    try {
+                        fixture.asControl(fixture.supervisor, scope::read);
+                    } catch (Throwable failure) {
+                        rejected.set(failure);
+                    }
+                });
+                try {
+                    anotherHost.join(4000);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+                assertFalse(anotherHost.isAlive());
+                assertEquals(1, region.activeReaders());
+            });
+            assertInstanceOf(SecurityException.class, rejected.get(),
+                    "same supervisor identity must not impersonate original CONTROL turn");
+            assertEquals(0, region.activeReaders());
+        }
+    }
+
+    @Test
+    void rawFutureLoanAdapterRemainsPackagePrivateNotGuestPublicApi()
+            throws Exception {
+        var raw = ActorStateSupervisorLoans.class.getDeclaredMethod(
+                "redeem",
+                ActorStateSupervisorLoans.Grant.class,
+                ActorRuntime.ActorSupervisor.class);
+        assertFalse(java.lang.reflect.Modifier.isPublic(raw.getModifiers()),
+                "guest or external host callers must not get unscoped loan Futures");
+        for (var name : java.util.List.of("withSupervisorRead", "withSupervisorWrite")) {
+            var method = ActorStateSupervisorLoans.class.getDeclaredMethod(
+                    name,
+                    ActorStateSupervisorLoans.Grant.class,
+                    ActorRuntime.ActorSupervisor.class,
+                    java.util.function.Consumer.class);
+            assertFalse(java.lang.reflect.Modifier.isPublic(method.getModifiers()),
+                    "compiler-only scoped bridge must remain runtime-package-local");
+        }
+    }
+
 }
