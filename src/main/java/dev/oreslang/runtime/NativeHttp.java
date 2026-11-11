@@ -360,17 +360,12 @@ public final class NativeHttp implements AutoCloseable {
                             state.abort(503, false);
                             return;
                         }
-                        try {
-                            worker.actor.send(exchange.moveTo(worker.actor));
-                        } finally {
-                            // DONE may win while dispatch is attaching this
-                            // generation. Do not retain a dead worker in the
-                            // listener/worker bidirectional reference sets.
-                            if (worker.actor.done().isDone()) {
-                                state.server.pooledWorkers.remove(worker);
-                                worker.served.remove(state.server);
-                            }
-                        }
+                        // Never unlink this generation merely because DONE
+                        // published: the last TurnExecutor callback may still
+                        // own a physical carrier and the handoff lease is
+                        // still outstanding. Retirement is handled only after
+                        // the lease is released and physical exit is observed.
+                        worker.actor.send(exchange.moveTo(worker.actor));
                     } catch (RuntimeException failure) {
                         state.abort(mayBeginDispatch(closed, state.server.stopped)
                                 ? 500 : 503, false);
@@ -378,7 +373,21 @@ public final class NativeHttp implements AutoCloseable {
                         // Every successful worker() reservation is released on
                         // success, abort, cancellation, send failure and close.
                         // Seal and release arbitrate under the same fence lock.
-                        if (worker != null) worker.admission.release();
+                        if (worker != null) {
+                            worker.admission.release();
+                            if (worker.actor.done().isDone()) {
+                                // DONE can beat the association in the block
+                                // above, even if its callback has already
+                                // examined an empty served set. Recheck after
+                                // releasing this dispatch lease and retire
+                                // using the same physical-exit gate as the
+                                // terminal callback. Never remove inline.
+                                worker.admission.seal();
+                                Worker retired = worker;
+                                HttpResponseCleanupDispatcher.dispatch(io,
+                                        () -> retireWorkerWhenPhysicallyExited(retired));
+                            }
+                        }
                     }
                     return;
                 }
