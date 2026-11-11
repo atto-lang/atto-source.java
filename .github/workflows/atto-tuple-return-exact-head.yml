@@ -72,38 +72,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-
-          suites = (
-              "TupleReturnTypeContractTest",
-              "TildeArrayTupleValueGuestTest",
-              "TildeAggregateTypeAliasCompilerTest",
-              "CollectionShapeMetadataTest",
-          )
-          root = Path("target/surefire-reports")
-          if not root.is_dir():
-              raise SystemExit("missing Surefire report directory")
-          total = 0
-          for suite in suites:
-              reports = list(root.glob(f"TEST-*.{suite}.xml"))
-              if len(reports) != 1:
-                  raise SystemExit(f"{suite}: expected one executed report, got {len(reports)}")
-              xml = ET.parse(reports[0]).getroot()
-              tests = int(xml.attrib.get("tests", "0"))
-              failures = int(xml.attrib.get("failures", "0"))
-              errors = int(xml.attrib.get("errors", "0"))
-              skipped = int(xml.attrib.get("skipped", "0"))
-              if tests <= 0 or failures or errors or skipped:
-                  raise SystemExit(
-                      f"{suite}: missing/excluded tests or failures: "
-                      f"tests={tests} failures={failures} errors={errors} skipped={skipped}"
-                  )
-              print(f"ATTO_TUPLE_RECEIPT suite={suite} tests={tests} failures=0 errors=0 skipped=0")
-              total += tests
-          print(f"ATTO_TUPLE_RECEIPT total_executed_tests={total} guest_fixture=canonical-return.atto")
-          PY
+          shopt -s nullglob
+          total=0
+          for suite in \
+            TupleReturnTypeContractTest \
+            TildeArrayTupleValueGuestTest \
+            TildeAggregateTypeAliasCompilerTest \
+            CollectionShapeMetadataTest; do
+            reports=(target/surefire-reports/TEST-*."$suite".xml)
+            if (( ${#reports[@]} != 1 )); then
+              echo "::error::$suite expected exactly one executed report; found ${#reports[@]}"
+              exit 1
+            fi
+            header="$(grep -m1 '<testsuite' "${reports[0]}")"
+            read_metric() {
+              local value
+              value="$(printf '%s\n' "$header" | grep -oE "(^|[[:space:]])$1=\"[0-9]+\"" | cut -d '"' -f 2 | head -n1 || true)"
+              if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+                echo "::error::$suite has no numeric $1 count" >&2
+                return 1
+              fi
+              printf '%s' "$value"
+            }
+            tests="$(read_metric tests)"
+            failures="$(read_metric failures)"
+            errors="$(read_metric errors)"
+            skipped="$(read_metric skipped)"
+            if (( tests <= 0 || failures != 0 || errors != 0 || skipped != 0 )); then
+              echo "::error::$suite tests=$tests failures=$failures errors=$errors skipped=$skipped"
+              exit 1
+            fi
+            total=$((total + tests))
+            echo "ATTO_TUPLE_RECEIPT suite=$suite tests=$tests failures=0 errors=0 skipped=0"
+          done
+          echo "ATTO_TUPLE_RECEIPT total_executed_tests=$total guest_fixture=canonical-return.atto"
 
       - name: Archive immutable compiler and guest receipts
         if: always()
