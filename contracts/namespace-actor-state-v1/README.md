@@ -1,9 +1,9 @@
 # Namespace-attached actor state (static admission candidate)
 
 This corpus is `Ast.ActorStateDecl` **parser / nominal binder input only**.
-It is **not** executable actor state and does not grant a critical section.\n\nThe canonical non-inline declaration is `declare actor Foo;` (or `pub declare actor Foo;` for public methods). `define actor Foo;` is rejected: `define actor Foo as ... end` remains the separate inline implementation form.
+It is **not** executable actor state and does not grant a critical section.\n\nThe canonical non-inline declaration is `declare actor Foo;` (or `declare pub actor Foo;` for public methods). `pub declare actor Foo;` is a syntax error. `define actor Foo;` is rejected: `define actor Foo as ... end` remains the separate inline implementation form.
 
-- `actor.atto` declares nominal `foo.Foo` with `pub declare actor Foo;` and supplies an out-of-line external receiver method.
+- `actor.atto` declares nominal `foo.Foo` with `declare pub actor Foo;` and supplies an out-of-line external receiver method.
 - `state.atto` attaches a sealed private `int x: 5` schema to exactly
   that nominal actor in the same source namespace.
 - `reject_wrong_namespace.atto` cannot attach `other.Foo` to `foo.Foo`.
