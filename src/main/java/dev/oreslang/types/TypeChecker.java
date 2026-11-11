@@ -170,11 +170,14 @@ public final class TypeChecker {
                                     + "and activation-generation fencing");
                 }
                 if (declaration instanceof Ast.StandaloneActorDecl actor) {
+                    String origin = actor.declared()
+                            ? " is a declared nominal actor with unverified implements contracts"
+                            : " parsed with legacy receiver binding '" + actor.receiverName() + "'";
                     throw new IllegalArgumentException(
                             "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: '" + actor.name()
-                                    + "' parsed with receiver binding '" + actor.receiverName()
-                                    + "' but requires checked actor context, mailbox dispatch, "
-                                    + "state ownership and generation-fenced runtime lowering");
+                                    + "'" + origin + " but requires checked actor context, "
+                                    + "mailbox dispatch, trait conformance, state ownership "
+                                    + "and generation-fenced runtime lowering");
                 }
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
                     throw new IllegalArgumentException(

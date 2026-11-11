@@ -274,6 +274,10 @@ final class ActorExternalEntrypointTest {
                 () -> TypeChecker.check(parsed));
         assertTrue(ex.getMessage().contains("STANDALONE_ACTOR_LOWERING_UNSUPPORTED"),
                 ex.getMessage());
+        assertTrue(ex.getMessage().contains("declared nominal actor"),
+                ex.getMessage());
+        assertFalse(ex.getMessage().contains("$declared$"),
+                "compiler internal receiver sentinel must not be presented as guest syntax");
     }
 
     @Test void declaredActorCanBindNamespaceEntrypointFromSeparateSourceUnit() {
