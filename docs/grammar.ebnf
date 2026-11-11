@@ -59,12 +59,13 @@ actor_callable_decl
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
-(* External actor receiver methods are parsed and statically indexed only.
-   Until actor-context/ownership lowering exists, TypeChecker rejects their
-   execution. Canonical receiver-first and legacy name-first spellings have
-   the same AST identity. Neither grants runtime receiver authority. *)
+(* Out-of-line actor methods remain static-only metadata until runtime
+   lowering. 'external mtd' has a distinct private actor-runtime ingress
+   marker, restricted to init():void or receive(ActorMail<T>):void. It is
+   not pub, not a callable guest function and cannot mint actor context. *)
 external_actor_method_decl
-                = ( "define" visibility | "pub" | "private" ) "mtd"
+                = ( "define" visibility | "pub" | "private"
+                  | visibility "external" ) "mtd"
                   ( "(" type_ref IDENT ")" callable_name
                   | callable_name "(" type_ref IDENT ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
