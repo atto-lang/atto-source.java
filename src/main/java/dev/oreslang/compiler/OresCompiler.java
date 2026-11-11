@@ -45,6 +45,18 @@ public final class OresCompiler {
         return checked.program();
     }
 
+    /**
+     * Validate a complete source graph under the strict profile. Every source
+     * unit, including import targets, must be supplied and checked; unresolved
+     * external imports fail closed. Returns linked checked AST units, not an
+     * emitted native program or proof of AOT execution.
+     */
+    public static IncrementalCompiler.BuildResult parseAndTypeCheckStrictAttoGraph(
+            java.util.Map<String, String> sources,
+            java.util.Map<String, java.util.Map<String, String>> importResolutions) {
+        return new IncrementalCompiler().compileStrictAtto(sources, importResolutions);
+    }
+
     /** Strict source-profile front end for closed-world build optimization. */
     public static TreeShaker.Result compileForBuildStrictAtto(
             String source, BuildOptions options) {
