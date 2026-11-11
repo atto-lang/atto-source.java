@@ -117,6 +117,31 @@ final class ActorExternalEntrypointModifierTest {
     }
 
     @Test
+    void externalLoweringDiagnosticWinsRegardlessOfActorDeclarationOrder() {
+        var forward = Parser.parse("namespace test_entry;"
+                + "define external mtd (Worker w) init(): void { return; }"
+                + "declare actor Worker;");
+        var reversed = Parser.parse("namespace test_entry;"
+                + "declare actor Worker;"
+                + "define external mtd (Worker w) init(): void { return; }");
+        for (Ast.Program program : java.util.List.of(forward, reversed)) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(program));
+            assertTrue(error.getMessage().contains(
+                    "EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED"), error.getMessage());
+        }
+    }
+
+    @Test
+    void canonicalDeclaredActorWithoutExternalMethodRetainsStandaloneBlocker() {
+        var program = Parser.parse("declare actor Worker;");
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains(
+                "STANDALONE_ACTOR_LOWERING_UNSUPPORTED"), error.getMessage());
+    }
+
+    @Test
     void parsedExternalReceiverStillFailsClosedBeforeGuestExecution() {
         var p = parse(
                 "define external mtd (Worker w) receive(ActorMail<int> mail): void { return; }");
