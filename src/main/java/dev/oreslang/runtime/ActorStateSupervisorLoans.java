@@ -207,6 +207,45 @@ public final class ActorStateSupervisorLoans {
         withOwnerLoan(ActorStateRwLoans.Access.WRITE, operation);
     }
 
+    /**
+     * Actor-owned lexical read of the same primitive proof slot used by
+     * delegated supervisor loans. Only the immutable scalar snapshot escapes,
+     * never an actor-state pointer or a borrowable mutable field.
+     */
+    public void withOwnerScalarRead(java.util.function.LongConsumer reader) {
+        Objects.requireNonNull(reader, "reader");
+        withOwnerRead(() -> {
+            long snapshot;
+            synchronized (gate) {
+                requireOpenLocked();
+                snapshot = protectedScalar;
+            }
+            reader.accept(snapshot);
+        });
+    }
+
+    /**
+     * Actor-owned lexical exclusive mutation. User computation occurs outside
+     * the lock; the physical RW loan keeps other readers/writers excluded.
+     * STOP between computation and commit aborts rather than writing revoked
+     * memory.
+     */
+    public void withOwnerScalarUpdate(java.util.function.LongUnaryOperator updater) {
+        Objects.requireNonNull(updater, "updater");
+        withOwnerWrite(() -> {
+            long before;
+            synchronized (gate) {
+                requireOpenLocked();
+                before = protectedScalar;
+            }
+            long after = updater.applyAsLong(before);
+            synchronized (gate) {
+                requireOpenLocked();
+                protectedScalar = after;
+            }
+        });
+    }
+
     private void withOwnerLoan(
             ActorStateRwLoans.Access access, Runnable operation) {
         Objects.requireNonNull(operation, "operation");
