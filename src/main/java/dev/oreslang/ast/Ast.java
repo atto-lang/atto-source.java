@@ -62,13 +62,39 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, ActorStateDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
             java.util.Objects.requireNonNull(name, "state field name");
             java.util.Objects.requireNonNull(type, "state field type");
             java.util.Objects.requireNonNull(initializer, "state field initializer");
+        }
+    }
+
+    /**
+     * A source-level sealed schema ATTACHED to an existing nominal actor.
+     * It is not a new class, actor instance, free mutable binding or a
+     * capability to borrow state. Only compiler-issued critical read/write
+     * loans may eventually access it after typed runtime lowering.
+     */
+    public record ActorStateDecl(String actorName, List<ProtectedStateField> fields)
+            implements Decl {
+        public ActorStateDecl {
+            if (actorName == null || actorName.isBlank()) {
+                throw new IllegalArgumentException("attached actor state requires a nominal actor name");
+            }
+            fields = List.copyOf(fields);
+            if (fields.isEmpty() || fields.size() > 128) {
+                throw new IllegalArgumentException("attached actor state requires 1..128 fields");
+            }
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (ProtectedStateField field : fields) {
+                if (!names.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate attached actor state field '"
+                            + field.name() + "'");
+                }
+            }
         }
     }
 
