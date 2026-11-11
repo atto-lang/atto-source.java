@@ -259,6 +259,7 @@ final class VirtualActorRuntimeGenerationFence {
             slot.lastGroup = group;
             slot.lastGroupClosed = false;
             slot.pending = nextGeneration;
+            advanceDirectoryRevision();
         }
     }
 
@@ -276,6 +277,7 @@ final class VirtualActorRuntimeGenerationFence {
                     !Objects.equals(slot.pending, generation))
                 throw new IllegalStateException("virtual actor reservation does not match");
             slot.pending = null; // Generation watermark does not roll back.
+            advanceDirectoryRevision();
         }
     }
 
@@ -305,6 +307,7 @@ final class VirtualActorRuntimeGenerationFence {
             slot.terminalControlPending = false;
             slot.terminalControlFailed = false;
             slot.pending = null;
+            advanceDirectoryRevision();
         }
     }
 
@@ -396,6 +399,7 @@ final class VirtualActorRuntimeGenerationFence {
                         !physical.equals(slot.lastBoundActor))
                     throw new IllegalStateException("terminal decision lease authority changed");
                 slot.terminalControlFailed = true;
+                advanceDirectoryRevision();
             }
         }
 
@@ -414,6 +418,7 @@ final class VirtualActorRuntimeGenerationFence {
                     slot.terminalControlPending = false;
                 slot.terminalDecisionInFlight = false;
                 released = true;
+                advanceDirectoryRevision();
             }
         }
     }
@@ -443,6 +448,7 @@ final class VirtualActorRuntimeGenerationFence {
             TerminalDecisionLease lease = new TerminalDecisionLease(identity, generation, physical);
             slot.terminalDecisionClaimed = true;
             slot.terminalDecisionInFlight = true;
+            advanceDirectoryRevision();
             return lease;
         }
     }
@@ -473,6 +479,7 @@ final class VirtualActorRuntimeGenerationFence {
             // generation retired, after the ActorGroup and ActorCell cleanup.
             slot.lastRetiredGeneration = slot.lastBoundGeneration;
             if (requiresTerminalControl) slot.terminalControlPending = true;
+            advanceDirectoryRevision();
         }
     }
 
@@ -501,6 +508,7 @@ final class VirtualActorRuntimeGenerationFence {
                 return; // A superseded receipt must not fence a new worker.
             slot.terminalControlFailed = true;
             slot.terminalControlPending = true;
+            advanceDirectoryRevision();
         }
     }
 
@@ -512,12 +520,16 @@ final class VirtualActorRuntimeGenerationFence {
     void abortPendingForGroup(ActorRuntime.ActorGroupId group) {
         Objects.requireNonNull(group, "group");
         synchronized (monitor) {
+            boolean changed = false;
             for (Slot slot : slots.values()) {
-                if (group.equals(slot.lastGroup)) {
+                if (group.equals(slot.lastGroup) &&
+                        (!slot.lastGroupClosed || slot.pending != null)) {
                     slot.lastGroupClosed = true;
                     if (slot.pending != null) slot.pending = null;
+                    changed = true;
                 }
             }
+            if (changed) advanceDirectoryRevision();
         }
     }
 }
