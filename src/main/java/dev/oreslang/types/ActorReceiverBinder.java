@@ -221,7 +221,7 @@ public final class ActorReceiverBinder {
     /** Only normalized, package-relative slash-delimited source IDs are valid. */
     private static boolean validSourceUnitId(String sourceId) {
         if (sourceId == null || sourceId.isBlank()
-                || sourceId.startsWith("/") || sourceId.indexOf('\\\\') >= 0) {
+                || sourceId.startsWith("/") || sourceId.indexOf('\\') >= 0) {
             return false;
         }
         for (String segment : sourceId.split("/", -1)) {
