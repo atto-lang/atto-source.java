@@ -3643,6 +3643,47 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Host-only inspection bridge. Directory state is a projection of the
+         * same generation/physical/terminal authority used by activation and
+         * CONTROL: no directory-owned generation counters or mutable mirrors.
+         */
+        void requireVirtualActorDirectoryHost() {
+            requireSupervisor("inspect current-main virtual actor directory");
+            requireCallerRuntimeAffinity("inspect current-main virtual actor directory");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor directory group");
+            }
+        }
+
+        Optional<VirtualActorRuntimeGenerationFence.DirectoryEntry>
+        inspectVirtualActorDirectory(VirtualActorActivationRegistry.Identity identity) {
+            requireSupervisor("inspect current-main virtual actor identity");
+            requireCallerRuntimeAffinity("inspect current-main virtual actor identity");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor directory group");
+                return virtualActorFences.inspectDirectory(supervisor.id(), identity);
+            }
+        }
+
+        VirtualActorRuntimeGenerationFence.DirectoryPage
+        pageVirtualActorDirectory(String tenant, int limit, long revision,
+                                  VirtualActorActivationRegistry.Identity after) {
+            requireSupervisor("list current-main virtual actor directory");
+            requireCallerRuntimeAffinity("list current-main virtual actor directory");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (actorGroups.get(id) != this)
+                    throw new IllegalStateException("unregistered virtual actor directory group");
+                return virtualActorFences.listDirectory(
+                        supervisor.id(), tenant, limit, revision, after);
+            }
+        }
+
         /** A generation watermark check; not sufficient to trust a terminal notice. */
         public boolean isCurrentVirtualActorGeneration(
                 VirtualActorActivationRegistry.Identity identity, long generation) {
