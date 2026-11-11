@@ -7454,6 +7454,10 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        if (value instanceof OresEnumSymbol) {
+            // A nominal declaration is data, not tenant-scoped export authority.
+            throw new SecurityException("enum Symbol has no untrusted export authorization");
+        }
         if (value instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
             // Check every nested key and value before admitting untrusted mailbox data.
             throw new SecurityException("Symbol is not visible to untrusted actor");
@@ -8050,9 +8054,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (value instanceof OresEnumSymbol symbol) return enumSymbolLogicalBytes(symbol);
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
+    }
+
+    private static long enumSymbolLogicalBytes(OresEnumSymbol symbol) {
+        // Conservative per-mail logical quota charge; no new arena allocation.
+        return 96L + 2L * (symbol.declaration().sourceUnitId().length()
+                + symbol.declaration().enumName().length() + symbol.caseName().length());
     }
 
     private static long containerBase(long header, long perEntry, int count) {
@@ -8102,6 +8113,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (value instanceof OresEnumSymbol symbol) return enumSymbolLogicalBytes(symbol);
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
@@ -8147,6 +8159,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static boolean isScalar(Object value) {
         return value == null || value instanceof String || value instanceof OresSymbol
+                || value instanceof OresEnumSymbol
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
