@@ -109,6 +109,23 @@ final class CanonicalDefineScopeTest {
     }
 
     @Test
+    void emptyNewableInterfaceCannotAuthorizeFactoryByNameOnly() {
+        Ast.Program parsed = Parser.parse("""
+                define trait Newable as
+                end
+
+                define pub class Plain implements Newable as
+                  pub static fnc new(): Plain {
+                    return new Plain();
+                  }
+                end
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("Newable must declare"), failure.getMessage());
+    }
+
+    @Test
     void newableTraitMethodNameParsesWithoutUnreservingNewEverywhere() {
         Ast.InterfaceDecl contract = assertInstanceOf(Ast.InterfaceDecl.class,
                 onlyDeclaration("define trait Newable as fnc new(): int; end"));
