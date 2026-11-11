@@ -199,7 +199,7 @@ public final class AsyncNioTcp {
                     reading.set(false);
                     callback.reject(failure);
                 }
-            });
+            }, this::closeQuietly);
         }
 
         /**
@@ -217,7 +217,7 @@ public final class AsyncNioTcp {
                 return OresFuture.failed(new IllegalStateException(
                         "closed socket or concurrent RESP2 reader"));
             }
-            return OresFuture.fromCallback(this::continueRespRead);
+            return OresFuture.fromCallback(this::continueRespRead, this::closeQuietly);
         }
 
         private void continueRespRead(OresFuture.Callback<List<String>> callback) {
@@ -368,7 +368,7 @@ public final class AsyncNioTcp {
                     writing.set(false);
                     callback.reject(failure);
                 }
-            });
+            }, this::closeQuietly);
         }
 
         public OresFuture<Void> closeAsync() {
