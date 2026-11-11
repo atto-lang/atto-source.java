@@ -1,4 +1,4 @@
-name: Actor-state RW ownership and physical retirement (Java exact head)
+name: Actor-state RW and .atto ownership compiler (Java exact head)
 
 on:
   pull_request:
@@ -6,6 +6,10 @@ on:
       - "src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java"
       - "src/main/java/dev/oreslang/runtime/ActorStateSupervisorLoans.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/parser/Parser.java"
+      - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
+      - "src/test/java/dev/oreslang/ActorStateContainerOwnershipCompilerTest.java"
+      - "src/test/resources/ownership/actor-state/**"
       - "src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorStateSupervisorLoansTest.java"
       - "docs/ACTOR_STATE_RW_ALLOCATION_BOUND_AUDIT.md"
@@ -51,8 +55,8 @@ jobs:
           set -euo pipefail
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest -DfailIfNoTests=true test
-      - name: Verify exact focused Surefire evidence (27 base and 32 integration tests)
+            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest -DfailIfNoTests=true test
+      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL and 7 .atto compiler tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -61,11 +65,12 @@ jobs:
           from pathlib import Path
           base = Path("target/surefire-reports")
           cases = {
-              "ActorStateRwLoansTest": 27,
-              "ActorStateSupervisorLoansTest": 32,
+              "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
+              "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
+              "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 7,
           }
           for class_name, minimum in cases.items():
-              path = base / f"TEST-dev.oreslang.runtime.{class_name}.xml"
+              path = base / f"TEST-{class_name}.xml"
               if not path.is_file():
                   raise SystemExit(f"FAIL: mandatory Surefire XML absent: {path}")
               suite = ET.parse(path).getroot()
@@ -89,4 +94,5 @@ jobs:
           path: |
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateRwLoansTest.xml
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateSupervisorLoansTest.xml
+            target/surefire-reports/TEST-dev.oreslang.ActorStateContainerOwnershipCompilerTest.xml
           if-no-files-found: warn
