@@ -30,6 +30,27 @@ final class AttoGuardCorpusGuestTest {
     }
 
     @Test
+    void attoEqNeqAndBangEqCompileAndExecuteThroughTheGuestFrontend() throws Exception {
+        // Hosted Truffle guest execution only: not a GraalVM Native Image AOT proof.
+        String text = """
+                pub fnc main(): int {
+                  if (3 eq 3 && 3 neq 4 && 3 !eq 5) then
+                    return 42;
+                  else
+                    return 7;
+                  fi
+                }
+                """;
+        TypeChecker.check(Parser.parse(text));
+        Source source = Source.newBuilder(OresLanguage.ID, text, "atto-equality-operators.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42, context.eval(source).asInt());
+        }
+    }
+
+    @Test
     void invalidGuardFailurePathsReject() throws Exception {
         for (String name : new String[]{"reject-fallthrough.atto", "reject-else.atto"}) {
             String text = fixture(name);
