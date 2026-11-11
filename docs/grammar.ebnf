@@ -490,7 +490,8 @@ tilde_builtin_kind = "array" | "vector" | "tuple"
    empty collection shape suffixes stay rejected.
    Value-position ~tuple(v1,v2,...) constructs a tuple value and must not
    be used as a return type. ~array(v1,v2,...) is explicitly an array,
-   never contextually coerced to a Tuple return, unlike legacy [...] literals.
+   never contextually coerced to a Tuple return; legacy arr[...] is equally
+   an explicit array while bare [...] retains contextual compatibility.
    Other ~kind(...) value constructors remain independently gated. *)
 type_arg_or_named = type_ref | named_type_param ;
 named_type_param = IDENT "=" meta_value ;
