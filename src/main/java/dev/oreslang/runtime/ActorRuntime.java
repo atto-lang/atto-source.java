@@ -3005,6 +3005,103 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * CONTROL-minted, physical-actor-only delivery capability. Once the owning
+     * ActorCell has been claimed, ordinary ActorRef.send/sendAsync and Mailman
+     * deliveries to the physical ref are denied permanently, including after
+     * route retirement. Only an exact coordinator PhysicalCompletion can
+     * authorize one physical transport attempt. Not a guest/source capability.
+     *
+     * This is NOT the stable logical ActorRef and never grants actor state or
+     * physical reclamation authority.
+     */
+    final class HotRoutePhysical<M> {
+        private final ActorRef<M> ref;
+        private ActorPhysicalHotRouteIngressFence.Permit permit;
+
+        private HotRoutePhysical(ActorRef<M> ref) {
+            this.ref = Objects.requireNonNull(ref, "physical ActorRef");
+        }
+
+        private void bind(ActorPhysicalHotRouteIngressFence.Permit minted) {
+            if (permit != null) throw new IllegalStateException("physical route already bound");
+            permit = Objects.requireNonNull(minted, "runtime-minted permit");
+        }
+
+        void sendTracked(
+                M message,
+                ActorRouteCoordinatorV1<HotRoutePhysical<M>>.PhysicalCompletion receipt) {
+            requireSupervisorContext("dispatch a managed physical actor route");
+            Objects.requireNonNull(receipt, "exact physical completion receipt")
+                    .claimPhysicalAdmission(this);
+            sendWithHotRoutePermit(ref, message, permit);
+        }
+
+        OresFuture<Void> processedDrain() {
+            return ref.drain();
+        }
+
+        boolean readyForPublication() {
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null || cell.ref != ref) return false;
+            synchronized (cell.lifecycleLock) {
+                return cell.ref == ref && cell.hotRouteIngress.claimed()
+                        && !permit.retired() && !cell.stopped.get()
+                        && !cell.finalized && !cell.forceKillFenced
+                        && ref.readyFuture.isDone()
+                        && !ref.readyFuture.isCompletedExceptionally();
+            }
+        }
+
+        boolean sameRuntime(HotRoutePhysical<?> other) {
+            return other != null
+                    && ActorRuntime.this == other.owningRuntime();
+        }
+
+        private ActorRuntime owningRuntime() { return ActorRuntime.this; }
+
+        void retireFromLogicalRoute() {
+            permit.retire(); // monotonic and non-blocking; no physical teardown
+        }
+
+        ActorRef<M> physicalRefForHostOnly() { return ref; }
+    }
+
+    /**
+     * One-way physical ingress claim. This method is package-private and
+     * requires host/CONTROL context. The minted endpoint cannot be recreated
+     * by a second coordinator or a stale actor. The caller MUST use it only
+     * after the physical actor is ready and MUST account for pre-claim mail
+     * through an independent physical processing/quiescence receipt.
+     */
+    <M> HotRoutePhysical<M> claimPhysicalForHotRoute(ActorRef<M> ref) {
+        requireSupervisorContext("claim physical actor for hot route");
+        requireCallerRuntimeAffinity("claim physical actor for hot route");
+        Objects.requireNonNull(ref, "physical ActorRef");
+        if (!ref.ownedBy(this)) {
+            throw new SecurityException("cannot claim another runtime's physical ActorRef");
+        }
+        if (ref.kind() != ActorKind.SHARED) {
+            throw new SecurityException("v1 physical hot routes require SHARED actors");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) {
+            throw terminated(ref);
+        }
+        // Allocate the endpoint BEFORE making the one-way claim, so an
+        // allocation failure does not strand a sealed ActorCell.
+        HotRoutePhysical<M> endpoint = new HotRoutePhysical<>(ref);
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized
+                    || cell.sealing || cell.forceKillFenced) throw terminated(ref);
+            if (!ref.readyFuture.isDone() || ref.readyFuture.isCompletedExceptionally()) {
+                throw new IllegalStateException("physical actor must be successfully ready before route claim");
+            }
+            endpoint.bind(cell.hotRouteIngress.claim());
+        }
+        return endpoint;
+    }
+
+    /**
      * Parent-bound structured child capability. It can send to the child, but
      * lifecycle authority is valid only in the spawning parent actor turn.
      */
@@ -6358,8 +6455,14 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendWithHotRoutePermit(ref, message, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendWithHotRoutePermit(
+            ActorRef<M> ref, M message,
+            ActorPhysicalHotRouteIngressFence.Permit routePermit) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -6371,8 +6474,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null || cell.ref != ref || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
+            cell.hotRouteIngress.require(routePermit);
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
@@ -6449,6 +6553,10 @@ public final class ActorRuntime implements AutoCloseable {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
                 synchronized (cell.lifecycleLock) {
+                    // Revalidate under the publication lock. A host may have
+                    // claimed the actor while message transport was freezing
+                    // its graph. Such a racing raw send must not publish.
+                    cell.hotRouteIngress.require(routePermit);
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
@@ -6524,7 +6632,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) return OresFuture.failed(terminated(ref));
+        if (cell == null || cell.ref != ref || cell.stopped.get())
+            return OresFuture.failed(terminated(ref));
+        // Fast-fail before expensive transport graph snapshot; async waiters
+        // which predated route claim are checked again at final publication.
+        synchronized (cell.lifecycleLock) {
+            cell.hotRouteIngress.require(null);
+        }
         if (currentActor.get() == cell) {
             return OresFuture.failed(new ActorSendWouldDeadlockException(ref.id()));
         }
@@ -6697,6 +6811,9 @@ public final class ActorRuntime implements AutoCloseable {
                         sharedMutexReservations = reserveSharedMutexBindings(prepared);
                     }
                     synchronized (cell.lifecycleLock) {
+                        // Async producers may have waited before the physical
+                        // actor was enrolled; never bypass the new route.
+                        cell.hotRouteIngress.require(null);
                         if (cell.stopped.get() || cell.finalized) throw terminated(ref);
                         if (cell.sealing) throw new ActorSealedException(ref.id());
                         if (cell.forceKillFenced) {
@@ -8383,6 +8500,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** One-way physical DATA seal; normal ActorRefs remain unaffected. */
+        private final ActorPhysicalHotRouteIngressFence hotRouteIngress =
+                new ActorPhysicalHotRouteIngressFence();
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
