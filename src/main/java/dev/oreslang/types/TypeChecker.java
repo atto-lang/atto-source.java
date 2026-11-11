@@ -3048,6 +3048,9 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.LambdaExpr immediatelyInvoked) {
+                rejectUnsafeImmediateLambdaSuspension(immediatelyInvoked);
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -7531,6 +7534,38 @@ public final class TypeChecker {
      * operations inside a callback typed as a synchronous Function.
      * Future expression variants fail closed until their effects are audited.
      */
+    /**
+     * A locally invoked block lambda does not automatically get a resumable
+     * SourceTask frame. Until direct-lambda continuation lowering is proven,
+     * reject suspension at this callsite rather than run a blocking host frame.
+     * Conservative for complex blocks: unknown control-flow forms fail closed.
+     */
+    private static void rejectUnsafeImmediateLambdaSuspension(Ast.LambdaExpr lambda) {
+        if (lambda.expressionBody() != null) {
+            if (hasSuspendingSumCallbackSyntax(lambda.expressionBody())) {
+                throw new IllegalArgumentException(
+                        "immediately invoked lambda cannot suspend without resumable lowering");
+            }
+            return;
+        }
+        for (Ast.Stmt stmt : lambda.blockBody()) {
+            Ast.Expr expression;
+            if (stmt instanceof Ast.ReturnStmt returned) expression = returned.value();
+            else if (stmt instanceof Ast.ExprStmt evaluated) expression = evaluated.expression();
+            else if (stmt instanceof Ast.BindingStmt binding) expression = binding.initializer();
+            else if (stmt instanceof Ast.DeferStmt defer) expression = defer.expression();
+            else {
+                throw new IllegalArgumentException(
+                        "immediately invoked lambda block requires checked resumable control flow: "
+                                + stmt.getClass().getSimpleName());
+            }
+            if (expression != null && hasSuspendingSumCallbackSyntax(expression)) {
+                throw new IllegalArgumentException(
+                        "immediately invoked lambda cannot suspend without resumable lowering");
+            }
+        }
+    }
+
     private static boolean hasSuspendingSumCallbackSyntax(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr) return true;
