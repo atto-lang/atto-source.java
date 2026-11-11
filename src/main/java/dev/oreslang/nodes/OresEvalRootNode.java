@@ -9216,9 +9216,12 @@ public final class OresEvalRootNode extends RootNode {
             String actorTypeName,
             OresObject object)
             implements ActorRuntime.ActorOwnedGuestState {
-        @Override public void retireFromRuntime() {
+        @Override public void retireFromRuntime(
+                ActorRuntime.StateRetirementPermit permit) {
             if (object.actorState != null) {
-                object.actorState.retireFromRuntime(ownerActorId);
+                // The runtime proves quiescence and owner identity before
+                // issuing this one-callback permit. No public state wipe API.
+                permit.retire(object.actorState);
             }
         }
         private SourceActorState {
@@ -9675,7 +9678,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (value instanceof OresObject object) {
             for (Object field : object.fields.values()) {
-                if (field != UNINITIALIZED_FIELD
+                if (field != Evaluator.UNINITIALIZED_FIELD
                         && containsMlScalarCapabilityValue(field, seen)) {
                     return true;
                 }
