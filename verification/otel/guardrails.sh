@@ -26,7 +26,7 @@ otel_guardrails_run_guest() {
   (
     # Bash file-size units on Linux are 1024-byte blocks.
     ulimit -f 1024 || exit 1
-    timeout --signal=TERM --kill-after=5s 30s -- "$@"
+    timeout --signal=TERM --kill-after=5s 30s "$@"
   ) > "$output/guest.stdout.jsonl" 2> "$output/guest.stderr.txt" || status=$?
   [[ $status -eq 0 ]] || return "$status"
   [[ -f "$output/guest.stdout.jsonl" && -f "$output/guest.stderr.txt" ]] || return 1
