@@ -154,5 +154,25 @@ final class DataOrientedBorrowCheckerTest {
                         SOA, "world", null, null, null, null, 7));
     }
 
+    @Test
+    void oversizedValidReadWorksetFailsAdmissionBeforeQuadraticPairScan() {
+        var region = place(AOS, "moving", "Position", "x", null);
+        var read = loan(region, READ);
+        var excessive = java.util.Collections.nCopies(
+                DataOrientedBorrowChecker.MAX_LOANS_PER_WORKSET + 1, read);
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(excessive, List.of()));
+        assertTrue(error.getMessage().contains("admission budget"));
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(List.of(), excessive));
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.requireInternallyValid(excessive));
+
+        var bounded = java.util.Collections.nCopies(
+                DataOrientedBorrowChecker.MAX_LOANS_PER_WORKSET, read);
+        assertTrue(DataOrientedBorrowChecker.canRunConcurrently(
+                bounded, List.of()));
+    }
+
 }
 
