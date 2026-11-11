@@ -52,6 +52,8 @@ public final class TypeChecker {
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
+    /** Exact return spelling scoped to the checked source callable. */
+    private Ast.TypeRef strictCallableReturnSource;
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -934,10 +936,13 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
+        Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
+        strictCallableReturnSource = strictAttoEquality && !fn.generator() ? fn.returnType() : null;
         currentMaySuspend = fn.async() || fn.suspends();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            strictCallableReturnSource = previousStrictReturnSource;
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
@@ -1752,10 +1757,13 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
+            strictCallableReturnSource = strictAttoEquality ? method.returnType() : null;
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
+                strictCallableReturnSource = previousStrictReturnSource;
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
@@ -2035,6 +2043,8 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
+        strictCallableReturnSource = null; // isolated task/lambda/select arm has its own return contract
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
@@ -2046,6 +2056,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            strictCallableReturnSource = previousStrictReturnSource;
         }
     }
 
@@ -2265,6 +2276,10 @@ public final class TypeChecker {
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
+            if (strictAttoEquality && ret.value() != null && strictCallableReturnSource != null) {
+                requireStrictNumericSourceAssignment(
+                        strictCallableReturnSource, ret.value(), env, "return value");
+            }
             return;
         }
         if (stmt instanceof Ast.YieldStmt yielded) {
@@ -5719,6 +5734,9 @@ public final class TypeChecker {
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            if (strictAttoEquality && !param.type().name().equals("$infer$")) {
+                lambdaEnv.defineStrictSourceType(param.name(), param.type());
+            }
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Type declaredLambdaResult = lambda.declaredReturnType() == null
@@ -8377,13 +8395,13 @@ public final class TypeChecker {
         if (value instanceof Ast.LiteralExpr literal
                 && literal.value() instanceof Double number
                 && Set.of("f32", "f64", "float").contains(expected)) {
-            if (!expected.equals("f32")
-                    || (Double.isFinite(number)
-                        && Double.doubleToLongBits((double) number.floatValue())
-                                == Double.doubleToLongBits(number))) return;
+            // Unsuffixed floating literals are contextually rounded by IEEE-754
+            // round-to-nearest ties-to-even; ordinary 0.1 -> f32 is valid.
+            if (Double.isFinite(number)
+                    && (!expected.equals("f32") || Float.isFinite(number.floatValue()))) return;
             throw new IllegalArgumentException(
                     "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE: "
-                    + number + " cannot be represented exactly as f32 in " + where);
+                    + number + " overflows " + expected + " in " + where);
         }
         String actual = strictNumericSource(value, env);
         if (actual == null) {
