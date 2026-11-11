@@ -362,6 +362,10 @@ public final class ActorStateSupervisorLoans {
         synchronized (gate) {
             revoked = true;
             issued.clear();
+            // Stop queued promotions without publishing their Futures while
+            // the actor lifecycle monitor is held. close() below performs
+            // terminal host notifications after that monitor is released.
+            arbiter.sealAdmissionsWithoutCallbacks();
         }
     }
 
