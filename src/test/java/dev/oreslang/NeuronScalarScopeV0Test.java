@@ -112,7 +112,7 @@ final class NeuronScalarScopeV0Test {
         // AttoLang method bodies do not implicitly return the last
         // expression. A protected state scope must exit through a known,
         // explicit return so a future MIR emitter can attach cleanup.
-        rejected(SOURCE.replace("                return;\n", ""));
+        rejected(SOURCE.replaceFirst("return;", ""));
     }
 
     @Test void rejectsIncompleteCriticalScopePairs() {
