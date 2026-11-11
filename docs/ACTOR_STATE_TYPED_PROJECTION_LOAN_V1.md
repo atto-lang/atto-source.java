@@ -66,6 +66,20 @@ supervisor CONTROL + 12 actor-state compiler/guest + 7 return-fence +
 executed steps, exact SHA/tree and five nonempty Surefire class
 receipts with zero failures/errors/skips are mandatory.
 
+Two **authored, not yet executed** exact-source negative mutations
+run after the positive 87-test pass in an authorized temporary
+checkout. The inherited return-borrow mutation must cause the
+direct-field escape regression to fail for the intended assertion.
+The new `scripts/ci/actor_state_projection_negative_mutation.py`
+deletes the actor-owned constant-index restriction, reruns the
+mutable-index JUnit method, and requires a targeted failing assertion
+(one testcase, zero errors/skips) rather than a generic compiler
+failure. Each driver restores pristine source and the original
+passing Surefire XML in `finally`, and emits separate negative XML
+and JSON receipts; the CI workflow fails if the guard cannot be
+found exactly once or the mutation survives. Neither mutation is
+production code and neither sends source to another organization.
+
 ## Security and proof holds
 
 The source-org CI runner still fails at admission (`steps=null`);
