@@ -18,7 +18,9 @@ ORIGINAL_XML = Path(
     "target/surefire-reports/TEST-dev.oreslang.ActorStateBorrowReturnFenceTest.xml"
 )
 MUTATION_DIR = Path("target/actor-state-negative-mutation")
-TARGET_TEST = "directlyReturnedActorFieldBorrowCannotEscape"
+# Projected returns now fail earlier at the field-loan admission gate;
+# mutate the independent return fence through a whole-self borrowed return.
+TARGET_TEST = "wholeActorSelfCannotEscapeViaBorrowedReturn"
 GUARD = '''        if (source != null && isActorConfinedBorrow(source)) {
             throw error("actor-owned state borrow cannot escape its mailbox turn "
                     + "as a returned field or projected alias");
