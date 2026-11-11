@@ -295,6 +295,19 @@ final class PackageNamespaceBuildTest {
     }
 
     @Test
+    void unpinnedBareSourceImportCannotBorrowAmbientDependencyAuthority() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        write(root, "src/shop/extra.atto", """
+                namespace shop;
+                import fnc outside from "vendor/foreign";
+                pub fnc local(): int { return 1; }
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                compiler::build);
+        assertTrue(error.getMessage().contains("untracked package source import"));
+    }
+
+    @Test
     void sourceRootsWithDuplicateOverlappingFilesAreRejected() throws IOException {
         PackageNamespaceBuild compiler = compiler();
         write(root, ".atto.pkg.toml", """
