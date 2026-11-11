@@ -1,0 +1,13 @@
+// Negative: reusing executable code is not authority to send a closure
+// or executable callable reference through actor mail. Closures may capture
+// actor-owned state; the compiler must reject all callable payload types.
+define actor Sink as
+  receive(ActorMail<Fnc<void>> mail): void {
+    self.end();
+    return;
+  }
+end
+
+pub fnc main(): void {
+  return;
+}
