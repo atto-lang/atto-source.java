@@ -43,7 +43,7 @@ final class CheckedDispatchPlanIntegrationV1Test {
                 "guest evaluators must not mutate the checked plan image");
 
         Ast.CallExpr baseCall = returnCall(function(checked, "invoke_base"));
-        CheckedDispatchPlansV1.Plan slot = CheckedDispatchPlansV1.lookup(baseCall);
+        CheckedDispatchPlansV1.Plan slot = snapshot.get(baseCall);
         assertNotNull(slot, "base-typed call must have a checked slot plan");
         assertSame(slot, snapshot.get(baseCall),
                 "published program metadata must preserve exact AST call identity");
@@ -59,7 +59,7 @@ final class CheckedDispatchPlanIntegrationV1Test {
         for (int i = 2; i < 4; i++) {
             Ast.CallExpr write = (Ast.CallExpr) ((Ast.ExprStmt) statements.get(i)).expression();
             Ast.CallExpr staticCall = (Ast.CallExpr) write.arguments().getFirst();
-            CheckedDispatchPlansV1.Plan direct = CheckedDispatchPlansV1.lookup(staticCall);
+            CheckedDispatchPlansV1.Plan direct = snapshot.get(staticCall);
             assertNotNull(direct, "static qualified method must be planned");
             assertEquals(AotDispatchPlannerV1.CallKind.STATIC_METHOD, direct.kind());
             assertEquals(AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL, direct.strategy());
@@ -69,7 +69,7 @@ final class CheckedDispatchPlanIntegrationV1Test {
 
         Ast.CallExpr firstWrite = (Ast.CallExpr) ((Ast.ExprStmt) statements.getFirst()).expression();
         Ast.CallExpr firstInvoke = (Ast.CallExpr) firstWrite.arguments().getFirst();
-        CheckedDispatchPlansV1.Plan functionPlan = CheckedDispatchPlansV1.lookup(firstInvoke);
+        CheckedDispatchPlansV1.Plan functionPlan = snapshot.get(firstInvoke);
         assertNotNull(functionPlan, "direct user function call must be planned");
         assertEquals(AotDispatchPlannerV1.CallKind.FREE_FUNCTION, functionPlan.kind());
         assertEquals(AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL, functionPlan.strategy());
@@ -82,34 +82,63 @@ final class CheckedDispatchPlanIntegrationV1Test {
                 firstInvoke.arguments(),
                 firstInvoke.origin());
         assertEquals(firstInvoke, equalButDifferent);
-        assertNull(CheckedDispatchPlansV1.lookup(equalButDifferent),
+        assertNull(snapshot.get(equalButDifferent),
                 "structurally equal but different AST nodes must not inherit compiler proofs");
     }
 
     @Test
-    void checkedPlansRejectWrongSourceArityOrKind() {
+    void publicationRejectsWrongCallShapeAndDifferentTargetIdentity() {
+        Ast.Program typed = OresCompiler.parseAndTypeCheck(
+                "fnc target(int x): int { return x; }");
+        Ast.FunctionDecl target = function(typed, "target");
         Ast.CallExpr call = new Ast.CallExpr(
                 new Ast.NameExpr("target"), List.of(new Ast.LiteralExpr(1)));
-        Ast.FunctionDecl target = function(OresCompiler.parseAndTypeCheck(
-                "fnc target(int x): int { return x; }"), "target");
-
-        CheckedDispatchPlansV1.Plan invalidArity = new CheckedDispatchPlansV1.Plan(
+        CheckedDispatchPlansV1.Plan valid = new CheckedDispatchPlansV1.Plan(
                 AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
                 AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL,
                 "target", 1, target, null, null);
-        assertDoesNotThrow(() -> CheckedDispatchPlansV1.record(call, invalidArity));
 
-        assertThrows(IllegalArgumentException.class, () -> new CheckedDispatchPlansV1.Plan(
-                AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
-                AotDispatchPlannerV1.Strategy.METHOD_SLOT,
-                "target", 1, target, null, null));
-        assertThrows(IllegalArgumentException.class, () -> CheckedDispatchPlansV1.record(
-                new Ast.CallExpr(new Ast.NameExpr("target"), List.of()),
-                invalidArity));
-        Ast.CallExpr spread = new Ast.CallExpr(
-                new Ast.NameExpr("target"),
+        // Publication is only metadata; it must not authorize execution of
+        // this deliberately unchecked, standalone Program.
+        Ast.Program unchecked = new Ast.Program(List.of());
+        assertDoesNotThrow(() -> CheckedDispatchPlansV1.publish(
+                unchecked, java.util.Map.of(call, valid)));
+        assertSame(valid, CheckedDispatchPlansV1.forProgram(unchecked).get(call));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new CheckedDispatchPlansV1.Plan(
+                        AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                        AotDispatchPlannerV1.Strategy.METHOD_SLOT,
+                        "target", 1, target, null, null));
+        assertThrows(IllegalArgumentException.class, () ->
+                CheckedDispatchPlansV1.publish(
+                        new Ast.Program(List.of()),
+                        java.util.Map.of(new Ast.CallExpr(
+                                new Ast.NameExpr("target"), List.of()), valid)));
+
+        Ast.CallExpr spread = new Ast.CallExpr(new Ast.NameExpr("target"),
                 List.of(new Ast.SpreadExpr(new Ast.NameExpr("args"))));
-        assertThrows(IllegalArgumentException.class,
-                () -> CheckedDispatchPlansV1.record(spread, invalidArity));
+        assertThrows(IllegalArgumentException.class, () ->
+                CheckedDispatchPlansV1.publish(
+                        new Ast.Program(List.of()), java.util.Map.of(spread, valid)));
+
+        Ast.CallExpr wrongName = new Ast.CallExpr(new Ast.NameExpr("other"),
+                List.of(new Ast.LiteralExpr(1)));
+        assertThrows(IllegalArgumentException.class, () ->
+                CheckedDispatchPlansV1.publish(
+                        new Ast.Program(List.of()), java.util.Map.of(wrongName, valid)));
+
+        Ast.FunctionDecl equallyShapedButDifferentTarget = function(
+                OresCompiler.parseAndTypeCheck(
+                        "fnc target(int x): int { return x; }"), "target");
+        assertNotSame(target, equallyShapedButDifferentTarget);
+        CheckedDispatchPlansV1.Plan conflicting = new CheckedDispatchPlansV1.Plan(
+                AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL,
+                "target", 1, equallyShapedButDifferentTarget, null, null);
+        assertThrows(IllegalStateException.class, () ->
+                CheckedDispatchPlansV1.publish(
+                        unchecked, java.util.Map.of(call, conflicting)),
+                "rechecking the same Program must not silently replace its resolved targets");
     }
 }
