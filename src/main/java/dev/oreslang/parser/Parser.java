@@ -491,6 +491,11 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // Allow 'pub mtd (Actor self) method(...)' without a redundant
+        // 'define'. Bare 'mtd' stays contextual, not a new global keyword.
+        if (modifiers.visibilitySeen && isExternalActorMethodHead()) {
+            return parseExternalActorMethod(annotations, modifiers);
+        }
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
@@ -1129,6 +1134,21 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // A nominal, semicolon-terminated actor may name contract obligations
+        // without defining an implicit runtime actor, empty class or alias.
+        // Actual actor-contract conformance remains a separate checked gate.
+        if (check(SEMICOLON)) {
+            if (!generics.isEmpty() || !parents.isEmpty()
+                    || actorKind != Ast.ActorKind.SHARED
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(peek(), "semicolon actor declarations require a plain "
+                        + "non-generic actor without transport or inheritance modifiers");
+            }
+            advance();
+            return new Ast.StandaloneActorDecl(
+                    name, null, visibility, actorKind, interfaces);
+        }
 
         // Standalone actor declaration: retain the receiver-binding name in
         // its own AST node. Never synthesize an empty class, dispatch table,
