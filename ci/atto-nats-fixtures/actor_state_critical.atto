@@ -1,0 +1,44 @@
+// REQUIRED positive Atto actor-state acceptance. Do not replace state {}
+// with private counters, a Rust model, or a Java-only host substrate.
+// The receipt is printed INSIDE the real actor turn, after a state write and
+// an independent state read. The caller joins actor termination before exit.
+// Compiler/runtime acceptance must execute this exact guest source.
+define actor AcceptanceCounter as
+  state {
+    let int count = 0;
+  }
+
+  critical increment(): void {
+    self.handle_state(|mut s| -> {
+      s.count = s.count + 1;
+    });
+    return;
+  }
+
+  critical has_one(): bool {
+    let bool matches = false;
+    self.handle_state(|s| -> {
+      matches = s.count == 1;
+    });
+    return matches;
+  }
+
+  receive(ActorMail<int> mail): void {
+    if mail.value == 1 then
+      self.increment();
+      if self.has_one() then
+        stdio.println("ATTO_GUEST_EXECUTED:state-critical");
+      fi
+    fi
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn AcceptanceCounter();
+  await worker.get_ready();
+  worker.send(1);
+  await worker.get_done();
+  return;
+}

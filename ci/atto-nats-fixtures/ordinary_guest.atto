@@ -1,0 +1,6 @@
+// POSITIVE EXECUTABLE Atto guest proof. This is intentionally tiny and
+// does not demonstrate actor state, network I/O or NATS compatibility.
+pub routine main(): void {
+  stdio.println("ATTO_GUEST_EXECUTED:ordinary-main");
+  return;
+}

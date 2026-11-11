@@ -1,0 +1,48 @@
+name: AttoNATS P0 — real Java compiler and actor guest
+on:
+  push:
+    branches:
+      - ci/atto-nats-real-guest-admission-20261111
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-compiler-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify unchanged exact compiler parent and application fixture blobs
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^)" = "4d171986559b3494025a4bbd0a5920ab704389e3"
+          test "$(git rev-parse HEAD:ci/atto-nats-fixtures/ordinary_guest.atto)" = "d293729f0b4556d045fc9c19bec5f546d8d25a8a"
+          test "$(git rev-parse HEAD:ci/atto-nats-fixtures/actor_state_critical.atto)" = "8e5a32bf954c7dec775722a94e1c090af1cb876f"
+          echo "COMPILER_SOURCE_HEAD=4d171986559b3494025a4bbd0a5920ab704389e3"
+          echo "ATTO_NATS_APP_SOURCE_HEAD=49d5e85e7070c8591c4d9d693b0e8579c8a7fc4d"
+          echo "ATTO_NATS_ORDINARY_SOURCE_BLOB=d293729f0b4556d045fc9c19bec5f546d8d25a8a"
+          echo "ATTO_NATS_STATE_SOURCE_BLOB=8e5a32bf954c7dec775722a94e1c090af1cb876f"
+          echo "COMPILER_PARENT_SOURCE_CHANGED=false"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute real compiler and ordinary guest (not parser-only)
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoNatsCompilerCarrierTest#ordinaryGuestExecutes -Dsurefire.failIfNoSpecifiedTests=true test
+          echo "ATTO_COMPILER_BASELINE_GUEST_EXECUTED=true"
+      - name: Execute required actor state/critical mailbox turn and join
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoNatsCompilerCarrierTest#stateCriticalActorTurnExecutesAndJoins -Dsurefire.failIfNoSpecifiedTests=true test
+          echo "ATTO_STATE_CRITICAL_GUEST_EXECUTED=true"
