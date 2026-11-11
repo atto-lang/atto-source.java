@@ -63,8 +63,14 @@ public final class NeuronScalarScopeV0 {
             if (method.name().equals("on_start")) {
                 if (initializer != null) throw unsupported("duplicate on_start");
                 initializer = method;
+            } else if (method.name().equals("forward")) {
+                if (forward != null) throw unsupported("duplicate forward");
+                forward = method;
+            } else if (containsDirectStateScope(method)) {
+                // No protected scope may be hidden inside receive(), an
+                // arbitrary helper or a supervisor-invoked method in v0.
+                throw unsupported("critical state scope in unsupported method: " + method.name());
             }
-            if (method.name().equals("forward")) forward = method;
         }
 
         boolean hasOnStartScope = initializer != null && containsDirectStateScope(initializer);
