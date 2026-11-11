@@ -67,6 +67,41 @@ the proxy.
 - Nothing in this change proves zero tracing GC, hard real time, native image
   execution, or multi-backend parity.
 
+## Security hardening on the draft branch
+
+The generator now verifies synthetic name uniqueness across compilation-unit
+declarations and explicit import names/aliases; wildcard imports reject until
+the qualified symbol table can prove resolution. An imported `Proxy` name
+cannot silently bind to the compiler intrinsic.
+
+Each public synchronous instance method must have a distinct name/explicit-arity
+slot. Identical slot identities reject even if parameter types differ.
+Method annotations are rejected rather than silently dropped: preserved
+`@DefaultArgVals`, capability, visibility and other metadata need their
+own compiler proof before forwarding is legal.
+
+Borrowed (including mutable or nested-generic borrowed), inferred, and
+function-valued parameter/return signatures are rejected until reborrowing,
+ownership and closure transport can be validated for generated calls. Static
+methods remain excluded, and internal target `self` calls are not intercepted.
+Wrapping does not confer a new authority or make the generated nominal type a
+subclass of the target. Compilers must use the ordinary statically checked
+forwarder call: no speculative direct implementation binding that would bypass
+future approved virtual dispatch rules.
+
+Regression coverage: the Java test class checks same-arity ambiguity, import
+and cross-module collision, annotations, nested borrowed values and function
+parameters. The common-source contract adds negative `.atto` fixtures for
+annotation loss and duplicate slots.
+
+**Execution status:** Exact PR-head GitHub Actions job
+[AOT class proxy exact-head guest gate](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/workflows/aot-class-proxy-exact-head.yml)
+ran into runner admission failure (`steps=null`) at
+`cdf765fca6ecd0057ecae9e12298623ee591e374`. No compiled guest
+test or standalone Native Image success is claimed. Revalidate the subsequent
+branch commits too. Do not mirror private compiler source to another
+organization without explicit approved carrier terms.
+
 ## Required evidence and follow-up
 
 1. Java: execute `AotClassProxyLanguageTest` in hosted CI at the exact PR
