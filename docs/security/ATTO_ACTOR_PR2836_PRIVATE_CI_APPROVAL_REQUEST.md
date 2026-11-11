@@ -20,10 +20,10 @@ It is deliberately a **draft**, not yet authorized for the v3 publisher.
 | Reviewed-candidate carrier PR | [#38](https://github.com/opto-sync-test/go-java-validation/pull/38) (draft) |
 | Candidate carrier base `main` | `db642bca2ed19ffa4262e85f95d8f296020b978c` (NOT a final reviewed merge SHA) |
 | Carrier workflow | `.github/workflows/oreslang-exact-tree-carrier.yml` |
-| Candidate workflow blob | `36e521337f0f5fe63ebcbf4faff3fe7a4a69352d` |
+| Candidate workflow blob | `530d841c494cb3594ddd2b96d8ce3a5627d63214` |
 | Candidate carrier CODEOWNERS blob | `0110a557c162204a399ebf1e628e50c9ed991439` |
-| Current carrier PR #38 head (not reviewed/merged) | `f07cbaaf4d6a2c7e8bbf7c3d1ec4ba76af917033` |
-| Current carrier PR #38 tree (not reviewed/merged) | `0a32bc12768b39e968581b283c8a8ff851c1ee9e` |
+| Current carrier PR #38 head (not reviewed/merged) | `934323c03e868fad081b41539de730499822142c` |
+| Current carrier PR #38 tree (not reviewed/merged) | `c62370eda32123bd45c1d576a4eabaf9ca5be590` |
 | Candidate trusted plan | `ci/test-plans/java-pr2836-actor-stack.json` |
 | Candidate plan blob | `7d6ca670536725e2f77717c63ea24227d51d29ac` |
 | Pinned source POM blob | `2e566927d4b8e07884ce53b0c463d440201fe54c` |
@@ -54,7 +54,7 @@ It is deliberately a **draft**, not yet authorized for the v3 publisher.
      `repository_id=1323598177`,
      `base_sha=<final independently reviewed carrier main SHA>`,
      `workflow_path=.github/workflows/oreslang-exact-tree-carrier.yml`,
-     `workflow_blob_sha=36e521337f0f5fe63ebcbf4faff3fe7a4a69352d`,
+     `workflow_blob_sha=530d841c494cb3594ddd2b96d8ce3a5627d63214`,
      `review_pr=38`, and only
      `test_plans["ci/test-plans/java-pr2836-actor-stack.json"]` with
      `blob_sha=7d6ca670536725e2f77717c63ea24227d51d29ac`
@@ -104,6 +104,14 @@ source export scope. No source mirror may occur before those changes.
 
 ## Source-free carrier regression checkpoint — 2026-11-11
 
-[Carrier run #42957248844](https://github.com/opto-sync-test/go-java-validation/actions/runs/42957248844) succeeded at draft PR #38 head `f07cbaaf4d6a2c7e8bbf7c3d1ec4ba76af917033`: **36 source-free tests passed** (6 exact-tree verifier tests, 6 trusted-plan runner tests, 11 report-verifier tests and 13 PR2836 plan-integrity tests), with nine recorded `verifier-tests` steps. The `verify-carrier` source-bearing job was skipped. The workflow checked exact CODEOWNERS bytes; no private source was copied.
+[Carrier run #42957248844](https://github.com/opto-sync-test/go-java-validation/actions/runs/42957248844) succeeded at draft PR #38 head `934323c03e868fad081b41539de730499822142c`: **36 source-free tests passed** (6 exact-tree verifier tests, 6 trusted-plan runner tests, 11 report-verifier tests and 13 PR2836 plan-integrity tests), with nine recorded `verifier-tests` steps. The `verify-carrier` source-bearing job was skipped. The workflow checked exact CODEOWNERS bytes; no private source was copied.
 
 This is an auditable **candidate**, not approved carrier main. Exact SHA/tree, carrier workflow blob, plan blob, and CODEOWNERS blob must be re-fetched after independent security review and merge. Source `main` protection and authorized private-source execution remain blocked. Any plan/code change invalidates older review/receipt expectations.
+
+## Synthetic offline Maven proof — 2026-11-11
+
+[Carrier PR #38 run #42958149378](https://github.com/opto-sync-test/go-java-validation/actions/runs/42958149378): **SUCCESS**. The `verifier-tests` job ran 36 source-free tests (6 provenance + 6 trusted-plan + 11 Surefire XML + 13 immutable plan scope). The additional `source-free-maven-offline` job installed pinned Java 25, resolved dependencies for a **carrier-owned synthetic Maven/JUnit project only**, ran a network-enabled synthetic test to populate dynamically loaded Surefire provider dependencies, deleted the synthetic `target` output, then recompiled and executed one actual JUnit test with Maven `-o -C` and nonempty successful Surefire evidence. Job `verify-carrier` was skipped; **no private source transferred**.
+
+**Scope of evidence:** Maven `dependency:go-offline` alone was insufficient: the first attempt missed `surefire-junit-platform:3.5.2`, and an explicit provider download missed `junit-platform-commons:1.9.3`. The final source-free proof warms the synthetic provider cache before offline rerun, but does **not** prove that all required AttoLang POM dependencies are cached, that process network egress is disabled, or that untrusted source may run safely. A separate reviewed, carrier-owned prefetch manifest and isolation gate are still needed before private compiler execution.
+
+Current **candidate** carrier PR head `934323c03e868fad081b41539de730499822142c`; candidate root tree `c62370eda32123bd45c1d576a4eabaf9ca5be590`; workflow blob `530d841c494cb3594ddd2b96d8ce3a5627d63214`; test-plan blob remains `7d6ca670536725e2f77717c63ea24227d51d29ac`. These identifiers require independent security review/merge attestation and must not be treated as a protected carrier base.
