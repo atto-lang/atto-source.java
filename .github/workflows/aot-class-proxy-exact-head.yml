@@ -48,7 +48,7 @@ jobs:
           test -s target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
           REPORT=target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
           TEST_COUNT="$(grep -m1 -Eo 'tests="[0-9]+"' "$REPORT" | sed -E 's/tests="([0-9]+)"/\1/')"
-          test "${TEST_COUNT:-0}" -ge 12
+          test "${TEST_COUNT:-0}" -ge 13
           ! grep -Eq '<(failure|error|skipped)( |>)' "$REPORT"
           printf 'ATTO_PROXY_TEST_COUNT=%s\n' "$TEST_COUNT"
           printf 'ATTO_PROXY_GUEST_RECEIPT=present\n'
