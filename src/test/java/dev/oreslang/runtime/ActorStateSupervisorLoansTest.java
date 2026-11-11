@@ -666,8 +666,11 @@ final class ActorStateSupervisorLoansTest {
                 fixture.allowOwnerUpdate.countDown();
             }
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
-            assertInstanceOf(IllegalStateException.class, fixture.denied.get(),
+            var revoked = assertInstanceOf(
+                    IllegalStateException.class, fixture.denied.get(),
                     "the actor write must fail its post-STOP state admission");
+            assertTrue(revoked.getMessage().contains("revoked"),
+                    "a timeout or interruption is not proof of STOP write fencing");
             assertTrue(region.physicallyRetired());
         }
     }
