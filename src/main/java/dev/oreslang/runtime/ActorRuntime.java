@@ -398,6 +398,48 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    // Staged v2 CONTROL data contract. No supervisor routing is enabled by this DTO alone.
+    /** Stable cause class for cross-actor CONTROL without exporting Throwable graphs. */
+    public enum ActorFailureKind {
+        FAILURE,
+        CANCELLED,
+        QUOTA_EXCEEDED,
+        HOST_FATAL
+    }
+
+    /**
+     * Immutable terminal child metadata delivered on the supervisor CONTROL
+     * plane. It intentionally contains no Throwable, stack, message string or
+     * actor-owned object.
+     */
+    public record ActorFailureNotice(
+            ActorId actor,
+            long generation,
+            Optional<ActorId> parent,
+            ActorKind actorKind,
+            ActorFailureKind failureKind,
+            long sequence,
+            String diagnosticType) {
+        public ActorFailureNotice {
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(parent, "parent");
+            Objects.requireNonNull(actorKind, "actorKind");
+            Objects.requireNonNull(failureKind, "failureKind");
+            Objects.requireNonNull(diagnosticType, "diagnosticType");
+            if (generation <= 0) {
+                throw new IllegalArgumentException("CONTROL generation must be positive");
+            }
+            if (sequence <= 0) {
+                throw new IllegalArgumentException("CONTROL sequence must be positive");
+            }
+            if (diagnosticType.isEmpty() || diagnosticType.length() > 128
+                    || diagnosticType.chars().anyMatch(ch -> ch < 0x20 || ch > 0x7e)) {
+                throw new IllegalArgumentException(
+                        "CONTROL diagnostic type must be printable ASCII and at most 128 bytes");
+            }
+        }
+    }
+
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
     private static final String CARRIER_BACKEND_PROPERTY = "ores.runtime.carriers";
