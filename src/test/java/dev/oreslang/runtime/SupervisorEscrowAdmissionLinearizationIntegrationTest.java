@@ -130,6 +130,90 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
         }
     }
 
+    private static final AtomicReference<ActorRuntime.ActorRef<String>> SPAWNED_CHILD =
+            new AtomicReference<>();
+
+    @Test
+    void nestedSpawnPublishesControlIdentityBeforeActorVisibilityAndRetiresOnCrash()
+            throws Exception {
+        var signal = new CountDownLatch(1);
+        SPAWN_DONE.set(signal);
+        SPAWN_DENIED.set(null);
+        SPAWNED_CHILD.set(null);
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ignored -> false);
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        if ("crash".equals(message)) {
+                            throw new IllegalStateException("supervisor failure");
+                        }
+                        if ("spawn".equals(message)) {
+                            try {
+                                ActorRuntime.ActorRef<String> child =
+                                        turn.runtime().spawnPrivate(
+                                                nested -> (item, context) -> { });
+                                SPAWNED_CHILD.set(child);
+                            } catch (RuntimeException | Error denied) {
+                                SPAWN_DENIED.set(denied);
+                            } finally {
+                                SPAWN_DONE.get().countDown();
+                            }
+                        }
+                    });
+            long supervisorId = recovery.attach(supervisor, null);
+            supervisor.send("spawn");
+            assertTrue(signal.await(5, TimeUnit.SECONDS), "nested spawn did not settle");
+            assertNull(SPAWN_DENIED.get(), "coordinator-backed nested spawn must succeed");
+            ActorRuntime.ActorRef<String> child = SPAWNED_CHILD.get();
+            assertNotNull(child, "spawn returned without child");
+            long childId = bridge.nodeId(child);
+            assertEquals(supervisorId, bridge.snapshot().get(childId).parentId(),
+                    "child must inherit exact CONTROL supervisor generation");
+            assertEquals(2, runtime.actorCount(), "one supervisor and one child");
+            child.send("ping");
+            supervisor.send("crash");
+            assertThrows(ExecutionException.class,
+                    () -> supervisor.done().get(5, TimeUnit.SECONDS));
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS),
+                    "CONTROL cancellation must retire the newly published child");
+            assertNull(bridge.beginDataAdmissionFromRuntime(childId, child.generation()),
+                    "fenced child must reject new DATA");
+            assertEquals(0, bridge.dataInFlightInSubtree(supervisorId));
+            assertNull(recovery.controlFault(), "CONTROL coordinator must not fault");
+        } finally {
+            SPAWNED_CHILD.set(null);
+            SPAWN_DONE.compareAndSet(signal, null);
+            SPAWN_DENIED.set(null);
+        }
+    }
+
+    @Test
+    void failedChildPublicationRollsBackEscrowNodeWithoutOrphanReservation() {
+        var ledger = new SupervisorFailureEscrowV1();
+        ledger.registerRoot(1L, 1L);
+        ledger.registerChild(2L, 1L, 2L);
+        var applied = new AtomicInteger();
+        assertThrows(IllegalStateException.class,
+                () -> ledger.registerChildAtomically(3L, 2L, 3L, () -> {
+                    applied.incrementAndGet();
+                    throw new IllegalStateException("injected publication failure");
+                }));
+        assertEquals(1, applied.get(), "publisher must have run once");
+        assertFalse(ledger.snapshot().containsKey(3L),
+                "failed child must not survive as a CONTROL reservation");
+        assertEquals(0, ledger.pendingCount(),
+                "registration rollback must not forge a failure notice");
+        ledger.fail(2L);
+        assertThrows(IllegalStateException.class,
+                () -> ledger.registerChildAtomically(4L, 2L, 4L,
+                        () -> applied.incrementAndGet()));
+        assertEquals(1, applied.get(), "fenced parent cannot run publisher");
+        assertFalse(ledger.snapshot().containsKey(4L));
+    }
+
     @Test
     void supervisedNestedSpawnFailsClosedUntilChildCanRegisterBeforePublication()
             throws Exception {
