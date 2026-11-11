@@ -135,6 +135,87 @@ final class WithExpressionGuestTest {
     }
 
     @Test
+    void immutableClassSelfCopyReconstructsNewObject() throws Exception {
+        assertEquals("101120", run("""
+                define class Point as
+                    pub final int x: 10;
+                    pub final int y: 20;
+
+                    pub incr_x(): Point {
+                        return rt copy self with {x => self.x + 1};
+                    }
+                end
+
+                pub routine main(): void {
+                    const Point point = new Point();
+                    const Point next = point.incr_x();
+                    stdio.stdout.write(point.x);
+                    stdio.stdout.write(next.x);
+                    stdio.stdout.write(next.y);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void explicitTakeOfImmutableClassInvalidatesOriginal() throws Exception {
+        assertEquals("4210", run("""
+                define class Pair as
+                    pub final int x: 10;
+                    pub final int y: 20;
+                end
+
+                pub routine main(): void {
+                    const Pair pair = new Pair();
+                    const Pair next = (rt take pair) with {x => 42};
+                    stdio.stdout.write(next.x);
+                    stdio.stdout.write(next.y);
+                    return;
+                }
+                """));
+        IllegalArgumentException failure = rejects("""
+                define class Pair as
+                    pub final int x: 10;
+                    pub final int y: 20;
+                end
+                pub routine main(): int {
+                    const Pair pair = new Pair();
+                    const Pair next = (rt take pair) with {x => 42};
+                    return pair.x;
+                }
+                """);
+        assertTrue(failure.getMessage().contains("moved"), failure::getMessage);
+    }
+
+    @Test
+    void nominalUpdatesRejectPlainOrMutableOrBorrowedClass() {
+        IllegalArgumentException plain = rejects("""
+                define class Pair as
+                    pub final int x: 10;
+                end
+                pub routine main(): void {
+                    const Pair p = new Pair();
+                    const Pair next = p with {x => 5};
+                    return;
+                }
+                """);
+        assertTrue(plain.getMessage().contains("rt copy or rt take"), plain::getMessage);
+
+        IllegalArgumentException mutable = rejects("""
+                define class Counter as
+                    pub let int x = 10;
+                end
+                pub routine main(): void {
+                    const Counter counter = new Counter();
+                    const Counter next = rt copy counter with {x => 12};
+                    return;
+                }
+                """);
+        assertTrue(mutable.getMessage().contains("compiler-certified immutable"),
+                mutable::getMessage);
+    }
+
+    @Test
     void rejectsMoveOnlyRecordContentWithoutCopyContract() {
         IllegalArgumentException failure = rejects("""
                 define class Box as
