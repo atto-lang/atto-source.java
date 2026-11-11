@@ -561,4 +561,37 @@ final class ValuePipeOperatorTest {
                 fnc broken(): int { return 2 |> |n| -> n + 1 |> 99; }
                 """));
     }
+
+    @Test
+    void inlinePipelineLambdaOwnershipRejectsRepeatedMovesAndBorrowEscape() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+                    fnc broken(): int {
+                      val Option<Box> owned = None;
+                      val int first = owned |> |box| -> 1;
+                      return owned |> |box| -> 2;
+                    }
+                    """)));
+        assertTrue(moved.getMessage().contains("moved value"), moved::toString);
+
+        IllegalArgumentException borrowed = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int {
+                      val int num = 3;
+                      return (rt borrow num) |> |n| -> 1;
+                    }
+                    """)));
+        assertTrue(borrowed.getMessage().contains("inline pipeline lambda cannot consume a borrow"),
+                borrowed::toString);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): &int {
+                      val int num = 3;
+                      return num |> |n| -> rt borrow n;
+                    }
+                    """)));
+    }
 }
