@@ -1091,18 +1091,17 @@ public final class OresEvalRootNode extends RootNode {
                 java.util.concurrent.atomic.AtomicBoolean retired =
                         new java.util.concurrent.atomic.AtomicBoolean();
                 for (TaskScope scope : snapshot) {
-                    final OresFuture<Void> drained;
                     try {
                         // Parent termination seals and revokes every still-live
                         // lexical scope. Its barrier settles only after every
                         // child has terminal authority and physical quiescence.
-                        drained = scope.cancelAndDrain();
+                        scope.cancelAndDrain();
                     } catch (RuntimeException | Error corruption) {
                         // Fail closed: a broken scope cannot manufacture a
                         // parent physical-retirement witness.
                         return;
                     }
-                    drained.whenCompleteRuntime((ignored, failure) -> {
+                    scope.afterPhysicalDrain(() -> {
                         synchronized (taskScopeLock) {
                             activeTaskScopes.remove(scope);
                         }

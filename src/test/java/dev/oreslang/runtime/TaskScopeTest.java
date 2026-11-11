@@ -14,6 +14,25 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class TaskScopeTest {
     @Test
+    void compilerRetirementNotificationRequiresPhysicalDrainEvenAfterFailure() {
+        TaskScope scope = new TaskScope();
+        TaskScope.Registration ticket = scope.reserve();
+        OresFuture<Integer> child = new OresFuture<>();
+        ticket.attach(child);
+        java.util.concurrent.atomic.AtomicInteger notifications =
+                new java.util.concurrent.atomic.AtomicInteger();
+        scope.afterPhysicalDrain(notifications::incrementAndGet);
+        scope.close();
+        child.failFromRuntime(new IllegalStateException("child failed"));
+        assertEquals(0, notifications.get(), "logical failure is not retirement");
+        ticket.quiesced();
+        assertEquals(1, notifications.get());
+        scope.afterPhysicalDrain(notifications::incrementAndGet);
+        assertEquals(2, notifications.get(), "late observer is notified exactly once");
+        assertThrows(NullPointerException.class, () -> scope.afterPhysicalDrain(null));
+    }
+
+    @Test
     void emptyScopeIsAlreadyQuiescentAndCannotReopen() {
         TaskScope scope = new TaskScope();
         OresFuture<Void> joined = scope.close();

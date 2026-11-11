@@ -1,0 +1,15 @@
+// Real suspension inside normal guest cleanup, followed by scope exit.
+// This proves ordering of these markers, not cancellation-safe resource reclamation.
+suspends fnc cleanup(): void {
+  stdio.println("cleanup-enter");
+  rt cooperate;
+  stdio.println("cleanup-exit");
+  return;
+}
+pub routine main(): void {
+  task scope {
+    let Task<int> child = task { defer cleanup(); return 1; };
+  }
+  stdio.println("scope-retired");
+  return;
+}
