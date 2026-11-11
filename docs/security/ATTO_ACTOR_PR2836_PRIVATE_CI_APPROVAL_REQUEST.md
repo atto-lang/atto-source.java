@@ -20,7 +20,10 @@ It is deliberately a **draft**, not yet authorized for the v3 publisher.
 | Reviewed-candidate carrier PR | [#38](https://github.com/opto-sync-test/go-java-validation/pull/38) (draft) |
 | Candidate carrier base `main` | `db642bca2ed19ffa4262e85f95d8f296020b978c` (NOT a final reviewed merge SHA) |
 | Carrier workflow | `.github/workflows/oreslang-exact-tree-carrier.yml` |
-| Candidate workflow blob | `8cf041f09d64c2ce6af8e2405a15d6493c382e06` |
+| Candidate workflow blob | `36e521337f0f5fe63ebcbf4faff3fe7a4a69352d` |
+| Candidate carrier CODEOWNERS blob | `0110a557c162204a399ebf1e628e50c9ed991439` |
+| Current carrier PR #38 head (not reviewed/merged) | `f07cbaaf4d6a2c7e8bbf7c3d1ec4ba76af917033` |
+| Current carrier PR #38 tree (not reviewed/merged) | `0a32bc12768b39e968581b283c8a8ff851c1ee9e` |
 | Candidate trusted plan | `ci/test-plans/java-pr2836-actor-stack.json` |
 | Candidate plan blob | `7d6ca670536725e2f77717c63ea24227d51d29ac` |
 | Pinned source POM blob | `2e566927d4b8e07884ce53b0c463d440201fe54c` |
@@ -51,7 +54,7 @@ It is deliberately a **draft**, not yet authorized for the v3 publisher.
      `repository_id=1323598177`,
      `base_sha=<final independently reviewed carrier main SHA>`,
      `workflow_path=.github/workflows/oreslang-exact-tree-carrier.yml`,
-     `workflow_blob_sha=8cf041f09d64c2ce6af8e2405a15d6493c382e06`,
+     `workflow_blob_sha=36e521337f0f5fe63ebcbf4faff3fe7a4a69352d`,
      `review_pr=38`, and only
      `test_plans["ci/test-plans/java-pr2836-actor-stack.json"]` with
      `blob_sha=7d6ca670536725e2f77717c63ea24227d51d29ac`
@@ -98,3 +101,9 @@ administrator must enable and verify actual source-main enforcement
 (with appropriate GitHub plan/organization changes if required). Independent
 security-owner review must then confirm the carrier trust boundary and
 source export scope. No source mirror may occur before those changes.
+
+## Source-free carrier regression checkpoint — 2026-11-11
+
+[Carrier run #42957248844](https://github.com/opto-sync-test/go-java-validation/actions/runs/42957248844) succeeded at draft PR #38 head `f07cbaaf4d6a2c7e8bbf7c3d1ec4ba76af917033`: **36 source-free tests passed** (6 exact-tree verifier tests, 6 trusted-plan runner tests, 11 report-verifier tests and 13 PR2836 plan-integrity tests), with nine recorded `verifier-tests` steps. The `verify-carrier` source-bearing job was skipped. The workflow checked exact CODEOWNERS bytes; no private source was copied.
+
+This is an auditable **candidate**, not approved carrier main. Exact SHA/tree, carrier workflow blob, plan blob, and CODEOWNERS blob must be re-fetched after independent security review and merge. Source `main` protection and authorized private-source execution remain blocked. Any plan/code change invalidates older review/receipt expectations.
