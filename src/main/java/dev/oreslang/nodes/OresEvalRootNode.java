@@ -4543,7 +4543,9 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    // Async guest List literals must remain mutable
+                                                    // like the synchronous eval(ListExpr) path.
+                                                    ? new ArrayList<>(values)
                                                     : null,
                                             failure));
                     return;
