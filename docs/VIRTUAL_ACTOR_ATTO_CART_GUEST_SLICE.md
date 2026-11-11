@@ -51,6 +51,10 @@ test harness wiring; the reusable Cart algorithm lives in `.atto`.
   physical actor. No mutable guest context or captured state crosses that
   boundary. Quantity starts from zero again because persistence is absent.
 - Checked `int` arithmetic uses the AttoLang i64 domain and rejects overflow.
+- An overflowing compiled guest transition inside a bound physical actor must
+  terminate that actor, emit only an exact-generation sanitized supervisor
+  CONTROL receipt, block successor reservation while the asynchronous policy
+  is unsettled, and admit generation N+1 only after acknowledgement.
 - Unsupported protected virtual declaration still rejects at the compiler
   type/MIR boundary. The negative test is not falsely counted as guest runtime.
 
@@ -91,7 +95,7 @@ needs independent exact-head executed backend receipts.
 
 Run `.github/workflows/atto-cart-virtual-guest-current-main.yml` with
 actual nonzero job steps and `HEAD^{tree}` readback. It must execute
-`AttoCartPhysicalActivationGuestTest` (4 cases) plus the 37 parent-stack host JUnit
+`AttoCartPhysicalActivationGuestTest` (5 cases) plus the 37 parent-stack host JUnit
 methods and preserve Surefire XML showing nonzero passed tests with no errors,
 failures or skips. A zero-step job is `NOT_EXECUTED`, never a Java compiler
 failure, AOT certification or guest proof.
