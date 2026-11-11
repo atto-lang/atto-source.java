@@ -193,12 +193,17 @@ negative missing-import "$demo/native-multifile/negative/missing-helper.atto"
 negative ambiguous-import "$demo/native-multifile/negative/ambiguous-import.atto"
 negative ownership-conflict "$demo/native-multifile/negative/ownership-conflict.atto"
 negative aliased-module-leak "$demo/native-multifile/module/alias-leak.atto"
-sed -i 's/^status=GUEST_FAILED$/status=PASS/' "$receipt/identity.txt"
+# Do not write PASS to the uploadable artifact until the verifier has
+# returned 0. Termination, cancellation, timeout or cleanup during this phase
+# must preserve VERIFYING, which cannot be mistaken for completed evidence.
+sed -i 's/^status=GUEST_FAILED$/status=VERIFYING/' "$receipt/identity.txt"
 printf 'positive_cases=3\nnegative_cases=4\n' >> "$receipt/identity.txt"
-# Independent receipt verification is mandatory before a PASS marker appears.
 if ! bash "$policy/scripts/ci/verify-atto-owned-matrix.sh" --verify \
       "$receipt" "$ATTO_EXPECTED_DEMO_SHA" "$ATTO_EXPECTED_COMPILER_SHA" "$demo"; then
-  sed -i 's/^status=PASS$/status=RECEIPT_FAILED/' "$receipt/identity.txt"
+  sed -i 's/^status=VERIFYING$/status=RECEIPT_FAILED/' "$receipt/identity.txt"
   fail 'independent seven-case receipt verification failed'
 fi
+sed -i 's/^status=VERIFYING$/status=PASS/' "$receipt/identity.txt"
+grep -Fxq 'status=PASS' "$receipt/identity.txt" ||
+  fail 'terminal verified PASS state not committed'
 echo "ATTO_OWNED_GUEST_PASS source=$ATTO_EXPECTED_COMPILER_SHA demo=$ATTO_EXPECTED_DEMO_SHA cases=7 (guest JIT, not AOT)"
