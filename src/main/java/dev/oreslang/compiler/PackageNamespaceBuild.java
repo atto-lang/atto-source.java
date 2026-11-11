@@ -43,6 +43,7 @@ public final class PackageNamespaceBuild {
 
     private final OresProjectConfig config;
     private final Path projectRoot;
+    private final Path declaredProjectRoot;
     private final Path manifestPath;
     private final byte[] manifestFingerprint;
     private final String packageIdentity;
@@ -64,6 +65,7 @@ public final class PackageNamespaceBuild {
                 || Files.isSymbolicLink(resolved)) {
             throw new IllegalArgumentException("package root must be a non-symlink directory");
         }
+        declaredProjectRoot = resolved;
         projectRoot = resolved.toRealPath();
         String name = config.projectName().orElseThrow(() ->
                 new IllegalArgumentException("namespace package requires project.name"));
@@ -163,11 +165,18 @@ public final class PackageNamespaceBuild {
         ArrayList<Path> roots = new ArrayList<>(config.sourceRoots());
         roots.sort((a, b) -> a.toString().compareTo(b.toString()));
         for (Path declared : roots) {
-            Path lexical = declared.toAbsolutePath().normalize();
-            if (!lexical.startsWith(projectRoot)) {
+            Path declaredRoot = declared.toAbsolutePath().normalize();
+            // Resolve against the canonical project directory rather than
+            // requiring the caller's full ancestor path to be canonical.
+            // Systems such as macOS may have a /var -> /private/var
+            // symlink ABOVE the chosen project root; internal symlinks
+            // remain explicitly forbidden by assertNoSymbolicSegments.
+            if (!declaredRoot.startsWith(declaredProjectRoot)) {
                 throw new IllegalArgumentException(
                         "source root escapes package or is a symlink: " + declared);
             }
+            Path lexical = projectRoot.resolve(
+                    declaredProjectRoot.relativize(declaredRoot)).normalize();
             assertNoSymbolicSegments(lexical);
             if (!Files.isDirectory(lexical, LinkOption.NOFOLLOW_LINKS)) {
                 throw new IllegalArgumentException("source root is not an ordinary directory: " + declared);
