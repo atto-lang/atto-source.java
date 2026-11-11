@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -145,6 +146,66 @@ final class ActorRuntimeHotRouteBridgeV1Test {
             unrelated.stop();
             assertTrue(claimed.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(unrelated.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void preclaimDirectPhysicalTurnBlocksLogicalUpgradeUntilProcessed()
+            throws Exception {
+        Object supervisor = new Object();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        AtomicInteger oldCount = new AtomicInteger();
+        AtomicInteger nextCount = new AtomicInteger(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var v1 = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new IllegalStateException("test physical turn was never released");
+                oldCount.addAndGet(mail);
+            });
+            var v2 = runtime.<Integer>spawnShared(() ->
+                    (mail, context) -> nextCount.addAndGet(mail));
+            v1.ready().get(5, TimeUnit.SECONDS);
+            v2.ready().get(5, TimeUnit.SECONDS);
+            try {
+                v1.send(1); // Accepted directly BEFORE it joins logical route.
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var physical1 = runtime.claimPhysicalForHotRoute(v1);
+                var physical2 = runtime.claimPhysicalForHotRoute(v2);
+                try (var route = new ActorRouteCoordinatorV1<>(
+                        91, supervisor, image('a'), state(0), physical1,
+                        8, 32, 256)) {
+                    var stage = route.stage(supervisor, image('b'));
+                    assertFalse(stage.quiescent(supervisor),
+                            "preclaim physical send must still count as outstanding v1 work");
+                    assertFalse(stage.publish(supervisor, state(1), physical2));
+                    release.countDown();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (!stage.quiescent(supervisor)) {
+                        if (System.nanoTime() >= deadline)
+                            fail("v1 direct preclaim message did not physically finish");
+                        Thread.sleep(2);
+                    }
+                    assertEquals(1, oldCount.get());
+                    assertTrue(stage.publish(supervisor, state(oldCount.get()), physical2));
+                    var stable = route.logicalRef();
+                    stable.send(new byte[]{1});
+                    assertTrue(route.dispatchNext(supervisor,
+                            ActorRuntimeHotRouteBridgeV1
+                                    .<Integer>processedReceiptTransport(bytes -> (int) bytes[0])));
+                    drained(route);
+                    assertEquals(2, nextCount.get());
+                    assertEquals(1, oldCount.get());
+                    assertEquals(2, route.current().routeEpoch());
+                }
+            } finally {
+                release.countDown();
+                v1.stop();
+                v2.stop();
+                assertTrue(v1.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(v2.awaitTermination(5, TimeUnit.SECONDS));
+            }
         }
     }
 
