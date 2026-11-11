@@ -114,6 +114,8 @@ final class AttoHpcTileGuestTest {
     private static final String PARAMETERIZED_BLOB =
             "88795ff752006d020ea08c6585a8b3b03bf641c7";
     private static final int RANDOM_CASES = 96;
+    private static final String VECTOR_MATRIX_SHA256 =
+            "b921d3a36a08917bd5ce7681eb9e00c7b37bb62e8308e0b8615c0c7ffb3ff575";
 
     private static long oracle(long[] v) {
         assertEquals(8, v.length);
@@ -156,7 +158,7 @@ final class AttoHpcTileGuestTest {
     }
 
     @TestFactory
-    Stream<DynamicTest> signedI64ParameterizedGuestMatchesCheckedOracle() throws IOException {
+    Stream<DynamicTest> signedI64ParameterizedGuestMatchesCheckedOracle() throws Exception {
         byte[] bytes;
         try (InputStream input = AttoHpcTileGuestTest.class.getResourceAsStream(PARAMETERIZED_SOURCE)) {
             assertNotNull(input, "Missing exact shared parameterized Atto guest source");
@@ -168,6 +170,15 @@ final class AttoHpcTileGuestTest {
                 "Only one reviewed main return may be replaced with runtime case literals");
         List<long[]> rows = vectors();
         assertEquals(107, rows.size(), "Keep Java cases aligned with LLVM Rust 107-case matrix");
+        String canonicalRows = rows.stream().map(row ->
+                Arrays.stream(row).mapToObj(Long::toString)
+                        .collect(Collectors.joining(",")) + "\n")
+                .collect(Collectors.joining());
+        String actualMatrixHash = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(canonicalRows.getBytes(StandardCharsets.US_ASCII)));
+        assertEquals(VECTOR_MATRIX_SHA256, actualMatrixHash,
+                "Full-width Graal vectors drifted from the LLVM Rust oracle matrix");
         return IntStream.range(0, rows.size()).mapToObj(index ->
                 DynamicTest.dynamicTest("hpc-i64-differential-" + index, () -> {
                     long[] row = rows.get(index);
