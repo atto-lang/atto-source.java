@@ -1600,15 +1600,36 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    /**
+     * Ownership representation of a concrete tuple. Tuple[T1,...,Tn] uses
+     * one finite-sequence-shape argument; tuple literals use $tuple$.
+     * Never interpret arrays, fixed arrays/lists, unions or dynamic lists as
+     * destructurable tuples merely because they have the right length.
+     */
+    private static List<Ast.TypeRef> staticPipelineTupleSlots(Ast.TypeRef type) {
+        if (type == null || type.inferArguments() || type.isBorrow()) return null;
+        if (type.isTupleType()) return type.arguments();
+        if (!type.name().equals("Tuple") || type.arguments().size() != 1) return null;
+        Ast.TypeRef shape = type.arguments().getFirst();
+        if (!shape.isSequenceShape()) return null;
+        List<Ast.TypeRef> slots = shape.arguments();
+        if (slots.isEmpty() || slots.stream().anyMatch(slot ->
+                slot.isSequenceShape() || slot.isRepeatMany() || slot.isRepeatExact()
+                        || slot.isNamedParameter() || slot.inferArguments())) return null;
+        return slots;
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
         if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 && call.callee() instanceof Ast.LambdaExpr lambda) {
+            int arity = lambda.parameters().size();
             if (call.arguments().size() != 1 || call.typeArgumentsPresent()
-                    || lambda.parameters().size() != 1) {
-                throw error("inline pipeline lambda requires exactly one argument and parameter");
+                    || arity < 1) {
+                throw error("inline pipeline lambda requires one upstream argument and at least one parameter");
             }
-            // The upstream is evaluated and transferred before the lambda
-            // captures are acquired, mirroring runtime evaluation order.
+            // Check/move the entire upstream exactly once. Every destructured
+            // field receives its OWN lexical binding; no implicit clone of
+            // move-only tuple elements or extra evaluation of the tuple.
             ValueInfo input = checkExpr(call.arguments().getFirst(), scope, true);
             if (isBorrowValue(input) || containsMutexGuardType(input.type)) {
                 throw error("inline pipeline lambda cannot consume a borrow or guard-bearing input "
@@ -1617,17 +1638,40 @@ public final class OwnershipChecker {
             if (input.type == null || input.type.name().equals("$infer$")) {
                 throw error("inline pipeline lambda requires an ownership-resolved upstream type");
             }
-            Ast.Param parameter = lambda.parameters().getFirst();
-            if (parameter.mutable() || parameter.structural()) {
-                throw error("inline pipeline lambda cannot request mutable or structural input");
+            List<Ast.TypeRef> inputs;
+            if (arity == 1) {
+                inputs = List.of(input.type);
+            } else {
+                List<Ast.TypeRef> slots = staticPipelineTupleSlots(input.type);
+                if (slots == null) {
+                    throw error("multi-parameter pipeline lambda requires a statically known Tuple input");
+                }
+                if (slots.size() != arity) {
+                    throw error("pipeline tuple arity mismatch: expected " + arity
+                            + " element(s), got " + slots.size());
+                }
+                if (slots.stream().anyMatch(slot -> slot == null
+                        || slot.isBorrow() || slot.name().equals("$infer$")
+                        || containsMutexGuardType(slot))) {
+                    throw error("pipeline tuple destructuring cannot publish borrowed, guarded or unresolved slots");
+                }
+                inputs = slots;
             }
-            // Contextualize the ownership-only lambda view without changing
-            // the canonical AST or reusing identity-bound type proofs.
-            Ast.Param checkedParameter = new Ast.Param(
-                    parameter.type().name().equals("$infer$") ? input.type : parameter.type(),
-                    parameter.name(), parameter.structural(), parameter.mutable());
+            // Contextualize the ownership-only lambda view without rewriting
+            // the canonical AST or minting executable type/ownership proofs.
+            List<Ast.Param> contextualParams = new ArrayList<>(arity);
+            for (int i = 0; i < arity; i++) {
+                Ast.Param parameter = lambda.parameters().get(i);
+                if (parameter.mutable() || parameter.structural()) {
+                    throw error("pipeline lambda parameter " + (i + 1)
+                            + " cannot request mutable or structural input");
+                }
+                contextualParams.add(new Ast.Param(
+                        parameter.type().name().equals("$infer$") ? inputs.get(i) : parameter.type(),
+                        parameter.name(), false, false));
+            }
             Ast.LambdaExpr contextual = new Ast.LambdaExpr(
-                    List.of(checkedParameter), lambda.expressionBody(),
+                    contextualParams, lambda.expressionBody(),
                     lambda.blockBody(), lambda.nonLexical(), lambda.declaredReturnType());
             return checkLambda(contextual, scope, null, false, false, true);
         }
