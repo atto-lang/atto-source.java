@@ -62,7 +62,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, ActorStateAttachmentDecl { }
+            ExternalActorMethodDecl, ActorStateAttachmentDecl, DeclaredActorDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -142,6 +142,39 @@ public final class Ast {
             if (actorKind != ActorKind.SHARED) {
                 throw new IllegalArgumentException(
                         "standalone actor AST currently supports only generic shared actors");
+            }
+        }
+    }
+
+    /**
+     * Declaration-only actor type whose methods and owned state may be
+     * supplied in separate, manifest-verified files of the same namespace.
+     * This is NOT a ClassDecl, an actor instance or an ActorRef.
+     */
+    public record DeclaredActorDecl(
+            String name, Visibility visibility, ActorKind actorKind,
+            List<TypeRef> contracts) implements Decl {
+        public DeclaredActorDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("declared actor requires a nominal type name");
+            }
+            java.util.Objects.requireNonNull(visibility, "declared actor visibility");
+            if (actorKind != ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "v1 declared actors support only the basic shared actor kind");
+            }
+            contracts = List.copyOf(contracts);
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (TypeRef contract : contracts) {
+                if (contract.isBorrow() || contract.inferArguments()
+                        || !contract.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "declared actor contracts require non-generic nominal types");
+                }
+                if (!seen.add(contract.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate declared actor contract: " + contract.name());
+                }
             }
         }
     }
