@@ -40,14 +40,45 @@ pattern; only compiler/runtime-enforced guarded access can authorize a state
 read or write. A supervisor must never receive these capabilities.
 
 `src/test/java/dev/oreslang/runtime/ActorStateReadWriteLoansTest.java`
-contains **12 host-only JUnit test cases**, including reader batching, writer
+contains **19 host-only JUnit test cases**, including reader batching, writer
 fairness, cancellation, generation restart/retirement, unpublished grants,
 callback lock discipline, contention and epoch exhaustion. These are source
 tests pending executed CI receipts, not verified pass results. The targeted
 `.github/workflows/neuron-state-contract.yml` gate checks the exact PR head
-and tree before invoking Maven's `NeuronActorV0Test` and
-`ActorStateReadWriteLoansTest` suites. A queued/failed job with
+and tree before invoking Maven's `NeuronActorV0Test`,
+`NeuronStateLayoutV0Test` and `ActorStateReadWriteLoansTest` suites.
+A queued/failed job with
 `steps=null` is not evidence that the Maven invocation occurred.
+
+### Additional audit hardening (source committed; execution not verified)
+
+- The loan arbiter now has an **independent active-reader cap** (128 by
+  default, configurable 1..65,536) and a separate, bounded pending queue
+  (0..65,536). Saturated reads queue rather than allocating unlimited active
+  capabilities; FIFO writer admission remains intact.
+- Cancelling a **reserved but unpublished** read or write Future revokes the
+  reservation immediately. The unused notification closure is removed from
+  the pending publication queue; otherwise a stalled earlier subscriber
+  could retain arbitrarily many cancelled grant callbacks and block capacity.
+  Both modes have deterministic stall/cancel regressions, plus a 256-cycle
+  retention stress case, concurrent read/write count checks, and repeated
+  cancellation/retirement schedules.
+- Neuron actors are restricted to concrete **shared** v0 actor declarations,
+  and `forward` / `receive` reject mutable/structural parameters and
+  explicit receiver types. This is deliberately narrow until the isolation
+  and alternate-receiver ABI is proven.
+- The linked public-class metadata admission path rejects neuron actor
+  signatures with `NEURON_STATE_LINK_UNSUPPORTED` instead of permitting
+  a separate compilation unit to import an unlowered protected state ABI.
+- Self-hosted Linux CI is **manual workflow_dispatch only**; scheduling it
+  automatically on every PR left the entire run queued when no matching
+  runner existed, also preventing hosted-job retries. Hosted attempt 2 was
+  accepted but again failed with `steps=null`, without Maven execution.
+  No private source was copied to another organization.
+
+The 19 reader/writer JUnit methods, 10 neuron parser/type-check methods, and
+4 layout JUnit methods are **33 committed host tests, NOT EXECUTED** on the
+current exact PR tree. No compiled guest `.atto` inference is certified.
 
 ### Guest/compiler next implementation slice
 
