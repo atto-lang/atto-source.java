@@ -24,6 +24,7 @@ on:
       - "docs/ACTOR_STATE_CONTAINER_COMPILER_V1.md"
       - "docs/ACTOR_STATE_RETURN_BORROW_FENCE_V1.md"
       - "docs/ACTOR_STATE_FIELD_BORROW_ADMISSION_V1.md"
+      - "docs/ACTOR_MANAGED_I64_FIELD_RUNTIME_BRIDGE_V1.md"
       - ".github/workflows/actor-state-rw-ownership.yml"
   workflow_dispatch:
 
