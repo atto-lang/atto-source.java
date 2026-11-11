@@ -48,14 +48,26 @@ final class SupervisorHotUpgradeGateV1 implements AutoCloseable {
     static final class ChildRegistry {
         private final Map<UUID, UUID> parentOf = new HashMap<>();
 
-        synchronized void claim(UUID childId, UUID supervisorId) {
+        private synchronized void claim(UUID childId, UUID supervisorId) {
+            Objects.requireNonNull(childId, "childId");
+            Objects.requireNonNull(supervisorId, "supervisorId");
             if (parentOf.containsKey(childId)) {
                 throw new IllegalStateException("actor already has a supervisor");
+            }
+            // Reject indirect supervision cycles, not only direct self-parenting.
+            // The single registry monitor serializes cycle detection with claims.
+            UUID ancestor = supervisorId;
+            Set<UUID> visited = new java.util.HashSet<>();
+            while (ancestor != null) {
+                if (childId.equals(ancestor) || !visited.add(ancestor)) {
+                    throw new IllegalStateException("supervisor hierarchy cycle");
+                }
+                ancestor = parentOf.get(ancestor);
             }
             parentOf.put(childId, supervisorId);
         }
 
-        synchronized void release(UUID childId, UUID supervisorId) {
+        private synchronized void release(UUID childId, UUID supervisorId) {
             if (!parentOf.remove(childId, supervisorId)) {
                 throw new IllegalStateException("stale or foreign child ownership");
             }
@@ -132,7 +144,20 @@ final class SupervisorHotUpgradeGateV1 implements AutoCloseable {
             throw new IllegalStateException("supervisor child limit exceeded");
         }
         childRegistry.claim(childId, supervisorId);
-        children.add(childId);
+        try {
+            if (!children.add(childId)) {
+                throw new IllegalStateException("child set disagrees with registry");
+            }
+        } catch (RuntimeException | Error failure) {
+            // Exception-atomic attachment: no registry claim survives a failed
+            // local admission. If rollback fails, preserve the error trail.
+            try {
+                childRegistry.release(childId, supervisorId);
+            } catch (RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     synchronized void detachChild(UUID childId) {
@@ -204,7 +229,9 @@ final class SupervisorHotUpgradeGateV1 implements AutoCloseable {
         candidate = null;
     }
 
-    synchronized boolean retired() { return closed && reservations == 0; }
+    // A closed supervisor still owns its children until a separate trusted STOP/
+    // reparent transaction releases those claims. Do NOT report retirement early.
+    synchronized boolean retired() { return closed && reservations == 0 && children.isEmpty(); }
 
     private void requireMutable() {
         if (closed || candidate != null) {
