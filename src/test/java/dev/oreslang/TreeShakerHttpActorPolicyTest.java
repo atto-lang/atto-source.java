@@ -54,6 +54,45 @@ final class TreeShakerHttpActorPolicyTest {
     }
 
     @Test
+    void compiledSerialHttpSourceRetainsTransportAfterTypecheckingAndOptimization() {
+        TreeShaker.Result result = dev.oreslang.compiler.OresCompiler.compileForBuild("""
+                define pub serial http actor Endpoint as
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                """, BuildOptions.library(Map.of()));
+        assertTrue(result.retained("root.Endpoint") ||
+                result.retained("service.Endpoint") ||
+                result.program().modules().stream()
+                    .flatMap(module -> module.declarations().stream())
+                    .anyMatch(Ast.ClassDecl.class::isInstance),
+                "the public actor must remain in the optimized module");
+        Ast.ClassDecl kept = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Endpoint"))
+                .findFirst().orElseThrow();
+        assertEquals(Ast.ActorConcurrency.serial(Ast.ActorTransport.HTTP),
+                kept.actorConcurrency(),
+                "whole compiler build must not launder serial HTTP into generic mail");
+    }
+
+    @Test
+    void invalidThreeByFourSourceCannotReachOptimizedLibraryArtifact() {
+        String source = """
+                define pub http actor Endpoint as
+                    int requestConcurrency = 3;
+                    int messageConcurrency = 4;
+                end
+                """;
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.compileForBuild(
+                        source, BuildOptions.library(Map.of())));
+        assertTrue(denied.getMessage().contains("Refusing unsafe configuration"),
+                denied::getMessage);
+    }
+
+    @Test
     void nonHttpTransportDiscriminantsArePreserved() {
         for (Ast.ActorTransport transport : List.of(
                 Ast.ActorTransport.TCP, Ast.ActorTransport.WEBSOCKET,
