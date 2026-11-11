@@ -255,4 +255,27 @@ final class ActorReceiverBinderTest {
     }
 
 
+    @Test
+    void inheritedActorReceiverRequiresExplicitHierarchyCoherence() {
+        rejects(module("  pub define actor Parent as end\n"
+                + "  pub define actor Worker extends Parent as end\n"
+                + method("get_count", "", "int")),
+                "requires inherited actor slot coherence");
+    }
+
+    @Test
+    void mailboxReceiveCannotBorrowItsTransportPayload() {
+        rejects(module(actor()
+                + "  define mtd receive(Worker w)(ActorMail<borrow int> mail): void { return; }\n"),
+                "external receive must be private");
+    }
+
+    @Test
+    void localActorInAnotherSourceUnitDoesNotResolveExternalMethod() {
+        // A matching spelling in a different unit is not an authorization.
+        assertEquals(0, bind(module(actor())).size());
+        rejects(module(method("get_count", "", "int")), "has no nominal actor");
+    }
+
+
 }
