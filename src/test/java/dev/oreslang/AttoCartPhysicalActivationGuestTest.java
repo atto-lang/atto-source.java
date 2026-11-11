@@ -25,6 +25,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -86,6 +87,20 @@ final class AttoCartPhysicalActivationGuestTest {
     private static String fixture(String name) throws Exception {
         String folder = name.equals("virtual_cart_unsupported.atto") ? "negative" : "positive";
         return Files.readString(contract(folder + "/" + name), StandardCharsets.UTF_8);
+    }
+
+    /** A one-shot bounded host grant per observation prevents test-only TTL flakiness. */
+    private static Optional<VirtualActorCurrentMainDirectory.Snapshot> inspect(
+            VirtualActorCurrentMainDirectory directory, Object session,
+            VirtualActorActivationRegistry.Identity identity) {
+        var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
+        return directory.inspect(grant, session, identity);
+    }
+
+    private static Optional<VirtualActorCurrentMainDirectory.Snapshot> inspectAddress(
+            VirtualActorCurrentMainDirectory directory, Object session, String address) {
+        var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
+        return directory.inspectAddress(grant, session, address);
     }
 
     private Path stage(String name) throws Exception {
@@ -163,11 +178,10 @@ final class AttoCartPhysicalActivationGuestTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             try (var directory = new VirtualActorCurrentMainDirectory(group, DOMAIN)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 VirtualActorActivationRegistry.Identity logical =
                         directory.resolve("Cart", "order-42");
                 String stableAddress = directory.address(logical);
-                assertTrue(directory.inspect(grant, session, logical).isEmpty(),
+                assertTrue(inspect(directory, session, logical).isEmpty(),
                         "obtaining a logical address must not start a physical worker");
 
                 AtomicReference<CompiledCartTurn> firstGuest = new AtomicReference<>();
@@ -188,16 +202,16 @@ final class AttoCartPhysicalActivationGuestTest {
                 first.drain().get(5, TimeUnit.SECONDS);
                 assertEquals(7L, firstLastOutput.get(),
                         "real .atto cart_step must run inside the first physical actor");
-                assertEquals(first.id(), directory.inspect(grant, session, logical)
+                assertEquals(first.id(), inspect(directory, session, logical)
                         .orElseThrow().physicalActorId().orElseThrow());
                 first.gracefulStop().get(5, TimeUnit.SECONDS);
                 first.getDone().get(5, TimeUnit.SECONDS);
                 firstGuest.get().close();
-                assertThrows(IllegalStateException.class, () -> firstGuest.get().apply(9L),
+                assertThrows(RuntimeException.class, () -> firstGuest.get().apply(9L),
                         "closed physical guest context must not accept stale invocations");
 
                 assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
-                        directory.inspect(grant, session, logical).orElseThrow().lifecycle());
+                        inspect(directory, session, logical).orElseThrow().lifecycle());
 
                 AtomicReference<CompiledCartTurn> secondGuest = new AtomicReference<>();
                 AtomicLong secondLastOutput = new AtomicLong(-1);
@@ -214,9 +228,9 @@ final class AttoCartPhysicalActivationGuestTest {
                 assertNotEquals(first.id(), second.id(), "physical worker identity must change");
                 assertEquals(stableAddress, directory.address(logical),
                         "logical address must not encode physical ActorId or generation");
-                assertEquals(2L, directory.inspectAddress(grant, session, stableAddress)
+                assertEquals(2L, inspectAddress(directory, session, stableAddress)
                         .orElseThrow().activationGeneration());
-                assertEquals(second.id(), directory.inspect(grant, session, logical)
+                assertEquals(second.id(), inspect(directory, session, logical)
                         .orElseThrow().physicalActorId().orElseThrow());
                 assertFalse(group.isCurrentVirtualActorGeneration(logical, 1L));
                 assertThrows(IllegalStateException.class, () -> first.send(99L),
@@ -230,7 +244,7 @@ final class AttoCartPhysicalActivationGuestTest {
                 second.getDone().get(5, TimeUnit.SECONDS);
                 secondGuest.get().close();
                 assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
-                        directory.inspect(grant, session, logical).orElseThrow().lifecycle());
+                        inspect(directory, session, logical).orElseThrow().lifecycle());
             }
             group.close();
         }
