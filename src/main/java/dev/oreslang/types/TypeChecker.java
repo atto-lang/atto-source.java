@@ -4277,7 +4277,10 @@ public final class TypeChecker {
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
                     && member.member().equals("read_line")) {
-                return new Function(List.of(), Primitive.STRING);
+                // Native stdin returns Some(line) or None on EOF, not a raw String.
+                // Type it as Option<String> so guest loops can safely terminate.
+                return new Function(List.of(),
+                        new Named("Option", List.of(Primitive.STRING)));
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process")
