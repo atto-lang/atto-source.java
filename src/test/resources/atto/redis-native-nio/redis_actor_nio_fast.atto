@@ -19,27 +19,28 @@ define actor FramedNioKvActor as
     if kind == 5; do self.end(); return; fi
     if kind == 3; do
       self.values.set(key, value);
-      self.send(("OK", ""));
+      self.send("OK");
       return;
     fi
     if kind == 2; do
       val found = self.values.get_optional(key);
       if found.is_none(); do
-        self.send(("NIL", ""));
+        self.send("NIL");
       else
-        self.send(("VALUE", found.unwrap()));
+        self.send("VALUE");
+        self.send(found.unwrap());
       fi
       return;
     fi
     if kind == 4; do
       if self.values.delete(key); do
-        self.send(("ONE", ""));
+        self.send("ONE");
       else
-        self.send(("ZERO", ""));
+        self.send("ZERO");
       fi
       return;
     fi
-    self.send(("ERR", ""));
+    self.send("ERR");
     return;
   }
 end
@@ -82,8 +83,12 @@ pub async routine main(): void {
       if frame.size >= 3 then value = frame[2]; fi
       worker.send((kind, key, value));
       val output = (await worker.outputs.next()).value.unwrap();
-      val answer = output.value;
-      await socket.write_resp2_hex_async(answer[0], answer[1]);
+      let string payload = "";
+      if output.value == "VALUE"; do
+        val data = (await worker.outputs.next()).value.unwrap();
+        payload = data.value;
+      fi
+      await socket.write_resp2_hex_async(output.value, payload);
     fi
   }
 }
