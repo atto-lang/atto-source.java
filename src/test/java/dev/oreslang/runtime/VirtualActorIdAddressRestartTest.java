@@ -136,6 +136,7 @@ final class VirtualActorIdAddressRestartTest {
                          ActorRuntime.TurnExecutor.direct(), control(pool))) {
                 var supervisor = runtime.createSupervisor();
                 try (var directory = supervisor.virtualActorDirectory(TENANT, 8, 4)) {
+                    try {
                     var logical = directory.resolve("Cart", "queued-timeout");
                     // Park the CONTROL carrier before admission so both
                     // requests are queued; avoid sleeps and timing assumptions.
@@ -170,10 +171,15 @@ final class VirtualActorIdAddressRestartTest {
                             .orElseThrow();
                     assertEquals(logical.identity(), observed.identity());
                     assertEquals(0, directory.pendingInspectionCount());
+                    } finally {
+                        // Release the carrier BEFORE closing runtime/executor
+                        // resources even if an assertion has failed.
+                        blocked.countDown();
+                    }
                 }
             }
         } finally {
-            blocked.countDown(); // Never strand a self-hosted runner on assertion failure.
+            blocked.countDown();
         }
     }
 

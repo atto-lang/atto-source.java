@@ -15,6 +15,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Host-only virtual actor directory scoped to one real ActorRuntime supervisor.
@@ -564,6 +565,10 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             throw new IllegalStateException("virtual actor inspection capacity exhausted");
         }
         Thread caller = Thread.currentThread();
+        // Reject synchronous inline dispatch, not the legal later reuse of the
+        // same carrier thread by a serialized executor.
+        AtomicBoolean dispatchCallActive = new AtomicBoolean(true);
+        AtomicReference<Throwable> dispatchFailure = new AtomicReference<>();
         CompletableFuture<T> result = new CompletableFuture<>();
         result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
         // 0=queued, 1=running, 2=cancelled-before-start, 3=finished.
@@ -605,7 +610,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 Throwable captureFailure = null;
                 boolean captured = false;
                 try {
-                    if (Thread.currentThread() == caller)
+                    if (dispatchCallActive.get() && Thread.currentThread() == caller)
                         throw new IllegalStateException("INLINE_CONTROL_DISPATCH_FORBIDDEN");
                     requireGrant(grant, session);
                     if (!result.isDone()) {
@@ -618,23 +623,35 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                     phase.set(3);
                     releaseSlot.run();
                 }
-                if (captureFailure != null) result.completeExceptionally(captureFailure);
+                Throwable transportFailure = dispatchFailure.get();
+                if (transportFailure != null) result.completeExceptionally(transportFailure);
+                else if (captureFailure != null) result.completeExceptionally(captureFailure);
                 else if (captured) result.complete(observed);
             });
         } catch (RuntimeException | Error failure) {
-            result.completeExceptionally(failure);
             if (phase.compareAndSet(0, 3) || phase.compareAndSet(2, 3))
                 releaseSlot.run();
+            // Completion may invoke dependent stages inline: release first.
+            result.completeExceptionally(failure);
             return result.minimalCompletionStage();
+        } finally {
+            dispatchCallActive.set(false);
         }
         dispatch.whenCompleteRuntime((ignored, failure) -> {
             if (failure != null) {
-                result.completeExceptionally(new IllegalStateException("CONTROL_DISPATCH_FAILED"));
-                // The dispatcher Future may release a queued task only when it
-                // guarantees the task will not execute later. The phase fence
-                // makes an erroneous late execution a no-op in either case.
-                if (phase.compareAndSet(0, 3) || phase.compareAndSet(2, 3))
+                Throwable rejected = new IllegalStateException("CONTROL_DISPATCH_FAILED", failure);
+                dispatchFailure.compareAndSet(null, rejected);
+                // A queued dispatch failure is a terminal admission outcome:
+                // release physical slot before invoking dependent callbacks.
+                if (phase.compareAndSet(0, 3) || phase.compareAndSet(2, 3)) {
                     releaseSlot.run();
+                    result.completeExceptionally(rejected);
+                } else if (phase.get() == 3) {
+                    result.completeExceptionally(rejected);
+                }
+                // If capture is still running (phase=1), its finally block
+                // releases the slot and publishes the recorded failure after
+                // the physical CONTROL capture ends.
             }
         });
         return result.minimalCompletionStage();
