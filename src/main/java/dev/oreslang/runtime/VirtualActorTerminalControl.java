@@ -47,6 +47,7 @@ final class VirtualActorTerminalControl {
 
     private static final class Lane {
         final ArrayDeque<Delivery> waiting = new ArrayDeque<>();
+        Delivery current;
         boolean active;
     }
 
@@ -172,6 +173,7 @@ final class VirtualActorTerminalControl {
                 lanes.remove(supervisorId, lane);
                 return;
             }
+            lane.current = delivery;
         }
 
         try {
@@ -179,6 +181,12 @@ final class VirtualActorTerminalControl {
             OresFuture<Void> accepted = Objects.requireNonNull(
                     dispatcher.execute(() -> {
                         synchronized (monitor) {
+                            // Failed/cancelled admission may still race a late
+                            // runnable. A reused or duplicate invocation
+                            // cannot execute policy after its lane moved on.
+                            if (lanes.get(supervisorId) != lane
+                                    || lane.current != delivery || delivery.dispatched)
+                                return;
                             delivery.dispatched = true;
                         }
                         // A VM CONTROL dispatcher cannot inline the policy on
@@ -260,6 +268,9 @@ final class VirtualActorTerminalControl {
             if (lanes.get(supervisorId) != lane) return;
             if (outstanding < 1)
                 throw new IllegalStateException("terminal CONTROL outstanding accounting underflow");
+            if (lane.current == null)
+                throw new IllegalStateException("terminal CONTROL active delivery missing");
+            lane.current = null;
             outstanding--;
             more = !lane.waiting.isEmpty();
             if (!more) {
@@ -287,6 +298,7 @@ final class VirtualActorTerminalControl {
                 throw new IllegalStateException("terminal CONTROL outstanding accounting underflow");
             outstanding -= count;
             lane.waiting.clear();
+            lane.current = null;
             lane.active = false;
             lanes.remove(supervisorId, lane);
         }
