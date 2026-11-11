@@ -94,7 +94,15 @@ jobs:
           # A suite with only one executed method is not equivalent evidence.
           grep -Fq 'name="baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified"' "$dispatch_report"
           grep -Fq 'name="sameFixtureRunsWithGuestJitDisabledByProfile"' "$dispatch_report"
+          grep -Fq 'name="scalarGenericIntReuseRunsWithAndWithoutGuestJit"' "$dispatch_report"
+          # Source admission alone does not prove the direct/instance/static
+          # canonical corpus actually executed through the guest interpreter.
+          # Require both the JIT-enabled and JIT-disabled runtime JUnit cases.
+          corpus_report=target/surefire-reports/TEST-dev.oreslang.DispatchV1CorpusCompilerTest.xml
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithJitEnabled"' "$corpus_report"
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithGuestJitDisabled"' "$corpus_report"
           echo 'RECEIPT dispatch_jvm_jit_and_disabled_named_cases=EXECUTED'
+          echo 'RECEIPT dispatch_canonical_direct_instance_static_jit_modes=EXECUTED'
           echo 'RECEIPT guest_42=asserted_by_AttoSourceAdmissionTest_and_AttoCacheShapeAdmissionTest'
           echo 'RECEIPT dispatch_virtual_override=asserted_by_AotDispatchGuestV1Test stdout_expected=121020'
           echo 'RECEIPT dispatch_jit_disabled_profile=asserted_by_AotDispatchGuestV1Test'
