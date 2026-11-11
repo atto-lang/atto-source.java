@@ -1,0 +1,7 @@
+// Ordinary borrowed input may be returned; actor self may not.
+define class Box as
+  pub val int value;
+end
+fnc identityBorrow(borrow Box value): borrow Box {
+  return value;
+}
