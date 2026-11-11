@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Host-only bridge from an admitted actor envelope/activation to protected
@@ -20,6 +21,7 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
     private volatile boolean retired;
     /** Host lifecycle callback only; never guest, and never invoked under a loan monitor. */
     private volatile Runnable physicalLoanDrainListener;
+    private final AtomicBoolean physicalDrainNotified = new AtomicBoolean();
 
     private NeuronActorScalarTurnStateV0(ActorRuntime.NeuronActorTurnProof proof,
                                         ActorStateReadWriteLoans storage) {
@@ -73,7 +75,8 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
         // Close happens after the underlying state loan releases its monitor.
         // Never let an actor finalization callback execute while the scalar
         // state monitor is held, or STOP could deadlock with a reader.
-        if (retired && storage.activeCount() == 0 && callback != null) {
+        if (retired && storage.activeCount() == 0 && callback != null
+                && physicalDrainNotified.compareAndSet(false, true)) {
             callback.run();
         }
     }
@@ -108,7 +111,7 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
     class ReadScope implements AutoCloseable {
         private final ActorRuntime.NeuronActorTurnProof proof;
         private final ActorStateReadWriteLoans.Loan loan;
-        private boolean released;
+        private final AtomicBoolean released = new AtomicBoolean();
 
         private ReadScope(ActorRuntime.NeuronActorTurnProof proof,
                           ActorStateReadWriteLoans.Loan loan) {
@@ -117,7 +120,8 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
         }
 
         final Object requireCurrentOwner() {
-            if (released) throw new IllegalStateException("neuron state scope already closed");
+            if (released.get())
+                throw new IllegalStateException("neuron state scope already closed");
             // Revalidate at EVERY access. A stored Scope from an earlier
             // envelope must never authorize another message, carrier or actor.
             if (proof.runtime() != runtime || proof.actorRef() != actor)
@@ -131,8 +135,7 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (released) return;
-            released = true;
+            if (!released.compareAndSet(false, true)) return;
             // Cleanup may execute during actor STOP after the original turn
             // has exited; do not require an active turn to release a loan.
             try {
