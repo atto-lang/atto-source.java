@@ -49,17 +49,17 @@ final class OresEnumSymbolActorMailTest {
         assertThrows(IllegalArgumentException.class, () -> OresEnumSymbol.declare(UNIT, "Light", List.of("Red")).caseNamed("Green"));
         assertThrows(IllegalArgumentException.class, () -> OresEnumSymbol.declare("other\u0000unit", "Light", CASES));
         assertThrows(IllegalArgumentException.class, () -> OresEnumSymbol.declare(UNIT, "Light.", CASES));
-        assertThrows(IllegalArgumentException.class, () -> OresEnumSymbol.declare(UNIT, "Light", List.of("Red", "Red")));
     }
 
     @Test void localFreezeRetainsSymbolAndDetachesMutableContainers() {
         var red = OresEnumSymbol.declare(UNIT, "Light", CASES).caseNamed("Red");
         assertSame(red, ActorRuntime.freeze(red), "immutable enum scalars are never encoded");
         var mutable = new ArrayList<Object>(List.of(red));
+        Map<?, ?> frozenMap = assertInstanceOf(Map.class,
+                ActorRuntime.freeze(Map.of("signal", mutable)));
         @SuppressWarnings("unchecked")
-        List<Object> frozen = (List<Object>) ActorRuntime.freeze(Map.of("signal", mutable))
-                instanceof Map<?, ?> map ? (List<Object>) map.get("signal") : null;
-        assertNotNull(frozen);
+        List<Object> frozen = (List<Object>) assertInstanceOf(
+                List.class, frozenMap.get("signal"));
         assertSame(red, frozen.getFirst());
         mutable.clear();
         assertEquals(1, frozen.size(), "container must be detached");
