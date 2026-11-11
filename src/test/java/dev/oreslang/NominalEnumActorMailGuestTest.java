@@ -63,23 +63,33 @@ final class NominalEnumActorMailGuestTest {
 
     @Test
     void untrustedActorCannotImportClosedEnumWithoutExportAuthorization() throws Exception {
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(source("untrusted-enum-mail-rejected"))),
-                "untrusted enum symbols need explicit receiver-approved export metadata");
+        Ast.Program parsed = Parser.parse(source("untrusted-enum-mail-rejected"));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(rejected.getMessage().contains("authenticated export"),
+                "untrusted ingress must fail with an actual export-policy diagnostic: "
+                        + rejected.getMessage());
     }
 
     @Test
     void cannotSendForeignNominalCaseToTypedActorMailbox() throws Exception {
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(source("foreign-enum-mail-rejected"))),
-                "nominal identity must be checked at the compiler send boundary");
+        Ast.Program parsed = Parser.parse(source("foreign-enum-mail-rejected"));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(rejected.getMessage().contains("ActorRef.send mailbox value"),
+                "foreign symbol must fail the send typecheck, not a generic parse failure: "
+                        + rejected.getMessage());
     }
 
     @Test
     void mixedOrPayloadEnumCannotClaimNullarySymbolMailOwnershipProof() throws Exception {
         String guest = source("payload-enum-mail-rejected");
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(guest)),
-                "payload-bearing enum must be rejected before actor-mail lowering");
+        Ast.Program parsed = Parser.parse(guest);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(rejected.getMessage().contains("nominal enum")
+                        || rejected.getMessage().contains("closed nullary"),
+                "payload enum must be rejected by ownership/type policy, not parser refusal: "
+                        + rejected.getMessage());
     }
 }
