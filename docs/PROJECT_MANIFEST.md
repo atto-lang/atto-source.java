@@ -39,6 +39,21 @@ consumes. Additional compiler, target, profile, dependency, workspace, and
 actor-policy sections should be added version-by-version rather than accepted
 and silently ignored.
 
+### Namespace-wide package proof (staged Java API)
+
+The Java compiler now has an **opt-in** `PackageNamespaceBuild` entrypoint
+that consumes the existing `OresProjectConfig` and recursively discovers
+bounded `.atto`/`.ores` files under `source.roots`. It validates the
+complete manifest-owned source set before linking namespace contracts,
+retains a package-qualified static actor-method index, and invalidates
+incremental work when a source file disappears. It rejects manifest
+changes without reloading the configuration and source symlinks/path
+escapes. This is not yet wired to the CLI and does not enable executable
+external receiver-method bodies; see
+[PACKAGE_NAMESPACE_ACTOR_INDEX_V1.md](PACKAGE_NAMESPACE_ACTOR_INDEX_V1.md).
+The existing `IncrementalCompiler.compile(Map)` remains a source-map
+compiler, not a manifest completeness attestation.
+
 ## Import resolution
 
 Oreslang source identity remains filesystem/path based. The manifest does not
