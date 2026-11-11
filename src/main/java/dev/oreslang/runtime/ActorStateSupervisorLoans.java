@@ -27,6 +27,8 @@ public final class ActorStateSupervisorLoans {
     private final Object gate = new Object();
     private final IdentityHashMap<Grant, Boolean> issued = new IdentityHashMap<>();
     private long nextExecution;
+    /** The same actor physical turn must not impersonate multiple borrowers. */
+    private Object activeOwnerSegment;
     private boolean revoked;
 
     // Package-private: ActorRuntime is the sole production issuer.
@@ -164,33 +166,56 @@ public final class ActorStateSupervisorLoans {
             ActorStateRwLoans.Access access, Runnable operation) {
         Objects.requireNonNull(operation, "operation");
         runtime.requireStateRegionOwnerTurn(actorId, actorGeneration);
+        Object segment = ActorRuntime.currentMutexExecutionSegment();
         ExecutionContext execution;
         synchronized (gate) {
             requireOpenLocked();
-            execution = nextMintedExecutionLocked();
-        }
-        OresFuture<ActorStateRwLoans.StateLoan> pending =
-                access == ActorStateRwLoans.Access.READ
-                        ? arbiter.acquireReadAsync(execution)
-                        : arbiter.acquireWriteAsync(execution);
-        if (!pending.isDone()) {
-            // Host actor turns may not park while the scheduler waits for a
-            // supervisor loan. A promotion racing with cancellation must
-            // release its physical loan after delivery, never lose the pin.
-            if (!pending.cancel(false)) {
-                pending.whenCompleteRuntime((loan, failure) -> {
-                    if (loan != null) loan.close();
-                });
-            }
-            throw new IllegalStateException(
-                    "actor-owned state RW operation would suspend its physical turn");
-        }
-        try (ActorStateRwLoans.StateLoan loan = pending.join()) {
-            if (!loan.heldBy(execution)) {
+            if (activeOwnerSegment != null) {
                 throw new IllegalStateException(
-                        "owner state loan was revoked before entering lexical scope");
+                        "actor owner cannot recursively acquire a shared-state RW loan");
             }
-            operation.run();
+            // Pin the caller's physical segment before minting synthetic
+            // execution identity. A nested callback cannot launder itself
+            // into a second reader by requesting a fresh execution id.
+            activeOwnerSegment = segment;
+            try {
+                execution = nextMintedExecutionLocked();
+            } catch (RuntimeException | Error failure) {
+                activeOwnerSegment = null;
+                throw failure;
+            }
+        }
+        try {
+            OresFuture<ActorStateRwLoans.StateLoan> pending =
+                    access == ActorStateRwLoans.Access.READ
+                            ? arbiter.acquireReadAsync(execution)
+                            : arbiter.acquireWriteAsync(execution);
+            if (!pending.isDone()) {
+                // Never park an actor carrier; a promotion that races
+                // cancellation must close its physical loan after delivery.
+                if (!pending.cancel(false)) {
+                    pending.whenCompleteRuntime((loan, failure) -> {
+                        if (loan != null) loan.close();
+                    });
+                }
+                throw new IllegalStateException(
+                        "actor-owned state RW operation would suspend its physical turn");
+            }
+            try (ActorStateRwLoans.StateLoan loan = pending.join()) {
+                if (!loan.heldBy(execution)) {
+                    throw new IllegalStateException(
+                            "owner state loan was revoked before entering lexical scope");
+                }
+                operation.run();
+            }
+        } finally {
+            synchronized (gate) {
+                if (activeOwnerSegment != segment) {
+                    throw new IllegalStateException(
+                            "actor owner execution segment changed during RW scope");
+                }
+                activeOwnerSegment = null;
+            }
         }
     }
 
