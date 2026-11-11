@@ -203,7 +203,6 @@ public final class NativeHttp implements AutoCloseable {
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
-            long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
             synchronized (exchange.state) {
                 exchange.checkOwner();
@@ -212,6 +211,9 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 exchange.state.spawnNanos = System.nanoTime();
             }
+            // Preflight can throw before work is admitted; do not leave the
+            // HTTP dispatch perf span half-open on rejection.
+            long perf = CorePerf.start();
             if (workers != null) {
                 try {
                     Worker worker = worker();
