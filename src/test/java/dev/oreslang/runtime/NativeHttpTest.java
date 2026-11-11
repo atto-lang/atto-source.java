@@ -352,6 +352,86 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void twoListenersSharingOnePoolReplaceSealedWorkerAfterFirstShutdown() throws Exception {
+        // Real Atto guest + loopback HTTP. Listener A's shutdown seals the
+        // shared worker incarnation. Listener B must allocate a distinct
+        // generation instead of sending to A's retired worker.
+        var firstPort = new CompletableFuture<Integer>();
+        var secondPort = new CompletableFuture<Integer>();
+        var firstDrain = new CompletableFuture<Void>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                String text = toString(StandardCharsets.UTF_8);
+                var numeric = text.lines().filter(s -> s.matches("[0-9]+"))
+                        .map(Integer::parseInt).toList();
+                if (!numeric.isEmpty() && !firstPort.isDone()) firstPort.complete(numeric.get(0));
+                if (numeric.size() >= 2 && !secondPort.isDone()) secondPort.complete(numeric.get(1));
+                if (text.contains("first-shutdown-completed")) firstDrain.complete(null);
+            }
+        };
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "ok");
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val first = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val second = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(first.port);
+                  stdio.println(second.port);
+                  val firstRequest = await first.accept();
+                  val firstCompleted = firstRequest.completion;
+                  handler.dispatch(rt mut borrow firstRequest);
+                  await firstCompleted;
+                  await first.shutdown(0);
+                  stdio.println("first-shutdown-completed");
+                  val secondRequest = await second.accept();
+                  val secondCompleted = secondRequest.completion;
+                  handler.dispatch(rt mut borrow secondRequest);
+                  await secondCompleted;
+                  await second.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  return;
+                }
+                """;
+        try (Context context = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                .out(output).build();
+             ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> client = clients.submit(() -> {
+                try {
+                    int a = firstPort.get(10, TimeUnit.SECONDS);
+                    int b = secondPort.get(10, TimeUnit.SECONDS);
+                    assertNotEquals(a, b, "listeners must be separately bound");
+                    assertEquals(200, request(a, "GET", "/", "").statusCode());
+                    firstDrain.get(15, TimeUnit.SECONDS);
+                    assertEquals(200, request(b, "GET", "/", "").statusCode());
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            try {
+                context.eval(Source.newBuilder(OresLanguage.ID, source,
+                        "native-http-shared-pool-shutdown.atto").build());
+                client.get(15, TimeUnit.SECONDS);
+            } finally {
+                client.cancel(true);
+            }
+        }
+        assertTrue(firstDrain.isDone(), "first listener never completed carrier drain");
+        assertTrue(output.toString(StandardCharsets.UTF_8).endsWith("2\\n0\\n"),
+                "sealed worker must be replaced, not reused: " + output.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
