@@ -88,27 +88,58 @@ verify() {
   echo "ATTO_OWNED_MATRIX_RECEIPT_PASS demo=$demo_sha compiler=$compiler_sha cases=7 JIT_ONLY_NOT_AOT"
 }
 self_test() {
-  local t
+  local t name entry reason
   t="$(mktemp -d)"
   trap 'rm -rf -- "$t"' EXIT
-  local p="$t/cases.tsv" n
+  mkdir -p "$t/native-multifile/negative" "$t/native-multifile/module"
+  local p="$t/cases.tsv"
   printf 'case\tphase\texit\tverdict\n' > "$p"
-  for n in linked-function linked-module-class ownership-valid; do
-    printf '%s\tcheck\t0\tPASS\n%s\tguest\t0\tPASS\n' "$n" "$n" >> "$p"
+  for name in linked-function linked-module-class ownership-valid; do
+    printf '%s\tcheck\t0\tPASS\n%s\tguest\t0\tPASS\n' "$name" "$name" >> "$p"
+    printf '0\n' > "$t/$name-check.exit"
+    printf '0\n' > "$t/$name-guest.exit"
+    : > "$t/$name-check.stdout"
+    : > "$t/$name-check.stderr"
+    printf '42' > "$t/$name-guest.stdout"
+    : > "$t/$name-guest.stderr"
   done
-  for n in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
-    printf '%s\tcheck\t1\tPASS\n' "$n" >> "$p"
+  for name in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
+    printf '%s\tcheck\t1\tPASS\n' "$name" >> "$p"
+    printf '1\n' > "$t/$name-check.exit"
+    : > "$t/$name-check.stdout"
+    case "$name" in
+      missing-import) entry="$t/native-multifile/negative/missing-helper.atto"; reason='import foo does not resolve to a file' ;;
+      ambiguous-import) entry="$t/native-multifile/negative/ambiguous-import.atto"; reason='collide is ambiguous in module' ;;
+      ownership-conflict) entry="$t/native-multifile/negative/ownership-conflict.atto"; reason='overlapping mutable borrow arguments' ;;
+      aliased-module-leak) entry="$t/native-multifile/module/alias-leak.atto"; reason='unknown class transport_contract.Request' ;;
+    esac
+    printf '%s:1:1: error: %s\n' "$entry" "$reason" > "$t/$name-check.stderr"
   done
-  # Source-free mutation gates never claim compiler or guest execution.
-  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'missing receipt streams accepted'; exit 1; fi
+  check_cases "$t" "$t" || { reject "valid synthetic matrix rejected"; exit 1; }
+  local reject_count=0
   printf '\n' >> "$p"
-  if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'extra test row accepted'; exit 1; fi
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'extra test row accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
   sed -i '$d' "$p"
   sed -i 's/linked-function\tcheck\t0\tPASS/linked-function\tcheck\t1\tPASS/' "$p"
-  if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'fake success exit accepted'; exit 1; fi
-  echo 'ATTO_OWNED_MATRIX_RECEIPT_HOST_SELF_TEST_PASS rejected=3 NOT_EXECUTED'
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'fake success ledger accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  sed -i 's/linked-function\tcheck\t1\tPASS/linked-function\tcheck\t0\tPASS/' "$p"
+  printf '124\n' > "$t/ambiguous-import-check.exit"
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'timeout exit accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  printf '1\n' > "$t/ambiguous-import-check.exit"
+  printf 'noise' >> "$t/ownership-valid-guest.stdout"
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'bad stdout accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  printf '42' > "$t/ownership-valid-guest.stdout"
+  printf 'java.lang.RuntimeException\n' > "$t/missing-import-check.stderr"
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'JVM exception accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  echo "ATTO_OWNED_MATRIX_RECEIPT_HOST_SELF_TEST_PASS accepts=1 rejects=$reject_count NOT_EXECUTED"
 }
-case "$${1:-}" in
+
+case "${1:-}" in
   --self-test) (( $# == 1 )) || exit 64; self_test ;;
   --verify) (( $# == 5 )) || exit 64; verify "$2" "$3" "$4" "$5" ;;
   *) echo 'usage: verify-atto-owned-matrix.sh --self-test | --verify RECEIPTS DEMO_SHA COMPILER_SHA DEMO_DIR' >&2; exit 64 ;;
