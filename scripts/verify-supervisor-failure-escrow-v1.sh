@@ -22,5 +22,6 @@ java -cp "$work" dev.oreslang.runtime.SupervisorEscrowDataAdmissionRaceStandalon
 grep -Fxq 'PASS SupervisorEscrowDataAdmissionRaceStandalone attempts=65536 checks=76' "$work/race.txt"
 java -cp "$work" dev.oreslang.runtime.SupervisorAtomicChildAdmissionStandalone | tee "$work/atomic.txt"
 grep -Eq '^PASS SupervisorAtomicChildAdmissionStandalone attempts=16384 checks=[1-9][0-9]*
+echo "VERIFIED exact-blob JDK host-only: $source_blob $test_blob $race_blob $atomic_blob"
  "$work/atomic.txt"
 echo "VERIFIED exact-blob JDK host-only: $source_blob $test_blob $race_blob $atomic_blob"
