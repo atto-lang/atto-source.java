@@ -50,4 +50,25 @@ final class AotDispatchGuestV1Test {
         }
         assertEquals("121020", out.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void scalarGenericIntReuseRunsWithAndWithoutGuestJit() throws Exception {
+        String source = Files.readString(
+                Path.of("tests/fixtures/dispatch/generic_i64_reuse_v1.atto"),
+                StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        for (ExecutionProfile profile : new ExecutionProfile[] {
+                ExecutionProfile.serverJit(),
+                new ExecutionProfile(ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER)}) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (Context context = IsolatePolicy.developer()
+                    .restrictedContextBuilder(profile).out(out).build()) {
+                context.eval(Source.newBuilder(
+                                OresLanguage.ID, source, "generic_i64_reuse_v1.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).build());
+            }
+            assertEquals("2022", out.toString(StandardCharsets.UTF_8),
+                    "generic interpreter semantics must not depend on guest JIT");
+        }
+    }
 }
