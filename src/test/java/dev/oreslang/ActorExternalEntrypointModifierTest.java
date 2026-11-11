@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * execution, actor bootstrap, a mailbox permit, or cross-backend parity.
  */
 final class ActorExternalEntrypointModifierTest {
-    private static final String ACTOR = "namespace test_entry; define actor Worker as end\n";
+    private static final String ACTOR = "namespace test_entry; declare actor Worker;\n";
 
     private static Ast.Program parse(String method) {
         return Parser.parse(ACTOR + method);
