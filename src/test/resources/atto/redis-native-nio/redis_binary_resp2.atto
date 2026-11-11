@@ -6,37 +6,37 @@
 // Binary values/keys use List<int> (0..255); owned Bytes still needs a runtime type.
 
 define class KvCommand as
-  final int kind = 0;
-  final List<int> key = [];
-  final List<int> value = [];
+  pub final int kind = 0;
+  pub final List<int> key = [];
+  pub final List<int> value = [];
 end
 
 define class KvReply as
-  final int kind = 0;
-  final List<int> value = [];
+  pub final int kind = 0;
+  pub final List<int> value = [];
 end
 
 define class KvEntry as
-  final List<int> key = [];
-  final List<int> value = [];
-  final bool live = false;
+  pub final List<int> key = [];
+  pub final List<int> value = [];
+  pub final bool live = false;
 end
 
 define class RespReader as
-  let int phase = 0;
-  let int argc = 0;
-  let int argc_digits = 0;
-  let int arg_index = 0;
-  let int bulk_length = 0;
-  let int bulk_digits = 0;
-  let int body_read = 0;
-  let int bytes_total = 0;
-  let List<int> body = [];
-  let List<List<int>> args = [];
+  pub let int phase = 0;
+  pub let int argc = 0;
+  pub let int argc_digits = 0;
+  pub let int arg_index = 0;
+  pub let int bulk_length = 0;
+  pub let int bulk_digits = 0;
+  pub let int body_read = 0;
+  pub let int bytes_total = 0;
+  pub let mut List<int> body = [];
+  pub let mut List<List<int>> args = [];
 end
 
 pub fnc copy_bytes(borrow List<int> bytes): List<int> {
-  let List<int> copied = [];
+  let mut List<int> copied = [];
   let int i = 0;
   loop {
     if i == bytes.size then return copied; fi
@@ -185,7 +185,7 @@ pub fnc reset_resp2(borrow mut RespReader r): void {
 // immutable byte snapshots is the interim storage index until the real
 // owned Bytes hashing primitive replaces this O(256) scan.
 define actor BinaryKvActor as
-  let List<KvEntry> entries;
+  let mut List<KvEntry> entries;
   on_start(): void {
     self.entries = [];
     return;
@@ -258,7 +258,7 @@ end
 // RESP bulk encoding in Atto: decimal length with no host itoa, UTF-8 or
 // parser shortcuts. The initial v1 byte API is still List<int>, not Bytes.
 pub fnc encode_bulk(borrow List<int> value): List<int> {
-  let List<int> out = [36];
+  let mut List<int> out = [36];
   let int left = value.size;
   let int divisor = 10000;
   let bool started = false;
