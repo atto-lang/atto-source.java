@@ -4434,10 +4434,39 @@ public final class Parser {
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseRange();
         if (!match(QUESTION)) return condition;
-        Ast.Expr whenTrue = check(LBRACE) ? parseValueBlock() : parseAssignment();
+        Ast.Expr whenTrue = parseTernaryArm(true);
         consume(COLON, "expected ':' in ternary expression");
-        Ast.Expr whenFalse = check(LBRACE) ? parseValueBlock() : parseConditional();
+        Ast.Expr whenFalse = parseTernaryArm(false);
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /**
+     * Only directly in a ternary arm, a bare zero-parameter block lambda is
+     * shorthand for its immediate invocation:
+     *
+     *     condition ? || -> { return one(); } : || -> { return two(); }
+     *
+     * Both arms normalize to CallExpr(LambdaExpr, []), so the selected arm
+     * executes exactly once using the existing typed call and capture rules.
+     * Parenthesized lambdas retain function-value semantics, and ordinary
+     * lambdas outside ?: are never implicitly invoked.
+     */
+    private Ast.Expr parseTernaryArm(boolean whenTrue) {
+        if (check(LBRACE)) return parseValueBlock();
+        if (startsBareZeroArgumentTernaryThunk()) {
+            Ast.LambdaExpr thunk = parsePipeLambda(false);
+            return new Ast.CallExpr(thunk, List.of());
+        }
+        return whenTrue ? parseAssignment() : parseConditional();
+    }
+
+    private boolean startsBareZeroArgumentTernaryThunk() {
+        if (!check(PIPE) || !checkNext(PIPE) || current + 3 >= tokens.size()) {
+            return false;
+        }
+        return adjacent(tokens.get(current), tokens.get(current + 1))
+                && tokens.get(current + 2).type() == ARROW
+                && tokens.get(current + 3).type() == LBRACE;
     }
 
     private Ast.Expr parseRange() {
