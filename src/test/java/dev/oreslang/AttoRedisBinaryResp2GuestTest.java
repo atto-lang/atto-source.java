@@ -244,9 +244,9 @@ final class AttoRedisBinaryResp2GuestTest {
                     command("QUIT")));
             client.getOutputStream().flush();
             expect(client, cat(
-                    ascii("+OK\\r\\n"), ascii("+OK\\r\\n"), ascii("+OK\\r\\n"),
+                    ascii("+OK\r\n"), ascii("+OK\r\n"), ascii("+OK\r\n"),
                     bulk(payload), bulk(keyA), bulk(empty),
-                    ascii(":1\\r\\n"), bulk(keyA), ascii("+OK\\r\\n")),
+                    ascii(":1\r\n"), bulk(keyA), ascii("+OK\r\n")),
                     "binary identity, zero-length key, and 1024-byte bulk length");
             assertClosed(client);
         });
@@ -257,15 +257,15 @@ final class AttoRedisBinaryResp2GuestTest {
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     void rejectNegativeBulkAndIncorrectBulkTrailers() throws Exception {
         runGuest(client -> {
-            client.getOutputStream().write(ascii("*2\\r\\n$3\\r\\nGET\\r\\n$-1\\r\\n"));
+            client.getOutputStream().write(ascii("*2\r\n$3\r\nGET\r\n$-1\r\n"));
             client.getOutputStream().flush();
-            expect(client, ascii("-ERR protocol\\r\\n"), "no null bulk requests");
+            expect(client, ascii("-ERR protocol\r\n"), "no null bulk requests");
             assertClosed(client);
         });
         runGuest(client -> {
-            client.getOutputStream().write(ascii("*1\\r\\n$4\\r\\nPING\\rX"));
+            client.getOutputStream().write(ascii("*1\r\n$4\r\nPING\rX"));
             client.getOutputStream().flush();
-            expect(client, ascii("-ERR protocol\\r\\n"), "bad bulk trailer");
+            expect(client, ascii("-ERR protocol\r\n"), "bad bulk trailer");
             assertClosed(client);
         });
         System.out.println("ATTO_REDIS_BINARY_BAD_TRAILER_NEGATIVE_BULK=PASS");
