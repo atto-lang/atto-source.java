@@ -1004,6 +1004,26 @@ public final class ActorRuntime implements AutoCloseable {
                 "supervisor CONTROL dispatcher returned null Future");
     }
 
+    /**
+     * Opaque physical CONTROL turn identity. Caller-visible references to an
+     * ActorSupervisor cannot mint or replay this private object. The same
+     * worker thread executing a later CONTROL callback receives a new token.
+     */
+    Object captureSupervisorStateControlTurn(ActorSupervisor supervisor) {
+        requireSupervisorStateHostContext(supervisor);
+        return CURRENT_STATE_SUPERVISOR_CONTROL.get();
+    }
+
+    void requireSupervisorStateControlTurn(
+            ActorSupervisor supervisor, Object capturedTurn) {
+        requireSupervisorStateHostContext(supervisor);
+        if (capturedTurn == null
+                || CURRENT_STATE_SUPERVISOR_CONTROL.get() != capturedTurn) {
+            throw new SecurityException(
+                    "actor state scope escaped its original physical CONTROL turn");
+        }
+    }
+
     /** Strict principal and carrier verification at every borrow/use/release. */
     void requireSupervisorStateHostContext(ActorSupervisor supervisor) {
         requireSupervisorContext("redeem, use, or release a state RW delegation");
