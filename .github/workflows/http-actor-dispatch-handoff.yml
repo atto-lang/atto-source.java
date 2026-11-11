@@ -3,8 +3,10 @@ on:
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/HttpPooledWorkerAdmissionFence.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/HttpPooledWorkerAdmissionFenceTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorCarrierQuiescencePollingTest.java"
       - ".github/workflows/http-actor-dispatch-handoff.yml"
 permissions:
@@ -37,7 +39,7 @@ jobs:
           cache: maven
       - name: Execute native HTTP host and actor handoff regressions
         run: |
-          mvn -B -ntp -Dtest=NativeHttpTest,ActorCarrierQuiescencePollingTest test
+          mvn -B -ntp -Dtest=NativeHttpTest,ActorCarrierQuiescencePollingTest,HttpPooledWorkerAdmissionFenceTest test
       - name: Print Surefire result inventory (never synthesize success)
         if: always()
         run: |
