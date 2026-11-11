@@ -270,7 +270,7 @@ final class ActorStateReadWriteLoansTest {
             assertTrue(waiting.stream().allMatch(java.util.concurrent.Future::isDone));
             assertFalse(active.heldBy(owner, round));
             assertThrows(IllegalStateException.class,
-                    () -> state.readFloat(active, owner, round, "weight"));
+                    () -> state.readFloat(active, owner, state.generation(), "weight"));
             assertFalse(state.tryClearRetiredScalarStorage());
             active.close();
             assertTrue(state.tryClearRetiredScalarStorage());
