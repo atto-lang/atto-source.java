@@ -2,9 +2,15 @@ package dev.oreslang.runtime;
 
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.ArrayList;
 
 /**
  * Runtime-local, host-only virtual-actor generation authority. The exact
@@ -24,9 +30,126 @@ import java.util.Objects;
 final class VirtualActorRuntimeGenerationFence {
     private final Object monitor = new Object();
     private final int capacity;
-    private final Map<VirtualActorActivationRegistry.Identity, Slot> slots = new HashMap<>();
+    private static final Comparator<VirtualActorActivationRegistry.Identity> ID_ORDER =
+            Comparator.comparing(VirtualActorActivationRegistry.Identity::domain)
+                    .thenComparing(VirtualActorActivationRegistry.Identity::declaration)
+                    .thenComparing(VirtualActorActivationRegistry.Identity::key);
+    private final NavigableMap<VirtualActorActivationRegistry.Identity, Slot> slots =
+            new TreeMap<>(ID_ORDER);
     private final Map<ActorRuntime.ActorId, VirtualActorActivationRegistry.Identity> byActor =
             new HashMap<>();
+    // Metadata revision, NOT another activation generation authority.
+    private long directoryRevision = 1L;
+
+    /** Conservative host inspection: PHYSICAL_OWNERSHIP_HELD includes STOP in progress. */
+    enum DirectoryPhase {
+        ACTIVATING, PHYSICAL_OWNERSHIP_HELD, TERMINAL_PENDING,
+        QUARANTINED, PASSIVATED, ABORTED
+    }
+
+    record DirectoryEntry(
+            VirtualActorActivationRegistry.Identity identity,
+            ActorRuntime.SupervisorId supervisor,
+            ActorRuntime.ActorGroupId group,
+            long generation,
+            DirectoryPhase phase,
+            Optional<ActorRuntime.ActorId> physicalActor,
+            boolean groupClosed) {
+        DirectoryEntry {
+            Objects.requireNonNull(identity, "identity");
+            Objects.requireNonNull(supervisor, "supervisor");
+            Objects.requireNonNull(group, "group");
+            Objects.requireNonNull(phase, "phase");
+            physicalActor = Objects.requireNonNull(physicalActor, "physicalActor");
+            if (generation <= 0)
+                throw new IllegalArgumentException("invalid directory generation");
+        }
+    }
+
+    record DirectoryPage(List<DirectoryEntry> entries, long revision,
+                         Optional<VirtualActorActivationRegistry.Identity> nextAfter) {
+        DirectoryPage {
+            entries = List.copyOf(entries);
+            nextAfter = Objects.requireNonNull(nextAfter, "nextAfter");
+            if (revision <= 0) throw new IllegalArgumentException("invalid directory revision");
+        }
+    }
+
+    static final class StaleDirectoryPageException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+        StaleDirectoryPageException() { super("virtual actor directory page is stale"); }
+    }
+
+    private void advanceDirectoryRevision() {
+        if (directoryRevision == Long.MAX_VALUE)
+            throw new IllegalStateException("virtual actor directory revision exhausted");
+        directoryRevision++;
+    }
+
+    private static DirectoryEntry directoryEntry(
+            VirtualActorActivationRegistry.Identity identity, Slot slot) {
+        DirectoryPhase phase = slot.terminalControlFailed
+                ? DirectoryPhase.QUARANTINED
+                : slot.terminalControlPending || slot.terminalDecisionInFlight
+                    ? DirectoryPhase.TERMINAL_PENDING
+                    : slot.physical != null
+                        ? DirectoryPhase.PHYSICAL_OWNERSHIP_HELD
+                        : slot.pending != null
+                            ? DirectoryPhase.ACTIVATING
+                            : slot.lastRetiredGeneration > 0
+                                ? DirectoryPhase.PASSIVATED
+                                : DirectoryPhase.ABORTED;
+        return new DirectoryEntry(identity, slot.supervisor, slot.lastGroup,
+                slot.generation, phase, Optional.ofNullable(slot.physical),
+                slot.lastGroupClosed);
+    }
+
+    /** Pure observation: does not resolve a ref, allocate a slot, or activate. */
+    Optional<DirectoryEntry> inspectDirectory(
+            ActorRuntime.SupervisorId supervisor,
+            VirtualActorActivationRegistry.Identity identity) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        validate(identity);
+        synchronized (monitor) {
+            Slot slot = slots.get(identity);
+            return slot == null || !slot.supervisor.equals(supervisor)
+                    ? Optional.empty() : Optional.of(directoryEntry(identity, slot));
+        }
+    }
+
+    /**
+     * Bounded, supervisor-and-tenant-scoped page. The revision changes on
+     * every lifecycle mutation; a cursor pinned to an old revision fails closed.
+     * No separate activation counters, mirror maps or guest state are read.
+     */
+    DirectoryPage listDirectory(
+            ActorRuntime.SupervisorId supervisor, String domain, int limit,
+            long expectedRevision, VirtualActorActivationRegistry.Identity after) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        validatePart(domain, "domain", 128);
+        if (limit < 1 || limit > 64 || expectedRevision < 0)
+            throw new IllegalArgumentException("invalid virtual actor directory page request");
+        if (after != null) {
+            validate(after);
+            if (!domain.equals(after.domain()))
+                throw new SecurityException("directory page cursor outside tenant");
+        }
+        synchronized (monitor) {
+            if (expectedRevision != 0 && expectedRevision != directoryRevision)
+                throw new StaleDirectoryPageException();
+            var rows = after == null ? slots.entrySet() : slots.tailMap(after, false).entrySet();
+            List<DirectoryEntry> entries = new ArrayList<>(limit);
+            boolean more = false;
+            for (var row : rows) {
+                if (!domain.equals(row.getKey().domain())
+                        || !supervisor.equals(row.getValue().supervisor)) continue;
+                if (entries.size() == limit) { more = true; break; }
+                entries.add(directoryEntry(row.getKey(), row.getValue()));
+            }
+            return new DirectoryPage(entries, directoryRevision,
+                    more ? Optional.of(entries.getLast().identity()) : Optional.empty());
+        }
+    }
 
     private static final class Slot {
         final ActorRuntime.SupervisorId supervisor;
