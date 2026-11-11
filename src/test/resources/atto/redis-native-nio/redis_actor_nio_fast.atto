@@ -85,7 +85,9 @@ pub async routine main(): void {
       // Exactly one typed reply envelope per actor command, including GET hits.
       // No second mailbox wait for VALUE; status and payload share one turn.
       val output = (await worker.outputs.next()).value.unwrap();
-      await socket.write_resp2_hex_async(output.value[0], output.value[1]);
+      // Explicitly preserve the typed mailbox payload before tuple indexing.
+      const Tuple<string,string> reply = output.value;
+      await socket.write_resp2_hex_async(reply[0], reply[1]);
     fi
   }
 }
