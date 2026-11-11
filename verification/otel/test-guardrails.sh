@@ -88,5 +88,30 @@ fi
 if otel_guardrails_run_guest "$output"; then
   fail 'empty guest command admitted'
 fi
-echo 'OTEL_SOURCE_ONLY_GUARDRAILS_PASS (class tamper, symlinks, bounded output, nonzero failure)'
+
+# Native-host checks accept an ordinary ELF without managed Java dependencies,
+# but are explicitly SOURCE-ONLY. /bin/true is NOT a GraalVM or Oreslang binary.
+elf_digest="$(otel_guardrails_native_host_digest /bin/true)" ||
+  fail 'ELF without JVM dependencies denied'
+[[ "$elf_digest" == "$(sha256sum /bin/true | cut -d' ' -f1)" ]] ||
+  fail 'native ELF digest does not bind bytes'
+ln -s /bin/true "$work/fake-native-link"
+if otel_guardrails_native_host_digest "$work/fake-native-link" >/dev/null 2>&1; then
+  fail 'ELF symlink was accepted'
+fi
+printf '#!/bin/sh\nexit 0\n' > "$work/fake-native-script"
+chmod +x "$work/fake-native-script"
+if otel_guardrails_native_host_digest "$work/fake-native-script" >/dev/null 2>&1; then
+  fail 'script launcher masqueraded as native ELF'
+fi
+if command -v java >/dev/null; then
+  java_bin="$(readlink -f "$(command -v java)")"
+  if readelf -d "$java_bin" 2>/dev/null | grep -Eq 'Shared library: \\[(libjvm|libjli|libjava)\\.so'; then
+    if otel_guardrails_native_host_digest "$java_bin" >/dev/null 2>&1; then
+      fail 'managed Java launcher was accepted as Native Image ELF'
+    fi
+  fi
+fi
+
+echo 'OTEL_SOURCE_ONLY_GUARDRAILS_PASS (class/JAR tamper, ELF/JVM-launcher denial, symlinks, bounded output, nonzero failure)'
 echo 'NO_COMPILER_GUEST_EXECUTED_OR_CERTIFIED'
