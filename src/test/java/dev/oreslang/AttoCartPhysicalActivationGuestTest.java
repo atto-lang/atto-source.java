@@ -27,6 +27,11 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -246,6 +251,91 @@ final class AttoCartPhysicalActivationGuestTest {
                 assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
                         inspect(directory, session, logical).orElseThrow().lifecycle());
             }
+            group.close();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void guestCartOverflowTriggersSanitizedTerminalControlAndFencesReactivation()
+            throws Exception {
+        String source = fixture("cart_ops.atto");
+        try (ExecutorService control = Executors.newSingleThreadExecutor();
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     ActorRuntime.DispatcherConfig.defaults(),
+                     ActorRuntime.TurnExecutor.direct(),
+                     task -> {
+                         var admission = new dev.oreslang.runtime.OresFuture<Void>();
+                         control.execute(() -> {
+                             try {
+                                 task.run();
+                                 admission.completeFromRuntime(null);
+                             } catch (Throwable problem) {
+                                 admission.failFromRuntime(problem);
+                             }
+                         });
+                         return admission;
+                     })) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var identity = new VirtualActorActivationRegistry.Identity(
+                    DOMAIN, "Cart", "overflow-terminal");
+            AtomicReference<ActorRuntime.VirtualActorTerminalNotice> delivered =
+                    new AtomicReference<>();
+            CountDownLatch notified = new CountDownLatch(1);
+            CompletableFuture<Void> supervisorPolicy = new CompletableFuture<>();
+            group.installVirtualActorTerminalHandler(notice -> {
+                delivered.set(notice);
+                notified.countDown();
+                return supervisorPolicy;
+            });
+            AtomicReference<CompiledCartTurn> ownedGuest = new AtomicReference<>();
+            AtomicLong lastSuccessful = new AtomicLong(-1L);
+            assertEquals(1L, group.reserveNextVirtualActorGeneration(identity));
+            var physical = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    actorContext -> {
+                        var guest = new CompiledCartTurn(source);
+                        ownedGuest.set(guest);
+                        return (Long delta, ActorRuntime.ActorContext<Long> ctx) ->
+                                lastSuccessful.set(guest.apply(delta));
+                    });
+            physical.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(physical, identity, 1L);
+            physical.send(Long.MAX_VALUE);
+            physical.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(Long.MAX_VALUE, lastSuccessful.get());
+
+            physical.send(1L); // Checked i64 guest overflow must terminate.
+            assertThrows(ExecutionException.class,
+                    () -> physical.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(notified.await(5, TimeUnit.SECONDS),
+                    "real .atto guest failure must reach supervisor CONTROL");
+            var receipt = delivered.get();
+            assertEquals(identity, receipt.identity());
+            assertEquals(physical.id(), receipt.actorId());
+            assertEquals(1L, receipt.generation());
+            assertEquals(ActorRuntime.VirtualActorTerminalKind.TERMINAL_FAILURE, receipt.kind());
+            assertFalse(receipt.toString().contains("9223372036854775807"),
+                    "CONTROL cannot leak guest data or values");
+            assertThrows(IllegalStateException.class,
+                    () -> group.reserveNextVirtualActorGeneration(identity),
+                    "pending asynchronous CONTROL must block a newer generation");
+
+            ownedGuest.get().close(); // After physical finalization, not before.
+            supervisorPolicy.complete(null);
+            long successor = -1L;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline) {
+                try {
+                    successor = group.reserveNextVirtualActorGeneration(identity);
+                    break;
+                } catch (IllegalStateException pending) {
+                    Thread.sleep(10);
+                }
+            }
+            assertEquals(2L, successor, "CONTROL acknowledgement should release restart gate");
+            group.abortVirtualActorGeneration(identity, successor);
             group.close();
         }
     }
