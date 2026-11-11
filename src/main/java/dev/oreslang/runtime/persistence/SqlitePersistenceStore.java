@@ -145,8 +145,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
     }
     /**
      * Called only by the trusted batch writer after commit(). The receipt
-     * alone never authorizes state publication. The current epoch fence and durable operation record share one
-     * short SQLite IMMEDIATE transaction, serialized with competing writers.
+     * alone never authorizes state publication. A short SQLite IMMEDIATE
+     * transaction serializes the current epoch fence and durable operation
+     * record against competing epoch grants and writes.
      */
     @Override public synchronized boolean verifyDurableCommit(Write write, Result receipt)
             throws SQLException {
@@ -163,8 +164,7 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 || !receipt.operationId().equals(write.operationId())
                 || write.expectedVersion() == Long.MAX_VALUE
                 || receipt.version() != write.expectedVersion() + 1L) return false;
-        // Serialize the epoch check and persisted operation witness against
-        // concurrent writers; the actor carrier never invokes this JDBC path.
+        // The JDBC blocking path is restricted to the trusted storage worker.
         begin();
         try {
             boolean valid = false;
@@ -197,19 +197,16 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
     /**
-     * Activation-scoped restore. A short SQLite IMMEDIATE transaction serializes
-     * fence validation and recovered state reads against competing writers;
-     * no external connection can rotate epoch between the check and reads.
-     * A trusted host may still call load() for migration or inspection;
-     * actor reactivation must use this fenced entry point instead.
+     * Activation-scoped restore. A short SQLite IMMEDIATE transaction
+     * serializes fence validation and recovered state reads against competing
+     * writers; no connection can rotate epoch between the fence and journal
+     * reads. A trusted host may still use load() for inspection; actor
+     * reactivation must use this fenced entry point instead.
      */
     public synchronized Recovery loadFenced(Identity id, long trustedEpoch) throws SQLException {
         checkOpen();
         Objects.requireNonNull(id);
         if (trustedEpoch <= 0) throw new IllegalArgumentException("invalid restore epoch");
-        // Serialize with competing epoch grants/commits across JDBC connections.
-        // This short write reservation runs only on the trusted blocking
-        // storage worker, never on an actor execution carrier.
         begin();
         try {
             if (epoch(id) != trustedEpoch) throw new SecurityException("STALE_EPOCH");
@@ -240,25 +237,44 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
     /** Called only while the owning Connection is inside an explicit read transaction. */
     private Recovery readRestoreWithinCurrentTransaction(Identity id) throws SQLException {
         long version=0, snapshotVersion=0;int snapshotSchema=0;byte[] snapshot=new byte[0];
-        try(PreparedStatement q=db.prepareStatement("SELECT version,snapshot_version,snapshot_schema,snapshot FROM state WHERE tenant=? AND actor=? AND slot=?")) {
+        try(PreparedStatement q=db.prepareStatement("SELECT version,snapshot_version,snapshot_schema,length(snapshot),substr(snapshot,1,1048577) "
+            + "FROM state WHERE tenant=? AND actor=? AND slot=?")) {
             bindKey(q,id);
             try(ResultSet r=q.executeQuery()){
-                if(r.next()){version=r.getLong(1);snapshotVersion=r.getLong(2);snapshotSchema=r.getInt(3);
-                    byte[] bytes=r.getBytes(4);if(bytes!=null)snapshot=bytes;}
+                if(r.next()){
+                    version=r.getLong(1);snapshotVersion=r.getLong(2);snapshotSchema=r.getInt(3);
+                    int bytesLength=r.getInt(4);
+                    if(bytesLength>1048576)throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                    byte[] bytes=r.getBytes(5);
+                    if(version<0 || snapshotVersion<0 || snapshotVersion>version || snapshotSchema<0 ||
+                       (snapshotVersion>0 && (snapshotSchema==0 || bytes==null)) ||
+                       (snapshotVersion==0 && (snapshotSchema!=0 || bytes!=null)) ||
+                       (bytes!=null && bytes.length>1048576))
+                        throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                    if(bytes!=null)snapshot=bytes;
+                }
             }
         }
         List<Event> events=new ArrayList<>();
-        try(PreparedStatement q=db.prepareStatement("SELECT version,schema,payload FROM events WHERE tenant=? AND actor=? AND slot=? AND version>? ORDER BY version ASC")){
+        try(PreparedStatement q=db.prepareStatement("SELECT version,schema,length(payload),substr(payload,1,1048577) "
+            + "FROM events WHERE tenant=? AND actor=? AND slot=? AND version>? ORDER BY version ASC")){
             bindKey(q,id);q.setLong(4,snapshotVersion);
             try(ResultSet r=q.executeQuery()){
                 long expected=snapshotVersion;
+                long replayBytes=0;
                 while(r.next()){
                     long next=r.getLong(1);
                     int eventSchema=r.getInt(2);
                     if(expected==Long.MAX_VALUE || next!=expected+1 || eventSchema<=0)
                         throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
-                    byte[] payload=r.getBytes(3);
+                    int eventLength=r.getInt(3);
+                    if(eventLength>1048576 || eventLength>16777216L-replayBytes)
+                        throw new SQLException("ACTOR_EVENT_REPLAY_BYTES_LIMIT");
+                    byte[] payload=r.getBytes(4);
                     if(payload==null)throw new SQLException("NULL_ACTOR_EVENT");
+                    if(payload.length>1048576 || payload.length>16777216L-replayBytes)
+                        throw new SQLException("ACTOR_EVENT_REPLAY_BYTES_LIMIT");
+                    replayBytes+=payload.length;
                     events.add(new Event(next,eventSchema,payload));
                     if(events.size()>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
                     expected=next;

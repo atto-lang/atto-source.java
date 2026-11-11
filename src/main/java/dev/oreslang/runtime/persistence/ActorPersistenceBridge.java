@@ -2,6 +2,7 @@ package dev.oreslang.runtime.persistence;
 
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresFuture;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import dev.oreslang.runtime.persistence.BatchPersistenceSidecar.*;
@@ -94,6 +95,107 @@ public final class ActorPersistenceBridge {
             assertBoundTurn(activation);
             continuation.accept(receipt, failure);
         });
+    }
+
+    /**
+     * Compiler-runtime entry point for a logical event-sourced command.
+     * The actor turn owns the immutable candidate; v2 SQLite work runs ONLY
+     * on the bounded provider worker. Completion returns through the same
+     * incarnation's actor execution lease, not a storage worker callback.
+     *
+     * A durable command receipt authorizes the caller to publish its candidate
+     * state on this turn. A duplicate receipt means the actor must reconcile
+     * already recovered state rather than applying the events again.
+     */
+    public static void onCommandCompletionInCurrentActor(
+            Activation activation, SqliteCommandPersistence provider,
+            String operationId, long expectedVersion, int schemaVersion,
+            byte[] commandBytes, java.util.List<byte[]> events, byte[] resultBytes,
+            BiConsumer<? super SqliteCommandPersistence.Receipt, ? super Throwable> continuation) {
+        Objects.requireNonNull(activation);
+        Objects.requireNonNull(provider);
+        Objects.requireNonNull(continuation);
+        assertBoundTurn(activation);
+        SqliteCommandPersistence.Identity id = commandIdentity(activation);
+        SqliteCommandPersistence.Command command = new SqliteCommandPersistence.Command(
+            id, operationId, activation.epoch, expectedVersion, schemaVersion,
+            commandBytes, events, resultBytes);
+        ActorRuntime.ContinuationTarget target =
+            activation.runtime.captureCurrentContinuationTarget();
+        // An append response is not sufficient evidence for publishing a
+        // candidate. Read the authoritative command ledger again under the
+        // current epoch fence on the provider worker. This also fails closed
+        // if a supervisor advances the epoch after COMMIT but before proof.
+        // Both operations are async: no carrier thread calls JDBC.
+        OresFuture<SqliteCommandPersistence.Receipt> future =
+            OresFuture.from(provider.appendAsync(command).thenCompose(receipt ->
+                provider.verifyAsync(id, operationId, activation.epoch, command.commandBytes())
+                    .thenApply(proof -> {
+                        if (receipt == null || proof == null ||
+                            !receipt.operationId().equals(operationId) ||
+                            !proof.operationId().equals(operationId) ||
+                            receipt.firstVersion() != proof.firstVersion() ||
+                            receipt.lastVersion() != proof.lastVersion() ||
+                            receipt.eventCount() != proof.eventCount() ||
+                            !Arrays.equals(receipt.resultBytes(), proof.resultBytes())) {
+                            throw new SqliteCommandPersistence.CommandError("UNVERIFIABLE_COMMIT");
+                        }
+                        // Preserve append's duplicate flag; the verification
+                        // receipt is a historical duplicate even for a new
+                        // command that has just committed successfully.
+                        return receipt;
+                    })
+            ));
+        activation.runtime.enqueueOnCompletion(future, target, (receipt, failure) -> {
+            assertBoundTurn(activation);
+            continuation.accept(receipt, failure);
+        });
+    }
+
+    /** Lost-ACK reconciliation must consult the provider's epoch-fenced ledger. */
+    public static void onCommandProofInCurrentActor(
+            Activation activation, SqliteCommandPersistence provider,
+            String operationId, byte[] commandBytes,
+            BiConsumer<? super SqliteCommandPersistence.Receipt, ? super Throwable> continuation) {
+        Objects.requireNonNull(activation);
+        Objects.requireNonNull(provider);
+        Objects.requireNonNull(continuation);
+        assertBoundTurn(activation);
+        SqliteCommandPersistence.Identity id = commandIdentity(activation);
+        byte[] owned = Objects.requireNonNull(commandBytes).clone();
+        ActorRuntime.ContinuationTarget target =
+            activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<SqliteCommandPersistence.Receipt> future =
+            OresFuture.from(provider.verifyAsync(id, operationId, activation.epoch, owned));
+        activation.runtime.enqueueOnCompletion(future, target, (receipt, failure) -> {
+            assertBoundTurn(activation);
+            continuation.accept(receipt, failure);
+        });
+    }
+
+    /** Fenced replay happens on the worker and resumes on the actor's lane. */
+    public static void onCommandRecoveryInCurrentActor(
+            Activation activation, SqliteCommandPersistence provider,
+            BiConsumer<? super SqliteCommandPersistence.Recovery, ? super Throwable> continuation) {
+        Objects.requireNonNull(activation);
+        Objects.requireNonNull(provider);
+        Objects.requireNonNull(continuation);
+        assertBoundTurn(activation);
+        SqliteCommandPersistence.Identity id = commandIdentity(activation);
+        ActorRuntime.ContinuationTarget target =
+            activation.runtime.captureCurrentContinuationTarget();
+        OresFuture<SqliteCommandPersistence.Recovery> future =
+            OresFuture.from(provider.loadFencedAsync(id, activation.epoch));
+        activation.runtime.enqueueOnCompletion(future, target, (result, failure) -> {
+            assertBoundTurn(activation);
+            continuation.accept(result, failure);
+        });
+    }
+
+    private static SqliteCommandPersistence.Identity commandIdentity(Activation activation) {
+        Identity trusted = activation.stableIdentity;
+        return new SqliteCommandPersistence.Identity(
+            trusted.tenant(), trusted.actor(), trusted.state());
     }
 
     private static void assertBoundTurn(Activation activation) {

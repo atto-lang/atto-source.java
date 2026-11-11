@@ -52,11 +52,8 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                         ActorPersistenceBridge.bindTrustedCurrentActor(context, key, 1);
                     oldGrant.set(binding);
                     return (delta, turn) -> {
-                        // Compute an owned candidate without publishing it to the
-                        // actor's mutable state before provider durability.
-                        long next = Math.addExact(block.readLong(0), delta);
-                        check(block.readLong(0) == 1L,
-                            "uncommitted mutation became visible before submission");
+                        long previous = block.readLong(0);
+                        long next = Math.addExact(previous, delta);
                         ActorPersistenceBridge.onSnapshotCompletionInCurrentActor(
                             binding, sidecar, "first-deposit", 0, 1, encode(next),
                             (receipt, failure) -> {
@@ -70,13 +67,9 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                                     check(receipt.durable() &&
                                         receipt.status() == Status.COMMITTED &&
                                         receipt.version() == 1, "commit receipt not durable");
-                                    check(block.readLong(0) == 1L,
-                                        "durable state was published before commit callback");
-                                    // Only the current actor turn may now make the
-                                    // provider-confirmed candidate visible.
+                                    check(block.readLong(0) == previous,
+                                        "staged state changed before durable confirmation");
                                     block.writeLong(0, next);
-                                    check(block.readLong(0) == next,
-                                        "committed mutation not published on actor carrier");
                                     persisted.complete(receipt);
                                 } catch (Throwable problem) {
                                     persisted.completeExceptionally(problem);
@@ -98,6 +91,58 @@ public final class ActorRuntimePersistenceIntegrationTestMain {
                     oldGrant.get(), sidecar, "forged", 1, 1, encode(999)); }
                 catch (IllegalStateException | SecurityException expected) { denied = true; }
                 check(denied, "persistence token usable outside its actor execution");
+            }
+            // Host failure injection: a storage provider fabricates a durable
+            // success receipt but cannot produce the trusted operation proof.
+            // Actor-owned state must stay at its original value on rejection.
+            Identity refusedKey = new Identity("tenant-a", "ledger-refused", "balance");
+            BatchPersistenceSidecar.Store forged = new BatchPersistenceSidecar.Store() {
+                @Override public void grantEpoch(String tenant, String actor, long epoch) {}
+                @Override public java.util.List<Result> commit(java.util.List<Write> writes) {
+                    Write write = writes.get(0);
+                    return java.util.List.of(new Result(write.operationId(), Status.COMMITTED,
+                            write.expectedVersion() + 1L, true));
+                }
+                // The default verifyDurableCommit() is false: no durable ledger.
+            };
+            try (BatchPersistenceSidecar sidecar = new BatchPersistenceSidecar(
+                        "tenant-a", forged, 16, 8192, 1024, 8, 4096, 5);
+                 ActorRuntime runtime = new ActorRuntime()) {
+                CompletableFuture<Long> rejectedState = new CompletableFuture<>();
+                ActorRuntime.ActorRef<Long> actor = runtime.spawnPrivateTrusted(context -> {
+                    PrivateMemoryBlock block = context.privateMemory().orElseThrow()
+                            .allocatePrivateBytes(Long.BYTES);
+                    block.writeLong(0, 1);
+                    ActorPersistenceBridge.Activation binding =
+                            ActorPersistenceBridge.bindTrustedCurrentActor(context, refusedKey, 1);
+                    return (delta, turn) -> {
+                        long oldValue = block.readLong(0);
+                        long proposed = Math.addExact(oldValue, delta);
+                        ActorPersistenceBridge.onSnapshotCompletionInCurrentActor(
+                                binding, sidecar, "unverified-deposit", 0, 1, encode(proposed),
+                                (receipt, failure) -> {
+                                    try {
+                                        check(ActorRuntime.currentActorId().orElseThrow()
+                                                .equals(turn.self().id()),
+                                                "rejected commit escaped actor execution lease");
+                                        check(failure != null,
+                                                "forged durable receipt was accepted");
+                                        check(block.readLong(0) == oldValue,
+                                                "rejected commit published tentative state");
+                                        rejectedState.complete(block.readLong(0));
+                                    } catch (Throwable problem) {
+                                        rejectedState.completeExceptionally(problem);
+                                    } finally {
+                                        turn.runtime().endCurrentActor();
+                                    }
+                                });
+                    };
+                });
+                actor.ready().get(15, TimeUnit.SECONDS);
+                actor.send(41L);
+                check(rejectedState.get(15, TimeUnit.SECONDS) == 1L,
+                        "actor changed state on unverified storage outcome");
+                actor.done().get(15, TimeUnit.SECONDS);
             }
             // A genuinely new ActorRuntime and new actor-local heap; all state
             // is reloaded through the authoritative persistent provider.

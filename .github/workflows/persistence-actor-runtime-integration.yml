@@ -37,3 +37,4 @@ jobs:
           sha256sum "$JDBC" "$SLF4J"
           CP="target/classes:target/test-classes:$(cat target/persistence-dependencies.txt):$JDBC:$SLF4J"
           java -ea -cp "$CP" dev.oreslang.runtime.persistence.ActorRuntimePersistenceIntegrationTestMain
+          java -ea -cp "$CP" dev.oreslang.runtime.persistence.ActorRuntimeCommandPersistenceIntegrationTestMain
