@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Independent compiler-owned gate for seven real shell-launched guest cases.
+# This is not a fabricated Surefire suite; those are checked separately.
+set -euo pipefail
+reject() { echo "ATTO_MATRIX_RECEIPT_REJECT: $*" >&2; return 1; }
+check_ledger() {
+  local d="$1" entry="$2" label="$3" expected_rc="$4"
+  local file="$d/$label-$entry.exit"
+  [[ -f "$file" && ! -L "$file" ]] || { reject "missing exit for $label/$entry"; return 1; }
+  [[ "$(cat "$file")" == "$expected_rc" ]] || { reject "wrong exit for $label/$entry"; return 1; }
+  for suffix in stdout stderr; do
+    [[ -f "$d/$label-$entry.$suffix" && ! -L "$d/$label-$entry.$suffix" ]] ||
+      { reject "missing output stream for $label/$entry"; return 1; }
+  done
+}
+check_cases() {
+  local d="$1" demo="$2" cp="$3" rc out err name file entry pattern
+  [[ -d "$d" && ! -L "$d" ]] || { reject "receipt directory absent"; return 1; }
+  [[ -f "$d/cases.tsv" && ! -L "$d/cases.tsv" ]] || { reject "case ledger absent"; return 1; }
+  local expected
+  expected="$(printf 'case\tphase\texit\tverdict\n'
+    for name in linked-function linked-module-class ownership-valid; do
+      printf '%s\tcheck\t0\tPASS\n' "$name"
+      printf '%s\tguest\t0\tPASS\n' "$name"
+    done
+    for name in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
+      printf '%s\tcheck\t1\tPASS\n' "$name"
+    done)"
+  [[ "$(cat "$d/cases.tsv")" == "$expected" ]] ||
+    { reject "case ledger missing, duplicate, reordered or forged status"; return 1; }
+  for name in linked-function linked-module-class ownership-valid; do
+    check_ledger "$d" check "$name" 0 || return 1
+    check_ledger "$d" guest "$name" 0 || return 1
+    [[ ! -s "$d/$name-check.stdout" && ! -s "$d/$name-check.stderr" ]] ||
+      { reject "positive source check emitted diagnostics"; return 1; }
+    [[ ! -s "$d/$name-guest.stderr" && "$(cat "$d/$name-guest.stdout")" == 42 ]] ||
+      { reject "positive guest output not exact 42"; return 1; }
+    [[ $(wc -c < "$d/$name-guest.stdout") -eq 2 ]] ||
+      { reject "positive guest stdout must be exact 42 without newline"; return 1; }
+  done
+  for name in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
+    check_ledger "$d" check "$name" 1 || return 1
+    [[ ! -s "$d/$name-check.stdout" ]] || { reject "negative guest stdout"; return 1; }
+    err="$d/$name-check.stderr"
+    [[ $(wc -l < "$err") -eq 1 && $(wc -c < "$err") -le 8192 ]] ||
+      { reject "negative requires one bounded diagnostic"; return 1; }
+    case "$name" in
+      missing-import) entry="$demo/native-multifile/negative/missing-helper.atto"; pattern='does not resolve to a file' ;;
+      ambiguous-import) entry="$demo/native-multifile/negative/ambiguous-import.atto"; pattern='is ambiguous in' ;;
+      ownership-conflict) entry="$demo/native-multifile/negative/ownership-conflict.atto"; pattern='overlapping mutable borrow arguments' ;;
+      aliased-module-leak) entry="$demo/native-multifile/module/alias-leak.atto"; pattern='unknown class transport_contract.Request' ;;
+    esac
+    IFS= read -r file < "$err"
+    [[ "$file" == "$entry:"* && "$file" == *"$pattern"* ]] ||
+      { reject "negative lacks anchored compiler-owned diagnostic: $name"; return 1; }
+    [[ "$file" =~ :[0-9]+:[0-9]+:\ error:\  ]] ||
+      { reject "not compiler --check source diagnostic: $name"; return 1; }
+    [[ "$file" != *'NoClassDefFoundError'* && "$file" != *'Failed to execute goal'* ]] ||
+      { reject "negative is infrastructure error: $name"; return 1; }
+  done
+}
+verify() {
+  local receipt="$1" demo_sha="$2" compiler_sha="$3" demo="$4" status
+  [[ "$demo_sha" =~ ^[a-f0-9]{40}$ && "$compiler_sha" =~ ^[a-f0-9]{40}$ ]] ||
+    { reject 'invalid exact-head identifier'; return 1; }
+  [[ -f "$receipt/identity.txt" && ! -L "$receipt/identity.txt" ]] ||
+    { reject "missing identity receipt"; return 1; }
+  [[ $(grep -Ec '^status=' "$receipt/identity.txt") -eq 1 ]] ||
+    { reject 'ambiguous receipt status'; return 1; }
+  grep -Fxq 'status=PASS' "$receipt/identity.txt" ||
+    { reject 'guest matrix did not finish'; return 1; }
+  grep -Fxq "demo_head=$demo_sha" "$receipt/identity.txt" ||
+    { reject 'demo pin mismatch'; return 1; }
+  grep -Fxq "compiler_head=$compiler_sha" "$receipt/identity.txt" ||
+    { reject 'compiler pin mismatch'; return 1; }
+  grep -Fxq 'positive_cases=3' "$receipt/identity.txt" ||
+    { reject 'positive case count mismatch'; return 1; }
+  grep -Fxq 'negative_cases=4' "$receipt/identity.txt" ||
+    { reject 'negative case count mismatch'; return 1; }
+  for file in fixture-sources.sha256 compiler-artifacts.sha256 compiler-classes.sha256 runtime-dependencies.sha256; do
+    [[ -s "$receipt/$file" && ! -L "$receipt/$file" ]] ||
+      { reject "missing hash receipt: $file"; return 1; }
+    sha256sum --status -c "$receipt/$file" ||
+      { reject "hash mismatch: $file"; return 1; }
+  done
+  check_cases "$receipt" "$demo" "$compiler_sha" ||
+    { reject 'case ledger verification failed'; return 1; }
+  echo "ATTO_OWNED_MATRIX_RECEIPT_PASS demo=$demo_sha compiler=$compiler_sha cases=7 JIT_ONLY_NOT_AOT"
+}
+self_test() {
+  local t
+  t="$(mktemp -d)"
+  trap 'rm -rf -- "$t"' EXIT
+  local p="$t/cases.tsv" n
+  printf 'case\tphase\texit\tverdict\n' > "$p"
+  for n in linked-function linked-module-class ownership-valid; do
+    printf '%s\tcheck\t0\tPASS\n%s\tguest\t0\tPASS\n' "$n" "$n" >> "$p"
+  done
+  for n in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
+    printf '%s\tcheck\t1\tPASS\n' "$n" >> "$p"
+  done
+  # Source-free mutation gates never claim compiler or guest execution.
+  if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'missing receipt streams accepted'; exit 1; fi
+  printf '\n' >> "$p"
+  if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'extra test row accepted'; exit 1; fi
+  sed -i '$d' "$p"
+  sed -i 's/linked-function\tcheck\t0\tPASS/linked-function\tcheck\t1\tPASS/' "$p"
+  if check_cases "$t" "$t" "" >/dev/null 2>&1; then reject 'fake success exit accepted'; exit 1; fi
+  echo 'ATTO_OWNED_MATRIX_RECEIPT_HOST_SELF_TEST_PASS rejected=3 NOT_EXECUTED'
+}
+case "$${1:-}" in
+  --self-test) (( $# == 1 )) || exit 64; self_test ;;
+  --verify) (( $# == 5 )) || exit 64; verify "$2" "$3" "$4" "$5" ;;
+  *) echo 'usage: verify-atto-owned-matrix.sh --self-test | --verify RECEIPTS DEMO_SHA COMPILER_SHA DEMO_DIR' >&2; exit 64 ;;
+esac
