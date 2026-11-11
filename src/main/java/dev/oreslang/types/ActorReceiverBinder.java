@@ -64,7 +64,8 @@ public final class ActorReceiverBinder {
         boolean hasExternalActorSyntax = program.modules().stream().anyMatch(
                 module -> module.declarations().stream().anyMatch(
                         decl -> decl instanceof Ast.StandaloneActorDecl
-                                || decl instanceof Ast.ExternalActorMethodDecl));
+                                || decl instanceof Ast.ExternalActorMethodDecl
+                                || decl instanceof Ast.ActorStateAttachmentDecl));
         // Do not perturb existing class-like actor programs before new
         // standalone/external receiver syntax actually appears.
         if (!hasExternalActorSyntax) return Map.of();
@@ -242,12 +243,20 @@ public final class ActorReceiverBinder {
         Map<String, Set<String>> embeddedInstanceSlots = new LinkedHashMap<>();
         Map<String, String> declaredTypes = new LinkedHashMap<>();
         Set<String> receiverAliases = new LinkedHashSet<>();
+        Map<String, Ast.ActorStateAttachmentDecl> attachedState = new LinkedHashMap<>();
 
         // Two passes: the actor may be declared after its external mtd body
         // in the same module; no order-dependent resolution is permitted.
         for (Ast.Decl declaration : module.declarations()) {
             String typeName = null;
             String category = null;
+            if (declaration instanceof Ast.ActorStateAttachmentDecl state) {
+                if (attachedState.putIfAbsent(state.actorName(), state) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate attached actor state schema for '" + module.name()
+                                    + "." + state.actorName() + "'");
+                }
+            }
             if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
@@ -291,6 +300,27 @@ public final class ActorReceiverBinder {
                     throw new IllegalArgumentException(
                             "duplicate actor/type identity '" + module.name() + "."
                                     + typeName + "' (" + previous + " versus " + category + ")");
+                }
+            }
+        }
+
+        // Prove attachment is a unique schema owned by a locally declared
+        // nominal actor, never a namespace-level mutable value or class field.
+        for (Ast.ActorStateAttachmentDecl state : attachedState.values()) {
+            Ast.Decl target = nominalActors.get(state.actorName());
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "attached actor state has no local nominal actor '"
+                                + module.name() + "." + state.actorName() + "'");
+            }
+            if (target instanceof Ast.ClassDecl klass) {
+                if (!klass.fields().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "attached actor state cannot mix with legacy actor fields");
+                }
+                if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "attached actor state on generic/inherited actors needs checked layout coherence");
                 }
             }
         }
