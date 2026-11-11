@@ -216,11 +216,23 @@ public final class NativeHttp implements AutoCloseable {
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
             if (worker != null && !worker.actor.done().isDone()) {
-                if (!context.actors().isAlive(worker.actor)) throw new RejectedExecutionException("HTTP worker is stopping");
-                reused++;
-                return worker;
+                if (!context.actors().isAlive(worker.actor)) {
+                    throw new RejectedExecutionException("HTTP worker is stopping");
+                }
+                // Shutdown may seal a generation after it has been selected
+                // but before new work is attached. Only this reservation
+                // permits a later dispatch handoff to the same actor.
+                if (worker.admission.tryReserve()) {
+                    reused++;
+                    return worker;
+                }
+                // Sealed workers are replaced in the pool slot. Their old
+                // physical-carrier obligations remain with prior listeners.
             }
             worker = new Worker(context.actors().spawnCodeActor(kind, code, type));
+            if (!worker.admission.tryReserve()) {
+                throw new IllegalStateException("new HTTP worker was unexpectedly sealed");
+            }
             workers[slot] = worker;
             created++;
             Worker attached = worker;
@@ -257,6 +269,8 @@ public final class NativeHttp implements AutoCloseable {
             final ActorRuntime.ActorRef<Object> actor;
             final Set<State> requests = ConcurrentHashMap.newKeySet();
             final Set<Server> served = ConcurrentHashMap.newKeySet();
+            final HttpPooledWorkerAdmissionFence admission =
+                    new HttpPooledWorkerAdmissionFence();
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
@@ -284,8 +298,9 @@ public final class NativeHttp implements AutoCloseable {
             long perf = CorePerf.start();
             try {
                 if (workers != null) {
+                    Worker worker = null;
                     try {
-                        Worker worker = worker();
+                        worker = worker();
                         boolean denyWorkerDispatch;
                         synchronized (state) {
                             // Recheck after choosing the worker; a concurrent
@@ -321,6 +336,11 @@ public final class NativeHttp implements AutoCloseable {
                     } catch (RuntimeException failure) {
                         state.abort(mayBeginDispatch(closed, state.server.stopped)
                                 ? 500 : 503, false);
+                    } finally {
+                        // Every successful worker() reservation is released on
+                        // success, abort, cancellation, send failure and close.
+                        // Seal and release arbitrate under the same fence lock.
+                        if (worker != null) worker.admission.release();
                     }
                     return;
                 }
@@ -615,6 +635,11 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 pooledBarrierStarted = true;
                 snapshot = List.copyOf(pooledWorkers);
+                // Linearize shutdown with ALL HTTP dispatch reservations,
+                // including those coming from other live listeners sharing a
+                // Handler pool. No new admission may use this worker generation
+                // after seal; a different listener creates a replacement.
+                for (Handler.Worker worker : snapshot) worker.admission.seal();
                 pooledWorkers.clear();
             }
             for (Handler.Worker worker : snapshot) worker.served.remove(this);
@@ -638,7 +663,11 @@ public final class NativeHttp implements AutoCloseable {
             }
             try {
                 for (Handler.Worker worker : workers) {
-                    if (!context.actors().httpCarrierQuiescent(worker.actor)) {
+                    // An idle snapshot alone races a handoff that already
+                    // reserved this worker. The seal forbids any future
+                    // reservations, and quiescent() joins existing ones.
+                    if (!worker.admission.quiescent()
+                            || !context.actors().httpCarrierQuiescent(worker.actor)) {
                         if (System.nanoTime() - startedNanos >= allowedNanos) {
                             failDrain(new TimeoutException(
                                     "HTTP pooled actor carrier did not quiesce before shutdown deadline"));
