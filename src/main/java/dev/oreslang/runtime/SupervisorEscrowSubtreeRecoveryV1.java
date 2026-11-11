@@ -240,13 +240,30 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // cannot erase a logical admission that predates the crash fence.
         if (bridge.dataInFlightInSubtree(nodeId) != 0)
             return RestartBlocker.DATA_ADMISSIONS_IN_FLIGHT;
+        // Gate precedence must be invariant under Map.copyOf() iteration
+        // order. Never consult an external physical-release verifier while
+        // any descendant has an unacknowledged failure CONTROL receipt.
         for (var entry : states.entrySet()) {
             long id = entry.getKey();
             if (id != nodeId && !isBelow(id, nodeId, states)) continue;
             if (entry.getValue().pending()) return RestartBlocker.PENDING_FAILURE;
+        }
+        // A completed parent is not sufficient while any child still runs.
+        for (var entry : states.entrySet()) {
+            long id = entry.getKey();
+            if (id != nodeId && !isBelow(id, nodeId, states)) continue;
             ActorRuntime.ActorRef<?> ref;
             synchronized (lock) { ref = refs.get(id); }
-            if (ref == null || !ref.done().isDone()) return RestartBlocker.CHILD_STILL_RUNNING;
+            if (ref == null || !ref.done().isDone())
+                return RestartBlocker.CHILD_STILL_RUNNING;
+        }
+        // Only after the whole subtree is DONE and fully ACKed may the
+        // authenticated physical verifier inspect external resource receipts.
+        for (var entry : states.entrySet()) {
+            long id = entry.getKey();
+            if (id != nodeId && !isBelow(id, nodeId, states)) continue;
+            ActorRuntime.ActorRef<?> ref;
+            synchronized (lock) { ref = refs.get(id); }
             if (!physicalRelease.independentlyReclaimed(ref))
                 return RestartBlocker.PHYSICAL_RELEASE_UNVERIFIED;
         }
