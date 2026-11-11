@@ -274,6 +274,27 @@ final class PackageNamespaceBuildTest {
     }
 
     @Test
+    void externalReceiverMethodBodiesRemainNonExecutableUntilMailboxLowering() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        write(root, "src/shop/external.atto", """
+                namespace shop;
+                define pub mtd (Cart cart) count(): int {
+                  return 42;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, compiler::build,
+                "external actor method syntax must not become a free function");
+    }
+
+    @Test
+    void MethodIndexResultCannotBeMutatedIntoACompilerProof() throws IOException {
+        PackageNamespaceBuild compiler = compiler();
+        var registry = compiler.build().actorMethods().actors();
+        assertThrows(UnsupportedOperationException.class,
+                () -> registry.clear());
+    }
+
+    @Test
     void sourceRootsWithDuplicateOverlappingFilesAreRejected() throws IOException {
         PackageNamespaceBuild compiler = compiler();
         write(root, ".atto.pkg.toml", """
