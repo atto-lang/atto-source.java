@@ -510,6 +510,27 @@ final class VirtualActorTerminalControlCurrentMainTest {
     }
 
     @Test
+    void terminalHandlerMustBeInstalledBeforeAnyPhysicalVirtualBinding()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var worker = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> { });
+            worker.getReady().get(5, TimeUnit.SECONDS);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(worker, ID, 1L);
+            assertThrows(IllegalStateException.class,
+                    () -> group.installVirtualActorTerminalHandler(
+                            notice -> CompletableFuture.completedFuture(null)),
+                    "late subscription must not silently miss already-bound workers");
+            worker.stop();
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
+    @Test
     void installingTerminalHandlerTwiceIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
