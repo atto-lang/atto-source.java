@@ -148,6 +148,45 @@ final class ActorManagedPrimitiveRegionCodeWorkerTest {
     }
 
     @Test
+    void structuredUntrustedCodeWorkerStillCannotMintSharedPrimitiveRegion()
+            throws Exception {
+        try (var images = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = images.publish("app/untrusted.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var supervisor = runtime.createSupervisor();
+            var group = runtime.createActorGroup(supervisor);
+            var admission = new AtomicReference<Boolean>();
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> ctx) {
+                    admission.set(ctx.createManagedPrimitiveStateRegion(8, 2).isEmpty());
+                    return ctx.self()::id;
+                }
+                @Override public void receiveActor(
+                        String type, ActorRuntime.ActorOwnedGuestState raw,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> ctx) {
+                    ctx.self().stop();
+                }
+            };
+            try {
+                var worker = group.spawnCodeWorker(
+                        ActorRuntime.ActorKind.UNTRUSTED,
+                        IsolatePolicy.developer(), executor, "Untrusted");
+                worker.ready().get(5, TimeUnit.SECONDS);
+                assertEquals(Boolean.TRUE, admission.get(),
+                        "an untrusted actor must not gain shared state even with a supervisor");
+                worker.send("end");
+                assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+            } finally {
+                group.close();
+            }
+        }
+    }
+
+    @Test
     void freeCodeActorCannotMintManagedSharedPrimitiveStorage()
             throws Exception {
         try (var images = new SharedCodeImageStore();
