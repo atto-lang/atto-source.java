@@ -1256,6 +1256,18 @@ public final class Parser {
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
         Ast.InterfaceDecl declaration = parseInterface(visibility);
+        // Compiler/runtime safety authorities are *not* structural traits:
+        // a guest-provided implementation cannot assert transfer, cleanup,
+        // mailbox ownership or supervisor CONTROL rights. Reserve these names
+        // at the declaration boundary until the trusted intrinsic protocol
+        // registry is integrated with source-visible diagnostic bounds.
+        if (kind == TRAIT && java.util.Set.of(
+                "Sendable", "Shareable", "Copy", "Drop",
+                "Receives", "Supervisor", "ActorLifecycle").contains(declaration.name())) {
+            throw error(previous(),
+                    "trait '" + declaration.name()
+                    + "' is compiler/runtime-owned; guest trait implementations cannot grant safety authority");
+        }
         interfaceKinds.put(declaration, kind);
         return declaration;
     }
