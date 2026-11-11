@@ -248,13 +248,50 @@ public final class OresEvalRootNode extends RootNode {
                 String codeUnitId,
                 long taskAdmissionEpoch) {
             this.program = program;
-            this.checkedDispatchPlans = CheckedDispatchPlansV1.forProgram(program);
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
+            this.checkedDispatchPlans = verifyCheckedDispatchPlans();
+        }
+
+        /**
+         * Bind checked targets to this exact code image once, before actor
+         * publication. Foreign/imported declarations and mismatched slots
+         * receive no fast-path authority, preserving virtual fallback.
+         */
+        private Map<Ast.CallExpr, CheckedDispatchPlansV1.Plan> verifyCheckedDispatchPlans() {
+            Map<Ast.CallExpr, CheckedDispatchPlansV1.Plan> source =
+                    CheckedDispatchPlansV1.forProgram(program);
+            IdentityHashMap<Ast.CallExpr, CheckedDispatchPlansV1.Plan> verified =
+                    new IdentityHashMap<>();
+            for (Map.Entry<Ast.CallExpr, CheckedDispatchPlansV1.Plan> entry : source.entrySet()) {
+                CheckedDispatchPlansV1.Plan plan = entry.getValue();
+                boolean localTarget = switch (plan.kind()) {
+                    case FREE_FUNCTION -> {
+                        LinkedHashMap<Integer, Ast.FunctionDecl> overloads = functions.get(plan.name());
+                        yield !ambiguousFunctions.contains(plan.name())
+                                && overloads != null
+                                && overloads.get(plan.arity()) == plan.function()
+                                && declarationModules.containsKey(plan.function());
+                    }
+                    case STATIC_METHOD, INSTANCE_METHOD -> {
+                        Map<CallableSelector, Ast.MethodDecl> slots =
+                                callableSlots.get(plan.receiverClass());
+                        CallableSelector selector = plan.kind() == AotDispatchPlannerV1.CallKind.STATIC_METHOD
+                                ? CallableSelector.staticFunction(plan.name(), plan.arity())
+                                : CallableSelector.instance(plan.name(), plan.arity());
+                        yield slots != null
+                                && slots.get(selector) == plan.method()
+                                && methodOwners.containsKey(plan.method());
+                    }
+                    default -> false;
+                };
+                if (localTarget) verified.put(entry.getKey(), plan);
+            }
+            return java.util.Collections.unmodifiableMap(verified);
         }
 
         private void indexImports() {
@@ -7093,8 +7130,6 @@ public final class OresEvalRootNode extends RootNode {
                         && plan.strategy() == AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
                         && plan.name().equals(directName.name())
                         && plan.arity() == call.arguments().size()
-                        && declarationModules.containsKey(plan.function())
-                        && !ambiguousFunctions.contains(directName.name())
                         ? plan.function()
                         : findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
@@ -7170,7 +7205,6 @@ public final class OresEvalRootNode extends RootNode {
                             && object.owner == this
                             && plan.name().equals(methodCall.member())
                             && plan.arity() == args.size()
-                            && methodOwners.containsKey(plan.method())
                             ? plan.method()
                             : object.owner.findMethod(
                                     object.klass,
@@ -7222,7 +7256,6 @@ public final class OresEvalRootNode extends RootNode {
                             && klass.owner() == this
                             && plan.name().equals(methodCall.member())
                             && plan.arity() == args.size()
-                            && methodOwners.containsKey(plan.method())
                             ? plan.method()
                             : klass.owner().findStaticFunction(
                                     klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
