@@ -6,7 +6,8 @@ end
 
 define actor Child extends Parent as
   pub attempt(ActorMail<String> mail): void {
-    self.receive(mail);
+    val alias = self;
+    alias.receive(mail);
     return;
   }
 end
