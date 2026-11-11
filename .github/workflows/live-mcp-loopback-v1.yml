@@ -1,0 +1,44 @@
+name: live-mcp-loopback-v1
+on:
+  push:
+    branches: [feat/attolang-live-devtools-mcp-v1]
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/devtools/**'
+      - 'tools/live-mcp-smoke/**'
+      - '.github/workflows/live-mcp-loopback-v1.yml'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/devtools/**'
+      - 'src/test/java/dev/oreslang/LiveMcpServerTest.java'
+      - 'tools/live-mcp-smoke/**'
+      - '.github/workflows/live-mcp-loopback-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java21-loopback-protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile actual transport without unrelated dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/atto-live-mcp-classes
+          javac --release 21 -d /tmp/atto-live-mcp-classes \
+            src/main/java/dev/oreslang/runtime/devtools/LiveMcpServer.java \
+            tools/live-mcp-smoke/Smoke.java \
+            tools/live-mcp-smoke/DiscoverySmoke.java
+      - name: Exercise bound loopback MCP endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -cp /tmp/atto-live-mcp-classes dev.oreslang.runtime.devtools.Smoke
+          java -cp /tmp/atto-live-mcp-classes dev.oreslang.runtime.devtools.DiscoverySmoke

@@ -1,0 +1,109 @@
+name: Actor state-region exact-head JDK21 + GraalVM25
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorPhysicalTurnGate.java'
+      - 'src/main/java/dev/oreslang/runtime/ReusableLongStateRegion.java'
+      - 'tests/ExactSourcePhysicalTurnSmoke.java'
+      - 'tests/CurrentRegionSafetySmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPhysicalTurnGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorAsyncFinalizationBarrierTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ReusableLongStateRegionTest.java'
+      - 'src/main/java/dev/oreslang/runtime/AsyncNativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - '.github/workflows/actor-state-region-physical-turn.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-production-host:
+    # Cross-repository PRs cannot silently substitute source with a foreign
+    # tree. Never fetch private source in a different organization here.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source-repository head, token-free after checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Require exact checkout and JDK21
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -n "${JAVA_HOME_21_X64:-}"
+          echo "$JAVA_HOME_21_X64/bin" >> "$GITHUB_PATH"
+          "$JAVA_HOME_21_X64/bin/java" -version
+          "$JAVA_HOME_21_X64/bin/javac" -version
+
+      - name: Compile and execute actual region/gate sources with 2,000 start-retire races
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/actor-region-classes"
+          "$JAVA_HOME_21_X64/bin/javac" --release 21 -Xlint:all -Werror \
+            -d "$RUNNER_TEMP/actor-region-classes" \
+            src/main/java/dev/oreslang/runtime/ReusableLongStateRegion.java \
+            src/main/java/dev/oreslang/runtime/ActorPhysicalTurnGate.java \
+            tests/ExactSourcePhysicalTurnSmoke.java \
+            tests/CurrentRegionSafetySmoke.java
+          "$JAVA_HOME_21_X64/bin/java" -ea \
+            -cp "$RUNNER_TEMP/actor-region-classes" \
+            dev.oreslang.runtime.ExactSourcePhysicalTurnSmoke
+          "$JAVA_HOME_21_X64/bin/java" -ea \
+            -cp "$RUNNER_TEMP/actor-region-classes" \
+            dev.oreslang.runtime.CurrentRegionSafetySmoke
+          echo "SOURCE_HEAD_EXECUTED=$EXPECTED_HEAD"
+          echo "HOST_ONLY=1"
+          echo "COMPILER_GUEST_PARITY=NOT_VERIFIED"
+
+  integrated-actor-lifetime-junit:
+    # The checked-in tests must execute on the exact source PR head in this
+    # private repository. No cross-org source carrier or PAT is permitted.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact source head, without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify the source head before invoking Maven
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "PINNED_JAVA_LIFETIME_SOURCE_SHA=$EXPECTED_HEAD"
+      - name: Set up pinned GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run real actor/native-I/O and physical-turn regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=AsyncNativeIoTest,ActorPhysicalTurnGateTest,ActorAsyncFinalizationBarrierTest,ReusableLongStateRegionTest \
+            -Dsurefire.failIfNoSpecifiedTests=true test
+          echo "HOST_RUNTIME_INTEGRATION_TESTS_EXECUTED=true"
+          echo "SOURCE_GUEST_PARITY_VERIFIED=false"

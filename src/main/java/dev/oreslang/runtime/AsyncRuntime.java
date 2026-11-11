@@ -14,6 +14,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -49,8 +50,11 @@ public final class AsyncRuntime implements AutoCloseable {
     private final ExecutorService executor;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ConcurrentHashMap<OresFuture<?>, TaskExit> taskExits = new ConcurrentHashMap<>();
+    private final AtomicLong nextDevtoolsTaskId = new AtomicLong();
 
     private static final class TaskExit {
+        private final long devtoolsId;
+        TaskExit(long devtoolsId) { this.devtoolsId = devtoolsId; }
         // 0: not entered, 1: running, 2: guest turn exited/cancelled before entry.
         private final AtomicInteger state = new AtomicInteger();
         private final CountDownLatch exited = new CountDownLatch(1);
@@ -96,6 +100,30 @@ public final class AsyncRuntime implements AutoCloseable {
         return closed.get();
     }
 
+    /** Host-only, detached Task metadata; no TaskLocal, Future or OS carrier leaks. */
+    public record DevtoolsTaskInfo(long taskId, String lifecycle) { }
+
+    public java.util.List<DevtoolsTaskInfo> devtoolsListTasks(int limit) {
+        if (ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()
+                || isAsyncCarrierThread() || OresScheduler.current() != null) {
+            throw new SecurityException("Task discovery requires a trusted host thread");
+        }
+        if (limit < 1 || limit > 64) {
+            throw new IllegalArgumentException("Task inspection limit must be 1..64");
+        }
+        var result = new java.util.ArrayList<DevtoolsTaskInfo>(limit);
+        for (TaskExit exit : taskExits.values()) {
+            int state = exit.state.get();
+            if (state == 2) continue;
+            result.add(new DevtoolsTaskInfo(exit.devtoolsId,
+                    state == 0 ? "QUEUED" : "ACTIVE"));
+            if (result.size() >= limit) break;
+        }
+        return java.util.List.copyOf(result);
+    }
+
+
     /**
      * Schedule one async callable and return immediately with a composable
      * future. Cancellation is propagated to the backing task and therefore
@@ -106,7 +134,7 @@ public final class AsyncRuntime implements AutoCloseable {
         if (closed.get()) throw new RejectedExecutionException("async runtime is closed");
 
         AtomicReference<Future<?>> backing = new AtomicReference<>();
-        TaskExit exit = new TaskExit();
+        TaskExit exit = new TaskExit(nextDevtoolsTaskId.incrementAndGet());
         OresFuture<T> completion = new OresFuture<>(() -> {
             Future<?> carrier = backing.getAndSet(null);
             if (carrier != null) carrier.cancel(true);

@@ -1,0 +1,7 @@
+fnc invalid(Result<bool, bool> x): int {
+    match x over
+        on Ok(true) -> { return 1; }
+        on Err(true) -> { return 2; }
+        on Err(false) -> { return 3; }
+    end
+}

@@ -1,0 +1,32 @@
+name: Java NdArray strided-view admission (host reference)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/NdArrayViewAdmission.java'
+      - 'src/test/java/dev/oreslang/runtime/NdArrayViewAdmissionSmoke.java'
+      - '.github/workflows/ndarray-view-host.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  ndarray-view-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Setup runtime
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Compile and execute Java range and alias cases
+        run: |
+          mkdir -p target/ndarray-view-smoke
+          javac -d target/ndarray-view-smoke src/main/java/dev/oreslang/runtime/NdArrayViewAdmission.java src/test/java/dev/oreslang/runtime/NdArrayViewAdmissionSmoke.java
+          java -cp target/ndarray-view-smoke dev.oreslang.runtime.NdArrayViewAdmissionSmoke
+      - name: Classify evidence
+        run: echo 'HOST_VIEW_PREFLIGHT_ONLY no compiled NdArray guest borrows or storage ownership parity'

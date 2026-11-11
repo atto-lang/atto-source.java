@@ -48,6 +48,7 @@ attempt() {
 }
 attempt 0 "$expected" . targeted
 grep -q -- '-DfailIfNoTests=true test' "$MOCK_MAVEN_LOG"
+grep -q -- 'OresFuturesTest,NestedWrapperSemanticsContractTest,' "$MOCK_MAVEN_LOG"
 grep -q -- 'NestedExtractionCallableEscapeTest' "$MOCK_MAVEN_LOG"
 grep -q -- 'NestedFutureFlattenCycleRegressionTest' "$MOCK_MAVEN_LOG"
 grep -q -- 'NestedOptionResultBoundaryRegressionTest' "$MOCK_MAVEN_LOG"

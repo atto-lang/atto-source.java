@@ -1,0 +1,35 @@
+name: Oreslang Rust formal models and analyzer
+on:
+  pull_request:
+    paths: ['tools/oreslang-verify/**', '.github/workflows/formal-and-lint.yml']
+  push:
+    branches: [main]
+    paths: ['tools/oreslang-verify/**', '.github/workflows/formal-and-lint.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust-verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Rust crate
+        run: cargo test --manifest-path tools/oreslang-verify/Cargo.toml --all-targets
+      - name: Deny Clippy warnings
+        run: cargo clippy --manifest-path tools/oreslang-verify/Cargo.toml --all-targets -- -D warnings
+      - name: Exhaust bounded actor and select states
+        run: |
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 2 --messages 2 --workers 2 --capacity 1
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- model --actors 1 --messages 3 --workers 2 --capacity 2
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- select-model --arms 3
+      - name: Userland analyzer SARIF output
+        run: |
+          printf 'fnc f(){ loop { defer cleanup(); } }' > audit.ores
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- lint --format sarif audit.ores > results.sarif
+          grep '"version":"2.1.0"' results.sarif
+      - name: Check trace and typed IR fixtures
+        run: |
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- trace tools/oreslang-verify/fixtures/actor-ingress-example.json
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- trace-core tools/oreslang-verify/fixtures/core-trace-v2-example.json
+          cargo run --manifest-path tools/oreslang-verify/Cargo.toml -- ir tools/oreslang-verify/fixtures/closed-match-ir-example.json --strict

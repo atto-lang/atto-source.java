@@ -1,4 +1,10 @@
-# Oreslang
+# AttoLang Java/GraalVM reference backend
+
+In general, strive to implement language features in .atto files not .java files (more attolang less java). In other words, for atto core and atto std lib more .atto files and fewer .java files. We also need to keep/maintain parity with oreslang-source.llvm and oreslang-source.net and oreslang-source.wasm, etc. The oreslang-source.java is typically the leader.
+
+AttoLang is the current public language name (formerly Oreslang). This repository remains the Java/Truffle reference compiler and runtime. Existing Java packages, `oreslang` compiler paths, `.ores` fixtures and external interfaces remain compatible during the rename. New `.atto` acceptance must be demonstrated by real parser/compiler and execution tests, not this README update.
+
+Use [AttoLang Brand Compatibility v1](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/contracts/v1/attolang-brand-compat-v1.json) as the migration policy. Do not rename repository paths, package coordinates, command names, ABI or wire-format identifiers as part of a branding-only change.
 
 Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
@@ -6,6 +12,8 @@ This repository contains the Java/Truffle reference implementation. The LLVM ver
 
 Do not use python for anything, use Rust instead of python to support the language.
 
+
+**Experimental declaration substrates:** [State container and virtual actor VM admission](docs/STATE_CONTAINER_VIRTUAL_ACTOR_SUBSTRATES.md). Guest `define state container` and `define virtual actor` are not yet compiled; this implementation currently supplies bounded access and activation capability primitives with distinct fail-closed parser diagnostics. Do not treat this as runtime parity.
 
 Notes on the compiler and runtime:
 
@@ -61,3 +69,32 @@ Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
 Implement tooling previously written in Python in **Rust** instead. Preserve behavior and test coverage while migrating; use `cargo fmt`, `cargo clippy`, and `cargo test` for Rust code. Existing Python must be inventoried and ported, not merely deleted if it implements required behavior. Changes introducing Python must be rejected in review and CI. References discussing the prohibition are allowed in documentation; they are not an authorization to execute Python.
 
 This rule applies across all repositories, including compiler backends, examples, benchmarks, workflows, and documentation. Language implementations written in Java, LLVM/other native languages, .NET, etc. remain in their existing implementation languages; **the Python-to-Rust mandate applies to Python tooling and Python implementations**.
+
+## Canonical AttoLang source files
+
+**Implementation policy (agents and contributors):** Put guest-visible features and library logic in `.atto` by default; reserve `.java` for justified compiler, runtime, host-interop, security and bootstrap code. See [the AttoLang-first agent directive](AGENTS.md) and [Copilot instructions](.github/copilot-instructions.md). This is a source-of-implementation rule, not just an extension rule.
+
+New AttoLang modules, tests and examples use the `.atto` extension. The Java frontend accepts `.atto` as native Ores-language source while retaining `.ores` as a legacy compatibility extension. Extensionless imports prefer `.atto` before `.ores`. See [the source-extension contract](docs/ATTO_SOURCE_EXTENSION.md).
+
+## Experimental `--analyze` frontend integration
+
+`oreslang-compiler --analyze example.atto` (legacy `.ores`) invokes
+the existing linked source-admission frontend, performs the production
+type/ownership analysis, and emits conservative
+`ORES-ANALYZE-V0` name/arity records without executing the guest.
+
+This is the first Java/GraalVM adapter for
+[platform-conformance compiler-analysis v0](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/pull/348)
+and native LLVM [PR #1375](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1375).
+It **does not** certify arbitrary transitive `throws`/`raises`/`panics`,
+actor supervisor routing, imports, dynamic invocation, checked arithmetic,
+or full source parity. Exit 0 is restricted to source-admitted closed
+scalar literal/parameter/direct-call expressions; unsupported or unknown
+effects are inconclusive (2) and invalid source is a failure (1).
+The independent `atto test --effects` tool remains advisory.
+
+**Evidence pending:** new implementation and JUnit fixtures have not
+been executed against Maven, Native Image, or LLVM's real binary at this
+exact head. Run `mvn test -Dtest=CompilerEffectAnalysisV0Test`, the
+real cross-backend conformance fixtures, and pinned-binary
+no-guest-execution/no-artifact checks before promoting this mode.
