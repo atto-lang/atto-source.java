@@ -31,6 +31,7 @@ public final class StaticProxySynthesis {
         // Resolution of generated nominal types is not yet namespace-qualified.
         // A declaration in another module must not capture a synthetic name.
         Set<String> occupiedNames = new HashSet<>();
+        Set<String> importedNames = new HashSet<>();
         for (Ast.ImportDecl imported : program.imports()) {
             // Without a completed qualified symbol table an open import might
             // resolve to FooProxy (or even Proxy) after synthesis. Fail closed.
@@ -38,10 +39,20 @@ public final class StaticProxySynthesis {
                 throw fail("wildcard imports require qualified proxy name resolution");
             }
             occupiedNames.addAll(imported.names());
-            if (imported.namespace() != null) occupiedNames.add(imported.namespace());
+            importedNames.addAll(imported.names());
+            if (imported.namespace() != null) {
+                occupiedNames.add(imported.namespace());
+                importedNames.add(imported.namespace());
+            }
         }
         if (occupiedNames.contains("Proxy")) {
             throw fail("an imported Proxy name conflicts with the compiler intrinsic");
+        }
+        for (String target : requested) {
+            if (importedNames.contains(target)) {
+                throw fail("proxy target '" + target
+                        + "' collides with an imported name or namespace alias");
+            }
         }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -95,6 +106,10 @@ public final class StaticProxySynthesis {
             throw fail("abstract/inherited/implemented class surfaces need complete method resolution: " + target.name());
         if (!target.genericParameters().isEmpty())
             throw fail("generic class specialization is not implemented for proxy " + target.name());
+        if (target.constructor() != null && !target.constructor().annotations().isEmpty()) {
+            throw fail("annotated target constructor needs checked proxy metadata: "
+                    + target.name());
+        }
         for (Ast.FieldDecl field : target.fields()) {
             if (!field.annotations().isEmpty())
                 throw fail("annotated fields need expanded method-surface proofs before proxying " + target.name());
@@ -174,7 +189,7 @@ public final class StaticProxySynthesis {
      * through nested generic arguments (e.g. Option<borrow Foo>) as well.
      */
     private static boolean unsafeSignatureType(Ast.TypeRef type) {
-        if (type.isBorrow() || type.inferArguments()
+        if (type.isBorrow() || type.isStructType() || type.inferArguments()
                 || type.name().equals("Fnc") || type.name().equals("Function")
                 || type.name().equals("Routine")
                 || type.name().equals("$infer$")) return true;
