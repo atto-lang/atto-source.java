@@ -111,10 +111,21 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
                 tracked = true;
                 publish.run();
             } catch (RuntimeException | Error failure) {
-                if (tracked) coordinator.rollbackSpawnedChildFromRuntime(childNodeId, child);
-                if (bound) runtime.rollbackSpawnedSupervisorEscrowFromRuntime(
-                        child, this, childNodeId);
-                ids.remove(child.id(), childNodeId);
+                // Every rollback step is independent. A failed coordinator
+                // cleanup may not suppress runtime-binding or identity cleanup.
+                try {
+                    if (tracked) coordinator.rollbackSpawnedChildFromRuntime(childNodeId, child);
+                } catch (RuntimeException | Error cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+                try {
+                    if (bound) runtime.rollbackSpawnedSupervisorEscrowFromRuntime(
+                            child, this, childNodeId);
+                } catch (RuntimeException | Error cleanup) {
+                    failure.addSuppressed(cleanup);
+                } finally {
+                    ids.remove(child.id(), childNodeId);
+                }
                 throw failure;
             }
         });
