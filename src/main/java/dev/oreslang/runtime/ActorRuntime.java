@@ -4867,6 +4867,18 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                 }
+                // ActorCell already reserved output-stream, channel and
+                // possibly private arena ownership during construction. A
+                // failed child/group/CONTROL publication has no lifecycle
+                // finalizer, so release all of them here before dropping the
+                // actor slot. Keep the original admission error authoritative.
+                if (cell != null) {
+                    try {
+                        cell.abortUnpublished();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                }
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -7407,9 +7419,46 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : null;
+            ActorMemorySlice preparedSlice;
+            try {
+                preparedSlice = isPrivateKind(kind)
+                        ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
+                        : null;
+            } catch (RuntimeException | Error constructionFailure) {
+                // ActorCell never reached the caller: do not strand the output
+                // stream registry if the final owned-memory construction fails.
+                try {
+                    outputStream.closeAndDrainFromRuntime();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    constructionFailure.addSuppressed(cleanupFailure);
+                }
+                throw constructionFailure;
+            }
+            this.memorySlice = preparedSlice;
+        }
+
+        /** A failed spawn must release resources constructed before actors.put.
+         * No actor turn, mailbox message or output observer may have started:
+         * successful publication and the returned ActorRef are both absent. */
+        private void abortUnpublished() {
+            if (activationRequested || scheduled.get() || carrierActive
+                    || activeTurns != 0 || nextUserMessageSequence != 0) {
+                throw new IllegalStateException(
+                        "cannot rollback an already activated actor " + ref.id());
+            }
+            try {
+                mailbox.close();
+            } finally {
+                try {
+                    continuationMailbox.close();
+                } finally {
+                    try {
+                        outputStream.closeAndDrainFromRuntime();
+                    } finally {
+                        if (memorySlice != null) memorySlice.close();
+                    }
+                }
+            }
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
