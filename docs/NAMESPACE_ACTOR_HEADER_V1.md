@@ -19,7 +19,7 @@ pub mtd (Foo f) bar(): void {
 This **parses as source metadata**, but does **not** compile into an executable
 actor or prove `ActorXYZ` conformance. The exact example also declares
 `Foo` privately while exposing public methods. Public API binding on a
-private actor intentionally fails; use `pub declare actor Foo ...;` only if
+private actor intentionally fails; use `declare pub actor Foo ...;` only if
 the actor type is meant to be exposed.
 
 ### Implemented in this patch
@@ -27,10 +27,11 @@ the actor type is meant to be exposed.
 - Preserve a semicolon-terminated `declare actor` nominal header and explicit
   `implements` reference list in `Ast.StandaloneActorDecl`; no hidden
   actor instance or synthetic receiver alias is created.
-- `declare actor Foo;` is the canonical body-free header; `define actor Foo;`
-  is explicitly rejected. `define actor Foo as ... end` remains the
-  separate inline implementation form. Visibility can be written as
-  `pub declare actor Foo;` or `declare pub actor Foo;`.
+- `declare actor Foo;` is the canonical private body-free header;
+  `declare pub actor Foo;` exports that nominal actor. Visibility **must
+  follow** `declare`: `pub declare actor Foo;` is rejected.
+  `define actor Foo;` is explicitly rejected, while
+  `define actor Foo as ... end` remains the separate inline form.
 - Parse `pub mtd (Foo f) bar(): void` as an external actor method without
   requiring `define`; the older `define [pub] mtd` spellings remain.
 - Preserve `init(): f` as a parsed return-type reference, **not** as a
