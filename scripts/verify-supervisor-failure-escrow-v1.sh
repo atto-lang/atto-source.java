@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source_path='src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java'
 test_path='src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowV1Standalone.java'
-source_blob='9c81211bdeea95705afa26d2f278092d9700973b'
+source_blob='3cab55b6afcd01377d6f59adf232c29e6f74deaf'
 test_blob='bfa4618c1e76041c8e5a90ad4950abdef73e1602'
 race_path='src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java'
 race_blob='9eb87ba39008840c7a4704e561b2fd94a7dd1fbd'
