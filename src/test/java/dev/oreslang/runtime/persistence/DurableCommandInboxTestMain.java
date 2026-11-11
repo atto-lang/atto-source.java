@@ -32,6 +32,24 @@ public final class DurableCommandInboxTestMain {
                 check(!original.duplicate() && original.firstVersion()==1 &&
                     original.lastVersion()==2 && Arrays.equals(original.reply(),response),
                     "original atomic commit/reply mismatch");
+                // The provider's actual persisted event_batch must match
+                // the canonical five-backend wire, not only roundtrip itself.
+                try (Connection audit=DriverManager.getConnection("jdbc:sqlite:"+path);
+                     PreparedStatement q=audit.prepareStatement(
+                         "SELECT hex(event_batch) FROM command_inbox "
+                         +"WHERE tenant=? AND actor=? AND slot=? AND op=?")) {
+                    q.setString(1,id.tenant());
+                    q.setString(2,id.actor());
+                    q.setString(3,id.state());
+                    q.setString(4,"op-42");
+                    try (ResultSet rows=q.executeQuery()) {
+                        check(rows.next() && rows.getString(1).equalsIgnoreCase(
+                            "0000000200000001000000124d6f6e65794465706f736974656428363029"
+                            +"00000001000000124d6f6e65794465706f736974656428343029"),
+                            "Java provider event batch differs from shared canonical wire");
+                        check(!rows.next(),"unexpected duplicate command inbox row");
+                    }
+                }
                 var durable=store.loadFenced(id,1);
                 check(durable.version()==2 && durable.events().size()==2,
                     "multi-event command did not atomically persist two journal rows");
