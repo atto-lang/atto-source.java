@@ -18,7 +18,7 @@ final class WebSocketSessionStateTest {
                         WebSocketSessionState.MAX_USER_QUEUE_CAPACITY + 1,
                         1024));
 
-        for (int reserved : new int[] {1004, 1005, 1006, 1015, 2000, 2999}) {
+        for (int reserved : new int[] {1004, 1005, 1006, 1014, 1015, 2000, 2999}) {
             org.junit.jupiter.api.Assertions.assertThrows(
                     IllegalArgumentException.class,
                     () -> WebSocketSessionState.closePayload(reserved, "x"),
@@ -31,6 +31,27 @@ final class WebSocketSessionStateTest {
         assertEquals(
                 2,
                 WebSocketSessionState.closePayload(3000, "").length);
+    }
+
+    @Test
+    void closeReasonRequiresStrictUtf8AndActualByteBudget() {
+        var valid = WebSocketSessionState.closePayload(1000, "🙂".repeat(30));
+        assertEquals(122, valid.length);
+        assertArrayEquals("🙂".repeat(30).getBytes(StandardCharsets.UTF_8),
+                java.util.Arrays.copyOfRange(valid, 2, valid.length));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> WebSocketSessionState.closePayload(1000, "🙂".repeat(31)),
+                "61 UTF-16 units can exceed 123 UTF-8 octets");
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> WebSocketSessionState.closePayload(1000, "\uD800"));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> WebSocketSessionState.closePayload(1000, "\uDC00"));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> WebSocketSessionState.closePayload(1000, "ok\uD800x"));
     }
 
     @Test

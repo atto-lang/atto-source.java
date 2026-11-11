@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Optional;
@@ -185,9 +184,15 @@ public final class WebSocketSessionState {
             throw new IllegalArgumentException("invalid WebSocket close code");
         }
         if (reason == null) throw new IllegalArgumentException("WebSocket close reason is required");
-        byte[] reasonBytes = reason.getBytes(StandardCharsets.UTF_8);
-        if (reasonBytes.length > 123) {
-            throw new IllegalArgumentException("WebSocket close reason exceeds 123 UTF-8 bytes");
+        // Java's permissive String.getBytes would replace unpaired surrogates
+        // with '?', silently changing the reason on the wire. Bound the actual
+        // UTF-8 octets before allocating; a CLOSE control payload is <=125.
+        byte[] reasonBytes;
+        try {
+            reasonBytes = WebSocketFrameCodec.encodeTextUtf8(reason, 123);
+        } catch (java.util.concurrent.RejectedExecutionException oversized) {
+            throw new IllegalArgumentException(
+                    "WebSocket close reason exceeds 123 UTF-8 bytes", oversized);
         }
         byte[] payload = new byte[2 + reasonBytes.length];
         payload[0] = (byte) (code >>> 8);
