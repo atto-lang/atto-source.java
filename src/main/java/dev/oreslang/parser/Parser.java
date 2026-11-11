@@ -258,7 +258,14 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                // A define-prefixed ordinary callable is still a free
+                // function/routine. Only an explicit nominal actor mtd may
+                // carry external ingress; never reclassify 'define fnc'.
+                if (check(FNC) || check(ROUTINE)) {
+                    rootDeclarations.add(parseDeclarationAfterModifiers(annotations, modifiers));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, fnc or routine after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -504,10 +511,14 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "type aliases");
                 rejectCallableStructuralAnnotation(annotations, "type aliases");
-                rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            // Preserve define-prefixed ordinary callables in modules as well.
+            // These do not receive an actor receiver or runtime ingress marker.
+            if (check(FNC) || check(ROUTINE)) {
+                return parseDeclarationAfterModifiers(annotations, modifiers);
+            }
+            throw error(previous(), "expected class, interface, trait, type, fnc or routine after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
