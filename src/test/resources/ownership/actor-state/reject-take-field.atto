@@ -1,0 +1,12 @@
+// Cannot move a slot out of the actor incarnation, even if its type is Copy.
+define actor Counter as
+  state {
+    let int count;
+  }
+
+  receive(ActorMail<String> mail): void {
+    val int moved = rt take self.count;
+    self.end();
+    return;
+  }
+end
