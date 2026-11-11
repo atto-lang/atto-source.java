@@ -30,9 +30,9 @@ verify_blob() {
 verify_blob 0f53db094ed9794b271b341aa889cb51656b4812 "$pinned/src/otel.ores"
 verify_blob 6480413e7a6f8b6bef1a8a279f777f8293dc9937 "$pinned/tests/smoke.ores"
 verify_blob 7d72f983cf09ede66ea8a62c2e17e60f7b03f6ba "$pinned/tests/span-finish-admission-retry.ores"
-verify_blob f9c9779bd3a895f096ce013819087c059fcc6a48 "$pinned/tools/telemetry-check/Cargo.toml"
-verify_blob f857130281cc51f23b0c5d9ef72ffa2882402be1 "$pinned/tools/telemetry-check/Cargo.lock"
-verify_blob 9d692d836552736fb3e990a1a8257cad9a660434 "$pinned/tools/telemetry-check/src/main.rs"
+verify_blob 55fbd9508b735d0248c80339234cd82eb533275a "$pinned/tools/telemetry-check/Cargo.toml"
+verify_blob cc5a82761a5188f1a2ed4f9ec67e566ddfed7f45 "$pinned/tools/telemetry-check/Cargo.lock"
+verify_blob baee942bd7860cd327d34b6c4ab78c03f21cd0ba "$pinned/tools/telemetry-check/src/main.rs"
 
 : "${JAVA_HOME:?Require GraalVM JDK 25}"
 test -x "$JAVA_HOME/bin/java"
