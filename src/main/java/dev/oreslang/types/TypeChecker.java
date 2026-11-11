@@ -264,6 +264,13 @@ public final class TypeChecker {
         }
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
+            // Linked signatures cannot smuggle a protected state layout into
+            // the public ABI while local neuron emission is deliberately gated.
+            if (linked.actorConcurrency().role() == Ast.ActorRole.NEURON) {
+                throw new IllegalArgumentException(
+                        "NEURON_STATE_LINK_UNSUPPORTED: linked neuron actor '"
+                                + linked.name() + "' requires checked state ABI and loan lowering");
+            }
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
@@ -1349,9 +1356,12 @@ public final class TypeChecker {
      * automatic differentiation. Require both hooks before guest lowering.
      */
     private static void checkNeuronV0Contract(Ast.ClassDecl klass) {
-        if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()) {
+        if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()
+                || klass.actorKind() != Ast.ActorKind.SHARED
+                || klass.isAbstract() || klass.constructor() != null) {
             throw new IllegalArgumentException(
-                    "neuron actor '" + klass.name() + "' v0 supports only nongeneric, noninherited scalar actors");
+                    "neuron actor '" + klass.name() + "' v0 supports only concrete, "
+                            + "shared, nongeneric, noninherited scalar actors");
         }
         java.util.List<Ast.MethodDecl> forwards = klass.methods().stream()
                 .filter(method -> method.name().equals("forward")).toList();
@@ -1365,10 +1375,10 @@ public final class TypeChecker {
                 || forward.structural() || !forward.genericParameters().isEmpty()
                 || !forward.effects().isEmpty() || forward.arity() != 1
                 || !forward.parameters().getFirst().type().equals(Ast.TypeRef.simple("float"))
+                || forward.parameters().getFirst().structural()
+                || forward.parameters().getFirst().mutable()
                 || !forward.returnType().equals(Ast.TypeRef.simple("float"))
-                || (forward.explicitReceiverType() != null
-                    && forward.explicitReceiverType().isBorrow()
-                    && forward.explicitReceiverType().name().equals("$borrow_mut$"))) {
+                || forward.explicitReceiverType() != null) {
             throw new IllegalArgumentException(
                     "neuron actor '" + klass.name() + "' forward must be public, synchronous, "
                     + "nongeneric forward(float): float with a readonly receiver");
@@ -1388,6 +1398,9 @@ public final class TypeChecker {
                 || !receive.genericParameters().isEmpty() || !receive.effects().isEmpty()
                 || receive.arity() != 1
                 || !receive.parameters().getFirst().type().equals(incoming)
+                || receive.parameters().getFirst().structural()
+                || receive.parameters().getFirst().mutable()
+                || receive.explicitReceiverType() != null
                 || !receive.returnType().equals(Ast.TypeRef.simple("void"))) {
             throw new IllegalArgumentException(
                     "neuron actor '" + klass.name()
