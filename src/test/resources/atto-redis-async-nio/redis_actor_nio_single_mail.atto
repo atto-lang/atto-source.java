@@ -17,7 +17,7 @@ define actor RedisKvSingleMail as
       self.end();
       return;
     fi
-    let parts = mail.value.split_literal("|");
+    let List<string> parts = mail.value.split_literal("|");
     val string op = parts[0];
     if op == "SET" && parts.size == 3; do
       self.values.set(parts[1], parts[2]);
@@ -80,7 +80,7 @@ pub async routine main(): void {
       worker.send(op + "|" + request[1]);
       val output = (await worker.outputs.next()).value.unwrap();
       if output.value.starts_with("VALUE|"); do
-        let fields = output.value.split_literal("|");
+        let List<string> fields = output.value.split_literal("|");
         await socket.write_resp2_hex_async("VALUE", fields[1]);
       else
         await socket.write_resp2_hex_async(output.value, "");
