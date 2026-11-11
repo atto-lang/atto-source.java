@@ -105,6 +105,64 @@ final class TupleReturnTypeContractTest {
     }
 
     @Test
+    void emptyAndSingletonCanonicalTuplesPreserveExactArity() throws Exception {
+        String program = """
+                fnc empty(): Tuple[] {
+                  return ~tuple();
+                }
+                fnc singleton(): Tuple[int] {
+                  return ~tuple(9);
+                }
+                pub routine main(): void {
+                  val zero: Tuple[] = empty();
+                  val one: Tuple[int] = singleton();
+                  stdio.stdout.write(one[0]);
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+        assertEquals("9", run(program));
+    }
+
+    @Test
+    void tildeTupleValueSyntaxIsRejectedInAllTypePositions() {
+        for (String program : new String[]{
+                "fnc wrong(): ~tuple(string, string) { return ~tuple(1, 2); }",
+                "fnc wrong(~tuple(string, string) value): void { return; }",
+                "pub fnc main(): void { val value: ~tuple(string, string) = ~tuple(1, 2); return; }",
+                "fnc wrong(): ~tuple<string, string>(1, 2) { return ~tuple(1, 2); }"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(program), program);
+            assertTrue(error.getMessage().contains("constructs a value, not a type"), error::getMessage);
+        }
+    }
+
+    @Test
+    void explicitArrayCannotSatisfyUnionOfTuples() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc wrong(): Tuple[string, string] | Tuple[int, int] {
+                          return ~array("left", "right");
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("return value"), error::getMessage);
+    }
+
+    @Test
+    void otherCollectionsStillRejectEmptySequenceShapes() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc wrong(): Array[] {
+                          return ~array();
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("sequence type shape cannot be empty"),
+                error::getMessage);
+    }
+
+    @Test
     void explicitlyConstructedArrayCannotMasqueradeAsTupleReturn() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
