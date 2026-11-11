@@ -166,3 +166,57 @@ compiled host, not compiled standalone guest source. A signed or
 independently corroborated GitHub CI job and artifact chain is still
 required for parity promotion. The original OTel JSONL format is still
 not OpenTelemetry's OTLP wire format.
+
+
+## 2026-11-11 P0 external CI runtime probe and Native Image correction
+
+An isolated, **source-free** alternative-runner check was actually executed in the
+private candidate compiler carrier `beamscale/bmscl-compiler` (repository ID
+`1383937120`). The synthetic-only workflow is pinned at
+`cd718ea97670cd15fd90613f1bb7944f1f01edaf` on branch
+`probe/otel-graal-aot-sourcefree-20261111`:
+[Actions run 43092108031](https://github.com/beamscale/bmscl-compiler/actions/runs/43092108031),
+job `130771548974` completed **success, eight executed steps**. It installed
+GraalVM 25.3 / JDK 25, built a synthetic Java class via Native Image, checked
+its ELF magic, and executed the binary. The log identified Oracle GraalVM
+**25.3.4.1**, output
+`SOURCE_FREE_GRAALVM_AOT_COMPILATION_SUCCEEDED`, and reported synthetic
+native-binary SHA256
+`4ebb8e603019320ceaf2924ef279d3b6565c85688e05646cf398452351362bbb`.
+
+**Critical corrected claim:** GraalVM 25.3.4.1 logs
+`Warning: Using a deprecated option --no-fallback from command line. No effect`.
+That CLI flag is **not** independent proof of a no-fallback build on this toolchain,
+even though the current compiler's Maven profile still passes it. The Java
+OTel real guest gate now requires a native executable ELF header, an ELF
+`EXEC` or `DYN` type, the absence of ordinary Java launcher
+`libjvm`/`libjli`/`libjava` shared-library dependencies, native-image
+toolchain-version output, correct binary `--build-info` mode
+`aot`/`interpreter-no-jit`, actual guest process exit 0, and the Rust
+semantic oracle. The native host digest is checked both before and after
+the guest run.
+
+The executable-host guard was independently exercised in Linux source-only
+Bash tests: native ELF accepted, ordinary Java launcher (libjli) denied,
+shell-script and symlink executable impostors denied. Alongside earlier
+JVM class/JAR mutation and output overflow tests, the latest checked-in
+`guardrails.sh` and `test-guardrails.sh` were **both executed locally,
+byte-identical to their GitHub Git blobs**. These controls do not execute
+the actual Oreslang compiler or prove native Oreslang guest AOT lowering.
+
+**Cross-organization source transfer remains denied.** GitHub branch metadata
+reports `main.protected=false` on both
+`ores-truffle-oreslang/oreslang-source.java` and
+`beamscale/bmscl-compiler`; current connector has no permission to inspect
+detailed protection controls (403). The old unapproved policy candidate
+cannot be promoted by a successful source-free GraalVM probe. Full review
+requirements are in source issues
+[#1501](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1501)
+and [#963](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/963).
+No private Oreslang compiler source was exported to the external runner.
+
+GitHub source-org OTel workflow
+[run 43089023303, attempt 2](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/43089023303/attempts/2)
+again failed **before runner assignment** (`steps=null`,
+`runner_id=null`). JVM and native guest jobs were skipped.
+Current real Oreslang OTel guest evidence remains **NOT_EXECUTED**.
