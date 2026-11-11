@@ -164,6 +164,51 @@ public final class SqlitePersistenceStoreTestMain {
                 }
                 check(checkpointBlocked,"rewritten event was laundered behind a new checkpoint");
             }
+            // Correct payload bytes do not excuse a rewritten origin
+            // operation version. This is rejected even after epoch changes.
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","metadata-event",1);
+                check(store.commit(List.of(write("metadata-event","event",1,0,
+                        Kind.EVENT,11))).get(0).durable(),
+                        "event metadata proof fixture");
+                store.grantEpoch("tenant-a","metadata-event",2);
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "UPDATE ops SET expected=99 WHERE actor='metadata-event' " +
+                    "AND slot='main' AND op='event'")==1,
+                    "event expected-version tamper fixture");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                boolean denied=false;
+                try { store.loadFenced(new Identity("tenant-a","metadata-event","main"),2); }
+                catch(java.sql.SQLException expected) {
+                    denied=expected.toString().contains("UNVERIFIED_ACTOR_EVENT");
+                }
+                check(denied,"rewritten legacy expected version was trusted on recovery");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                store.grantEpoch("tenant-a","metadata-snapshot",1);
+                check(store.commit(List.of(write("metadata-snapshot","checkpoint",1,0,
+                        Kind.SNAPSHOT,21))).get(0).durable(),
+                        "snapshot metadata proof fixture");
+            }
+            try(var raw=java.sql.DriverManager.getConnection("jdbc:sqlite:"+file);
+                var statement=raw.createStatement()) {
+                check(statement.executeUpdate(
+                    "UPDATE ops SET epoch=0 WHERE actor='metadata-snapshot' " +
+                    "AND slot='main' AND op='checkpoint'")==1,
+                    "snapshot origin epoch tamper fixture");
+            }
+            try(var store=new SqlitePersistenceStore(file)) {
+                boolean denied=false;
+                try { store.loadFenced(new Identity("tenant-a","metadata-snapshot","main"),1); }
+                catch(java.sql.SQLException expected) {
+                    denied=expected.toString().contains("UNVERIFIED_ACTOR_SNAPSHOT");
+                }
+                check(denied,"rewritten snapshot origin epoch was trusted on recovery");
+            }
             // A correct-size altered snapshot is also forbidden. Length and
             // stream contiguity alone are not a sufficient recovery witness.
             try(var store=new SqlitePersistenceStore(file)) {
