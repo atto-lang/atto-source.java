@@ -5,6 +5,8 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorHeaderAdmissionTest.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
       - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
@@ -61,13 +63,14 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
         run: |
           set -euo pipefail
           for suite in \
+              NamespaceActorHeaderAdmissionTest \
               CrossFileActorReceiverBindingTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
