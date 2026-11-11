@@ -36,8 +36,8 @@ final class WithExpressionGuestTest {
     void copyUpdatePreservesOriginalAndEvaluatesOriginalField() throws Exception {
         assertEquals("101120", run("""
                 pub routine main(): void {
-                    val point = record{x: 10, y: 20};
-                    val next = rt copy point with {x => point.x + 1};
+                    const point = record{x: 10, y: 20};
+                    const next = rt copy point with {x => point.x + 1};
                     stdio.stdout.write(point.x);
                     stdio.stdout.write(next.x);
                     stdio.stdout.write(next.y);
@@ -50,8 +50,8 @@ final class WithExpressionGuestTest {
     void plainCopyValueAndChainedUpdateExecuteAsExpressions() throws Exception {
         assertEquals("104237", run("""
                 pub routine main(): void {
-                    val point = record{x: 10, y: 20};
-                    val next = point with {x => 42} with {y => 37};
+                    const point = record{x: 10, y: 20};
+                    const next = point with {x => 42} with {y => 37};
                     stdio.stdout.write(point.x);
                     stdio.stdout.write(next.x);
                     stdio.stdout.write(next.y);
@@ -64,8 +64,8 @@ final class WithExpressionGuestTest {
     void explicitTakeConstructsNewValueAndCannotReadMovedOriginal() throws Exception {
         assertEquals("912", run("""
                 pub routine main(): void {
-                    val point = record{x: 9, y: 8};
-                    val next = (rt take point) with {y => 12};
+                    const point = record{x: 9, y: 8};
+                    const next = (rt take point) with {y => 12};
                     stdio.stdout.write(next.x);
                     stdio.stdout.write(next.y);
                     return;
@@ -73,8 +73,8 @@ final class WithExpressionGuestTest {
                 """));
         IllegalArgumentException failure = rejects("""
                 pub routine main(): int {
-                    val point = record{x: 9, y: 8};
-                    val next = (rt take point) with {y => 12};
+                    const point = record{x: 9, y: 8};
+                    const next = (rt take point) with {y => 12};
                     return point.x;
                 }
                 """);
@@ -85,7 +85,7 @@ final class WithExpressionGuestTest {
     void unknownFieldAndWrongReplacementTypeReject() {
         IllegalArgumentException unknown = rejects("""
                 pub routine main(): int {
-                    val point = record{x: 1};
+                    const point = record{x: 1};
                     return (point with {z => 2}).x;
                 }
                 """);
@@ -93,7 +93,7 @@ final class WithExpressionGuestTest {
 
         IllegalArgumentException wrongType = rejects("""
                 pub routine main(): int {
-                    val point = record{x: 1};
+                    const point = record{x: 1};
                     return (point with {x => "invalid"}).x;
                 }
                 """);
@@ -104,8 +104,8 @@ final class WithExpressionGuestTest {
     void rejectsBorrowAndNonRecordAndSideEffectfulRhs() {
         IllegalArgumentException borrowed = rejects("""
                 pub routine main(): void {
-                    val point = record{x: 1};
-                    val next = (rt borrow point) with {x => 2};
+                    const point = record{x: 1};
+                    const next = (rt borrow point) with {x => 2};
                     return;
                 }
                 """);
@@ -114,8 +114,8 @@ final class WithExpressionGuestTest {
 
         IllegalArgumentException struct = rejects("""
                 pub routine main(): void {
-                    val point = infer struct{x: 1};
-                    val next = (rt take point) with {x => 2};
+                    const point = infer struct{x: 1};
+                    const next = (rt take point) with {x => 2};
                     return;
                 }
                 """);
@@ -123,10 +123,10 @@ final class WithExpressionGuestTest {
                 struct::getMessage);
 
         IllegalArgumentException call = rejects("""
-                fnc next_x(): int { return 5; }
+                fnc next_x(int arg): int { return arg; }
                 pub routine main(): void {
-                    val point = record{x: 1};
-                    val next = point with {x => next_x()};
+                    const point = record{x: 1};
+                    const next = point with {x => next_x(3)};
                     return;
                 }
                 """);
@@ -142,8 +142,8 @@ final class WithExpressionGuestTest {
                 end
 
                 pub routine main(): void {
-                    val point = record{x: new Box(), y: 2};
-                    val next = rt copy point with {y => 3};
+                    const point = record{x: new Box(), y: 2};
+                    const next = rt copy point with {y => 3};
                     return;
                 }
                 """);
