@@ -78,7 +78,7 @@ A queued/failed job with
 
 The 20 reader/writer JUnit methods, 10 neuron parser/type-check methods,
 4 layout methods, 13 scoped-scalar preflight methods, and four real-ActorRuntime
-turn/state host methods are **51 committed JUnit tests, NOT EXECUTED**
+turn/state host methods are **51 previously committed JUnit tests, NOT EXECUTED**
 on the current exact PR tree. No compiled guest `.atto` inference is certified.
 
 ### Compiler scoped-scalar preflight (new, still fail closed)
@@ -201,6 +201,42 @@ rejection, expression/alias negative cases, and the retained type-check gate.
 The descriptor is not a portable executable binary, authenticated loan, or
 compiled JVM/LLVM/.NET/Wasm/Forge result; native backend-specific lowering
 and physical actor lifecycle binding remain outstanding.
+
+## MIR descriptor and physical-host model hardening
+
+The scalar `NeuronScalarMirV0` descriptor now rejects hand-built
+`GuardedScope` programs with operand-stack underflow, leftover values,
+missing read result, missing write, write from an inference input, or a
+write from a read-only scope. The `Plan` constructor separately checks
+every state symbol against the immutable declared layout and enforces
+one write per field, reads after initialization, and a consistent
+inference-input name. These checks apply even if no parser-produced
+preflight is involved. Neither the descriptor nor this validation
+constitutes a guest execution capability.
+
+The host `NeuronActorScalarTurnStateV0.ReadScope` close operation
+uses a single atomic release claim, so concurrent STOP/cancellation
+cleanup cannot double-close the physical loan. Its STOP drain callback
+is claimed at most once when the last loan releases. Parser admission
+now restricts contextual `self.handle_state(critical-...)` syntax
+to `on_start` or `forward`, and rejects direct/nested occurrences
+inside `receive` or helper methods.
+
+`NeuronScalarMirHostModelTest` feeds an actual parsed
+`.atto` fixture into `NeuronScalarMirV0.lower`, then runs the
+**descriptive** instructions using a test-only scalar stack model
+whose state loads/stores are routed through a real
+`ActorRuntime` turn-bound protected scope. Its expected result is
+`weight=2, bias=1, input=3 -> 7`, and injected instruction failures
+must release loans through Java finally. **This is host-model
+integration testing, not compiled AttoLang inference or a release
+gate receipt.**
+
+The targeted exact-head suite now has **61 committed JUnit methods**
+in eight classes, including the new constructed-MIR, concurrent
+cleanup and host-model regressions. As with all earlier tests, they
+remain **unexecuted** until a trusted runner produces a real
+nonzero-step Maven test report on the exact branch head.
 
 ### Guest/compiler next implementation slice
 
