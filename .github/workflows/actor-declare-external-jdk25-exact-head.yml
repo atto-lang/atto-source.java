@@ -14,6 +14,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java'
       - 'src/main/java/dev/oreslang/runtime/ActorSourceLifecycleGate.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/main/java/dev/oreslang/compiler/StatelessDeclaredActorLowerer.java'
       - 'src/test/java/dev/oreslang/ActorExternalEntrypointModifierTest.java'
       - 'src/test/java/dev/oreslang/DeclaredActorNominalSyntaxTest.java'
       - 'src/test/java/dev/oreslang/DeclaredActorHardeningTest.java'
@@ -24,6 +26,7 @@ on:
       - 'src/test/java/dev/oreslang/ActorReceiveIngressGuestExecutionTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorInitPublicationGateTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorSourceLifecycleGateTest.java'
+      - 'src/test/java/dev/oreslang/StatelessDeclaredActorExecutionTest.java'
       - 'src/test/resources/atto/actor-ingress/**'
       - '.github/workflows/actor-declare-external-jdk25-exact-head.yml'
   workflow_dispatch:
@@ -76,14 +79,14 @@ jobs:
           distribution: graalvm
           cache: maven
 
-      - name: Execute parser, binder, ingress, one-shot gate and real inline actor guest JUnit
+      - name: Execute compiler, ingress and runtime gates plus opt-in declared actor guest JUnit
         shell: bash
         run: |
           set -euo pipefail
           javac -version 2>&1 | grep -Eq '^javac 25([. ]|$)'
           mvn -version
           mvn -B -ntp \
-            -Dtest=ActorExternalEntrypointModifierTest,DeclaredActorNominalSyntaxTest,DeclaredActorHardeningTest,ActorReceiverBinderTest,CrossFileActorReceiverBindingTest,ExternalActorReceiverAstAdmissionTest,ActorReceiveIngressBoundaryTest,ActorReceiveIngressGuestExecutionTest,ActorInitPublicationGateTest,ActorSourceLifecycleGateTest \
+            -Dtest=ActorExternalEntrypointModifierTest,DeclaredActorNominalSyntaxTest,DeclaredActorHardeningTest,ActorReceiverBinderTest,CrossFileActorReceiverBindingTest,ExternalActorReceiverAstAdmissionTest,ActorReceiveIngressBoundaryTest,ActorReceiveIngressGuestExecutionTest,ActorInitPublicationGateTest,ActorSourceLifecycleGateTest,StatelessDeclaredActorExecutionTest \
             -DfailIfNoTests=true test
           echo 'RECEIPT actor_external_maven_test_step=EXECUTED'
 
@@ -107,6 +110,7 @@ jobs:
               'ActorReceiveIngressGuestExecutionTest',
               'runtime.ActorInitPublicationGateTest',
               'runtime.ActorSourceLifecycleGateTest',
+              'StatelessDeclaredActorExecutionTest',
           )
           total = 0
           for suite in suites:
@@ -125,9 +129,10 @@ jobs:
                   raise SystemExit(f'INVALID_SUREFIRE_RESULT:{suite}:tests={count}:testcases={actual}:fail={failures}:errors={errors}:skipped={skipped}')
               total += count
               print(f'RECEIPT junit={suite} tests={count} sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')
-          if total < 106:
+          if total < 120:
               raise SystemExit(f'INSUFFICIENT_TESTS:{total}')
           print(f'RECEIPT actor_external_junit=EXECUTED_VERIFIED total={total}')
           print('RECEIPT inline_actor_mailbox_guest=JVM_EXECUTED_VERIFIED')
-          print('RECEIPT declared_actor_guest=UNVERIFIED native_image=UNVERIFIED five_backend_parity=UNVERIFIED')
+          print('RECEIPT stateless_declared_actor_opt_in_guest=JVM_EXECUTED_VERIFIED')
+          print('RECEIPT stateful_declared_actor_guest=UNVERIFIED native_image=UNVERIFIED five_backend_parity=UNVERIFIED')
           PY
