@@ -106,6 +106,9 @@ final class AotClassProxyLanguageTest {
         Ast.NewExpr proxy = (Ast.NewExpr) ((Ast.BindingStmt) main.body().getFirst()).initializer();
         assertEquals(1, proxy.arguments().size());
         assertEquals("Foo", ((Ast.NewExpr) proxy.arguments().getFirst()).type().name());
+        // Checking only the AST shape is insufficient: run the real guest
+        // constructor and verify the side effect occurs exactly once.
+        assertEquals("1", run(source));
     }
 
     @Test
@@ -235,6 +238,25 @@ final class AotClassProxyLanguageTest {
                             proxySurfaceProgram(List.of(method)), Set.of("Foo")));
             assertTrue(error.getMessage().contains("borrow"), error.getMessage());
         }
+    }
+
+    @Test
+    void rejectsTargetIdentityEscapeViaDirectAndNestedReturnTypes() {
+        Ast.TypeRef target = Ast.TypeRef.simple("Foo");
+        Ast.TypeRef nested = new Ast.TypeRef("Option", List.of(target), false);
+        for (Ast.TypeRef result : List.of(target, nested)) {
+            Ast.MethodDecl method = proxySurfaceMethod(result, List.of(), List.of());
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("expose the wrapped target"),
+                    error.getMessage());
+        }
+        // Returning a primitive remains a legal, ordinary typed forwarder.
+        Ast.MethodDecl primitive = proxySurfaceMethod(Ast.TypeRef.simple("int"),
+                List.of(), List.of());
+        assertDoesNotThrow(() -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                proxySurfaceProgram(List.of(primitive)), Set.of("Foo")));
     }
 
     @Test
