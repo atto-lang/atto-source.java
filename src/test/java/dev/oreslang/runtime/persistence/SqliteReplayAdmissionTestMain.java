@@ -112,6 +112,29 @@ public final class SqliteReplayAdmissionTestMain {
                       "bounded journal failed to resume after snapshot");
                 check(commands.loadVerified(countId,1).events().size()==1,
                       "post-checkpoint verified restore did not replay one event");
+                // A forged snapshot can never reset replay accounting enough
+                // to admit another command or legacy event.
+                try(Connection raw=DriverManager.getConnection("jdbc:sqlite:"+database);
+                    PreparedStatement tamper=raw.prepareStatement(
+                        "UPDATE state SET snapshot=x'FF' WHERE tenant=? AND actor=? AND slot=?")) {
+                    tamper.setString(1,countId.tenant());
+                    tamper.setString(2,countId.actor());
+                    tamper.setString(3,countId.state());
+                    check(tamper.executeUpdate()==1,"checkpoint tamper setup failed");
+                }
+                boolean legacyRejected=false;
+                try {legacy.commit(List.of(new Write(countId,"unsafe-legacy",
+                            1,10002,1,Kind.EVENT,new byte[]{3}))); }
+                catch(java.sql.SQLException rejected) {
+                    legacyRejected=rejected.toString().contains("UNVERIFIED_ACTOR_SNAPSHOT");
+                }
+                check(legacyRejected,"altered checkpoint admitted legacy durable event");
+                boolean atomicRejected=false;
+                try {commands.commit(command(countId,10002,"unsafe-command")); }
+                catch(java.sql.SQLException rejected) {
+                    atomicRejected=rejected.toString().contains("CORRUPT_SNAPSHOT_PROOF");
+                }
+                check(atomicRejected,"altered checkpoint admitted atomic durable command");
             }
             System.out.println("PASS Java JDBC 10k-event and 16MiB admission boundaries");
         } finally {
