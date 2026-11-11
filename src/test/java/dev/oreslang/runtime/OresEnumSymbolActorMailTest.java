@@ -115,4 +115,25 @@ final class OresEnumSymbolActorMailTest {
                 () -> validator.invoke(null, List.of(Map.of("signal", red)), new IdentityHashMap<>(), 0));
         assertInstanceOf(SecurityException.class, failed.getCause());
     }
+
+    @Test void mailboxQuotaChargesFullClosedEnumSchemaInConstantTime() {
+        OresEnumSymbol.Declaration light = OresEnumSymbol.declare(UNIT, "Light", CASES);
+        long expected = 96L + 2L * (UNIT.length() + "Light".length());
+        for (String variant : CASES) expected += 24L + 2L * variant.length();
+        assertEquals(expected, light.transportLogicalBytes());
+        assertSame(light.caseNamed("Red").declaration(), light);
+
+        // Huge immutable case dictionaries are still retained object graphs.
+        // Charge the complete dictionary once per mail, using the cached
+        // size instead of traversing 4096 variants on every send.
+        List<String> bigCases = new ArrayList<>();
+        for (int i = 0; i < 4096; i++) bigCases.add("Case" + i);
+        OresEnumSymbol.Declaration huge = OresEnumSymbol.declare(UNIT, "Huge", bigCases);
+        assertTrue(huge.transportLogicalBytes() > 120_000L);
+        assertEquals(huge.transportLogicalBytes(),
+                huge.caseNamed("Case0").declaration().transportLogicalBytes());
+        OresEnumSymbol first = huge.caseNamed("Case0");
+        assertSame(first, ActorRuntime.freeze(first));
+    }
+
 }
