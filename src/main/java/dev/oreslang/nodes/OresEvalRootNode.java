@@ -3265,6 +3265,25 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    // Nullary nominal enum variants are values even in
+                    // suspendable evaluation. Resolve before evaluating the
+                    // namespace name, which is compile-time-only.
+                    if (member.receiver() instanceof Ast.NameExpr enumOwner
+                            && env.lookup(enumOwner.name()) == Env.MISSING) {
+                        NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + member.member());
+                        if (enumCase != null) {
+                            try {
+                                continuation.accept(
+                                        task,
+                                        constructNominalEnum(enumCase, List.of()),
+                                        null);
+                            } catch (RuntimeException | Error failure) {
+                                continuation.accept(task, null, failure);
+                            }
+                            return;
+                        }
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
@@ -6206,7 +6225,17 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                if (member.receiver() instanceof Ast.NameExpr enumOwner
+                        && env.lookup(enumOwner.name()) == Env.MISSING) {
+                    NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                            enumOwner.name() + "." + member.member());
+                    if (enumCase != null) {
+                        return constructNominalEnum(enumCase, List.of());
+                    }
+                }
+                return member(eval(member.receiver(), env), member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
