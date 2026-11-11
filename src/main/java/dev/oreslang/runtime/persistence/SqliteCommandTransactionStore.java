@@ -166,15 +166,33 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
         if(newEvents<1 || newEvents>10000 || newBytes<0 || newBytes>16_777_216L)
             return false;
         long checkpoint=0;
+        int snapshotSchema=0;
+        byte[] snapshot=null;
         try(PreparedStatement s=db.prepareStatement(
-                "SELECT snapshot_version FROM state WHERE tenant=? AND actor=? AND slot=?")) {
+                "SELECT snapshot_version,snapshot_schema,length(snapshot)," +
+                "substr(snapshot,1,1048577) FROM state " +
+                "WHERE tenant=? AND actor=? AND slot=?")) {
             bindId(s,id);
             try(ResultSet row=s.executeQuery()) {
-                if(row.next()) checkpoint=row.getLong(1);
+                if(row.next()) {
+                    checkpoint=row.getLong(1);
+                    snapshotSchema=row.getInt(2);
+                    long size=row.getLong(3);
+                    boolean absent=row.wasNull();
+                    snapshot=row.getBytes(4);
+                    if(checkpoint>0 &&
+                       (absent || size<0 || size>1_048_576 ||
+                        snapshot==null || snapshot.length!=size))
+                        throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                    if(checkpoint==0 && (snapshotSchema!=0 || !absent))
+                        throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+                }
             }
         }
         if(checkpoint<0 || checkpoint>head(id))
             throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        if(checkpoint>0)
+            verifySnapshotBarrier(id,checkpoint,snapshotSchema,snapshot);
         try(PreparedStatement s=db.prepareStatement(
                 "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
                 "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
