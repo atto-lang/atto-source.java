@@ -48,7 +48,9 @@ allowed only at file root, never inside a module.
 
 1. Parse each source file, retaining the list of namespace claims and the
    declaration's `namespaceContract` target bit. Annotation expansion
-   preserves the claims.
+   preserves the claims. The namespace proof helper is **package-private**
+   inside the Java compiler: ordinary callers cannot invoke it as a
+   stand-alone certification API using fabricated partial ASTs.
 2. Partition the **complete explicit compilation source set** by declared,
    flat namespace. Do not infer membership from physical directories,
    globbing, imports, external package labels, or a matching namespace
