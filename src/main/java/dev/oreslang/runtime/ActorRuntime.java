@@ -1473,12 +1473,43 @@ public final class ActorRuntime implements AutoCloseable {
      * domain. The runtime validates ownership before admitting it as persistent
      * source-actor state.
      */
+    /**
+     * Revocable, non-forgeable authority for finalizing compiler-owned state.
+     * Only ActorRuntime can construct one, after the last actor turn exits.
+     * A callback cannot retain usable cleanup authority after it returns.
+     */
+    public static final class StateRetirementPermit {
+        private final ActorId owner;
+        private boolean live = true;
+
+        private StateRetirementPermit(ActorId owner) {
+            this.owner = Objects.requireNonNull(owner, "retiring actor");
+        }
+
+        public synchronized void retire(SealedActorState state) {
+            if (!live) {
+                throw new SecurityException("actor state retirement authority has expired");
+            }
+            Objects.requireNonNull(state, "actor state").retireFromRuntime(owner);
+        }
+
+        private synchronized void revoke() {
+            live = false;
+        }
+    }
+
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
         /**
-         * Runtime-owned finalization hook, after all admitted actor turns
-         * have quiesced. No guest code executes during this callback.
+         * Runtime-only finalization hook. The permit is valid solely during
+         * this callback after quiescence; guest code never receives it.
          */
+        default void retireFromRuntime(StateRetirementPermit permit) {
+            Objects.requireNonNull(permit, "runtime state retirement permit");
+            retireFromRuntime();
+        }
+        /** Legacy host implementation hook; no SealedActorState authority. */
+        @Deprecated
         default void retireFromRuntime() { }
     }
 
@@ -6333,7 +6364,12 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!retiringState.ownerActorId().equals(ref.id())) {
                         throw new SecurityException("foreign source actor state in lifecycle finalization");
                     }
-                    retiringState.retireFromRuntime();
+                    StateRetirementPermit permit = new StateRetirementPermit(ref.id());
+                    try {
+                        retiringState.retireFromRuntime(permit);
+                    } finally {
+                        permit.revoke();
+                    }
                 } catch (VirtualMachineError | ThreadDeath fatal) {
                     throw fatal;
                 } catch (Throwable finalizationFailure) {
