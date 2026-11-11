@@ -1046,6 +1046,14 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         pendingSourceOutputRelay = null;
                     }
                 }
+                // Once a source output was consumed, a failed/cancelled
+                // relay cannot silently leave the session accepting USER
+                // frames: provenance and byte-credit recovery are uncertain.
+                // Revocation is logical and host-close is queued on CONTROL;
+                // no actor carrier calls Socket.close().
+                if (terminal != null && !retired.get()) {
+                    requestActiveWriteAbort();
+                }
             });
             next.whenCompleteRuntime((step, failure) -> {
                 if (relay.isDone()) return;
