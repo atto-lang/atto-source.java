@@ -50,6 +50,12 @@ grants. It never settles Futures or invokes callbacks. A protected scalar
 write and this seal linearize on the same monitor: the write must finish
 before the seal or be rejected afterward.
 
+The logical seal also sets an admission-only flag in
+`ActorStateRwLoans` *without executing callbacks*. No new loan may be
+acquired and `promoteLocked()` refuses to promote a queued borrower even
+if the previous writer physically closes before the full STOP drain.
+A dedicated 27th arbiter regression asserts this no-promotion invariant.
+
 After sealing descendant admission, outside `lifecycleLock`, STOP calls
 `revokeFromRuntimeStop()` to close the RW arbiter and publish pending-Future
 notifications. A separate `arbiterClosed` flag ensures that an earlier
@@ -100,7 +106,7 @@ borrow scopes and verified physical-unwind release.
 
 Focused JUnit files:
 
-1. `ActorStateRwLoansTest`: 26 authored arbiter tests,
+1. `ActorStateRwLoansTest`: 27 authored arbiter tests,
    including bounded/FIFO grants, cancellation, STOP,
    notification drainage, epoch exhaustion and constructor visibility.
 2. `ActorStateSupervisorLoansTest`: 22 authored integration tests
@@ -113,9 +119,9 @@ Focused JUnit files:
    and a paused actor write whose post-STOP commit is rejected
    specifically with a revoked-region diagnostic (not a timeout).
 
-**48 authored tests are not 48 passing tests.** The exact-head workflow
+**49 authored tests are not 49 passing tests.** The exact-head workflow
 `.github/workflows/actor-state-rw-ownership.yml` requires both suites,
-checks the PR source SHA/tree, checks Surefire XML (`>=26` and `>=22`)
+checks the PR source SHA/tree, checks Surefire XML (`>=27` and `>=22`)
 with zero failures/errors/skips, and retains receipts. GitHub job
 `steps=null` means **NOT_EXECUTED**, not compiler-backed proof.
 
