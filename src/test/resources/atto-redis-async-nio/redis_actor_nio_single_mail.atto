@@ -11,23 +11,22 @@ define actor RedisKvSingleMail as
   }
 
   receive(ActorMail<List<string>> mail): void {
-    val request = mail.value;
-    if request.size == 0; do
+    if mail.value.size == 0; do
       self.end();
       return;
     fi
-    val string op = request[0];
+    val string op = mail.value[0];
     if op == "QUIT"; do
       self.end();
       return;
     fi
-    if op == "SET" && request.size == 3; do
-      self.values.set(request[1], request[2]);
+    if op == "SET" && mail.value.size == 3; do
+      self.values.set(mail.value[1], mail.value[2]);
       self.send("OK");
       return;
     fi
-    if op == "GET" && request.size == 2; do
-      val found = self.values.get_optional(request[1]);
+    if op == "GET" && mail.value.size == 2; do
+      val found = self.values.get_optional(mail.value[1]);
       if found.is_none(); do
         self.send("NIL");
       else
@@ -36,8 +35,8 @@ define actor RedisKvSingleMail as
       fi
       return;
     fi
-    if op == "DEL" && request.size == 2; do
-      if self.values.delete(request[1]); do
+    if op == "DEL" && mail.value.size == 2; do
+      if self.values.delete(mail.value[1]); do
         self.send("ONE");
       else
         self.send("ZERO");
