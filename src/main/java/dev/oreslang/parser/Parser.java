@@ -2339,6 +2339,13 @@ public final class Parser {
 
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
+            // Zero-arity tuples are values (~tuple()) and types (Tuple[]).
+            // Model the empty intrinsic with the existing finite tuple type
+            // rather than allowing an empty sequence shape for every collection.
+            if (name.equals("Tuple") && args.isEmpty() && check(RBRACKET)) {
+                advance();
+                return Ast.TypeRef.tupleType(List.of());
+            }
             args.add(parseSequenceShapeDimension());
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
