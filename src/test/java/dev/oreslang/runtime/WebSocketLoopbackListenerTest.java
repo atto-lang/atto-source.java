@@ -19,6 +19,65 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(15)
 final class WebSocketLoopbackListenerTest {
+
+    /**
+     * HOST-ONLY integration proof: one real TCP client -> authenticated actor
+     * continuation -> actual ActorOutputStream -> fenced outbound socket.
+     * Not proof that an AttoLang source receive handler has been lowered.
+     */
+    @Test
+    void hostActorOutputTraversesAuthenticatedWebSocketAsText() throws Exception {
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnPrivateTrusted(
+                    ctx -> (mail, turn) -> { });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, actor.address(), actor::isAlive);
+                    var value = "echo🙂";
+                    sendMaskedText(client, value);
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertTrue(conn.dispatchHostActorMessage(
+                            handle, tenant, actors, actor, frame -> {
+                                assertEquals(WebSocketFrameCodec.OPCODE_TEXT, frame.opcode());
+                                assertTrue(ActorRuntime.inActorExecution());
+                                actors.emitCurrentActorOutput(
+                                        new String(frame.payload(), StandardCharsets.UTF_8));
+                            }));
+                    var output = actor.outputs().next().get(3, TimeUnit.SECONDS);
+                    assertFalse(output.done());
+                    assertEquals(actor.id(), output.value().actorId());
+                    assertEquals(value, output.value().value());
+                    // This test's host-only relay runs OUTSIDE the actor carrier:
+                    // the final guest-lowering bridge must enforce the same
+                    // owner generation and output-stream provenance.
+                    conn.sendTextForActorAsync(handle, tenant, actor.address(),
+                            (String) output.value().value()).get(3, TimeUnit.SECONDS);
+                    byte[] expected = value.getBytes(StandardCharsets.UTF_8);
+                    byte[] actual = client.getInputStream().readNBytes(2 + expected.length);
+                    assertEquals(0x81, Byte.toUnsignedInt(actual[0]));
+                    assertEquals(expected.length, Byte.toUnsignedInt(actual[1]));
+                    assertArrayEquals(expected,
+                            java.util.Arrays.copyOfRange(actual, 2, actual.length));
+                    assertEquals(0, conn.pendingActorTicketCount());
+                    conn.close();
+                }
+            } finally {
+                actor.cancel();
+            }
+        }
+    }
+
     private static final String KEY = "dGhlIHNhbXBsZSBub25jZQ==";
 
     private static int unusedPort() throws Exception {
