@@ -53,10 +53,18 @@ public final class PinnedPackageInterface {
         return true;
     }
 
+    // Shared namespace model excludes names that could become prototype
+    // keys in browser/ESM exports. Match source-free conformance v1.
+    private static boolean reservedName(String value) {
+        return value.equals("constructor") || value.equals("prototype")
+                || value.equals("__proto__") || value.equals("__root__");
+    }
+
     /** One digest-pinned public-interface envelope per declared namespace. */
     public record NamespacePin(String namespace, String interfaceSha256) {
         public NamespacePin {
             if (namespace == null || !NAMESPACE.matcher(namespace).matches()
+                    || reservedName(namespace)
                     || interfaceSha256 == null || !DIGEST.matcher(interfaceSha256).matches()) {
                 throw new IllegalArgumentException("invalid namespace interface pin");
             }
@@ -75,6 +83,7 @@ public final class PinnedPackageInterface {
             String targetAbi, String featurePolicy, List<NamespacePin> namespaces) {
         public Lock {
             if (alias == null || !ALIAS.matcher(alias).matches()
+                    || reservedName(alias)
                     || packageInstanceId == null
                     || !INSTANCE.matcher(packageInstanceId).matches()
                     || packageInstanceId.contains("//")
