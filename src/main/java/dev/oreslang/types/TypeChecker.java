@@ -133,8 +133,12 @@ public final class TypeChecker {
                         AotDispatchPlannerV1.Linkage.FROZEN_CODE_GENERATION, true));
         CheckedDispatchPlansV1.Plan plan = new CheckedDispatchPlansV1.Plan(
                 kind, strategy, name, arity, function, receiverClass, method);
-        CheckedDispatchPlansV1.record(call, plan);
-        checkedDispatchPlans.put(call, plan);
+        plan.requireCallShape(call);
+        CheckedDispatchPlansV1.Plan previous = checkedDispatchPlans.putIfAbsent(call, plan);
+        if (previous != null && !plan.sameTargets(previous)) {
+            throw new IllegalStateException(
+                    "same checker call identity acquired incompatible dispatch targets");
+        }
     }
 
 
