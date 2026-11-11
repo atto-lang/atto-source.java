@@ -33,6 +33,21 @@ final class VirtualActorProtectedMirV1Test {
         }
     }
 
+    private static String negativeFixture(String name) {
+        if (!List.of("unfenced_cart.atto", "escaped_state_cart.atto",
+                "suspending_cart.atto").contains(name))
+            throw new IllegalArgumentException("unreviewed negative virtual actor fixture");
+        Path path = Path.of("contracts", "virtual-actor-mir-v1", "negative", name)
+                .toAbsolutePath().normalize();
+        assertFalse(Files.isSymbolicLink(path));
+        assertTrue(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS));
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8);
+        } catch (java.io.IOException io) {
+            throw new java.io.UncheckedIOException(io);
+        }
+    }
+
     private static Ast.VirtualActorDecl actor(String source) {
         Ast.Decl decl = Parser.parse(source)
                 .modules().getFirst().declarations().getFirst();
@@ -97,6 +112,22 @@ final class VirtualActorProtectedMirV1Test {
         rejected(checkedCart().replace("s.quantity = s.quantity + n;",
                 "s.quantity = s.quantity + n; s.quantity = 0;"),
                 "unrecognized protected method body");
+    }
+
+    @Test
+    void canonicalNegativeAttoContractsFailClosedBeforeAnyRuntimeLowering() {
+        for (String fixture : List.of("unfenced_cart.atto",
+                "escaped_state_cart.atto", "suspending_cart.atto")) {
+            String source = negativeFixture(fixture);
+            var err = assertThrows(IllegalArgumentException.class,
+                    () -> VirtualActorProtectedMirV1.analyze(actor(source)));
+            assertTrue(err.getMessage().contains("VIRTUAL_ACTOR_MIR_V1_REJECTED"),
+                    () -> fixture + ": " + err.getMessage());
+            var rejectedByCompiler = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)));
+            assertTrue(rejectedByCompiler.getMessage().contains("VIRTUAL_ACTOR_MIR_UNSUPPORTED"),
+                    () -> fixture + ": " + rejectedByCompiler.getMessage());
+        }
     }
 
     @Test
