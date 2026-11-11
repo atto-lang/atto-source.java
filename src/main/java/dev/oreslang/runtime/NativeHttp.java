@@ -151,6 +151,27 @@ public final class NativeHttp implements AutoCloseable {
         return transportClosed && !dispatchInProgress && freshActorExitedOrPoolTracked;
     }
 
+    /** A removed request has not completed until its Future callback has returned. */
+    static boolean readyForCarrierBarrier(boolean stoppedTransport, boolean noActive,
+                                           int publishingReleases) {
+        return stoppedTransport && noActive && publishingReleases == 0;
+    }
+
+    /** Publish the terminal Future after leaving the HTTP listener monitor. */
+    static void failOutsideMonitor(Object lock, OresFuture<Object> future, Throwable failure) {
+        if (Thread.holdsLock(lock)) {
+            throw new IllegalStateException("HTTP terminal callback under listener monitor");
+        }
+        if (future != null) future.failFromRuntime(failure);
+    }
+
+    static void publishOutsideMonitor(Object lock, OresFuture<Object> future, Object exchange) {
+        if (Thread.holdsLock(lock)) {
+            throw new IllegalStateException("HTTP accept callback under listener monitor");
+        }
+        if (future != null) future.completeFromRuntime(exchange);
+    }
+
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
@@ -375,6 +396,14 @@ public final class NativeHttp implements AutoCloseable {
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
+        // A request may leave active before its completion callback returns.
+        // Shutdown must join callback publication before declaring success.
+        private final AtomicInteger releasesInProgress = new AtomicInteger();
+        // The listener owns historical worker incarnations, not only the
+        // Handler's current pool slots (which may already be replaced).
+        private final Set<Handler.Worker> pooledWorkers = ConcurrentHashMap.newKeySet();
+        private final AtomicBoolean forcedCloseClaimed = new AtomicBoolean();
+        private boolean pooledBarrierStarted, drainOutcomeClaimed;
         private OresFuture<Object> waiter;
         private volatile boolean stopped;
         private boolean transportStopped;
@@ -597,14 +626,29 @@ public final class NativeHttp implements AutoCloseable {
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
-            if (server.active.remove(this)) {
-                if (poolWorker != null) poolWorker.requests.remove(this);
-                if (CorePerf.enabled()) {
-                    CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
+            // Claim the publication lease BEFORE removing from active.
+            // Otherwise a concurrent last-removal observer can incorrectly
+            // see active.empty && zero in-flight publishers and drain early.
+            server.releasesInProgress.incrementAndGet();
+            try {
+                if (server.active.remove(this)) {
+                    if (poolWorker != null) poolWorker.requests.remove(this);
+                    if (CorePerf.enabled()) {
+                        CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
+                    }
+                    synchronized (server) {
+                        server.pending.removeIf(exchange -> exchange.state == this);
+                    }
+                    server.admission.release();
+                    server.completed.incrementAndGet();
+                    completion.completeFromRuntime((long) responseStatus);
                 }
-                synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
-                server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
-                completion.completeFromRuntime((long) responseStatus);
+            } catch (RuntimeException | Error failure) {
+                server.failDrain(failure);
+                throw failure;
+            } finally {
+                server.releasesInProgress.decrementAndGet();
+                server.completeDrain();
             }
         }
     }
