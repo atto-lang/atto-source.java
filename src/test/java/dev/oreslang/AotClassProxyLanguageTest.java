@@ -185,6 +185,22 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void rejectsImportedNamesAndUnresolvedWildcardImports() {
+        Ast.Program baseline = proxySurfaceProgram(List.of());
+        Ast.ImportDecl importedName = new Ast.ImportDecl(Ast.ImportKind.CLASS,
+                List.of("FooProxy"), false, null, "./other");
+        Ast.ImportDecl wildcard = new Ast.ImportDecl(Ast.ImportKind.ALL,
+                List.of(), true, "external", "./other");
+
+        for (Ast.ImportDecl imported : List.of(importedName, wildcard)) {
+            Ast.Program program = new Ast.Program(List.of(imported), baseline.modules());
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(program, Set.of("Foo")));
+            assertTrue(error.getMessage().contains("AOT_PROXY_UNSUPPORTED"), error.getMessage());
+        }
+    }
+
+    @Test
     void rejectsAmbiguousGeneratedMethodSlot() {
         Ast.MethodDecl first = proxySurfaceMethod(Ast.TypeRef.simple("int"),
                 List.of(new Ast.Param(Ast.TypeRef.simple("int"), "a")), List.of());
