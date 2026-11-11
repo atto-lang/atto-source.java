@@ -225,13 +225,24 @@ public final class ActorReceiverBinder {
                 || (!sourceId.endsWith(".atto") && !sourceId.endsWith(".ores"))) {
             return false;
         }
+        // Keep source-unit identities portable and unambiguous on Windows,
+        // POSIX and filesystem-based package resolvers. ':' also denotes
+        // drive letters and NTFS alternate data streams. Bidi/format control
+        // code points can visually impersonate trusted package paths.
+        if (sourceId.indexOf(':') >= 0) return false;
         for (String segment : sourceId.split("/", -1)) {
             if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
                 return false;
             }
         }
-        for (int i = 0; i < sourceId.length(); i++) {
-            if (Character.isISOControl(sourceId.charAt(i))) return false;
+        for (int i = 0; i < sourceId.length(); ) {
+            int codePoint = sourceId.codePointAt(i);
+            if (Character.isISOControl(codePoint)
+                    || Character.getType(codePoint) == Character.FORMAT
+                    || codePoint == 0x2028 || codePoint == 0x2029) {
+                return false;
+            }
+            i += Character.charCount(codePoint);
         }
         return true;
     }
@@ -393,11 +404,15 @@ public final class ActorReceiverBinder {
                     throw new IllegalArgumentException(
                             "ACTOR_INIT_OWNER_ESCAPE: init must not return raw actor self");
                 }
-                if (!isVoid(method.returnType())
-                        && !(method.returnType().name().equals("state")
-                            && method.returnType().arguments().isEmpty())) {
+                // A user-defined nominal type called 'state' is NOT proof of
+                // a compiler-issued sealed state builder/capability. Until
+                // builder provenance and ownership are checked in typed IR,
+                // accept only the non-escaping void bootstrap ABI.
+                if (!isVoid(method.returnType())) {
                     throw new IllegalArgumentException(
-                            "external init requires void or compiler-owned state builder return");
+                            "ACTOR_INIT_STATE_BUILDER_UNVERIFIED: external init "
+                                    + "must return void until compiler-owned state builders "
+                                    + "have verified provenance and ownership lowering");
                 }
             }
         }
