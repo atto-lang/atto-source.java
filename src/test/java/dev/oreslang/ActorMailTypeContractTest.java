@@ -197,11 +197,10 @@ final class ActorMailTypeContractTest {
                             end
                             pub routine main(): void {
                               val worker = spawn Worker();
-                              worker.""" + method + """
-                              (42);
+                              worker.METHOD(42);
                               return;
                             }
-                            """)));
+                            """.replace("METHOD", method))));
             assertTrue(mismatch.getMessage().contains("ActorRef." + method + " mailbox value"),
                     mismatch.getMessage());
         }
