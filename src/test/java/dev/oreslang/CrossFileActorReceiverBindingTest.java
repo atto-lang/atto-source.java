@@ -174,4 +174,103 @@ final class CrossFileActorReceiverBindingTest {
                 () -> TypeChecker.check(Parser.parse(method)),
                 "nominal metadata must not silently authorize mailbox execution");
     }
+
+    @Test
+    void duplicateActorAcrossFilesIsRejectedEvenWithoutExternalMethods() {
+        String actor = "namespace foo; define actor Bar as end";
+        var error = assertThrows(IllegalArgumentException.class, () -> resolve(actor, actor));
+        assertTrue(error.getMessage().contains("duplicate actor/type identity"),
+                error.getMessage());
+    }
+
+    @Test
+    void sameAstObjectReusedAsTwoSourceFilesCannotForgeProvenance() {
+        Ast.Program shared = Parser.parse(
+                "namespace foo; define actor Bar as end\n"
+                        + "define mtd (Bar b) do_x(): void { return; }");
+        Map<String, Ast.Program> map = new LinkedHashMap<>();
+        map.put("src/foo/one.atto", shared);
+        map.put("src/foo/two.atto", shared);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", map));
+        assertTrue(error.getMessage().contains("ambiguous declaration provenance"),
+                error.getMessage());
+    }
+
+    @Test
+    void caseFoldedSourcePathsCannotCreateDifferentActorOwners() {
+        Ast.Program actor = Parser.parse("namespace foo; define actor Bar as end");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/Foo.atto", actor);
+        units.put("src/foo.atto", actor);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("case-insensitive source unit collision"),
+                error.getMessage());
+    }
+
+    @Test
+    void parentTraversalCannotBeUsedAsAProvenanceUnitId() {
+        Ast.Program actor = Parser.parse("namespace foo; define actor Bar as end");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/../outside.atto", actor);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("invalid package-relative source unit ID"),
+                error.getMessage());
+    }
+
+    @Test
+    void innocentDotDotWithinFilenameDoesNotTriggerFalseTraversal() {
+        Ast.Program actor = Parser.parse("namespace foo; define actor Bar as end");
+        Ast.Program method = Parser.parse(
+                "namespace foo; define mtd (Bar b) do_x(): void { return; }");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/file..backup.atto", actor);
+        units.put("src/method.atto", method);
+        assertEquals(1, ActorReceiverBinder.bindSourceSet("demo@1.0.0", units).size());
+    }
+
+    @Test
+    void nullSourceUnitIdGetsControlledDiagnostic() {
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put(null, Parser.parse("namespace foo; define actor Bar as end"));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("invalid package-relative source unit ID"),
+                error.getMessage());
+    }
+
+    @Test
+    void nullSourceProgramGetsControlledDiagnostic() {
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/foo.atto", null);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("null source program"), error.getMessage());
+    }
+
+    @Test
+    void excessiveSourceFilesAreRejectedBeforeBuildingAnIndex() {
+        Ast.Program actor = Parser.parse("namespace foo; define actor Bar as end");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        for (int i = 0; i <= 4096; i++) {
+            units.put("src/source-" + i + ".atto", actor);
+        }
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("exceeds 4096 units"),
+                error.getMessage());
+    }
+
+    @Test
+    void sourceUnitWithoutExplicitNamespaceDoesNotClaimPackageActorScope() {
+        Ast.Program actor = Parser.parse("define actor Bar as end");
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/foo.atto", actor);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+        assertTrue(error.getMessage().contains("require an explicit source namespace"),
+                error.getMessage());
+    }
 }
