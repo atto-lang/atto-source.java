@@ -620,7 +620,7 @@ public final class ActorRuntime implements AutoCloseable {
                     cell.managedByGroup.get() == null ? "unmanaged-supervision-unknown" : cell.kind.name(),
                     retired ? "terminated" : cell.stopped.get() ? "stopping" :
                         cell.behavior == null && cell.codeActorState == null ? "starting" : "running",
-                    1, java.time.Instant.now().toString(), cell.queuedUserMessages,
+                    cell.ref.generation(), java.time.Instant.now().toString(), cell.queuedUserMessages,
                     cell.activeMail == null ? 0 : 1);
             }
         }
