@@ -1,0 +1,115 @@
+name: Atto tuple return exact-head Java guest
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/Types.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/TupleReturnTypeContractTest.java'
+      - 'src/test/java/dev/oreslang/TildeArrayTupleValueGuestTest.java'
+      - 'src/test/resources/atto/tuple-returns/**'
+      - '.github/workflows/atto-tuple-return-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atto-tuple-return-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  java-tuple-guest:
+    name: Java checked tuple return and compiled guest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Require exact source SHA, clean tree, and named tests
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          test -s src/test/java/dev/oreslang/TupleReturnTypeContractTest.java
+          test -s src/test/java/dev/oreslang/TildeArrayTupleValueGuestTest.java
+          test -s src/test/resources/atto/tuple-returns/canonical-return.atto
+          printf 'ATTO_TUPLE_RECEIPT source_sha=%s source_tree=%s run_id=%s attempt=%s\n' \
+            "$actual" "$(git rev-parse HEAD^{tree})" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          sha256sum src/test/resources/atto/tuple-returns/canonical-return.atto
+          sha256sum src/test/java/dev/oreslang/TupleReturnTypeContractTest.java
+
+      - name: Set up GraalVM JDK 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+
+      - name: Execute canonical tuple compiler, ownership and guest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=TupleReturnTypeContractTest,TildeArrayTupleValueGuestTest,TildeAggregateTypeAliasCompilerTest,CollectionShapeMetadataTest \
+            clean test
+
+      - name: Require executed JUnit tests without errors or failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          suites = (
+              "TupleReturnTypeContractTest",
+              "TildeArrayTupleValueGuestTest",
+              "TildeAggregateTypeAliasCompilerTest",
+              "CollectionShapeMetadataTest",
+          )
+          root = Path("target/surefire-reports")
+          if not root.is_dir():
+              raise SystemExit("missing Surefire report directory")
+          total = 0
+          for suite in suites:
+              reports = list(root.glob(f"TEST-*.{suite}.xml"))
+              if len(reports) != 1:
+                  raise SystemExit(f"{suite}: expected one executed report, got {len(reports)}")
+              xml = ET.parse(reports[0]).getroot()
+              tests = int(xml.attrib.get("tests", "0"))
+              failures = int(xml.attrib.get("failures", "0"))
+              errors = int(xml.attrib.get("errors", "0"))
+              skipped = int(xml.attrib.get("skipped", "0"))
+              if tests <= 0 or failures or errors or skipped:
+                  raise SystemExit(
+                      f"{suite}: missing/excluded tests or failures: "
+                      f"tests={tests} failures={failures} errors={errors} skipped={skipped}"
+                  )
+              print(f"ATTO_TUPLE_RECEIPT suite={suite} tests={tests} failures=0 errors=0 skipped=0")
+              total += tests
+          print(f"ATTO_TUPLE_RECEIPT total_executed_tests={total} guest_fixture=canonical-return.atto")
+          PY
+
+      - name: Archive immutable compiler and guest receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-tuple-guest-surefire-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 14
