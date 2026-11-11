@@ -85,6 +85,12 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
     private final long[] generations;
     private final int[] loans;
     private final List<NodeId>[] edges;
+    // Preallocated intrusive construction-order links. A reused slot is a
+    // newly constructed owner, regardless of its physical slot number.
+    private final int[] older;
+    private final int[] newer;
+    private int oldest = -1;
+    private int newest = -1;
     private final IdentityHashMap<T, Boolean> uniquePayloads = new IdentityHashMap<>();
     private final int maxEdgesPerNode;
     private int activeLoans;
@@ -106,6 +112,10 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         this.generations = new long[capacity];
         this.loans = new int[capacity];
         this.edges = (List<NodeId>[]) new List<?>[capacity];
+        this.older = new int[capacity];
+        this.newer = new int[capacity];
+        Arrays.fill(older, -1);
+        Arrays.fill(newer, -1);
         for (int i = 0; i < capacity; i++) edges[i] = new ArrayList<>();
         Arrays.fill(generations, 1L);
         this.maxEdgesPerNode = maxEdgesPerNode;
@@ -147,6 +157,11 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
             values[slot] = value;
             uniquePayloads.put(value, Boolean.TRUE);
             edges[slot].clear();
+            older[slot] = newest;
+            newer[slot] = -1;
+            if (newest >= 0) newer[newest] = slot;
+            else oldest = slot;
+            newest = slot;
             size++;
             return new NodeId(identity, slot, generations[slot]);
         }
@@ -190,13 +205,17 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
             if (generations[id.slot] == Long.MAX_VALUE)
                 throw new IllegalStateException("graph generation exhausted");
             drop = payload(id.slot);
+            unlinkOrder(id.slot);
             values[id.slot] = null;
             uniquePayloads.remove(drop);
             generations[id.slot]++;
             edges[id.slot].clear();
             size--;
         }
-        runDrops(List.of(drop));
+        // Avoid creating a managed List.of(drop) wrapper for each hot-path
+        // explicit owner release. The callback itself remains trusted code.
+        runDrop(drop);
+        propagateFatalDropFailure();
     }
 
     public synchronized int size() { return size; }
@@ -223,15 +242,29 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         runDrops(cleanup);
     }
 
+    private void unlinkOrder(int slot) {
+        int previous = older[slot];
+        int next = newer[slot];
+        if (previous < 0) oldest = next;
+        else newer[previous] = next;
+        if (next < 0) newest = previous;
+        else older[next] = previous;
+        older[slot] = newer[slot] = -1;
+    }
+
     private List<T> detachAll() {
         List<T> cleanup = new ArrayList<>(size);
-        for (int i = values.length - 1; i >= 0; i--) {
-            if (values[i] != null) {
-                cleanup.add(payload(i));
-                values[i] = null;
-                edges[i].clear();
-            }
+        // Reverse *construction* order, not reverse slot order. Previously
+        // replacing a deleted slot silently reordered destructor callbacks.
+        for (int i = newest; i >= 0;) {
+            int previous = older[i];
+            cleanup.add(payload(i));
+            values[i] = null;
+            edges[i].clear();
+            older[i] = newer[i] = -1;
+            i = previous;
         }
+        oldest = newest = -1;
         uniquePayloads.clear();
         size = 0;
         fullyClosed = true;
@@ -244,15 +277,21 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         return cleanup;
     }
 
+    private void runDrop(T value) {
+        try {
+            value.close();
+        } catch (Throwable failure) {
+            recordCleanupFailure(failure);
+        }
+    }
+
     private void runDrops(List<T> cleanup) {
         // Attempt all drops, preserving VM-fatal precedence after sibling cleanup.
-        for (T value : cleanup) {
-            try {
-                value.close();
-            } catch (Throwable failure) {
-                recordCleanupFailure(failure);
-            }
-        }
+        for (T value : cleanup) runDrop(value);
+        propagateFatalDropFailure();
+    }
+
+    private void propagateFatalDropFailure() {
         Throwable failure = cleanupFailure;
         if (failure instanceof VirtualMachineError fatal) throw fatal;
         if (failure instanceof ThreadDeath fatal) throw fatal;
