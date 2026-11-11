@@ -82,6 +82,10 @@ final class ManifestNamespaceActorTopologyTest {
         var topology = fixture().inspectActorTopology();
         assertEquals("counter-demo@0.1.0", topology.packageIdentity());
         assertEquals(3, topology.sourceUnits().size());
+        assertEquals(topology.sourceUnits().size(), topology.sourceSha256().size());
+        for (String sourceId : topology.sourceUnits()) {
+            assertTrue(topology.sourceSha256().get(sourceId).matches("[0-9a-f]{64}"));
+        }
         assertTrue(topology.actorMethods().hasActor(key("Counter")));
         assertTrue(topology.actorMethods().actor(key("Counter")).publicNominalWitness());
         assertEquals("src/foo/actor.atto", topology.actorMethods().declaringUnit(key("Counter")));
@@ -223,6 +227,24 @@ final class ManifestNamespaceActorTopologyTest {
     }
 
     @Test
+    void changingStateSourceInvalidatesItsSourceReceiptOnRescan() throws IOException {
+        var compiler = fixture();
+        var before = compiler.inspectActorTopology();
+        String source = "src/foo/state.atto";
+        String oldHash = before.sourceSha256().get(source);
+        write(source, STATE.replace("let int x: 5;", "let int x: 6;"));
+        var after = compiler.inspectActorTopology();
+        assertNotEquals(oldHash, after.sourceSha256().get(source));
+        assertEquals(before.sourceSha256().get("src/foo/actor.atto"),
+                after.sourceSha256().get("src/foo/actor.atto"));
+        var binding = after.attachedStates().get(new ActorStateBinder.Slot(
+                "counter-demo@0.1.0", "foo", "Counter"));
+        var literal = assertInstanceOf(Ast.LiteralExpr.class,
+                binding.schema().fields().getFirst().initializer());
+        assertEquals(6L, literal.value());
+    }
+
+    @Test
     void changingManifestAfterBuilderCreationRequiresFreshConfig() throws IOException {
         var compiler = fixture();
         compiler.inspectActorTopology();
@@ -276,6 +298,8 @@ final class ManifestNamespaceActorTopologyTest {
     @Test
     void returnedTopologyMapsAreImmutable() throws IOException {
         var topology = fixture().inspectActorTopology();
+        assertThrows(UnsupportedOperationException.class,
+                () -> topology.sourceSha256().clear());
         assertThrows(UnsupportedOperationException.class,
                 () -> topology.attachedStates().clear());
         assertThrows(UnsupportedOperationException.class,
