@@ -2878,6 +2878,13 @@ public final class TypeChecker {
                     yield Primitive.INT;
                 }
                 case "eq", "neq", "==", "!=" -> {
+                    // Revalidate the typed AST: future macro/annotation expansion
+                    // must not synthesize a legacy operator past lexical admission.
+                    if (strictAttoEquality
+                            && (binary.operator().equals("==") || binary.operator().equals("!="))) {
+                        throw new IllegalArgumentException(
+                                "ATTO_STRICT_INVALID_EQUALITY_TOKEN: use eq / neq / !eq");
+                    }
                     requireEqualityComparable(left, right);
                     yield Primitive.BOOL;
                 }
