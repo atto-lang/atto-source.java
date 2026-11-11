@@ -114,6 +114,8 @@ final class AttoRedisBinaryResp2GuestTest {
                     context.eval(Source.newBuilder(OresLanguage.ID, code,
                                     "redis_binary_resp2.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
                 }
             });
             try (Socket client = connect(guest, port)) {
