@@ -446,6 +446,41 @@ final class VirtualActorTerminalControlCurrentMainTest {
     }
 
     @Test
+    void canceledControlAdmissionCannotLaterExecuteItsQueuedRunnable() throws Exception {
+        AtomicReference<Runnable> delayed = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(),
+                turn -> {
+                    delayed.set(turn);
+                    // A dishonest/failed dispatcher still holds a runnable.
+                    return OresFuture.failed(new IllegalStateException("runner admission failed"));
+                })) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            AtomicInteger invoked = new AtomicInteger();
+            group.installVirtualActorTerminalHandler(notice -> {
+                invoked.incrementAndGet();
+                return CompletableFuture.completedFuture(null);
+            });
+            var actor = failingWorker(group);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(actor, ID, 1L);
+            failActor(actor);
+            assertNotNull(delayed.get());
+            assertThrows(IllegalStateException.class,
+                    () -> group.reserveNextVirtualActorGeneration(ID));
+            delayed.get().run(); // Simulated malicious late executor callback.
+            delayed.get().run(); // Duplicate must also be rejected.
+            assertEquals(0, invoked.get(),
+                    "a canceled/failed CONTROL lane must never run policy");
+            assertThrows(IllegalStateException.class,
+                    () -> group.reserveNextVirtualActorGeneration(ID));
+            group.close();
+        }
+    }
+
+    @Test
     void installingTerminalHandlerTwiceIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
