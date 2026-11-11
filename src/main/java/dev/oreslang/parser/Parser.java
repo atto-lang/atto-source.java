@@ -643,14 +643,21 @@ public final class Parser {
                 returnType, annotations, body, specs, effects);
     }
 
-    /** Contextual mtd accepts both receiver-first and name-first declarations. */
+    /** Contextual external mtd and legacy mtd both accept receiver-first declarations. */
     private boolean isExternalActorMethodHead() {
-        return isContextualIdentifier("mtd")
-                && current + 1 < tokens.size()
-                && (tokens.get(current + 1).type() == LPAREN
-                    || (current + 2 < tokens.size()
-                        && tokens.get(current + 1).type() == IDENT
-                        && tokens.get(current + 2).type() == LPAREN));
+        int head = current;
+        if (head < tokens.size() && tokens.get(head).type() == IDENT
+                && tokens.get(head).lexeme().equals("external")) {
+            head++;
+        }
+        return head < tokens.size()
+                && tokens.get(head).type() == IDENT
+                && tokens.get(head).lexeme().equals("mtd")
+                && head + 1 < tokens.size()
+                && (tokens.get(head + 1).type() == LPAREN
+                    || (head + 2 < tokens.size()
+                        && tokens.get(head + 1).type() == IDENT
+                        && tokens.get(head + 2).type() == LPAREN));
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
@@ -658,6 +665,8 @@ public final class Parser {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
+        // Keep external contextual: it marks runtime ingress, not source visibility.
+        boolean runtimeEntrypoint = matchContextualIdentifier("external");
         consumeContextualIdentifier("mtd", "expected external receiver method declaration");
         // The canonical form is 'define mtd (Worker w) update(...): void'.
         // Keep the earlier 'define mtd update(Worker w)(...): void' as
@@ -696,7 +705,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body);
+                modifiers.visibility, parameters, returns, body, runtimeEntrypoint);
     }
 
     private Ast.ClassDecl parseClass(
