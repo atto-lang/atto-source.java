@@ -34,7 +34,7 @@ final class CheckedDispatchPlanIntegrationV1Test {
     @Test
     void typecheckerRecordsDirectAndVirtualCallPlansOnRealGuestSource() throws Exception {
         String source = Files.readString(
-                Path.of("tests/fixtures/dispatch/known_and_virtual_v1.atto"),
+                Path.of("contracts/dispatch-v1/virtual_override_121020.atto"),
                 StandardCharsets.UTF_8);
         Ast.Program checked = OresCompiler.parseAndTypeCheck(source);
         var snapshot = CheckedDispatchPlansV1.forProgram(checked);
