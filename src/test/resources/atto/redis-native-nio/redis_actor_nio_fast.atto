@@ -11,7 +11,7 @@ define actor FramedNioKvActor as
     return;
   }
 
-  receive(ActorMail<Tuple<int,string,string>> mail): void {
+  receive(ActorMail<Tuple[int, string, string]> mail): void {
     const tuple = mail.value;
     const int kind = tuple[0];
     const string key = tuple[1];
