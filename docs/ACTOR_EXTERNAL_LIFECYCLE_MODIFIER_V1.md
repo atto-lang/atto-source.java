@@ -6,7 +6,7 @@
 
 ```atto
 namespace example;
-define actor Worker as end
+declare actor Worker;
 define external mtd (Worker w) init(): void { return; }
 define external mtd (Worker w) receive(ActorMail<int> mail): void { return; }
 ```
@@ -29,3 +29,5 @@ The nominal binder accepts runtime role metadata **only** for private `init`/`re
 Run `ActorExternalEntrypointModifierTest` plus the inherited `ActorReceiverBinderTest`, `ExternalActorReceiverAstAdmissionTest` and `CrossFileActorReceiverBindingTest` against the **exact final** commit SHA in an admitted JDK 25 runner. Then add real actor init/receive guest execution and negative diagnostics, complete Java no-fallback Native Image, and independently port LLVM/.NET/Wasm/Forge. Treat source-free inventory checks as insufficient.
 
 Private source must not be mirrored to an unrelated organization without independently authorized exact-head publisher/carrier protection and review.
+
+Canonical out-of-line declarations now use `declare actor Worker;` (`declare pub actor Worker;` for public nominal identity); the old `define actor Worker as worker;` is compatibility-only. `define actor Worker as ... end` continues to mean inline implementation. This draft supports only plain declared actor identities; implementation and `implements` metadata remain independently gated.
