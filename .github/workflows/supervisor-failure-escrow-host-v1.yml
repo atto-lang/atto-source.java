@@ -22,9 +22,34 @@ permissions:
 
 jobs:
   host-escrow:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Hosted by default. The repository-scoped, one-job disposable worker is
+    # selected ONLY after independent exact-SHA approval via protected vars.
+    if: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || (github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'ci/supervisor-ephemeral-jdk25-exact-head-20261111' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.event.pull_request.head.sha) }}
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 20
     steps:
+      - name: Recheck self-hosted runner authorization before checkout
+        shell: bash
+        env:
+          PRIVATE_RUNNER: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER }}
+          APPROVED_SHA: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+          SOURCE_REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$PRIVATE_RUNNER" == true ]]; then
+            [[ "$SOURCE_REPO" == ores-truffle-oreslang/oreslang-source.java ]] || exit 41
+            [[ "$HEAD_REPO" == "$SOURCE_REPO" && "$EVENT" == pull_request ]] || exit 42
+            [[ "$HEAD_REF" == ci/supervisor-ephemeral-jdk25-exact-head-20261111 ]] || exit 43
+            [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 44
+            [[ "$APPROVED_SHA" == "$EXPECTED_HEAD" ]] || exit 45
+            printf 'APPROVED_SOURCE_PR_HEAD=%s\n' "$EXPECTED_HEAD"
+          else
+            printf 'SOURCE_ORG_HOSTED_RUNNER_ONLY\n'
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -55,4 +80,15 @@ jobs:
           set -euo pipefail
           bash scripts/verify-supervisor-escrow-runtime-bridge-v1.sh
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-
+  deny-unapproved-runner:
+    # The fail-closed verdict MUST be a separate failed job. An ineligible
+    # self-hosted test job is skipped, which GitHub may otherwise treat as a
+    # successful required check. This job never checks out private source.
+    if: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && !(github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'ci/supervisor-ephemeral-jdk25-exact-head-20261111' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.event.pull_request.head.sha) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Fail with no checkout or sensitive source
+        run: |
+          echo 'DENIED_UNAPPROVED_PRIVATE_EPHEMERAL_RUNNER' >&2
+          exit 51
