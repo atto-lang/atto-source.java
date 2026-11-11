@@ -78,6 +78,64 @@ final class ActorPipelineRouteSessionTest {
     }
 
     @Test
+    void supervisorGenerationFenceCannotOvertakeMailboxPublication() {
+        var session = new ActorPipelineRouteSession(linearPlan(), 1, 8);
+        var source = session.ingress("source");
+
+        // Model the trusted scheduler's non-suspending DATA admission
+        // critical section. CONTROL cancellation must not interleave a
+        // generation reset with a partially published frame.
+        var rejected = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> session.withAdmissionBarrier(source, () -> {
+                    session.abortAndAdvanceGeneration(2);
+                    return null;
+                }));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                rejected.getMessage().contains("mailbox publication"));
+        session.requireLive(source);
+        org.junit.jupiter.api.Assertions.assertEquals(1, session.outstanding());
+        org.junit.jupiter.api.Assertions.assertEquals(1L, session.generation());
+
+        // Once the publication scope has exited, supervisor cancellation
+        // fences every old frame and the new incarnation may accept ingress.
+        org.junit.jupiter.api.Assertions.assertEquals(
+                1, session.abortAndAdvanceGeneration(2));
+        org.junit.jupiter.api.Assertions.assertFalse(session.ownsLive(source));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, () -> session.forward(source));
+        var replacement = session.ingress("source");
+        org.junit.jupiter.api.Assertions.assertEquals(2L, session.generation());
+        ActorPipelineRouteSession.retireDelivered(source);
+        session.requireLive(replacement);
+        ActorPipelineRouteSession.retireDelivered(replacement);
+        org.junit.jupiter.api.Assertions.assertEquals(0, session.outstanding());
+    }
+
+    @Test
+    void supervisorCannotCloseGraphInsideMailPublicationOrReuseOldGeneration() {
+        var session = new ActorPipelineRouteSession(linearPlan(), 10, 2);
+        var root = session.ingress("source");
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> session.withAdmissionBarrier(root, () -> {
+                    session.close();
+                    return null;
+                }));
+        org.junit.jupiter.api.Assertions.assertFalse(session.closed());
+        session.requireLive(root);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> session.abortAndAdvanceGeneration(10));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> session.abortAndAdvanceGeneration(9));
+        session.close();
+        org.junit.jupiter.api.Assertions.assertTrue(session.closed());
+        org.junit.jupiter.api.Assertions.assertFalse(session.ownsLive(root));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, () -> session.ingress("source"));
+    }
+
+    @Test
     void actualReplyMailboxRejectionKeepsAuthenticatedSourceFrameLive() throws Exception {
         var plan = new ActorPipelineRoutePlan(
                 java.util.List.of(
