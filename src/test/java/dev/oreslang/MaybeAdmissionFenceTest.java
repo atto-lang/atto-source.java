@@ -122,6 +122,64 @@ final class MaybeAdmissionFenceTest {
     }
 
     @Test
+    void firstMiddleLastFailureSkipsAllLaterBindingsAndRunsDeferOnce() throws Exception {
+        String source = """
+                fnc first(bool fail): Result<int, String> {
+                  stdio.stdout.write("A");
+                  if fail then
+                    return Err("first");
+                  else
+                    return Ok(1);
+                  fi
+                }
+                fnc second(bool fail): Result<int, String> {
+                  stdio.stdout.write("B");
+                  if fail then
+                    return Err("second");
+                  else
+                    return Ok(2);
+                  fi
+                }
+                fnc third(bool fail): Result<int, String> {
+                  stdio.stdout.write("C");
+                  if fail then
+                    return Err("third");
+                  else
+                    return Ok(3);
+                  fi
+                }
+                fnc exercise(bool a, bool b, bool c): Result<int, String> {
+                  defer stdio.stdout.write("D");
+                  return maybe
+                    Ok(x) ?= first(a);
+                    Ok(y) ?= second(b);
+                    Ok(z) ?= third(c);
+                    return Ok(x + y + z)
+                  else
+                    Err(reason) -> {
+                      stdio.stdout.write("E");
+                      return Err(reason)
+                    };
+                  end;
+                }
+                pub fnc main(): void {
+                  stdio.println(exercise(false, false, false).is_ok());
+                  stdio.stdout.write("|");
+                  stdio.println(exercise(true, false, false).is_ok());
+                  stdio.stdout.write("|");
+                  stdio.println(exercise(false, true, false).is_ok());
+                  stdio.stdout.write("|");
+                  stdio.println(exercise(false, false, true).is_ok());
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(source));
+        OwnershipChecker.check(typed);
+        assertEquals("ABCDtrue\n|AEDfalse\n|ABEDfalse\n|ABCEDfalse\n",
+                run(source).replace("\r", ""));
+    }
+
+    @Test
     void failClosedOnMissingElseAndWrongFailureHandler() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc f(Option<int> o): int {
