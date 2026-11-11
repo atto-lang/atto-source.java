@@ -3014,7 +3014,8 @@ public final class ActorRuntime implements AutoCloseable {
      * This is NOT the stable logical ActorRef and never grants actor state or
      * physical reclamation authority.
      */
-    final class HotRoutePhysical<M> {
+    final class HotRoutePhysical<M>
+            implements ActorRouteCoordinatorV1.PhysicalRouteWitness {
         private final ActorRef<M> ref;
         private ActorPhysicalHotRouteIngressFence.Permit permit;
 
@@ -3040,7 +3041,8 @@ public final class ActorRuntime implements AutoCloseable {
             return ref.drain();
         }
 
-        boolean readyForPublication() {
+        @Override
+        public boolean readyForPublication() {
             ActorCell<?> cell = actors.get(ref.id());
             if (cell == null || cell.ref != ref) return false;
             synchronized (cell.lifecycleLock) {
@@ -3052,14 +3054,17 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        boolean sameRuntime(HotRoutePhysical<?> other) {
-            return other != null
+        @Override
+        public boolean sameAuthorityDomain(
+                ActorRouteCoordinatorV1.PhysicalRouteWitness candidate) {
+            return candidate instanceof ActorRuntime.HotRoutePhysical<?> other
                     && ActorRuntime.this == other.owningRuntime();
         }
 
         private ActorRuntime owningRuntime() { return ActorRuntime.this; }
 
-        void retireFromLogicalRoute() {
+        @Override
+        public void retireFromLogicalRoute() {
             permit.retire(); // monotonic and non-blocking; no physical teardown
         }
 
