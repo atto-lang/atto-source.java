@@ -354,7 +354,7 @@ public final class ActorReceiverBinder {
                                     + "' conflicts with an in-class actor method");
                 }
             }
-            validateHookShape(method);
+            validateHookShape(method, target);
             Slot key = new Slot(
                     module.name(), method.actorName(), method.name(),
                     method.parameters().size());
@@ -375,7 +375,8 @@ public final class ActorReceiverBinder {
         return name + "/" + arity;
     }
 
-    private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
+    private static void validateHookShape(
+            Ast.ExternalActorMethodDecl method, Ast.Decl target) {
         String name = method.name();
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
@@ -383,10 +384,41 @@ public final class ActorReceiverBinder {
                     "external actor method '" + name
                             + "' cannot implement a compiler-owned or unverified CONTROL hook");
         }
-        if (name.equals("receive")) {
-            // Same private ActorMail<T> -> void ABI as the existing actor-local
-            // receive hook; never authorize public or arbitrary typed-message
-            // overloads through a static nominal binding.
+
+        // 'external' denotes runtime-controlled ingress, NOT pub API export.
+        // The static binder records the ABI only; no actor runtime can call
+        // it without a compiler-issued actor identity and generation permit.
+        if (method.runtimeIngress()) {
+            if (!(target instanceof Ast.StandaloneActorDecl)) {
+                throw new IllegalArgumentException(
+                        "external mtd runtime ingress requires a declared namespace actor");
+            }
+            if (!name.equals("init") && !name.equals("receive")) {
+                throw new IllegalArgumentException(
+                        "external mtd runtime ingress is reserved for init/receive");
+            }
+            if (method.visibility() != Ast.Visibility.PRIVATE) {
+                throw new IllegalArgumentException(
+                        "external mtd init/receive cannot be public actor methods");
+            }
+        } else if (target instanceof Ast.StandaloneActorDecl
+                && (name.equals("init") || name.equals("receive"))) {
+            throw new IllegalArgumentException(
+                    "declared actor " + name
+                            + " requires explicit private 'external mtd' runtime ingress");
+        }
+
+        if (name.equals("init")) {
+            if (method.visibility() != Ast.Visibility.PRIVATE
+                    || !method.parameters().isEmpty()
+                    || !isVoid(method.returnType())) {
+                throw new IllegalArgumentException(
+                        "external init must be private, zero-argument and return void");
+            }
+        } else if (name.equals("receive")) {
+            // One immutable/sendable ActorMail<T> is carried by mailbox
+            // ingress. Borrowed or closed structural payloads do not cross
+            // into the actor as raw aliases or forgable message authority.
             if (method.visibility() != Ast.Visibility.PRIVATE
                     || method.parameters().size() != 1
                     || !method.parameters().getFirst().type().name().equals("ActorMail")
