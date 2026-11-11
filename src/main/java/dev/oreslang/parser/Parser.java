@@ -135,6 +135,10 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (isDeclaredActorHead()) {
+                rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                continue;
+            }
             if (isContextualIdentifier("declare")) {
                 rootForwards.add(parseForwardType(annotations, modifiers));
                 continue;
@@ -400,6 +404,9 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (isDeclaredActorHead()) {
+            return parseDeclaredActor(annotations, modifiers);
+        }
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
@@ -1198,6 +1205,51 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
+    /**
+     * Canonical out-of-line actor declaration. 'declare' remains contextual;
+     * ordinary 'declare type/trait/interface' forwards are unaffected.
+     * This node is nominal-only and does not create an empty actor class.
+     */
+    private boolean isDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int index = current + 1;
+        if (index < tokens.size()
+                && (tokens.get(index).type() == PUB
+                    || tokens.get(index).type() == PRIVATE)) {
+            index++;
+        }
+        return index < tokens.size() && tokens.get(index).type() == ACTOR;
+    }
+
+    private Ast.StandaloneActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        validateOnlyVisibilityModifiers(before, "declared actors");
+        rejectCallableStructuralAnnotation(annotations, "declared actors");
+        rejectDiscardedDeclarationAnnotations(annotations, "declared actors");
+        consumeContextualIdentifier("declare", "expected declared actor");
+        Modifiers after = parseModifiers();
+        validateOnlyVisibilityModifiers(after, "declared actors");
+        if (before.visibilitySeen && after.visibilitySeen) {
+            throw error(previous(), "duplicate/conflicting actor declaration visibility");
+        }
+        Ast.Visibility visibility =
+                after.visibilitySeen ? after.visibility : before.visibility;
+        consume(ACTOR, "expected actor after declare");
+        String name = consumeTypeDeclarationName("expected nominal actor name");
+        if (check(LT)) {
+            throw error(peek(), "declared actors cannot be generic until witness lowering exists");
+        }
+        if (check(EXTENDS)) {
+            throw error(peek(), "declared actors cannot inherit without verified slot coherence");
+        }
+        List<Ast.TypeRef> contracts = match(IMPLEMENTS, IMPL)
+                ? parseTypeRefList() : List.of();
+        consume(SEMICOLON,
+                "declare actor header must end with ';' and cannot contain inline methods");
+        return new Ast.StandaloneActorDecl(
+                name, null, visibility, Ast.ActorKind.SHARED, contracts);
+    }
+
     private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
@@ -1209,19 +1261,11 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
-        // A nominal, semicolon-terminated actor may name contract obligations
-        // without defining an implicit runtime actor, empty class or alias.
-        // Actual actor-contract conformance remains a separate checked gate.
+        // A semicolon-only actor is only declared, never defined inline.
+        // Preserve 'define actor Foo as ... end' for full inline implementations.
         if (check(SEMICOLON)) {
-            if (!generics.isEmpty() || !parents.isEmpty()
-                    || actorKind != Ast.ActorKind.SHARED
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
-                throw error(peek(), "semicolon actor declarations require a plain "
-                        + "non-generic actor without transport or inheritance modifiers");
-            }
-            advance();
-            return new Ast.StandaloneActorDecl(
-                    name, null, visibility, actorKind, interfaces);
+            throw error(peek(), "out-of-line actor declarations use 'declare actor "
+                    + name + ";', not 'define actor " + name + ";'");
         }
 
         // Standalone actor declaration: retain the receiver-binding name in
