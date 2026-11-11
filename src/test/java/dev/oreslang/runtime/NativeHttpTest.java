@@ -365,11 +365,16 @@ class NativeHttpTest {
             @Override public synchronized void write(byte[] bytes, int off, int len) {
                 super.write(bytes, off, len);
                 String text = toString(StandardCharsets.UTF_8);
-                var numeric = text.lines().filter(s -> s.matches("[0-9]+"))
+                // Only consume complete lines: stdout may deliver a single
+                // decimal port split across multiple write calls.
+                int newline = text.lastIndexOf('\n');
+                if (newline < 0) return;
+                String completeLines = text.substring(0, newline + 1);
+                var numeric = completeLines.lines().filter(s -> s.matches("[0-9]+"))
                         .map(Integer::parseInt).toList();
                 if (!numeric.isEmpty() && !firstPort.isDone()) firstPort.complete(numeric.get(0));
                 if (numeric.size() >= 2 && !secondPort.isDone()) secondPort.complete(numeric.get(1));
-                if (text.contains("first-shutdown-completed")) firstDrain.complete(null);
+                if (completeLines.contains("first-shutdown-completed\n")) firstDrain.complete(null);
             }
         };
         String source = """
