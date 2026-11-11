@@ -19,6 +19,11 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
     private static final ConcurrentLinkedQueue<ActorRuntime.ActorRef<String>> CHILDREN =
             new ConcurrentLinkedQueue<>();
     private static final AtomicInteger CHILD_TURNS = new AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicReference<Throwable>
+            GROUP_REJECTED = new java.util.concurrent.atomic.AtomicReference<>();
+    private static final java.util.concurrent.atomic.AtomicReference<
+            java.util.concurrent.CountDownLatch> GROUP_FINISHED =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     @Test
     void parentCrashRetiresEveryAtomicallyRegisteredChildAndPreservesSibling()
@@ -162,6 +167,61 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
                     () -> new SupervisorEscrowSubtreeRecoveryV1(
                             runtime, bridge, control, ref -> false),
                     "late recovery coordinator must not inherit untracked actors");
+        }
+    }
+
+    @Test
+    void failedManagedGroupAdmissionReleasesUnpublishedActorMemoryAndOutput()
+            throws Exception {
+        var done = new java.util.concurrent.CountDownLatch(1);
+        GROUP_FINISHED.set(done);
+        GROUP_REJECTED.set(null);
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ref -> false);
+            // One managed-worker slot: the parent occupies it. Its next
+            // nested child can build an ActorCell but cannot publish into
+            // the inherited group, exercising full post-constructor rollback.
+            var limited = new IsolatePolicy(
+                    java.util.Set.of(IsolatePolicy.Capability.ACTOR_SPAWN),
+                    16L * 1024 * 1024, 1, java.time.Duration.ofSeconds(10));
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivate(
+                    limited, ignored -> (message, turn) -> {
+                        try {
+                            ActorRuntime.ActorGroup group =
+                                    turn.runtime().createActorGroup();
+                            group.manageWorker(turn.self());
+                            turn.runtime().spawnPrivate(
+                                    nested -> (item, context) -> { });
+                        } catch (Throwable rejected) {
+                            GROUP_REJECTED.set(rejected);
+                        } finally {
+                            GROUP_FINISHED.get().countDown();
+                        }
+                    });
+            long parentNode = recovery.attach(parent, null);
+            parent.getReady().get(5, TimeUnit.SECONDS);
+            parent.send("spawn with exhausted inherited group");
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, GROUP_REJECTED.get(),
+                    "inherited managed-worker limit must fail admission");
+            assertEquals(1, runtime.actorCount(),
+                    "failed nested spawn leaked an actor slot");
+            assertEquals(2, bridge.snapshot().size(),
+                    "failed child left a CONTROL node after rollback");
+            assertTrue(bridge.snapshot().get(parentNode).alive(),
+                    "parent may recover from a rejected child publication");
+            var streams = ActorRuntime.class.getDeclaredField("actorOutputStreams");
+            streams.setAccessible(true);
+            assertEquals(1, ((java.util.Set<?>)streams.get(runtime)).size(),
+                    "aborted ActorCell kept its registered output stream");
+            assertEquals(0, runtime.privateMemoryUsedBytes(),
+                    "unpublished actor retained private heap reservations");
+        } finally {
+            GROUP_REJECTED.set(null);
+            GROUP_FINISHED.compareAndSet(done, null);
         }
     }
 
