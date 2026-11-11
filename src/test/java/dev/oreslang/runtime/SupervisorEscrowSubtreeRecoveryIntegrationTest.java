@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -177,6 +178,65 @@ final class SupervisorEscrowSubtreeRecoveryIntegrationTest {
             assertFalse(oldA.isAlive());
             assertEquals(SupervisorEscrowSubtreeRecoveryV1.RestartBlocker.ALREADY_REPLACED,
                     recovery.restartBlocker(oldAId));
+        }
+    }
+
+    @Test
+    void concurrentHostAttachAndSupervisorCrashNeverLeaveAnUntrackedControlNode()
+            throws Exception {
+        for (int round = 0; round < 8; round++) {
+            try (ActorRuntime runtime = new ActorRuntime();
+                 var control = Executors.newSingleThreadExecutor();
+                 var racers = Executors.newFixedThreadPool(2)) {
+                var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+                var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                        runtime, bridge, control, ignored -> false);
+                ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivate(
+                        ignored -> (message, turn) -> {
+                            if ("crash".equals(message)) {
+                                throw new IllegalStateException("injected supervisor crash");
+                            }
+                        });
+                ActorRuntime.ActorRef<String> child = runtime.spawnPrivate(
+                        ignored -> (message, turn) -> { });
+                recovery.attach(supervisor, null);
+                supervisor.getReady().get(5, TimeUnit.SECONDS);
+                var start = new CountDownLatch(1);
+                Future<Long> joining = racers.submit(() -> {
+                    start.await();
+                    return recovery.attach(child, supervisor);
+                });
+                Future<?> crashing = racers.submit(() -> {
+                    start.await();
+                    supervisor.send("crash");
+                    return null;
+                });
+                start.countDown();
+                crashing.get(5, TimeUnit.SECONDS);
+                long attached = -1L;
+                try {
+                    attached = joining.get(5, TimeUnit.SECONDS);
+                } catch (ExecutionException rejected) {
+                    assertInstanceOf(IllegalStateException.class, rejected.getCause(),
+                            "only a fenced supervisor may reject host child attachment");
+                }
+                assertThrows(ExecutionException.class,
+                        () -> supervisor.done().get(5, TimeUnit.SECONDS));
+                if (attached > 0) {
+                    assertTrue(child.awaitTermination(5, TimeUnit.SECONDS),
+                            "a published CONTROL child must be retired after supervisor failure");
+                    assertNotNull(bridge.snapshot().get(attached));
+                    assertEquals(3, bridge.snapshot().size());
+                } else {
+                    assertEquals(2, bridge.snapshot().size(),
+                            "rejected attachment must not strand a CONTROL ledger entry");
+                    runtime.cancel(child);
+                    assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+                }
+                assertEquals(1, bridge.pendingCount());
+                assertNull(recovery.controlFault(),
+                        "coordinator must not observe a ledger node without an ActorRef");
+            }
         }
     }
 
