@@ -114,6 +114,22 @@ final class DeclaredActorContractWitnessTest {
     }
 
     @Test
+    void parameterMutabilityIsPartOfTheContractWitness() {
+        reject(DECL,
+                NS + "define pub interface ActorXYZ as "
+                        + "fnc bar(int mut x): int; end",
+                METHOD,
+                "signature mismatch");
+    }
+
+    @Test
+    void structuralOrReferenceReturnTypeCannotEscapeAsScalarProof() {
+        reject(DECL, CONTRACT,
+                NS + "pub mtd (Foo f) bar(int x): Foo { return f; }",
+                "requires exact scalar");
+    }
+
+    @Test
     void privateImplementationCannotWitnessPublicContract() {
         reject(DECL, CONTRACT,
                 NS + "mtd (Foo f) bar(int x): int { return x; }",
