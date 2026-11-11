@@ -37,6 +37,7 @@ final class NamespaceContractMultiFileTest {
     private static final String FUNCTION = """
             namespace shop;
             pub fnc tick(int amount): int { return amount; }
+            pub fnc main(): int { return 42; }
             """;
 
     private static Map<String, String> complete() {
