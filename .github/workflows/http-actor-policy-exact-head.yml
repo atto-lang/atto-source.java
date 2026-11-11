@@ -5,6 +5,7 @@ on:
       - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
       - "src/main/java/dev/oreslang/ast/Ast.java"
       - "src/test/java/dev/oreslang/TreeShakerHttpActorPolicyTest.java"
+      - "src/test/resources/http-actor-v1/**"
       - "src/test/java/dev/oreslang/ActorTransportConcurrencyContractTest.java"
       - ".github/workflows/http-actor-policy-exact-head.yml"
 permissions:
