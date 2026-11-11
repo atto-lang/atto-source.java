@@ -35,7 +35,7 @@ public final class CoreLibrarySources {
     private static final int MAX_IMPORT_PATH_CHARS = 4096;
     private static final int MAX_MODULE_SEGMENTS = 32;
 
-    private static final Set<String> CORE_SOURCES = Set.of("numeric.ores", "protocols.ores");
+    private static final Set<String> CORE_SOURCES = Set.of("numeric.ores", "protocols.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -131,6 +131,15 @@ public final class CoreLibrarySources {
         if (!importPath.startsWith(CORE_IMPORT_PREFIX)) {
             throw new IllegalArgumentException(
                     "canonical core imports must start with 'ores.core/': " + importPath);
+        }
+        // New compiler-owned guest modules use canonical .atto bytes, while
+        // the original extensionless and .ores import spellings retain one
+        // stable semantic unit identity. This is an explicit closed mapping:
+        // no ambient file-system or extension probing is permitted.
+        if (importPath.equals(CORE_IMPORT_PREFIX + "protocols")
+                || importPath.equals(CORE_IMPORT_PREFIX + "protocols.atto")
+                || importPath.equals(CORE_IMPORT_PREFIX + "protocols.ores")) {
+            return "protocols.atto";
         }
         return canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
     }
