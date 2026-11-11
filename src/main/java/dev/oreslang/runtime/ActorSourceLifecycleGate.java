@@ -11,7 +11,7 @@ import java.util.Objects;
  * itself a proof of external `declare actor` lowering or sealed state.</p>
  */
 final class ActorSourceLifecycleGate {
-    enum Phase { NEW, INITIALIZING, READY, FAILED, CLOSED }
+    enum Phase { NEW, INITIALIZING, READY, TEARING_DOWN, FAILED, CLOSED }
 
     private final ActorRuntime.ActorId owner;
     private final String actorType;
@@ -59,6 +59,18 @@ final class ActorSourceLifecycleGate {
             throw new SecurityException(
                     "source actor mailbox/state owner does not match active incarnation");
         }
+    }
+
+    synchronized void beginTeardown(
+            ActorRuntime.ActorId caller, String type,
+            ActorRuntime.ActorOwnedGuestState state) {
+        requireOwner(caller, type);
+        require(Phase.READY, "tear down source actor");
+        if (state == null || !owner.equals(state.ownerActorId())) {
+            throw new SecurityException(
+                    "source actor teardown does not own active incarnation state");
+        }
+        phase = Phase.TEARING_DOWN;
     }
 
     synchronized void close() {
