@@ -1,8 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.ToLongFunction;
@@ -59,8 +56,15 @@ public final class BoundedDemandChannel<T> {
     private final long maxBytes;
     private final long maxDemand;
     private final int maxInFlight;
-    private final ArrayDeque<Long> queuedSizes = new ArrayDeque<>();
-    private final Map<Long, Long> inFlight = new HashMap<>();
+    /** Preallocated, bounded ring of per-message retained byte extents. */
+    private final long[] queuedSizes;
+    private int queuedHead;
+    private int queuedTail;
+    private int queuedCount;
+    /** Preallocated, bounded in-flight descriptor slots; ticket 0 means free. */
+    private final long[] loanTickets;
+    private final long[] loanBytes;
+    private int loansInUse;
     private boolean subscribed;
     private boolean complete;
     private boolean cancelled;
@@ -75,6 +79,9 @@ public final class BoundedDemandChannel<T> {
             throw new IllegalArgumentException("all demand-port budgets must be positive");
         }
         this.channel = new ChannelRuntime.Channel<>(capacity);
+        this.queuedSizes = new long[capacity];
+        this.loanTickets = new long[maxInFlight];
+        this.loanBytes = new long[maxInFlight];
         this.maxInFlight = maxInFlight;
         this.maxBytes = maxBytes;
         this.maxDemand = maxDemand;
@@ -109,21 +116,31 @@ public final class BoundedDemandChannel<T> {
         public Poll<T> poll() {
             synchronized (gate) {
                 if (cancelled) return new Poll<>(PollStatus.CANCELLED, Optional.empty());
-                if (inFlight.size() == maxInFlight) {
+                if (loansInUse == maxInFlight) {
                     return new Poll<>(PollStatus.NOT_READY, Optional.empty());
                 }
-                if (queuedSizes.isEmpty()) {
+                if (queuedCount == 0) {
                     return new Poll<>(complete ? PollStatus.COMPLETE : PollStatus.NOT_READY,
                                       Optional.empty());
                 }
                 if (nextTicket == Long.MAX_VALUE) {
                     throw new IllegalStateException("delivery ticket space exhausted");
                 }
+                int freeSlot = -1;
+                for (int i = 0; i < loanTickets.length; i++) {
+                    if (loanTickets[i] == 0) { freeSlot = i; break; }
+                }
+                if (freeSlot < 0) throw new IllegalStateException("loan accounting diverged");
                 T value = channel.tryRead().orElseThrow(
                         () -> new IllegalStateException("channel FIFO/accounting diverged"));
-                long bytes = queuedSizes.removeFirst();
+                long bytes = queuedSizes[queuedHead];
+                queuedSizes[queuedHead] = 0;
+                queuedHead = advance(queuedHead);
+                queuedCount--;
                 long ticket = nextTicket++;
-                inFlight.put(ticket, bytes);
+                loanTickets[freeSlot] = ticket;
+                loanBytes[freeSlot] = bytes;
+                loansInUse++;
                 return new Poll<>(PollStatus.ITEM, Optional.of(new Delivery<>(value, ticket)));
             }
         }
@@ -131,10 +148,16 @@ public final class BoundedDemandChannel<T> {
         /** ACK retires a physical consumer loan; duplicate/stale ACKs do nothing. */
         public boolean ack(long ticket) {
             synchronized (gate) {
-                Long bytes = inFlight.remove(ticket);
-                if (bytes == null) return false;
-                retainedBytes -= bytes;
-                return true;
+                for (int i = 0; i < loanTickets.length; i++) {
+                    if (ticket != 0 && loanTickets[i] == ticket) {
+                        loanTickets[i] = 0;
+                        retainedBytes -= loanBytes[i];
+                        loanBytes[i] = 0;
+                        loansInUse--;
+                        return true;
+                    }
+                }
+                return false;
             }
         }
 
@@ -161,7 +184,9 @@ public final class BoundedDemandChannel<T> {
             else {
                 credit--;
                 retainedBytes += bytes;
-                queuedSizes.addLast(bytes);
+                queuedSizes[queuedTail] = bytes;
+                queuedTail = advance(queuedTail);
+                queuedCount++;
                 return new Offer<>(true, Optional.empty(), Refusal.NONE);
             }
             return new Offer<>(false, Optional.of(value), refusal);
@@ -187,17 +212,24 @@ public final class BoundedDemandChannel<T> {
             complete = true;
             credit = 0;
             channel.close();
-            while (!queuedSizes.isEmpty()) {
+            while (queuedCount != 0) {
                 channel.tryRead().orElseThrow(
                         () -> new IllegalStateException("channel FIFO/accounting diverged"));
-                retainedBytes -= queuedSizes.removeFirst();
+                retainedBytes -= queuedSizes[queuedHead];
+                queuedSizes[queuedHead] = 0;
+                queuedHead = advance(queuedHead);
+                queuedCount--;
             }
             return true;
         }
     }
 
+    private int advance(int index) {
+        return index == queuedSizes.length - 1 ? 0 : index + 1;
+    }
+
     public long retainedBytes() { synchronized (gate) { return retainedBytes; } }
-    public int queuedCount() { synchronized (gate) { return queuedSizes.size(); } }
-    public int inFlightCount() { synchronized (gate) { return inFlight.size(); } }
+    public int queuedCount() { synchronized (gate) { return queuedCount; } }
+    public int inFlightCount() { synchronized (gate) { return loansInUse; } }
     public long outstandingDemand() { synchronized (gate) { return credit; } }
 }
