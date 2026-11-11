@@ -4969,7 +4969,8 @@ public final class OwnershipChecker {
                     || slot == null || slot.isBorrow() || slot.inferArguments()
                     || !slot.arguments().isEmpty()
                     || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
-                    || findClass(slot.name()) != null) return false;
+                    || findClass(slot.name()) != null
+                    || hasLocalTypeAliasNamed(slot.name())) return false;
         }
         return true;
     }
