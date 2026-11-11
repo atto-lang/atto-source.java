@@ -57,7 +57,7 @@ jobs:
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
             -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest -DfailIfNoTests=true test
-      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL and 7 .atto compiler tests)
+      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL and 8 .atto compiler/guest tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -68,7 +68,7 @@ jobs:
           cases = {
               "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
               "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
-              "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 7,
+              "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 8,
           }
           for class_name, minimum in cases.items():
               path = base / f"TEST-{class_name}.xml"
