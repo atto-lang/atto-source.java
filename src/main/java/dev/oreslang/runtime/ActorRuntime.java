@@ -4803,9 +4803,23 @@ public final class ActorRuntime implements AutoCloseable {
                             actors.put(id, cell);
                         }
                             } catch (RuntimeException | Error publishFailure) {
-                                // No terminal CTRL or cancellation can observe
-                                // an orphan reservation: ancestor fail() waits
-                                // for this monitor until rollback is complete.
+                                // Roll back every partially exposed physical
+                                // registry BEFORE dropping the bridge monitor.
+                                // Otherwise ancestor failure can observe a
+                                // published actor whose CONTROL entry vanished.
+                                actors.remove(id, cell);
+                                if (linkedToParent) {
+                                    parent.children.remove(cell);
+                                    linkedToParent = false;
+                                }
+                                ActorGroupId groupId = cell.managedByGroup.get();
+                                ActorGroup ownerGroup = groupId == null
+                                        ? null : actorGroups.get(groupId);
+                                if (ownerGroup != null) {
+                                    synchronized (ownerGroup.authorityLock) {
+                                        ownerGroup.managedWorkers.remove(id, ref);
+                                    }
+                                }
                                 if (reservedChildEscrow != null) {
                                     supervisorEscrowBindings.remove(
                                             id, reservedChildEscrow);
