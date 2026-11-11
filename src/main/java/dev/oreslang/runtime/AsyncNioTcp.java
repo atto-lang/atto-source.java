@@ -295,14 +295,23 @@ public final class AsyncNioTcp {
         public OresFuture<Void> writeResp2HexAsync(String status, String hexPayload) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.write_resp2_hex_async");
+            // Keep the serializer CPU interval distinct from submitting the
+            // asynchronous write. The two may overlap only in observer reports,
+            // never in measurement windows for this request.
             long encodeStarted = CorePerf.start();
+            byte[] frame;
             try {
-                byte[] frame = AsyncNioResp2.encode(status, hexPayload);
-                return writeDetachedAsync(frame);
+                frame = AsyncNioResp2.encode(status, hexPayload);
             } catch (IOException failure) {
                 return OresFuture.failed(failure);
             } finally {
                 CorePerf.end(CorePerf.REDIS_RESP_ENCODE, encodeStarted);
+            }
+            long submitStarted = CorePerf.start();
+            try {
+                return writeDetachedAsync(frame);
+            } finally {
+                CorePerf.end(CorePerf.REDIS_TCP_WRITE_SUBMIT, submitStarted);
             }
         }
 
