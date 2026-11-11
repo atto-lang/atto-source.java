@@ -42,7 +42,9 @@ final class AttoAsyncNioTcpGuestTest {
         try (ExecutorService exec = Executors.newSingleThreadExecutor()) {
             Future<?> execution = exec.submit(() -> {
                 try (Context context = Context.newBuilder(OresLanguage.ID)
-                        .allowAllAccess(true).out(stdout).build()) {
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID, "--ores-capabilities=NETWORK,STDOUT")
+                        .out(stdout).build()) {
                     context.eval(Source.newBuilder(OresLanguage.ID, source,
                             "atto-nio2-binary-echo.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
