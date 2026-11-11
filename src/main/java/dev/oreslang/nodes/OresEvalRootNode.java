@@ -10236,7 +10236,11 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
+            // Box identity must not override numeric value semantics (NaN is
+            // unequal even when both operands are the same boxed instance).
+            if (left == right) {
+                return !(left instanceof Number n) || NumericValueEquality.equals(n, n);
+            }
             if (left == null || right == null) return false;
 
             if (left instanceof dev.oreslang.runtime.OresSymbol
