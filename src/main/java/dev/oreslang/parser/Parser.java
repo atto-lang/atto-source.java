@@ -136,7 +136,11 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (isContextualIdentifier("declare")) {
-                rootForwards.add(parseForwardType(annotations, modifiers));
+                if (looksLikeDeclaredActorHead()) {
+                    rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                } else {
+                    rootForwards.add(parseForwardType(annotations, modifiers));
+                }
                 continue;
             }
 
@@ -397,6 +401,9 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (isContextualIdentifier("declare")) {
+            if (looksLikeDeclaredActorHead()) {
+                return parseDeclaredActor(annotations, modifiers);
+            }
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
             return null;
@@ -1740,6 +1747,46 @@ public final class Parser {
             throw error(name, "'_' cannot be used as a declared type name");
         }
         return name.lexeme();
+    }
+
+    /**
+     * A declared actor is a nominal (non-executable) actor identity whose
+     * methods may be attached by a verified source namespace binder.
+     *
+     * 'declare actor A;' differs from an unresolved 'declare type T;':
+     * it is a complete nominal declaration, not a promise to define the
+     * same type later in this source file.
+     */
+    private boolean looksLikeDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int candidate = current + 1;
+        while (candidate < tokens.size()
+                && (tokens.get(candidate).type() == PUB
+                    || tokens.get(candidate).type() == PRIVATE)) {
+            candidate++;
+        }
+        return candidate < tokens.size() && tokens.get(candidate).type() == ACTOR;
+    }
+
+    private Ast.StandaloneActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        Token marker = advance(); // contextual 'declare'
+        if (!annotations.isEmpty() || before.visibilitySeen || before.async
+                || before.suspends || before.generator || before.structural
+                || before.nonLexical || before.trapped || before.isStatic
+                || before.isAbstract || before.shared || before.untrusted) {
+            throw error(marker,
+                    "declare actor accepts visibility only after 'declare', before 'actor'");
+        }
+        Modifiers after = parseModifiers();
+        validateOnlyVisibilityModifiers(after, "declared actors");
+        consume(ACTOR, "expected actor after declare");
+        String name = consumeTypeDeclarationName("expected declared actor name");
+        consume(SEMICOLON,
+                "declare actor requires a plain nongeneric nominal actor name "
+                        + "followed by ';'; actor bodies, inheritance and receiver aliases "
+                        + "are not part of this declaration");
+        return new Ast.StandaloneActorDecl(name, after.visibility, Ast.ActorKind.SHARED);
     }
 
     private ForwardType parseForwardType(List<Ast.Annotation> annotations, Modifiers before) {
