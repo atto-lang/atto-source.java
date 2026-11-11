@@ -536,13 +536,13 @@ final class ValuePipeOperatorTest {
                 () -> TypeChecker.check(Parser.parse("""
                     fnc broken(): int { return 2 |> || -> 3; }
                     """)));
-        assertTrue(empty.getMessage().contains("exactly one parameter"), empty::toString);
+        assertTrue(empty.getMessage().contains("at least one parameter"), empty::toString);
 
         IllegalArgumentException many = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     fnc broken(): int { return 2 |> |x, y| -> x + y; }
                     """)));
-        assertTrue(many.getMessage().contains("exactly one parameter"), many::toString);
+        assertTrue(many.getMessage().contains("statically known Tuple"), many::toString);
 
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
