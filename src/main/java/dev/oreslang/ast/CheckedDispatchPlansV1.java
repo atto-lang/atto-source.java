@@ -6,6 +6,7 @@ import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -119,5 +120,65 @@ public final class CheckedDispatchPlansV1 {
         Objects.requireNonNull(call, "call");
         expunge();
         return PLANS.get(new IdentityKey(call, null));
+    }
+
+    // Evaluators receive one immutable identity-indexed snapshot at link time.
+    // Guest calls never acquire the global proof-registry monitor.
+    private static final ReferenceQueue<Ast.Program> CLEARED_PROGRAMS = new ReferenceQueue<>();
+    private static final Map<ProgramKey, Map<Ast.CallExpr, Plan>> BY_PROGRAM = new HashMap<>();
+
+    private static final class ProgramKey extends WeakReference<Ast.Program> {
+        private final int hash;
+        private ProgramKey(Ast.Program program, ReferenceQueue<Ast.Program> queue) {
+            super(Objects.requireNonNull(program, "checked program"), queue);
+            hash = System.identityHashCode(program);
+        }
+
+        @Override public int hashCode() { return hash; }
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof ProgramKey key)) return false;
+            Ast.Program left = get();
+            return left != null && left == key.get();
+        }
+    }
+
+    private static void expungePrograms() {
+        Reference<? extends Ast.Program> ref;
+        while ((ref = CLEARED_PROGRAMS.poll()) != null) BY_PROGRAM.remove(ref);
+    }
+
+    /** Called only after the full typed program has been validated. */
+    public static synchronized void publish(
+            Ast.Program program, Map<Ast.CallExpr, Plan> resolved) {
+        Objects.requireNonNull(program, "checked program");
+        Objects.requireNonNull(resolved, "resolved call plans");
+        expungePrograms();
+        IdentityHashMap<Ast.CallExpr, Plan> identity = new IdentityHashMap<>();
+        for (Map.Entry<Ast.CallExpr, Plan> entry : resolved.entrySet()) {
+            Ast.CallExpr call = Objects.requireNonNull(entry.getKey(), "checked call");
+            Plan plan = Objects.requireNonNull(entry.getValue(), "checked plan");
+            if (lookup(call) != plan && !plan.equals(lookup(call))) {
+                throw new IllegalStateException("unregistered checked call plan");
+            }
+            identity.put(call, plan);
+        }
+        Map<Ast.CallExpr, Plan> snapshot =
+                java.util.Collections.unmodifiableMap(identity);
+        ProgramKey key = new ProgramKey(program, CLEARED_PROGRAMS);
+        Map<Ast.CallExpr, Plan> old = BY_PROGRAM.putIfAbsent(key, snapshot);
+        if (old != null && !old.equals(snapshot)) {
+            throw new IllegalStateException("conflicting checked dispatch snapshot for program");
+        }
+    }
+
+    /**
+     * Unpublished/rewritten ASTs receive no fast-path authority and preserve
+     * the interpreter's existing conservative name/slot lookup behavior.
+     */
+    public static synchronized Map<Ast.CallExpr, Plan> forProgram(Ast.Program program) {
+        Objects.requireNonNull(program, "program");
+        expungePrograms();
+        return BY_PROGRAM.getOrDefault(new ProgramKey(program, null), Map.of());
     }
 }
