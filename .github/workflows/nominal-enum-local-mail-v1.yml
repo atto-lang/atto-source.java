@@ -1,0 +1,33 @@
+name: AttoLang closed enum local actor mail
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enum-local-mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: graalvm
+          java-version: '25'
+          cache: maven
+      - name: Execute local enum actor transport JUnit tests
+        run: >-
+          mvn -B -ntp -Dtest=OresEnumSymbolActorMailTest
+          -DfailIfNoTests=true test
+      - name: Save executed Surefire receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-enum-local-mail-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
