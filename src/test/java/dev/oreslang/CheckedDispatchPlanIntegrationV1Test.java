@@ -141,4 +141,32 @@ final class CheckedDispatchPlanIntegrationV1Test {
                         unchecked, java.util.Map.of(call, conflicting)),
                 "rechecking the same Program must not silently replace its resolved targets");
     }
+
+    @Test
+    void unresolvedGenericSpecializationsCannotBeMisreportedAsDirectAotSymbols() {
+        // A resolved generic source declaration is not a unique *emitted*
+        // symbol until the post-macro, post-ownership specialization graph
+        // has been closed and compiled. Keep interpreter semantics unchanged.
+        Ast.Program genericFunction = OresCompiler.parseAndTypeCheck("""
+                define module app
+                  fnc identity<T>(T value): T { return value; }
+                  fnc read(): int { return identity(42); }
+                end
+                """);
+        Ast.CallExpr call = returnCall(function(genericFunction, "read"));
+        assertNull(CheckedDispatchPlansV1.forProgram(genericFunction).get(call),
+                "generic callable without emitted specialization must not claim DIRECT");
+
+        Ast.Program genericMethod = OresCompiler.parseAndTypeCheck("""
+                define module app
+                  define class Box as
+                    pub map<T>(T value): T { return value; }
+                  end
+                  fnc read(Box box): int { return box.map(7); }
+                end
+                """);
+        Ast.CallExpr methodCall = returnCall(function(genericMethod, "read"));
+        assertNull(CheckedDispatchPlansV1.forProgram(genericMethod).get(methodCall),
+                "unmonomorphized method must not claim a checked static symbol");
+    }
 }
