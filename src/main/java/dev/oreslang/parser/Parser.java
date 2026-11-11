@@ -1249,24 +1249,26 @@ public final class Parser {
         }
     }
 
+    private void rejectForgedCompilerProtocol(String name) {
+        // Trait, interface and contract declarations all participate in
+        // nominal conformance. No spelling may forge an actor/ownership proof.
+        if (java.util.Set.of("Sendable", "Shareable", "Copy", "Drop",
+                "Receives", "Supervisor", "ActorLifecycle").contains(name)) {
+            throw error(previous(), "protocol '" + name
+                    + "' is compiler/runtime-owned; guest declarations cannot grant safety authority");
+        }
+    }
+
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
         Ast.InterfaceDecl iface = parseInterface(visibility, true);
+        rejectForgedCompilerProtocol(iface.name());
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
         Ast.InterfaceDecl declaration = parseInterface(visibility);
-        // Compiler/runtime safety authorities are *not* structural traits:
-        // a guest-provided implementation cannot assert transfer, cleanup,
-        // mailbox ownership or supervisor CONTROL rights. Reserve these names
-        // at the declaration boundary until the trusted intrinsic protocol
-        // registry is integrated with source-visible diagnostic bounds.
-        if ((kind == TRAIT || kind == INTERFACE) && java.util.Set.of(
-                "Sendable", "Shareable", "Copy", "Drop",
-                "Receives", "Supervisor", "ActorLifecycle").contains(declaration.name())) {
-            throw error(previous(),
-                    "protocol '" + declaration.name()
-                    + "' is compiler/runtime-owned; guest declarations cannot grant safety authority");
+        if (kind == TRAIT || kind == INTERFACE) {
+            rejectForgedCompilerProtocol(declaration.name());
         }
         interfaceKinds.put(declaration, kind);
         return declaration;
