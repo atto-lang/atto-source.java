@@ -217,8 +217,12 @@ final class SupervisorEscrowInheritedChildRaceIntegrationTest {
             streams.setAccessible(true);
             assertEquals(1, ((java.util.Set<?>)streams.get(runtime)).size(),
                     "aborted ActorCell kept its registered output stream");
-            assertEquals(0, runtime.privateMemoryUsedBytes(),
-                    "unpublished actor retained private heap reservations");
+            var privateBytes = ActorRuntime.class.getDeclaredField("privateMemoryBytes");
+            privateBytes.setAccessible(true);
+            assertEquals(0L,
+                    ((java.util.concurrent.atomic.AtomicLong)
+                            privateBytes.get(runtime)).get(),
+                    "unpublished actor retained aggregate private heap reservations");
         } finally {
             GROUP_REJECTED.set(null);
             GROUP_FINISHED.compareAndSet(done, null);
