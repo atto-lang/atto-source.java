@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -168,6 +170,79 @@ final class AotClassProxyLanguageTest {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> Parser.parse(suspending));
         assertTrue(error.getMessage().contains("AOT_PROXY_UNSUPPORTED"));
+    }
+
+    @Test
+    void rejectsCrossModuleGeneratedNameCapture() {
+        Ast.ClassDecl foo = new Ast.ClassDecl("Foo", false, List.of(), List.of(), List.of());
+        Ast.ClassDecl existing = new Ast.ClassDecl("FooProxy", false, List.of(), List.of(), List.of());
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(foo)),
+                new Ast.ModuleDecl("second", List.of(existing))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(program, Set.of("Foo")));
+        assertTrue(error.getMessage().contains("collides"), error.getMessage());
+    }
+
+    @Test
+    void rejectsAmbiguousGeneratedMethodSlot() {
+        Ast.MethodDecl first = proxySurfaceMethod(Ast.TypeRef.simple("int"),
+                List.of(new Ast.Param(Ast.TypeRef.simple("int"), "a")), List.of());
+        Ast.MethodDecl second = proxySurfaceMethod(Ast.TypeRef.simple("int"),
+                List.of(new Ast.Param(Ast.TypeRef.simple("String"), "a")), List.of());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        proxySurfaceProgram(List.of(first, second)), Set.of("Foo")));
+        assertTrue(error.getMessage().contains("ambiguous proxy method slot"), error.getMessage());
+    }
+
+    @Test
+    void rejectsMethodAnnotationRatherThanSilentlyDroppingContract() {
+        Ast.MethodDecl annotated = proxySurfaceMethod(Ast.TypeRef.simple("int"),
+                List.of(), List.of(new Ast.Annotation("RequiredPolicy", List.of())));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        proxySurfaceProgram(List.of(annotated)), Set.of("Foo")));
+        assertTrue(error.getMessage().contains("annotated method"), error.getMessage());
+    }
+
+    @Test
+    void rejectsBorrowedMethodTypesIncludingNestedGenericArguments() {
+        Ast.TypeRef borrowed = Ast.TypeRef.borrowed(Ast.TypeRef.simple("Foo"), false);
+        Ast.TypeRef nested = new Ast.TypeRef("Option", List.of(borrowed), false);
+        Ast.MethodDecl borrowedArg = proxySurfaceMethod(Ast.TypeRef.simple("void"),
+                List.of(new Ast.Param(nested, "value")), List.of());
+        Ast.MethodDecl borrowedResult = proxySurfaceMethod(nested, List.of(), List.of());
+        for (Ast.MethodDecl method : List.of(borrowedArg, borrowedResult)) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsCallableMethodValuesBeforeForwarding() {
+        Ast.TypeRef fnc = Ast.TypeRef.functionType(
+                List.of(Ast.TypeRef.simple("int")), Ast.TypeRef.simple("int"));
+        Ast.MethodDecl method = proxySurfaceMethod(Ast.TypeRef.simple("void"),
+                List.of(new Ast.Param(fnc, "callback")), List.of());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+        assertTrue(error.getMessage().contains("reborrowing"), error.getMessage());
+    }
+
+    private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
+        Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
+        return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
+    }
+
+    private static Ast.MethodDecl proxySurfaceMethod(Ast.TypeRef result,
+            List<Ast.Param> parameters, List<Ast.Annotation> annotations) {
+        return new Ast.MethodDecl("read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                parameters, result, annotations, List.of());
     }
 
     private static String run(String program) throws Exception {
