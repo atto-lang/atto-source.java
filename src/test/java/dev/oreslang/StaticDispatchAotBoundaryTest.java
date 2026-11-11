@@ -62,7 +62,8 @@ final class StaticDispatchAotBoundaryTest {
                           pub pick(String s): int { return 42; }
                         end
                         """)));
-        assertTrue(error.getMessage().contains("arity 1"), error.getMessage());
+        assertTrue(error.getMessage().contains("already has arity 1"), error.getMessage());
+        assertTrue(error.getMessage().contains("name + arity only"), error.getMessage());
     }
 
     @Test
@@ -78,8 +79,10 @@ final class StaticDispatchAotBoundaryTest {
                         define class Ambiguous extends Left, Right as
                         end
                         """)));
-        assertTrue(error.getMessage().contains("ambiguous inherited method"),
+        assertTrue(error.getMessage().contains("ambiguous inherited method 'Ambiguous.ping' with arity 0"),
                 error.getMessage());
+        assertTrue(error.getMessage().contains("Left"), error.getMessage());
+        assertTrue(error.getMessage().contains("Right"), error.getMessage());
     }
 
     @Test
