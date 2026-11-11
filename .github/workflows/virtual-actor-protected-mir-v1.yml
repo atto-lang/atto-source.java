@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorPortableMirV1.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java'
+      - 'src/test/java/dev/oreslang/VirtualActorPortableMirV1Test.java'
       - 'contracts/virtual-actor-mir-v1/**'
       - '.github/workflows/virtual-actor-protected-mir-v1.yml'
   workflow_dispatch:
@@ -38,8 +40,10 @@ jobs:
           echo "HEAD_SHA=$EXPECTED_HEAD_SHA"
           echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
           git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java
+          git hash-object src/main/java/dev/oreslang/compiler/VirtualActorPortableMirV1.java
           git hash-object src/main/java/dev/oreslang/types/TypeChecker.java
           git hash-object src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java
+          git hash-object src/test/java/dev/oreslang/VirtualActorPortableMirV1Test.java
           git hash-object contracts/virtual-actor-mir-v1/cases.json
           git hash-object contracts/virtual-actor-mir-v1/positive/cart_checked_contract.atto
           git hash-object contracts/virtual-actor-mir-v1/negative/unfenced_cart.atto
@@ -58,10 +62,11 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp \
-            -Dtest=VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
+            -Dtest=VirtualActorProtectedMirV1Test,VirtualActorPortableMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
             -DfailIfNoTests=true test
           for suite in \
             dev.oreslang.VirtualActorProtectedMirV1Test \
+            dev.oreslang.VirtualActorPortableMirV1Test \
             dev.oreslang.StateContainerVirtualActorAdmissionTest \
             dev.oreslang.AttoCartPhysicalActivationGuestTest \
             dev.oreslang.runtime.VirtualActorGenerationFenceCurrentMainTest \
@@ -74,4 +79,5 @@ jobs:
             echo "EXECUTED_JUNIT=$suite"
           done
           echo "EXACT_HEAD_CHECKED=$GITHUB_SHA"
+          echo "VIRTUAL_ACTOR_PORTABLE_MIR=STATIC_ONLY"
           echo "VIRTUAL_ACTOR_GUEST_LOWERING=STILL_UNSUPPORTED"
