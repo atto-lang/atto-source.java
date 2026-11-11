@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -212,6 +213,94 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
                         () -> applied.incrementAndGet()));
         assertEquals(1, applied.get(), "fenced parent cannot run publisher");
         assertFalse(ledger.snapshot().containsKey(4L));
+    }
+
+    private static final AtomicReference<CountDownLatch> RACE_SPAWNING =
+            new AtomicReference<>();
+    private static final AtomicReference<CountDownLatch> RACE_RELEASE =
+            new AtomicReference<>();
+    private static final AtomicReference<CountDownLatch> RACE_FINISHED =
+            new AtomicReference<>();
+    private static final AtomicReference<ConcurrentLinkedQueue<ActorRuntime.ActorRef<String>>>
+            RACE_CHILDREN = new AtomicReference<>();
+    private static final AtomicReference<Throwable> RACE_REJECTED =
+            new AtomicReference<>();
+
+    @Test
+    void cancelRacingSupervisedChildSpawnLeavesNoOrphanActorOrControlReservation()
+            throws Exception {
+        var spawned = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var finished = new CountDownLatch(1);
+        var children = new ConcurrentLinkedQueue<ActorRuntime.ActorRef<String>>();
+        RACE_SPAWNING.set(spawned);
+        RACE_RELEASE.set(release);
+        RACE_FINISHED.set(finished);
+        RACE_CHILDREN.set(children);
+        RACE_REJECTED.set(null);
+        try (ActorRuntime runtime = new ActorRuntime();
+             ExecutorService control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            var recovery = new SupervisorEscrowSubtreeRecoveryV1(
+                    runtime, bridge, control, ignored -> false);
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        try {
+                            for (int i = 0; i < 128; i++) {
+                                if (i == 16) {
+                                    RACE_SPAWNING.get().countDown();
+                                    if (!RACE_RELEASE.get().await(5, TimeUnit.SECONDS)) {
+                                        throw new IllegalStateException("test cancellation signal timed out");
+                                    }
+                                }
+                                try {
+                                    ActorRuntime.ActorRef<String> child =
+                                            turn.runtime().spawnPrivate(
+                                                    nested -> (item, context) -> { });
+                                    RACE_CHILDREN.get().add(child);
+                                } catch (RuntimeException denied) {
+                                    RACE_REJECTED.set(denied);
+                                    break;
+                                }
+                            }
+                        } finally {
+                            RACE_FINISHED.get().countDown();
+                        }
+                    });
+            recovery.attach(supervisor, null);
+            supervisor.send("spawn");
+            assertTrue(spawned.await(5, TimeUnit.SECONDS));
+            assertEquals(16, children.size(), "expected the initial published cohort");
+            assertTrue(runtime.cancel(supervisor), "cancellation must fence the parent");
+            release.countDown();
+            assertTrue(finished.await(5, TimeUnit.SECONDS),
+                    "actor turn did not settle after supervisor cancellation");
+            assertNotNull(RACE_REJECTED.get(),
+                    "late spawn must fail after parent retirement fence");
+            assertTrue(supervisor.awaitTermination(5, TimeUnit.SECONDS));
+            for (ActorRuntime.ActorRef<String> child : children) {
+                assertTrue(child.awaitTermination(5, TimeUnit.SECONDS),
+                        "published child must be physically retired by parent cancellation");
+            }
+            assertEquals(children.size() + 2, bridge.snapshot().size(),
+                    "cancelled spawn must not leave unpublished CONTROL nodes");
+            assertEquals(0, bridge.pendingCount(),
+                    "structured cancellation must not forge failure CONTROL");
+            assertNull(recovery.controlFault(), "CONTROL coordinator must survive race");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (runtime.actorCount() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, runtime.actorCount(),
+                    "cancelled supervision tree must release all actor slots");
+        } finally {
+            release.countDown();
+            RACE_SPAWNING.set(null);
+            RACE_RELEASE.set(null);
+            RACE_FINISHED.set(null);
+            RACE_CHILDREN.set(null);
+            RACE_REJECTED.set(null);
+        }
     }
 
     @Test
