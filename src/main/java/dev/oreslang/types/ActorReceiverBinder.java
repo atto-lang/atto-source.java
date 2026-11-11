@@ -333,6 +333,24 @@ public final class ActorReceiverBinder {
                 }
             }
             validateHookShape(method);
+            // Runtime lifecycle slots are nominal roles, not overloadable by
+            // argument count. Preserve the old name/arity rule for ordinary mtd.
+            if (method.name().equals("init") || method.name().equals("receive")) {
+                for (Slot existing : bindings.keySet()) {
+                    if (existing.module().equals(module.name())
+                            && existing.actor().equals(method.actorName())
+                            && existing.name().equals(method.name())) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_DUPLICATE_" + method.name().toUpperCase(java.util.Locale.ROOT)
+                                        + ": duplicate lifecycle entrypoint role");
+                    }
+                }
+                if (method.runtimeEntrypoint() && target instanceof Ast.ClassDecl classActor
+                        && classActor.methods().stream().anyMatch(m -> m.name().equals(method.name()))) {
+                    throw new IllegalArgumentException(
+                            "external actor lifecycle role conflicts with inline actor method");
+                }
+            }
             Slot key = new Slot(
                     module.name(), method.actorName(), method.name(),
                     method.parameters().size());
@@ -355,6 +373,30 @@ public final class ActorReceiverBinder {
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
         String name = method.name();
+        if (method.runtimeEntrypoint()) {
+            if (!name.equals("init") && !name.equals("receive")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_EXTERNAL_ROLE_UNSUPPORTED: 'external' marks only "
+                                + "init/receive runtime entrypoint roles in v1");
+            }
+            if (method.visibility() != Ast.Visibility.PRIVATE) {
+                throw new IllegalArgumentException(
+                        "ACTOR_EXTERNAL_LIFECYCLE_PRIVATE: runtime entrypoints "
+                                + "cannot be public guest methods");
+            }
+            if (name.equals("init")) {
+                if (method.returnType().name().equals(method.actorName())) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_INIT_OWNER_ESCAPE: init must not return raw actor self");
+                }
+                if (!isVoid(method.returnType())
+                        && !(method.returnType().name().equals("state")
+                            && method.returnType().arguments().isEmpty())) {
+                    throw new IllegalArgumentException(
+                            "external init requires void or compiler-owned state builder return");
+                }
+            }
+        }
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
             throw new IllegalArgumentException(
