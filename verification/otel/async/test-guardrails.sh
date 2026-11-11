@@ -113,5 +113,34 @@ if command -v java >/dev/null; then
   fi
 fi
 
+# Exercise actual receipt cleanup in a tiny, disposable local Git checkout.
+# This deliberately has no Oreslang fixture or compiler: a pinned-blob
+# integrity check MUST fail, while stale receipts MUST disappear.
+probe="$work/receipt-failclosed-probe"
+mkdir -p "$probe/verification/otel/async"
+cp "$root/verification/otel/async/execute-async-otel-guest.sh" \
+  "$probe/verification/otel/async/execute-async-otel-guest.sh"
+cp "$root/verification/otel/async/guardrails.sh" \
+  "$probe/verification/otel/async/guardrails.sh"
+git -C "$probe" init -q
+git -C "$probe" -c user.name='OTel Source-only Test' \
+  -c user.email='otel-source-only@example.invalid' add verification
+git -C "$probe" -c user.name='OTel Source-only Test' \
+  -c user.email='otel-source-only@example.invalid' commit -qm 'fixture without private Oreslang guest'
+for fixture in smoke span-finish-admission-retry; do
+  mkdir -p "$probe/target/otel/async/jvm/$fixture"
+  printf 'STALE_SUCCESS_SHOULD_NOT_SURVIVE\n' \
+    > "$probe/target/otel/async/jvm/$fixture/receipt.txt"
+done
+if EXPECTED_SOURCE_SHA="$(git -C "$probe" rev-parse HEAD)" \
+   bash "$probe/verification/otel/async/execute-async-otel-guest.sh" jvm \
+   > "$work/receipt-probe.stdout" 2> "$work/receipt-probe.stderr"; then
+  fail 'missing source-owned OTel fixture was incorrectly admitted'
+fi
+for fixture in smoke span-finish-admission-retry; do
+  [[ ! -e "$probe/target/otel/async/jvm/$fixture/receipt.txt" ]] ||
+    fail 'stale or partial receipt survived failed exact-blob validation'
+done
+
 echo 'OTEL_SOURCE_ONLY_GUARDRAILS_PASS (class/JAR tamper, ELF/JVM-launcher denial, symlinks, bounded output, nonzero failure)'
 echo 'NO_COMPILER_GUEST_EXECUTED_OR_CERTIFIED'
