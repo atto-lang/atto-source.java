@@ -86,20 +86,21 @@ runs `Parser.parse` + `TypeChecker.check` (which invokes the
 ownership pass), and executes the accepted actor program using
 `org.graalvm.polyglot.Context` with `allowAllAccess(false)`.
 
-Seven authored tests:
+Eight authored tests:
 
 1. State fields flatten into private actor `Ast.FieldDecl`s.
 2. Valid grouped state passes the compiler ownership/type checks.
 3. A real Graal guest increments actor-owned state, emits output,
    stops, and returns the expected `1`.
-4. Copy scalar `rt take self.count` fails in the ownership checker.
-5. Public state fields fail at parse time.
-6. A second state container fails at parse time.
-7. Methods and nested code inside state fail at parse time.
+4. Two compiled actors each have distinct mutable state despite sharing immutable code (output `1|1`).
+5. Copy scalar `rt take self.count` fails in the ownership checker.
+6. Public state fields fail at parse time.
+7. A second state container fails at parse time.
+8. Methods and nested code inside state fail at parse time.
 
 The exact-head `.github/workflows/actor-state-rw-ownership.yml`
 checks **27 existing RW arbiter + 32 existing supervisor CONTROL +
-7 new compiler/guest tests = 66 authored tests**. It requires
+8 new compiler/guest tests = 67 authored tests**. It requires
 nonempty real Surefire XML reports for all three test classes with
 zero failures, errors or skips. A job without assigned runner,
 nonzero executed steps and exact-head SHA/tree receipt is **NOT_EXECUTED**.
@@ -107,7 +108,7 @@ No test has been certified passing merely because it was authored.
 
 ## Remaining critical work
 
-- Run all 66 tests on an authorized Java 21 CI runner and fix any
+- Run all 67 tests on an authorized Java 21 CI runner and fix any
   real compile/runtime failures; preserve negative mutation evidence.
 - Replace any remaining free-standing raw supervisor host
   `Future<Loan>` adapter with the lexical scoped CONTROL API, then
