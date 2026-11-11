@@ -220,6 +220,35 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void lambdaTerminalReturnTypeIsCheckedAfterLexicalPrefixes() {
+        // A prefix statement must not turn a statically known String return
+        // into Unknown, which would be accepted in an int-valued ternary.
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("""
+                        val value: int = true ? || -> {
+                          val wrong = "string";
+                          return wrong;
+                        } : { return 42; };
+                        """))));
+    }
+
+    @Test
+    void immediateComplexLambdaRequiresAnExplicitReturnType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("""
+                        val value: int = true ? (|int n| -> {
+                          if n eq 3 {
+                            return 42;
+                          }
+                          return 0;
+                        })(3) : { return 0; };
+                        """))));
+        assertTrue(failure.getMessage().contains("statically known return type"),
+                failure::getMessage);
+    }
+
+    @Test
     void rejectsNestedBorrowEscapingTernaryArmInCollection() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
