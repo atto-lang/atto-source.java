@@ -7,7 +7,8 @@ public or protected instance method. The actor scheduler dispatches it after
 mailbox admission, bounded queueing, ownership transfer and execution-lease
 acquisition. Guest source MUST NOT directly invoke or capture an actor's
 receive handler, regardless of receiver expression, alias, inheritance,
-compilation unit, or source visibility.
+compilation unit, or source visibility. Resolution MUST distinguish a
+lexically shadowing callable named receive from the actor handler itself.
 
 - self.receive(mail) and unqualified receive(mail) inside an actor: reject.
 - actorValue.receive(mail), including typed aliases and cross-file references:
@@ -38,3 +39,13 @@ ActorReceiveIngressBoundaryTest. LLVM, .NET NativeAOT, Wasm, Forge/Cranelift
 and JS must run equivalent compile-fail tests and one actual mailbox delivery
 guest test on pinned source heads. A source-only checker test or zero-step CI
 does not certify guest execution or cross-backend parity.
+
+## Threat-model regression additions
+
+- An actor-local lambda bound to the name receive may still be invoked as a
+  normal local callable; it is not a privileged mailbox entrypoint.
+- A self alias cannot be used to call the actual receive handler.
+- An inherited actor receive remains runtime-only.
+- A cross-file imported actor's receive cannot be called directly through a
+  typed actor instance. Semantic resolution must preserve actor metadata.
+- These fixtures are compile-time tests, not scheduler delivery receipts.

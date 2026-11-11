@@ -56,6 +56,33 @@ final class ActorReceiveIngressBoundaryTest {
     }
 
     @Test
+    void selfAliasCannotDirectlyInvokeReceive() {
+        mustReject("negative-aliased-self-receive", "runtime-only");
+    }
+
+    @Test
+    void inheritedReceiveCannotBeCalledOnActorInstance() {
+        mustReject("negative-inherited-receive", "runtime-only");
+    }
+
+    @Test
+    void lexicalCallableNamedReceiveDoesNotGainMailboxAuthority() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                fixture("positive-shadowed-receive"))));
+    }
+
+    @Test
+    void directReceiveOnActorImportedFromDifferentAttoUnitIsRejected() {
+        var units = java.util.Map.of(
+                "src/worker.atto", fixture("imported-public-actor"),
+                "src/consumer.atto", fixture("negative-imported-receive"));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> new dev.oreslang.compiler.IncrementalCompiler().compile(units));
+        assertTrue(error.getMessage().contains("runtime-only"), error.getMessage());
+    }
+
+    @Test
     void externalMailboxSendRemainsLegal() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
                 fixture("positive-mailbox-send"))));

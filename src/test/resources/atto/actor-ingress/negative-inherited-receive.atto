@@ -1,0 +1,12 @@
+define actor Parent as
+  receive(ActorMail<String> mail): void {
+    return;
+  }
+end
+
+define actor Child extends Parent as
+  pub attempt(ActorMail<String> mail): void {
+    self.receive(mail);
+    return;
+  }
+end

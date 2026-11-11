@@ -3044,6 +3044,9 @@ public final class TypeChecker {
             // symbol so unrelated top-level functions named receive remain legal.
             if (call.callee() instanceof Ast.NameExpr bareReceive
                     && bareReceive.name().equals("receive")
+                    // A lexical callable shadows the method name. Never
+                    // mistake that distinct symbol for mailbox ingress.
+                    && env.lookup(bareReceive.name()) == null
                     && currentActorKind != Ast.ActorKind.NONE
                     && currentClassOwner != null
                     && findMethodsByName(
