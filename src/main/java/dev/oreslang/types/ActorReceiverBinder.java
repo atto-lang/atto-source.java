@@ -251,10 +251,20 @@ public final class ActorReceiverBinder {
             if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
-                if (!receiverAliases.add(actor.receiverName())) {
+                if (actor.receiverName() != null
+                        && !receiverAliases.add(actor.receiverName())) {
                     throw new IllegalArgumentException(
                             "duplicate standalone actor receiver binding '"
                                     + module.name() + "." + actor.receiverName() + "'");
+                }
+                // Contract references from a semicolon-only actor header must
+                // not be laundered into an implementation witness. The
+                // actor-targeted contract linker is not part of this binder.
+                if (!actor.implementedContracts().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_CONTRACT_WITNESS_UNSUPPORTED: nominal actor '"
+                                    + module.name() + "." + actor.name()
+                                    + "' requires verified actor-only contract conformance");
                 }
                 nominalActors.put(typeName, actor);
             } else if (declaration instanceof Ast.ClassDecl klass) {
@@ -317,6 +327,14 @@ public final class ActorReceiverBinder {
                                 + method.actorName() + "'");
             }
             if (target instanceof Ast.ClassDecl klass) {
+                // An external slot could otherwise shadow an inherited
+                // method without a hierarchy-aware conformance proof.
+                if (!klass.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "external receiver binding on inherited actor '"
+                                    + module.name() + "." + klass.name()
+                                    + "' requires inherited actor slot coherence");
+                }
                 if (!klass.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "external receiver method on generic actor '"
@@ -370,6 +388,8 @@ public final class ActorReceiverBinder {
                     || !method.parameters().getFirst().type().name().equals("ActorMail")
                     || method.parameters().getFirst().type().arguments().size() != 1
                     || method.parameters().getFirst().type().inferArguments()
+                    || method.parameters().getFirst().type().arguments().getFirst().isBorrow()
+                    || method.parameters().getFirst().type().arguments().getFirst().isClosedAggregateType()
                     || !isVoid(method.returnType())) {
                 throw new IllegalArgumentException(
                         "external receive must be private and accept one "
