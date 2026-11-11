@@ -6,6 +6,10 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,16 +20,18 @@ import static org.junit.jupiter.api.Assertions.*;
  * claimed. A checked plan deliberately remains unlowered in TypeChecker.
  */
 final class VirtualActorProtectedMirV1Test {
-    private static final String CART = """
-            define virtual actor Cart as
-              state { let int quantity: 0; }
-              add(int n) -> void ::
-                handle_state(critical-write |s| -> {
-                  s.quantity = s.quantity + n;
-                });
-              end
-            end
-            """;
+    private static String checkedCart() {
+        Path path = Path.of("contracts", "virtual-actor-mir-v1", "positive",
+                        "cart_checked_contract.atto").toAbsolutePath().normalize();
+        assertFalse(Files.isSymbolicLink(path), "canonical protected MIR fixture symlink");
+        assertTrue(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS),
+                "canonical protected MIR .atto fixture missing");
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8);
+        } catch (java.io.IOException io) {
+            throw new java.io.UncheckedIOException(io);
+        }
+    }
 
     private static Ast.VirtualActorDecl actor(String source) {
         Ast.Decl decl = Parser.parse(source)
@@ -43,7 +49,7 @@ final class VirtualActorProtectedMirV1Test {
 
     @Test
     void cartBuildsTypedImmutablePreloweringContract() {
-        var mir = VirtualActorProtectedMirV1.analyze(actor(CART));
+        var mir = VirtualActorProtectedMirV1.analyze(actor(checkedCart()));
         assertEquals("Cart", mir.declaration());
         assertEquals(Ast.Visibility.PRIVATE, mir.visibility());
         assertEquals("quantity", mir.state().name());
@@ -64,8 +70,8 @@ final class VirtualActorProtectedMirV1Test {
 
     @Test
     void typeCheckerStillDeniesExecutableVirtualActorAfterSuccessfulMirAnalysis() {
-        var parsed = Parser.parse(CART);
-        assertNotNull(VirtualActorProtectedMirV1.analyze(actor(CART)));
+        var parsed = Parser.parse(checkedCart());
+        assertNotNull(VirtualActorProtectedMirV1.analyze(actor(checkedCart())));
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(parsed));
         assertTrue(failure.getMessage().contains("VIRTUAL_ACTOR_MIR_UNSUPPORTED"));
@@ -73,43 +79,43 @@ final class VirtualActorProtectedMirV1Test {
 
     @Test
     void rejectsWrongScalarStateAndNonconstantInitializer() {
-        rejected(CART.replace("let int quantity", "let string quantity"),
+        rejected(checkedCart().replace("let int quantity", "let string quantity"),
                 "checked i64");
-        rejected(CART.replace("quantity: 0", "quantity: n"),
+        rejected(checkedCart().replace("quantity: 0", "quantity: n"),
                 "constant i64");
-        rejected(CART.replace("state { let int quantity: 0; }",
+        rejected(checkedCart().replace("state { let int quantity: 0; }",
                 "state { let int quantity: 0; let int other: 0; }"),
                 "exactly one");
     }
 
     @Test
     void rejectsUnfencedReadsAndWritesOrEscapingAliases() {
-        rejected(CART.replace("critical-write", "critical-read"),
+        rejected(checkedCart().replace("critical-write", "critical-read"),
                 "token/provenance mismatch");
-        rejected(CART.replace("s.quantity = s.quantity + n;", "return s;"),
+        rejected(checkedCart().replace("s.quantity = s.quantity + n;", "return s;"),
                 "unrecognized protected method body");
-        rejected(CART.replace("s.quantity = s.quantity + n;",
+        rejected(checkedCart().replace("s.quantity = s.quantity + n;",
                 "s.quantity = s.quantity + n; s.quantity = 0;"),
                 "unrecognized protected method body");
     }
 
     @Test
     void rejectsUnsupportedTypeAndShadowedStateLoan() {
-        rejected(CART.replace("add(int n)", "add(string n)"),
+        rejected(checkedCart().replace("add(int n)", "add(string n)"),
                 "checked i64");
-        rejected(CART.replace("add(int n)", "add(int s)")
+        rejected(checkedCart().replace("add(int n)", "add(int s)")
                         .replace(" + n;", " + s;"),
                 "shadows");
-        rejected(CART.replace("add(int n)", "add(int quantity)")
+        rejected(checkedCart().replace("add(int n)", "add(int quantity)")
                         .replace(" + n;", " + quantity;"),
                 "shadows");
-        rejected(CART.replace("-> void ::", "-> int ::"),
+        rejected(checkedCart().replace("-> void ::", "-> int ::"),
                 "return void");
     }
 
     @Test
     void protectedMethodCannotSmuggleAnUnverifiedOrForgedTokenKind() {
-        var source = actor(CART);
+        var source = actor(checkedCart());
         var original = source.methods().getFirst();
         var unverified = new Ast.ProtectedMethod(original.name(),
                 original.parameters(), original.returnType(), original.bodyTokens());
@@ -148,7 +154,7 @@ final class VirtualActorProtectedMirV1Test {
 
     @Test
     void rejectUnsafeMethodThroughProductionTypeChecker() {
-        var source = CART.replace("s.quantity = s.quantity + n;", "return s;");
+        var source = checkedCart().replace("s.quantity = s.quantity + n;", "return s;");
         var error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(source)));
         assertTrue(error.getMessage().contains("VIRTUAL_ACTOR_MIR_UNSUPPORTED"));
