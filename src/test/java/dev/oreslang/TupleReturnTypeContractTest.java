@@ -140,6 +140,32 @@ final class TupleReturnTypeContractTest {
     }
 
     @Test
+    void legacyArrConstructorCannotMasqueradeAsTuple() {
+        for (String source : new String[]{
+                "fnc bad(): Tuple[int, int] { return arr[40, 2]; }",
+                "pub fnc main(): void { val tuple: Tuple[int, int] = arr[40, 2]; return; }"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(error.getMessage().contains("type"), error::getMessage);
+        }
+    }
+
+    @Test
+    void bareBracketsRetainLegacyContextualTupleTyping() {
+        // Compatibility-only parser/typecheck guarantee, NOT compiled guest evidence.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc legacy(): Tuple[int, int] {
+                  return [40, 2];
+                }
+                pub fnc main(): void {
+                  val t: Tuple[int, int] = legacy();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void explicitArrayCannotSatisfyUnionOfTuples() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
