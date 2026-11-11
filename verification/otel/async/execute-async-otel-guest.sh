@@ -18,6 +18,23 @@ pinned=verification/otel/async/pinned
 out=target/otel/async/$mode
 test ! -L "$out"
 mkdir -p "$out"
+# Receipts must be from THIS exact invocation. A failed second fixture may
+# otherwise leave a successful-looking first fixture receipt from an earlier
+# run, or leave the first one behind after a late compiler/oracle failure.
+for receipt_fixture in smoke span-finish-admission-retry; do
+  receipt_dir="$out/$receipt_fixture"
+  test ! -L "$receipt_dir"
+  mkdir -p "$receipt_dir"
+  test ! -L "$receipt_dir"
+  rm -f -- "$receipt_dir/receipt.txt"
+done
+otel_async_run_complete=false
+otel_async_cleanup_receipts() {
+  if [[ "$otel_async_run_complete" != true ]]; then
+    rm -f -- "$out/smoke/receipt.txt" "$out/span-finish-admission-retry/receipt.txt"
+  fi
+}
+trap otel_async_cleanup_receipts EXIT
 source verification/otel/async/guardrails.sh
 
 verify_blob() {
@@ -102,4 +119,5 @@ if [[ "$mode" == jvm ]]; then
 else
   test "$native_sha" = "$(otel_guardrails_native_host_digest target/ores-aot)"
 fi
+otel_async_run_complete=true
 echo "OTEL_ASYNC_REAL_GUEST_OUTPUT_VALIDATED $mode; independent CI attestation pending"
