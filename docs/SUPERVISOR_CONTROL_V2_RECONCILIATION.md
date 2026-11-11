@@ -16,7 +16,21 @@
 3. Keeps a polled notice reserved until explicit `ack`, `retry`, or authorized transfer. Settlement uses an **opaque per-poll delivery lease** tied to the exact lane, reservation object and monotonic attempt ticket; a stale or foreign ACK cannot acknowledge a newer retry. A retry does not create another notice.
 4. **New safety fix:** root transfer performs a whole-batch preflight for *every* published parent notice under both lane monitors, checking that the exact root reservation exists and is unused. If any destination is missing/stale/occupied, no notice moves.
 5. **New lock-order fix:** a shared transfer coordinator is acquired before either lane monitor. Opposite-direction handovers cannot wait on each other's lane monitor in the old ABBA pattern.
-6. Adds five focused JUnit tests: insufficient destination capacity => zero moved; stale/occupied root => zero moved; in-flight transfer => ACK cannot happen from old owner, exact root retry/ACK; concurrent opposing handovers => no deadlock and no lost notices; stale/foreign settlement lease after retry/transfer cannot ACK another attempt.
+6. Adds six focused JUnit tests: insufficient destination capacity => zero moved; stale/occupied root => zero moved; in-flight transfer => ACK cannot happen from old owner, exact root retry/ACK; concurrent opposing handovers => no deadlock and no lost notices; stale/foreign settlement lease after retry/transfer cannot ACK another attempt; ticket overflow leaves the queued failure intact.
+
+7. **Poll failure atomicity:** allocate the opaque Delivery and Optional receipt before committing any dequeue, ticket or pending-count change. This prevents an allocation failure at receipt creation from making the only retained terminal event unreachable.
+
+### Independently executed, source-free design-model evidence
+
+The private test repository `fiducia-cloud-test/go-client-consumer` ran six original Python model checks on commit `020f046743fb471e9ed90ddaeaffb78690a361f7`:
+[Actions run 42957781887](https://github.com/fiducia-cloud-test/go-client-consumer/actions/runs/42957781887).
+The job completed successfully with five executed steps and six passing model tests, including two negative mutation probes (partial transfer and identifier-only ACK).
+This model contains **no copied AttoLang compiler/runtime source** and is **NOT** byte-identical Java/JUnit/Graal/native evidence. Its success does not satisfy any exact-head release gate.
+
+The source repository's protected private CI policy does **not** authorize
+`fiducia-cloud-test/go-client-consumer` as an export destination for #2846 or #2838.
+Full-tree mirroring is blocked pending a reviewed exact carrier contract, immutable
+destination repository ID, pinned workflow/test plan and explicit source-PR allowance.
 
 ### Not yet integrated
 
@@ -38,7 +52,7 @@ There is no `.atto` compiler lowering, no source-level privileged supervisor han
 
 `.github/workflows/supervisor-control-lane-port.yml` invokes
 `scripts/verify-supervisor-control-lane-port.sh`: full JDK25 Maven compile plus
-five direct JUnit methods, with exact Surefire report assertions and no skipped
+six direct JUnit methods, with exact Surefire report assertions and no skipped
 tests. This proves the **isolated ledger** only, even when executed. Full actor
 lifecycle integration and guest execution have different mandatory gates.
 
