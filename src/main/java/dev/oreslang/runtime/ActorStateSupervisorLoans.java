@@ -30,6 +30,7 @@ public final class ActorStateSupervisorLoans {
     /** The same actor physical turn must not impersonate multiple borrowers. */
     private Object activeOwnerSegment;
     private boolean revoked;
+    private boolean arbiterClosed;
     /** Owned primitive proof slot: never return a mutable actor-state alias. */
     private long protectedScalar;
 
@@ -117,7 +118,7 @@ public final class ActorStateSupervisorLoans {
         }
 
         private void requireLiveLocked() {
-            if (released || !delegate.heldBy(execution)) {
+            if (revoked || released || !delegate.heldBy(execution)) {
                 throw new SecurityException("state loan was revoked or physically released");
             }
         }
@@ -351,12 +352,30 @@ public final class ActorStateSupervisorLoans {
         return arbiter.physicallyRetired();
     }
 
-    /** Runtime STOP only. Not a guest-visible capability or raw state close. */
-    void revokeFromRuntimeStop() {
+    /**
+     * STOP admission linearization. Called under ActorCell.lifecycleLock
+     * BEFORE publishing stopped=true: this operation takes only the region
+     * monitor and never enters an OresFuture callback. A scalar writer
+     * and this seal serialize on the same monitor.
+     */
+    void sealFromRuntimeStop() {
         synchronized (gate) {
-            if (revoked) return;
             revoked = true;
             issued.clear();
+        }
+    }
+
+    /**
+     * After the actor has sealed descendant admission, physically close the
+     * queued arbiter OUTSIDE lifecycleLock. A prior logical seal must not
+     * suppress terminal Future notification/drain publication.
+     */
+    void revokeFromRuntimeStop() {
+        synchronized (gate) {
+            if (arbiterClosed) return;
+            revoked = true;
+            issued.clear();
+            arbiterClosed = true;
         }
         arbiter.close();
     }
