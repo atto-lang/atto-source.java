@@ -103,7 +103,7 @@ actor-targeted signature/type/effect verification from #2792.
 
 ## Inventory rejection tests
 
-The new `ManifestNamespaceActorTopologyTest` authors 21 JUnit checks for:
+The new `ManifestNamespaceActorTopologyTest` authors 27 JUnit checks for:
 manifest-bound source inventory and separate source provenance, unexposed
 init/receive, TypeChecker's no-guest-execution fence, actor deletion and
 out-of-root replacement, duplicate/wrong-namespace state and receiver
@@ -116,6 +116,57 @@ These tests **must actually execute** at the exact SHA in
 `manifest-actor-topology-junit.yml`, alongside six older actor test suites,
 with nonempty GitHub job steps and non-skipped Surefire XML. A clean Git
 head/tree receipt is not sufficient to claim guest execution.
+
+## Immutable actor descriptors — added integration gate
+
+`PackageNamespaceBuild.inspectActorTopology()` now returns an
+`ActorDescriptorIndex` through `topology.actorDescriptors()`. For each
+`(package@version, namespace, actor)` it records:
+
+- the one manifest-owned nominal declaration and its source unit;
+- private sealed `int` state field names and checked constant i64 initializers;
+- ordinary out-of-line method signatures with `unloweredExternal=true`;
+- private runtime-only `init/0` and `receive/1` entry points, including
+  their distinct source-unit provenance; these never enter the public method
+  lookup index;
+- the deterministic SHA-256 of the complete, sorted manifest source receipt
+  set, length-delimited and scoped by package identity.
+
+`Descriptor.guestExecutable()` intentionally returns `false`. These
+records are immutable **compiler inspection artifacts**, not unforgeable
+physical actor permits, contract witnesses, method implementations or
+runtime dispatch slots. The constructor representation must not be used
+to bypass `TypeChecker` or manufacture a `RuntimeActorRef`.
+
+```java
+var descriptor = topology.actorDescriptors().descriptor(actor);
+assert !descriptor.guestExecutable();
+assert descriptor.stateFields().get("x").initialI64() == 5L;
+assert descriptor.runtimeIngress().containsKey("init");
+assert descriptor.runtimeIngress().containsKey("receive");
+```
+
+The inspector rechecks each descriptor member's nominal identity, actor,
+receiver, state and manifest source provenance, rejects forged/missing
+source receipts, and independently validates `receive(ActorMail<T>)`.
+Changing source bytes invalidates its receipt; a foreign package with
+the same namespace or actor name cannot inherit a descriptor.
+
+### Contract and runtime restrictions
+
+The actor-targeted contract parser/type checker in draft #2792 is based
+on a **different compiler branch**. It is not safe to treat an ordinary
+module `contract` or a name/arity match in a method index as an actor
+contract. This branch still rejects `declare pub actor Foo implements
+ActorXYZ;` with `ACTOR_CONTRACT_WITNESS_UNSUPPORTED`. A future integration
+must prove exact public signature and checked body/effects in a single
+manifest-resolved actor-only contract before this rejection can be removed.
+
+Physical critical-read/write locks and actor-owned state frames from draft
+#2796 are also not merged into this descriptor branch. No mutable state
+view, guest scheduler, activation, mailbox send or physical generation
+fencing is made available by this feature. Runtime tests are distinct
+from JUnit metadata tests.
 
 ## Next compiler/runtime gates
 
