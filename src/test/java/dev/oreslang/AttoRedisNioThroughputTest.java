@@ -202,10 +202,8 @@ final class AttoRedisNioThroughputTest {
         }
     }
 
-    @Test
-    @Timeout(value = 60, unit = TimeUnit.SECONDS)
-    void framedNioFastPathPreservesBinaryEmptyNilAndPipelining() throws Exception {
-        String code = resource("redis_actor_nio_fast.atto");
+    private static void verifyFramedNioGuest(String filename) throws Exception {
+        String code = resource(filename);
         int port = freePort();
         String bind = "network.listen_async(\"127.0.0.1\", 16399)";
         assertTrue(code.contains(bind));
@@ -220,7 +218,7 @@ final class AttoRedisNioThroughputTest {
                                 new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
                         .build()) {
                     context.eval(Source.newBuilder(OresLanguage.ID,
-                                    guestCode, "redis_actor_nio_fast.atto")
+                                    guestCode, filename)
                             .mimeType(OresLanguage.MIME_TYPE).build());
                 } catch (Exception failure) {
                     throw new RuntimeException(failure);
@@ -261,7 +259,19 @@ final class AttoRedisNioThroughputTest {
             }
             guest.get(15, TimeUnit.SECONDS);
         }
-        System.out.println("ATTO_NATIVE_NIO_FRAMED_REAL_ACTOR_BINARY_PIPELINE=PASS");
+        System.out.println("ATTO_NATIVE_NIO_FRAMED_REAL_ACTOR_BINARY_PIPELINE=PASS fixture=" + filename);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void framedNioFastPathPreservesBinaryEmptyNilAndPipelining() throws Exception {
+        verifyFramedNioGuest("redis_actor_nio_fast.atto");
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void singleReplyNioActorPreservesBinaryEmptyNilAndPipelining() throws Exception {
+        verifyFramedNioGuest("redis_actor_nio_single_reply.atto");
     }
 
     @Test
@@ -272,13 +282,15 @@ final class AttoRedisNioThroughputTest {
         double baseline = runGuest("redis_binary_resp2_baseline.atto", "atto_nio_baseline");
         double optimized = runGuest("redis_binary_resp2.atto", "atto_nio_fingerprint");
         double framed = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed");
+        double singleReply = runGuest("redis_actor_nio_single_reply.atto", "atto_nio_single_reply");
         double redis;
         try (Socket client = new Socket("127.0.0.1", REDIS_PORT)) {
             redis = runTrials(client, "official_redis_no_persistence");
         }
         System.out.printf("ATTO_NATIVE_NIO_COMPARISON baseline=%.1f optimized=%.1f "
-                + "framed=%.1f redis=%.1f optimized_over_baseline=%.4f "
-                + "framed_over_optimized=%.4f framed_over_redis=%.4f%n",
-                baseline, optimized, framed, redis, optimized / baseline, framed / optimized, framed / redis);
+                + "framed=%.1f single_reply=%.1f redis=%.1f optimized_over_baseline=%.4f "
+                + "framed_over_optimized=%.4f single_over_framed=%.4f single_over_redis=%.4f%n",
+                baseline, optimized, framed, singleReply, redis, optimized / baseline,
+                framed / optimized, singleReply / framed, singleReply / redis);
     }
 }
