@@ -31,7 +31,7 @@ public final class ActorStateSupervisorLoans {
 
     // Package-private: ActorRuntime is the sole production issuer.
     ActorStateSupervisorLoans(
-            ActorRuntime runtime, ActorRuntime.ActorId actorId,
+            ActorRuntime runtime, Object runtimeMint, ActorRuntime.ActorId actorId,
             long actorGeneration, ExecutionContext.AllocationDomain allocation,
             int maxPending, int maxReaders) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -45,6 +45,7 @@ public final class ActorStateSupervisorLoans {
                 || allocation.generation() != actorGeneration) {
             throw new IllegalArgumentException("invalid runtime-minted actor allocation");
         }
+        runtime.claimStateRegionMint(runtimeMint, actorId, actorGeneration, allocation);
         this.arbiter = new ActorStateRwLoans(
                 allocation, maxPending, maxReaders,
                 () -> runtime.onStateLoanRetired(actorId));
@@ -72,11 +73,8 @@ public final class ActorStateSupervisorLoans {
      */
     public final class Loan implements AutoCloseable {
         private final ActorStateRwLoans.StateLoan delegate;
-        private final boolean ownerLoan;
-
-        private Loan(ActorStateRwLoans.StateLoan delegate, boolean ownerLoan) {
+        private Loan(ActorStateRwLoans.StateLoan delegate) {
             this.delegate = delegate;
-            this.ownerLoan = ownerLoan;
         }
 
         public ActorStateRwLoans.Access access() { return delegate.access(); }
@@ -84,11 +82,7 @@ public final class ActorStateSupervisorLoans {
 
         @Override
         public void close() {
-            if (ownerLoan) {
-                runtime.requireStateRegionOwnerReleaseTurn(actorId, actorGeneration);
-            } else {
-                runtime.requireSupervisorStateHostContext();
-            }
+            runtime.requireSupervisorStateHostContext();
             delegate.close();
         }
     }
@@ -149,7 +143,7 @@ public final class ActorStateSupervisorLoans {
                 grant.access == ActorStateRwLoans.Access.READ
                         ? arbiter.acquireReadAsync(execution)
                         : arbiter.acquireWriteAsync(execution);
-        return wrap(pending, false);
+        return wrap(pending);
     }
 
     /**
@@ -212,12 +206,12 @@ public final class ActorStateSupervisorLoans {
     }
 
     private OresFuture<Loan> wrap(
-            OresFuture<ActorStateRwLoans.StateLoan> pending, boolean ownerLoan) {
+            OresFuture<ActorStateRwLoans.StateLoan> pending) {
         OresFuture<Loan> exposed = new OresFuture<>(() -> pending.cancel(false));
         pending.whenCompleteRuntime((physical, failure) -> {
             if (failure != null) {
                 exposed.failFromRuntime(OresFuture.unwrap(failure));
-            } else if (!exposed.completeFromRuntime(new Loan(physical, ownerLoan))) {
+            } else if (!exposed.completeFromRuntime(new Loan(physical))) {
                 // Consumer cancelled before delivery. Never leave an
                 // undeliverable successful physical loan pinning STOP.
                 physical.close();
