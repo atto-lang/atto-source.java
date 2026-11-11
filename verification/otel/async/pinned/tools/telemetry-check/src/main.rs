@@ -1,4 +1,76 @@
 use serde_json::Value;
+// Recursively reject duplicate object members before serde_json::Value can
+// silently overwrite the first value. This is an OUTPUT-only semantic oracle;
+// it must never be treated as proof that a guest actually ran.
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
+
+struct StrictValue(Value);
+struct StrictVisitor;
+
+impl<'de> Deserialize<'de> for StrictValue {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        deserializer.deserialize_any(StrictVisitor)
+    }
+}
+impl<'de> Visitor<'de> for StrictVisitor {
+    type Value = StrictValue;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value without duplicate object keys")
+    }
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::Null))
+    }
+    fn visit_none<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::Null))
+    }
+    fn visit_bool<E: de::Error>(self, value: bool) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::Bool(value)))
+    }
+    fn visit_i64<E: de::Error>(self, value: i64) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::Number(value.into())))
+    }
+    fn visit_u64<E: de::Error>(self, value: u64) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::Number(value.into())))
+    }
+    fn visit_f64<E: de::Error>(self, value: f64) -> std::result::Result<Self::Value, E> {
+        let number = serde_json::Number::from_f64(value)
+            .ok_or_else(|| E::custom("non-finite JSON number"))?;
+        Ok(StrictValue(Value::Number(number)))
+    }
+    fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::String(value.to_owned())))
+    }
+    fn visit_string<E: de::Error>(self, value: String) -> std::result::Result<Self::Value, E> {
+        Ok(StrictValue(Value::String(value)))
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A)
+        -> std::result::Result<Self::Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<StrictValue>()? {
+            items.push(item.0);
+        }
+        Ok(StrictValue(Value::Array(items)))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A)
+        -> std::result::Result<Self::Value, A::Error> {
+        let mut fields = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if fields.contains_key(&key) {
+                return Err(de::Error::custom(format!("duplicate JSON member: {key}")));
+            }
+            let value = map.next_value::<StrictValue>()?;
+            fields.insert(key, value.0);
+        }
+        Ok(StrictValue(Value::Object(fields)))
+    }
+}
+
+fn parse_strict_json(line: &str) -> std::result::Result<Value, serde_json::Error> {
+    serde_json::from_str::<StrictValue>(line).map(|strict| strict.0)
+}
+
 use std::{error::Error, path::PathBuf, process::Command};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -21,7 +93,7 @@ fn execute(root: &std::path::Path, source: &std::path::Path) -> Result<String> {
 fn check_smoke(text: &str) -> Result<()> {
     let rows = text
         .lines()
-        .map(serde_json::from_str::<Value>)
+        .map(parse_strict_json)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let logs: Vec<_> = rows.iter().filter(|r| r["signal"] == "log").collect();
     let spans: Vec<_> = rows.iter().filter(|r| r["signal"] == "span").collect();
@@ -114,7 +186,7 @@ fn check_finish_admission_retry(text: &str) -> Result<()> {
     if lines.len() != 1 {
         return Err("expected exactly one admitted completion after rejected enqueue".into());
     }
-    let row: Value = serde_json::from_str(lines[0])?;
+    let row = parse_strict_json(lines[0])?;
     let fields = [
         "schema", "signal", "timestamp_unix_ms", "service", "ores_trace_id",
         "span_id", "parent_span_id", "name", "duration_ns", "outcome", "http_status"
@@ -261,6 +333,26 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn strict_json_decoder_rejects_duplicate_keys_at_every_nesting_level() {
+        for bad in [
+            r#"{"signal":"span","signal":"span"}"#,
+            r#"{"signal":"span","signal":"log"}"#,
+            r#"{"a":{"trace":"first","trace":"second"}}"#,
+            r#"{"a":[{"x":1,"x":2}]}"#,
+            r#"{"\u0073ignal":"span","signal":"span"}"#,
+        ] {
+            assert!(super::parse_strict_json(bad).is_err(), "accepted duplicate key: {bad}");
+        }
+        for good in [
+            r#"{"a":1,"b":{"a":2},"c":[{"a":3},{"a":4}]}"#,
+            r#"{"escaped":"quote \" and \\ slash","null":null,"boolean":true}"#,
+            r#"{"i64_min":-9223372036854775808,"i64_max":9223372036854775807}"#,
+        ] {
+            assert!(super::parse_strict_json(good).is_ok(), "rejected valid JSON: {good}");
+        }
+    }
+
     #[test]
     fn span_finish_retry_oracle_accepts_one_valid_completion_and_rejects_tampering() {
         use serde_json::{json, Value};
