@@ -23,6 +23,19 @@ pub routine main(): void {
     } : {
       return [id + 1]
     };
+    // Direct unparenthesized zero-arg thunks are invoked exactly once only
+    // in ternary arms, without invoking the unselected thunk.
+    val thunked: Array<int> = id eq 3 ? || -> {
+      return []
+    } : || -> {
+      return [id + 1]
+    };
+    // Explicit immediately invoked typed lambdas behave the same.
+    val called: Array<int> = id eq 3 ? (|int v| -> {
+      return []
+    })(3) : (|int g| -> {
+      return [id + 1]
+    })(5);
   }
 
   val result: int = true ? {
