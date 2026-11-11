@@ -88,6 +88,67 @@ final class ActorIoIntrinsicTest {
     }
 
     @Test
+    void independentActorIoStreamsStayIsolatedAcrossConcurrentMailboxes() throws Exception {
+        // Two live actors have independent bounded DATA outputs. Only the
+        // coordinator may write process stdout; neither actor receives an
+        // ambient host descriptor or the other's output capability.
+        String code = """
+                define actor Worker as
+                  suspends receive(ActorMail<String> mail): void {
+                    await io.out.write(mail.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub suspends routine main(): void {
+                  val first = await spawn Worker();
+                  val second = await spawn Worker();
+                  first.send("alpha");
+                  second.send("beta");
+
+                  val firstStep = await first.outputs.next();
+                  val firstRecord = firstStep.value.unwrap();
+                  val secondStep = await second.outputs.next();
+                  val secondRecord = secondStep.value.unwrap();
+
+                  stdio.stdout.write(firstRecord.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(secondRecord.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(firstRecord.actor_id == first.id);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(secondRecord.actor_id == second.id);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(firstRecord.sequence);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(secondRecord.sequence);
+
+                  await first.get_done();
+                  await second.get_done();
+                  val firstEnd = await first.outputs.next();
+                  val secondEnd = await second.outputs.next();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(firstEnd.done);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(secondEnd.done);
+                  return;
+                }
+                """;
+        var out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(out)
+                .build()) {
+            context.eval(Source.newBuilder(
+                    OresLanguage.ID, code, "actor-io-two-isolated-mailboxes.ores").build());
+        }
+        assertEquals("alpha|beta|true|true|0|0|true|true",
+                out.toString(StandardCharsets.UTF_8),
+                "actor DATA outputs must retain actor identity, sequence, EOF and isolation");
+    }
+
+    @Test
     void processStdioIsRejectedInsideActor() {
         PolyglotException failure = assertThrows(PolyglotException.class, () ->
                 check("""
