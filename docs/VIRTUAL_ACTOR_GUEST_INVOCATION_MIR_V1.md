@@ -48,12 +48,13 @@ any backend actually implements it.
 
 ## Security and test acceptance
 
-Nine source-authored JUnit tests check: parsed guest AST and typed linear
+Ten source-authored JUnit tests check: parsed guest AST and typed linear
 ops; immutable non-forgeable compiler metadata; wrong nominal types and
 resolve factories; unknown/privileged methods, argument and arity mismatch;
 unawaited calls and reference escape; invalid logical keys; control-flow
-and extra declaration rejection; namespace/selector separation; production
-execution rejection.
+and extra declaration rejection; namespace/selector separation; three
+standalone negative .atto fixtures checked against the production rejection;
+and continued production execution denial.
 
 A focused exact-head workflow includes this new suite plus both preceding
 MIR suites, the existing Cart compiled transition tests, and the
