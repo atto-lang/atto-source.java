@@ -20,6 +20,7 @@ import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Host-only, NET-scoped, bounded, single-accept-at-a-time loopback transport.
@@ -273,6 +274,10 @@ final class WebSocketLoopbackListener implements AutoCloseable {
         // Max 16 explicit tickets. Each keeps its owner loan until actor-turn
         // delivery or scheduler cancellation; no unbounded queued handoffs.
         private int pendingActorTickets;
+        // Exactly one outstanding actor-output read per physical connection.
+        // Guarded by lifecycleLock. This is an obligation, not another
+        // authority ledger: WebSocketActorConnectionLease still owns access.
+        private OresFuture<Void> pendingSourceOutputRelay;
         private final WebSocketOutboundGate outbound =
                 new WebSocketOutboundGate(maxFrameBytes, 16,
                         maxFrameBytes * 16, 4, this::requestActiveWriteAbort);
@@ -975,6 +980,130 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             }
         }
 
+        /**
+         * Runtime-owned ONE-output relay for a bound compiler/source actor.
+         * Its ActorOutputStream cannot be constructed by guest code. Read
+         * completion only queues a bounded native-I/O worker; the actor's
+         * carrier never submits an outbound socket frame or blocks on it.
+         * Consumers may rearm after completion to forward the next output.
+         */
+        OresFuture<Void> relayNextSourceActorTextOutputAsync(
+                WebSocketActorConnectionLease.Handle handle,
+                OresContext context, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(context, "runtime context");
+            requireContextActor(context, actor, "websocket.source-output");
+            return relaySourceActorOutput(
+                    handle, context.contextId(), context.actors(), actor);
+        }
+
+        /** HOST-ONLY source-executor fixture seam, not guest authority. */
+        OresFuture<Void> relayHostNextSourceActorTextOutputAsync(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            return relaySourceActorOutput(handle, tenant, runtime, actor);
+        }
+
+        private OresFuture<Void> relaySourceActorOutput(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(runtime, "source actor runtime");
+            Objects.requireNonNull(actor, "source actor");
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.inActorGroupMailmanExecution()) {
+                throw new SecurityException(
+                        "source WebSocket output relay requires host supervisor");
+            }
+            if (!runtime.isSourceCodeActor(actor)) {
+                throw new SecurityException(
+                        "source WebSocket output relay requires live code actor");
+            }
+            requireNet.accept(endpoint, "websocket.source-output");
+            final OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> next;
+            final OresFuture<Void> relay;
+            synchronized (lifecycleLock) {
+                if (retired.get() || closed.get() || abortRequested.get()) {
+                    throw new RejectedExecutionException("WebSocket source relay is retired");
+                }
+                if (pendingSourceOutputRelay != null) {
+                    throw new RejectedExecutionException(
+                            "only one source output reader per connection");
+                }
+                // Acquire/release at registration. The output's actual native
+                // writer will acquire a NEW loan and revalidate epoch/owner.
+                try (var loan = acquireActorLease(
+                        handle, tenant, actor.address())) {
+                    var stream = actor.outputs();
+                    if (!stream.actorId().equals(actor.id())) {
+                        throw new SecurityException("foreign actor output stream");
+                    }
+                    next = stream.next();
+                    relay = new OresFuture<>(() -> next.cancel(false));
+                    pendingSourceOutputRelay = relay;
+                }
+            }
+            relay.whenCompleteRuntime((unused, terminal) -> {
+                synchronized (lifecycleLock) {
+                    if (pendingSourceOutputRelay == relay) {
+                        pendingSourceOutputRelay = null;
+                    }
+                }
+            });
+            next.whenCompleteRuntime((step, failure) -> {
+                if (relay.isDone()) return;
+                if (failure != null) {
+                    relay.failFromRuntime(OresFuture.unwrap(failure));
+                    return;
+                }
+                if (step == null || step.done()) {
+                    relay.failFromRuntime(new IllegalStateException(
+                            "source actor output stream ended before WebSocket reply"));
+                    return;
+                }
+                ActorRuntime.ActorOutput<Object> output = step.value();
+                if (output == null || !actor.id().equals(output.actorId())) {
+                    relay.failFromRuntime(new SecurityException(
+                            "source actor output belongs to a different actor"));
+                    return;
+                }
+                if (!(output.value() instanceof String text)) {
+                    relay.failFromRuntime(new IllegalArgumentException(
+                            "TEXT WebSocket output must be a source actor String"));
+                    return;
+                }
+                // This callback can fire on an actor carrier. Only enqueue a
+                // bounded host worker here; native send rejects actor carriers.
+                try {
+                    OresFuture<Void> staged = nativeIo.submit(
+                            "websocket.source-output-relay", () -> {
+                                if (relay.isDone()) return null;
+                                try {
+                                    OresFuture<Void> write = sendTextForActorAsync(
+                                            handle, tenant, actor.address(), text);
+                                    write.whenCompleteRuntime((ignored, writeError) -> {
+                                        if (writeError == null) {
+                                            relay.completeFromRuntime(null);
+                                        } else {
+                                            relay.failFromRuntime(
+                                                    OresFuture.unwrap(writeError));
+                                        }
+                                    });
+                                } catch (RuntimeException | Error invalid) {
+                                    relay.failFromRuntime(invalid);
+                                }
+                                return null;
+                            });
+                    staged.whenCompleteRuntime((ignored, stageError) -> {
+                        if (stageError != null) {
+                            relay.failFromRuntime(OresFuture.unwrap(stageError));
+                        }
+                    });
+                } catch (RuntimeException | Error admissionFailure) {
+                    relay.failFromRuntime(admissionFailure);
+                }
+            });
+            return relay;
+        }
+
         /** Host-only real-actor fixture with the same mailbox admission logic. */
         boolean dispatchHostActorMessage(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,
@@ -1086,10 +1215,16 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             // Serialize ledger revocation with host binding, transfer, and
             // authorization. The socket close itself must happen OUTSIDE the
             // lifecycle lock: it can wake the selector/native I/O worker.
+            OresFuture<Void> relayToCancel;
             synchronized (lifecycleLock) {
                 if (!retired.compareAndSet(false, true)) return;
                 if (actorOwnership != null) actorOwnership.revoke();
+                relayToCancel = pendingSourceOutputRelay;
+                pendingSourceOutputRelay = null;
             }
+            // Cancel the actor-output read OUTSIDE lifecycleLock: Future
+            // observers can synchronously reenter native/actor retirement.
+            if (relayToCancel != null) relayToCancel.cancel(false);
             protocol.transportClosed();
             try { socket.close(); }
             catch (IOException failure) {
