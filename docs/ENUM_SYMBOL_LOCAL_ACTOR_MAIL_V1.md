@@ -69,3 +69,26 @@ nonzero runner steps and JUnit XML evidence exists.
 5. Acquire independent review; do not merge until actual executed CI and
    negative tests prove the exact PR head. Zero-step runner admission is
    `NOT_EXECUTED`, not success.
+
+## Quota hardening and additional executable gates
+
+Each nullary symbol references the complete immutable closed enum declaration,
+not only its selected case string. Mailbox accounting charges the declaration's
+*entire bounded case schema* for each admitted symbol, using a cached logical
+byte count computed once during validated declaration construction. This makes
+each send's scalar budget check O(1), avoids per-send 4096-case traversal, and
+does not give a large retained declaration dictionary an uncharged admission
+path. Quotas are intentionally conservative (logical retention), not byte
+measurements of Java or native object layouts.
+
+Additional JUnit probes cover a full 4096-case declaration and a real UNTRUSTED
+actor's rejection of both direct and nested unexported enum symbols. Existing
+positive PRIVATE/SHARED mailbox tests still assert the same immutable object
+arrives without serialization.
+
+The CI gate on this branch is
+`.github/workflows/nominal-enum-local-mail-v1.yml`. It runs
+`mvn -B -ntp -Dtest=OresEnumSymbolActorMailTest -DfailIfNoTests=true test`
+and retains Surefire output when a runner actually executes. No successful
+exact-head CI or compiled `.atto` guest evidence is implied merely by writing
+this workflow.
