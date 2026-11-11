@@ -126,6 +126,21 @@ final class CanonicalDefineScopeTest {
     }
 
     @Test
+    void actorCannotAcquireConstructorOrFactoryAuthorityByNamingMethodNew() {
+        Ast.Program parsed = Parser.parse("""
+                define actor Probe as
+                  pub fnc new(): int {
+                    return 1;
+                  }
+                end
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("actor") && failure.getMessage().contains("new()"),
+                failure.getMessage());
+    }
+
+    @Test
     void newableTraitMethodNameParsesWithoutUnreservingNewEverywhere() {
         Ast.InterfaceDecl contract = assertInstanceOf(Ast.InterfaceDecl.class,
                 onlyDeclaration("define trait Newable as fnc new(): int; end"));
