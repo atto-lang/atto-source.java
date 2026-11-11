@@ -227,4 +227,32 @@ final class ActorReceiverBinderTest {
     }
 
 
+    @Test
+    void bindingMetadataCannotBeForgedFromAnOrdinaryClass() {
+        Ast.Program parsed = Parser.parse(module(
+                "  define class Worker as end\n"
+                + method("get_count", "", "int")));
+        var declarations = parsed.modules().getFirst().declarations();
+        Ast.ClassDecl ordinary = assertInstanceOf(Ast.ClassDecl.class, declarations.getFirst());
+        var method = assertInstanceOf(Ast.ExternalActorMethodDecl.class, declarations.get(1));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new ActorReceiverBinder.Binding(ordinary, method));
+        assertTrue(error.getMessage().contains("nominal actor declaration"), error.getMessage());
+    }
+
+    @Test
+    void bindingMetadataCannotBeForgedAcrossNominalActorTypes() {
+        Ast.Program parsed = Parser.parse(module(
+                "  pub define actor Other as other;\n"
+                + method("get_count", "", "int")));
+        var declarations = parsed.modules().getFirst().declarations();
+        Ast.StandaloneActorDecl other = assertInstanceOf(
+                Ast.StandaloneActorDecl.class, declarations.getFirst());
+        var method = assertInstanceOf(Ast.ExternalActorMethodDecl.class, declarations.get(1));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new ActorReceiverBinder.Binding(other, method));
+        assertTrue(error.getMessage().contains("actor identity must match"), error.getMessage());
+    }
+
+
 }
