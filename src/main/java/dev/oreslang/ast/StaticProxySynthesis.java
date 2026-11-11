@@ -31,6 +31,18 @@ public final class StaticProxySynthesis {
         // Resolution of generated nominal types is not yet namespace-qualified.
         // A declaration in another module must not capture a synthetic name.
         Set<String> occupiedNames = new HashSet<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            // Without a completed qualified symbol table an open import might
+            // resolve to FooProxy (or even Proxy) after synthesis. Fail closed.
+            if (imported.wildcard()) {
+                throw fail("wildcard imports require qualified proxy name resolution");
+            }
+            occupiedNames.addAll(imported.names());
+            if (imported.namespace() != null) occupiedNames.add(imported.namespace());
+        }
+        if (occupiedNames.contains("Proxy")) {
+            throw fail("an imported Proxy name conflicts with the compiler intrinsic");
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ClassDecl klass) occupiedNames.add(klass.name());
