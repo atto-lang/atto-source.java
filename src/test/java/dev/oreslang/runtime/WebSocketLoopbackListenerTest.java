@@ -103,7 +103,7 @@ final class WebSocketLoopbackListenerTest {
                     ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
                     executor, "EchoActor");
             actor.ready().get(3, TimeUnit.SECONDS);
-            var outputStream = actor.outputs();
+            assertEquals(actor.id(), actor.outputs().actorId());
             int port = unusedPort();
             try (var io = new AsyncNativeIo(4);
                  var listener = listen(io, port, 1)) {
@@ -115,6 +115,12 @@ final class WebSocketLoopbackListenerTest {
                     var tenant = java.util.UUID.randomUUID();
                     var handle = conn.bindActorHost(
                             tenant, actor.address(), actor::isAlive);
+                    var relay = conn.relayHostNextSourceActorTextOutputAsync(
+                            handle, tenant, actors, actor);
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> conn.relayHostNextSourceActorTextOutputAsync(
+                                    handle, tenant, actors, actor),
+                            "only one pending output reader per socket");
                     sendMaskedText(client, "hello");
                     assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
                             conn.readForActorAsync(handle, tenant, actor.address())
@@ -124,15 +130,10 @@ final class WebSocketLoopbackListenerTest {
                     assertTrue(received.await(3, TimeUnit.SECONDS));
                     assertEquals(1, deliveries.get());
                     assertEquals(0, conn.pendingActorTicketCount());
-                    var result = outputStream.next().get(3, TimeUnit.SECONDS);
-                    assertFalse(result.done());
-                    assertEquals(actor.id(), result.value().actorId());
-                    assertEquals("echo:hello", result.value().value());
-                    // For now this last outbound hop is a trusted host relay;
-                    // guest output-to-wire still needs its runtime-owned binder.
-                    conn.sendTextForActorAsync(handle, tenant, actor.address(),
-                            (String) result.value().value())
-                            .get(3, TimeUnit.SECONDS);
+                    // Runtime consumes the source actor's real output channel,
+                    // stages a bounded native worker, then writes under the
+                    // original actor/tenant/connection lease. No test-side echo.
+                    relay.get(3, TimeUnit.SECONDS);
                     byte[] expected = "echo:hello".getBytes(StandardCharsets.UTF_8);
                     byte[] frame = client.getInputStream()
                             .readNBytes(expected.length + 2);
@@ -140,7 +141,12 @@ final class WebSocketLoopbackListenerTest {
                     assertEquals(expected.length, Byte.toUnsignedInt(frame[1]));
                     assertArrayEquals(expected,
                             java.util.Arrays.copyOfRange(frame, 2, frame.length));
+                    // A pending next-output read must not survive disconnect.
+                    var pendingOutput = conn.relayHostNextSourceActorTextOutputAsync(
+                            handle, tenant, actors, actor);
                     conn.close();
+                    assertTrue(pendingOutput.isCancelled(),
+                            "physical WebSocket shutdown cancels the source output reader");
                 }
             } finally {
                 actor.cancel();

@@ -20,7 +20,6 @@ import java.util.function.BiConsumer;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Host-only, NET-scoped, bounded, single-accept-at-a-time loopback transport.
