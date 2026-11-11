@@ -275,7 +275,11 @@ public final class NativeHttp implements AutoCloseable {
                     synchronized (state) {
                         state.actor = spawned;
                     }
-                    spawned.done().whenCompleteRuntime((ignored, failure) -> state.release());
+                    // Actor DONE can be published while holding the actor's
+                    // lifecycle monitor. Schedule the release off that stack
+                    // so HTTP completion callbacks cannot reenter the actor.
+                    spawned.done().whenCompleteRuntime((ignored, failure) ->
+                            HttpResponseCleanupDispatcher.dispatch(io, state::release));
                     spawned.ready().whenCompleteRuntime((ignored, failure) -> {
                         long spawn;
                         long ready;
