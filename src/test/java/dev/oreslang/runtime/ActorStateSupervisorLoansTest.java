@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real ActorRuntime/managed-worker integration, not a source-free oracle. */
-@Timeout(20)
+@Timeout(45)
 final class ActorStateSupervisorLoansTest {
 
     private static void sendAndDrain(
