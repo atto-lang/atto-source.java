@@ -74,6 +74,69 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void implicitAndExplicitReturnTernaryArmsProduceIdenticalAstAndResults() throws Exception {
+        String implicit = wrap("""
+                for id in 1..4 {
+                  val successors: Array<int> = id eq 3 ? {
+                    []
+                  } : {
+                    [id + 1]
+                  };
+                  stdio.stdout.write(id);
+                }
+                """);
+        String explicit = wrap("""
+                for id in 1..4 {
+                  val successors: Array<int> = id eq 3 ? {
+                    return []
+                  } : {
+                    return [id + 1]
+                  };
+                  stdio.stdout.write(id);
+                }
+                """);
+        // `return` is syntax sugar for the arm's final expression,
+        // not an enclosing-callable ReturnStmt.
+        assertEquals(Parser.parse(implicit), Parser.parse(explicit));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(implicit)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(explicit)));
+        assertEquals("123", run(implicit));
+        assertEquals("123", run(explicit));
+    }
+
+    @Test
+    void armLocalReturnDoesNotExitEnclosingFunction() throws Exception {
+        String source = wrap("""
+                val choice: int = true ? {
+                  val base = 40;
+                  return base + 2;
+                } : {
+                  return 0;
+                };
+                stdio.stdout.write("after:");
+                stdio.stdout.write(choice);
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("after:42", run(source));
+    }
+
+    @Test
+    void explicitReturnIsFinalAndNotAvailableInStandaloneBlocks() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap(
+                        "val x = true ? { return 1; val y = 2; } : { 0 };")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap(
+                        "val x = true ? { return; } : { 2 };")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap(
+                        "val x: int = { val x = 1; return x; };")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap(
+                        "val x: int = { val x = 1; x };")));
+    }
+
+    @Test
     void ternaryRetainsRightAssociativityAndLazySelectedBranch() throws Exception {
         String source = wrap("""
                 val result: int = false ? { 1 } : true ? {
