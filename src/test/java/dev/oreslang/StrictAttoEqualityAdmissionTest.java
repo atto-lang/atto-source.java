@@ -102,6 +102,17 @@ final class StrictAttoEqualityAdmissionTest {
     }
 
     @Test
+    void strictSingleUnitAdmissionRejectsUnverifiedImportedSourceGraph() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheckStrictAtto("""
+                        import fnc helper from "./legacy.ores";
+                        pub fnc main(): bool { return 7 eq 7; }
+                        """));
+        assertTrue(error.getMessage().contains("ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED"),
+                error::getMessage);
+    }
+
+    @Test
     void legacyEqualityTypingRemainsSeparatelyCompatible() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub fnc main(): bool {
