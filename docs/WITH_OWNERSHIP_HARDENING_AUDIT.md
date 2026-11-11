@@ -68,6 +68,12 @@ passing run on a different source SHA as proof for this PR.
   Its source-free synthetic verifier
   [passed](https://github.com/voxletra/voxletra-e2e/actions/runs/42966487656)
   without copying private Oreslang source.
+- The independent source-free, bounded ownership transition model
+  [passed on private CI run #42967910541](https://github.com/voxletra/voxletra-e2e/actions/runs/42967910541):
+  6,947 reachable transition states enumerated at bound five, with 10
+  deliberately unsafe controls rejected. This is **model-only evidence**,
+  not refinement of the actual compiler/ownership/runtime implementation,
+  and carries zero private source files.
 - A complete source run is blocked by `MAX_FILES=1024` versus the
   1,910-source-blob current tree, plus mandatory independent
   `@ORESoftware` carrier approval/V3 receipt. Do not manually bypass.
