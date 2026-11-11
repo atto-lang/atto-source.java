@@ -142,7 +142,12 @@ final class NeuronScalarScopeV0Test {
                 "self.send(self.forward(mail.value));",
                 "self.handle_state(critical-read |s| -> s.weight);"
                         + " self.send(self.forward(mail.value));");
-        rejected(injected);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(injected),
+                "critical receive scope must fail at parser admission");
+        String nested = SOURCE.replace("self.send(self.forward(mail.value));",
+                "self.send(self.handle_state(critical-read |s| -> s.weight));");
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(nested),
+                "nested critical scope inside receive is also forbidden");
     }
 
     @Test void rejectsOversizedScalarExpressionTreeWithoutStackBlowup() {
