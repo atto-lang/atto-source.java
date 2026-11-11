@@ -369,4 +369,71 @@ final class ActorRouteCoordinatorV1Test {
         }
     }
 
+    private static final class AttestedHostPhysical
+            implements ActorRouteCoordinatorV1.PhysicalRouteWitness {
+        private final Object domain;
+        private final AtomicReference<Object> owner = new AtomicReference<>();
+        volatile boolean ready;
+        volatile boolean retired;
+
+        AttestedHostPhysical(Object domain, boolean ready) {
+            this.domain = domain;
+            this.ready = ready;
+        }
+        @Override public boolean readyForPublication() { return ready && !retired; }
+        @Override public boolean sameAuthorityDomain(
+                ActorRouteCoordinatorV1.PhysicalRouteWitness other) {
+            return other instanceof AttestedHostPhysical test && domain == test.domain;
+        }
+        @Override public void bindToCoordinator(Object coordinator) {
+            if (!owner.compareAndSet(null, coordinator))
+                throw new SecurityException("physical endpoint already bound");
+        }
+        @Override public void retireFromLogicalRoute() { retired = true; }
+    }
+
+    @Test void candidateMustBeReadyAndOwnedByExactlyOneLogicalRoute() {
+        Object seal = new Object();
+        Object runtimeDomain = new Object();
+        var original = new AttestedHostPhysical(runtimeDomain, true);
+        try (var authority = new ActorRouteCoordinatorV1<>(
+                85, seal, image('a'), state(0), original, 4, 32, 128)) {
+            var candidate = new AttestedHostPhysical(runtimeDomain, false);
+            var stage = authority.stage(seal, image('b'));
+            assertThrows(IllegalStateException.class,
+                    () -> stage.publish(seal, state(0), candidate));
+            assertFalse(original.retired);
+            candidate.ready = true;
+            assertTrue(stage.publish(seal, state(0), candidate));
+            assertTrue(original.retired);
+            assertThrows(SecurityException.class, () -> new ActorRouteCoordinatorV1<>(
+                    86, new Object(), image('a'), state(0), candidate, 4, 32, 128));
+        }
+    }
+
+    @Test void foreignAuthorityDomainAndReplayedPhysicalReceiptAreRejected() {
+        Object seal = new Object();
+        Object firstRuntime = new Object();
+        var original = new AttestedHostPhysical(firstRuntime, true);
+        try (var authority = new ActorRouteCoordinatorV1<>(
+                88, seal, image('a'), state(0), original, 4, 32, 128)) {
+            authority.logicalRef().send(new byte[]{1});
+            assertTrue(authority.dispatchNext(seal, (route, mail, receipt) -> {
+                receipt.claimPhysicalAdmission(route);
+                assertThrows(SecurityException.class,
+                        () -> receipt.claimPhysicalAdmission(route));
+                assertThrows(SecurityException.class,
+                        () -> receipt.claimPhysicalAdmission(new Object()));
+                receipt.acknowledge();
+            }));
+            var stage = authority.stage(seal, image('b'));
+            var foreign = new AttestedHostPhysical(new Object(), true);
+            assertThrows(SecurityException.class,
+                    () -> stage.publish(seal, state(1), foreign));
+            assertFalse(original.retired);
+            stage.abort(seal);
+            assertSame(original, authority.current().physicalRoute());
+        }
+    }
+
 }
