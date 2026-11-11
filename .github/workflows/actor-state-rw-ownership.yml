@@ -17,6 +17,7 @@ on:
       - "docs/ACTOR_SUPERVISOR_CONTROL_GUARDED_STATE_V1.md"
       - "docs/ACTOR_SUPERVISOR_SCOPED_CONTROL_LOANS_V1.md"
       - "docs/ACTOR_STATE_CONTAINER_COMPILER_V1.md"
+      - "docs/ACTOR_STATE_FIELD_BORROW_ADMISSION_V1.md"
       - ".github/workflows/actor-state-rw-ownership.yml"
   workflow_dispatch:
 
@@ -58,7 +59,7 @@ jobs:
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
             -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest,ActorStateFieldBorrowBoundaryTest -DfailIfNoTests=true test
-      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL, 12 state-group and 7 field-loan compiler/guest tests)
+      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL, 12 state-group and 8 field-loan compiler/guest tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +71,7 @@ jobs:
               "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
               "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
               "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 12,
-              "dev.oreslang.ActorStateFieldBorrowBoundaryTest": 7,
+              "dev.oreslang.ActorStateFieldBorrowBoundaryTest": 8,
           }
           for class_name, minimum in cases.items():
               path = base / f"TEST-{class_name}.xml"
