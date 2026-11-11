@@ -727,10 +727,11 @@ final class ValuePipeOperatorTest {
                     |> |x, y| -> tuple(x + 1, y + 1);
                 }
                 fnc identity(Tuple[int] one): Tuple[int] { return one; }
+                fnc first(Tuple[int] one): int { return one[0]; }
                 fnc typed(): Tuple[string, int] { return tuple("Ada", 3); }
                 pub fnc main(): void {
                   stdio.println(chained() |> |x, y| -> x + y);
-                  stdio.println(tuple(9) |> |whole| -> identity(whole));
+                  stdio.println(tuple(9) |> |whole| -> identity(whole) |> first);
                   stdio.println(typed() |> |string name, int count| -> count + 1);
                   return;
                 }
@@ -743,7 +744,7 @@ final class ValuePipeOperatorTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals(java.util.List.of("12", "[9]", "4"),
+        assertEquals(java.util.List.of("12", "9", "4"),
                 output.toString(StandardCharsets.UTF_8).lines().toList());
     }
 }
