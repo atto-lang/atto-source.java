@@ -2,7 +2,7 @@
 // Requires Java compiler async NIO PR #2894 + Redis guest integration PR #2897.
 // No host RESP parser, stdio pipe, host-side KV, blocking socket, or Rust fallback.
 // Current wire limit: three args, command <=16, key <=4096, value <=16384;
-// 256 distinct live keys, one loopback client, no persistence or supervision.
+// 256 slot-bound keys, one loopback client, no persistence or supervision.
 // Binary values/keys use List<int> (0..255); owned Bytes still needs a runtime type.
 
 // Source-local actors cannot depend on sibling nominal classes without
@@ -170,16 +170,18 @@ pub fnc reset_resp2(borrow mut RespReader r): void {
 
 // No String decoding for keys or values. A bounded actor-owned array of
 // immutable byte snapshots is the interim storage index until the real
-// owned Bytes hashing primitive replaces this O(256) scan.
+// owned Bytes hashing primitive replaces this O(256) fingerprint scan.
 define actor BinaryKvActor as
   let mut List<List<int>> keys;
   let mut List<List<int>> values;
   let mut List<bool> live;
+  let mut List<int> fingerprints;
 
   on_start(): void {
     self.keys = [];
     self.values = [];
     self.live = [];
+    self.fingerprints = [];
     return;
   }
 
@@ -204,6 +206,19 @@ define actor BinaryKvActor as
     }
   }
 
+  // A bounded deterministic numeric prefilter for binary keys. Max length
+  // is 4,096 octets, so worst-case sum is <2,147,483,647. Collisions
+  // are always resolved by bytes_equal; this is NOT a hash-only lookup.
+  key_fingerprint(borrow List<int> key): int {
+    let int result = key.size;
+    let int i = 0;
+    loop {
+      if i == key.size then return result; fi
+      result = result + (i + 1) * key.get(i);
+      i = i + 1;
+    }
+  }
+
   emit_reply(int kind, List<int> value): void {
     self.send((kind, value));
     return;
@@ -218,16 +233,20 @@ define actor BinaryKvActor as
     if kind == 1; do self.emit_reply(5, []); return; fi
     if kind == 0; do self.emit_reply(6, []); return; fi
 
+    let int fingerprint = self.key_fingerprint(rt borrow key);
     let int match_index = -1;
     let int free_index = -1;
     let int i = 0;
     loop {
       if i == self.keys.size then break; fi
-      if !self.live.get(i) && free_index == -1 then free_index = i; fi
-      val stored_key = self.keys.get(i);
-      if self.bytes_equal(rt borrow stored_key, rt borrow key); do
-        match_index = i;
-        break;
+      if !self.live.get(i); do
+        if free_index == -1 then free_index = i; fi
+      elseif self.fingerprints.get(i) == fingerprint; do
+        val stored_key = self.keys.get(i);
+        if self.bytes_equal(rt borrow stored_key, rt borrow key); do
+          match_index = i;
+          break;
+        fi
       fi
       i = i + 1;
     }
@@ -246,10 +265,12 @@ define actor BinaryKvActor as
       if slot >= 0; do
         self.keys.set(slot, self.clone_bytes(rt borrow key));
         self.values.set(slot, self.clone_bytes(rt borrow value));
+        self.fingerprints.set(slot, fingerprint);
         self.live.set(slot, true);
       elseif self.keys.size < 256; do
         self.keys.add(self.clone_bytes(rt borrow key));
         self.values.add(self.clone_bytes(rt borrow value));
+        self.fingerprints.add(fingerprint);
         self.live.add(true);
       else
         self.emit_reply(6, []);
@@ -330,7 +351,7 @@ pub async routine main(): void {
   val socket = await listener.accept_async();
   val reader = new RespReader();
   loop {
-    val chunk = await socket.read_bytes_async(1024);
+    val chunk = await socket.read_bytes_async(4096);
     if chunk.size == 0; do
       await socket.close_async();
       await listener.close_async();
