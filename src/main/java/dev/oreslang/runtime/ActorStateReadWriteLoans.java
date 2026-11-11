@@ -248,6 +248,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
 
     private void cancelQueued(Pending request) {
         boolean removed;
+        Loan reserved;
         synchronized (monitor) {
             removed = pending.remove(request);
             if (removed) {
@@ -255,8 +256,16 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
                 // A cancelled head-of-line writer must not strand compatible
                 // queued readers behind it until an unrelated loan closes.
                 promoteLocked();
+                reserved = null;
+            } else {
+                // Dequeued grants are RESERVED but not yet guest-visible.
+                // Cancellation must release that reservation even when a
+                // previous completion callback is stalled on another thread.
+                // Do not wait for delayed publishGrant() to close the loan.
+                reserved = request.reservation;
             }
         }
+        if (reserved != null) reserved.close();
         if (removed) publish();
     }
 
@@ -288,6 +297,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
             Loan loan = next instanceof ReadPending
                     ? grantReaderLocked(next.handler)
                     : grantWriterLocked(next.handler);
+            next.reservation = loan;
             notifications.addLast(() -> publishGrant(next, loan));
             if (loan instanceof WriteLoan) return;
         }
@@ -347,6 +357,9 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
 
     private abstract class Pending {
         final Object handler;
+        // Assigned while holding monitor when removed from the pending FIFO.
+        // Cancellation may revoke the reserved loan before Future delivery.
+        Loan reservation;
         Pending(Object handler) { this.handler = handler; }
         abstract boolean cancelled();
         abstract boolean complete(Loan loan);
