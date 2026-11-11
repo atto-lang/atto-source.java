@@ -33,6 +33,11 @@ from the actor mailbox, nonreentrant dispatch, generation fencing,
 ownership, cancellation and deterministic cleanup. No reflection
 or arbitrary external actor-state access.
 
+The audit adds 22 authored JUnit cases overall, including direct
+public synchronous actor witness requirements, reserved method-slot
+rejection, public teardown and CONTROL-hook rejection, and preserving
+private synchronous teardown for supervisor-owned cleanup.
+
 Required proof: exact-head Git tree, Java/JUnit runs with nonzero
 executed steps, real guest invocation for accepted fixture and
 compile-time negative diagnostic for rejected fixture, independent
