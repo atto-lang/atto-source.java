@@ -7821,6 +7821,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final String codeActorType;
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
+        /** Only one primitive field layout can be minted per actor incarnation. */
+        private boolean primitiveStateRegionIssued;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -8763,9 +8765,15 @@ public final class ActorRuntime implements AutoCloseable {
                         // Untrusted tenants must remain isolate-only and
                         // cannot acquire a same-process shared-state region.
                         if (codeExecutor == null || managedByGroup.get() == null
-                                || kind == ActorKind.UNTRUSTED) {
+                                || kind == ActorKind.UNTRUSTED
+                                || codeActorState != null || activeMail != null
+                                || primitiveStateRegionIssued) {
                             return Optional.empty();
                         }
+                        // Source startup executes under one physical owner
+                        // turn. Mark admission before attempting allocation:
+                        // failures cannot retry with a second mutable layout.
+                        primitiveStateRegionIssued = true;
                         return Optional.of(ActorRuntime.this.createCurrentActorStateLoans(
                                 maxPending, maxReaders));
                     }
