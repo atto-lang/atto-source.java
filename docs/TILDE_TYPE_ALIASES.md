@@ -111,6 +111,14 @@ literal retains its existing contextual tuple compatibility until a separate
 migration contract is approved. A user-declared `Tuple` class or alias cannot
 hijack an explicitly bracketed intrinsic shape.
 
+Zero-slot and singleton annotations have canonical spellings `Tuple[]` and
+`Tuple[T]`, respectively; these match the distinct `~tuple()` and `~tuple(v)`
+values. Only `Tuple[]` is allowed as an empty bracketed sequence type; `Array[]`
+and other unshaped empty sequence notations still fail. In any type position,
+`~tuple(value, ...)` fails with a clear diagnostic: it is a value constructor,
+not a type. Typed construction `~tuple<T...>(...)` is intentionally rejected
+until checked value-witness lowering is implemented and proven across backends.
+
 A dedicated `TupleReturnTypeContractTest` and the real
 `src/test/resources/atto/tuple-returns/canonical-return.atto` fixture provide
 positive compiled guest and negative return-type cases. **These checks are
