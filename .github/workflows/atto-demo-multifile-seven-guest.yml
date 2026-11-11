@@ -8,6 +8,7 @@ on:
       - 'src/test/java/dev/oreslang/AttoDemoMultifileSevenCaseGuestTest.java'
       - 'src/test/resources/atto/demo-multifile-v1/**'
       - 'src/main/java/**'
+      - 'scripts/ci/AttoDemoSevenReceiptVerifier.java'
       - '.github/workflows/atto-demo-multifile-seven-guest.yml'
   push:
     branches:
@@ -34,6 +35,14 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      - name: Verify exact shared JUnit receipt verifier and mutation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:scripts/ci/AttoDemoSevenReceiptVerifier.java)" = "f0b03b060cb0c9566380ea29f323633336f0ce46"
+          mkdir -p "$RUNNER_TEMP/atto-demo-receipt-verify"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-demo-receipt-verify" scripts/ci/AttoDemoSevenReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-demo-receipt-verify" AttoDemoSevenReceiptVerifier --self-test
       - name: Prove exact compiler head and byte-identical demo fixture blobs
         shell: bash
         env:
@@ -66,20 +75,14 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dtest=AttoDemoMultifileSevenCaseGuestTest -DfailIfNoTests=true test
-      - name: Require seven explicit non-skipped JUnit cases
+      - name: Verify exact seven named, non-skipped JUnit guest cases
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          report="target/surefire-reports/TEST-dev.oreslang.AttoDemoMultifileSevenCaseGuestTest.xml"
-          test -s "$report"
-          grep -Eq 'tests="7"' "$report"
-          grep -Eq 'failures="0"' "$report"
-          grep -Eq 'errors="0"' "$report"
-          grep -Eq 'skipped="0"' "$report"
-          test "$(grep -c '<testcase ' "$report")" -eq 7
-          echo "ATTO_DEMO_SEVEN_LINKED_GUEST_PASS head=$EXPECTED_HEAD attempt=$GITHUB_RUN_ATTEMPT job=$GITHUB_JOB tests=7 profile=server-jit NOT_AOT"
+          java -cp "$RUNNER_TEMP/atto-demo-receipt-verify" AttoDemoSevenReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
+          echo "ATTO_DEMO_GUEST_RUN_IDENTITY head=$EXPECTED_HEAD run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT job=$GITHUB_JOB"
       - name: Preserve compiler-owned JUnit report even if tests fail
         if: always()
         uses: actions/upload-artifact@v4
