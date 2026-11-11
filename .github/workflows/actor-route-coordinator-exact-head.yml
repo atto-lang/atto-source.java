@@ -3,8 +3,11 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorRouteCoordinatorV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPhysicalHotRouteIngressFence.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntimeHotRouteBridgeV1.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRouteCoordinatorV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPhysicalHotRouteIngressFenceTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRuntimeHotRouteBridgeV1Test.java'
       - 'examples/hot-upgrade/ActorRouteCoordinatorHostDemo.java'
       - '.github/workflows/actor-route-coordinator-exact-head.yml'
@@ -44,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorRouteCoordinatorV1Test,ActorRuntimeHotRouteBridgeV1Test \
+          mvn -B -ntp -Dtest=ActorRouteCoordinatorV1Test,ActorPhysicalHotRouteIngressFenceTest,ActorRuntimeHotRouteBridgeV1Test \
             -DfailIfNoTests=true test
       - name: Retain exact-head JUnit XML
         if: always()
