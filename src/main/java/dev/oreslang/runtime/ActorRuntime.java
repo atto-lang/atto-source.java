@@ -837,6 +837,42 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Constructor-only proof: caller-created AllocationDomain values are
+     * descriptive identities, NOT bearer credentials. This one-use object
+     * is private to ActorRuntime and cannot be minted through source APIs.
+     */
+    private static final class StateRegionMint {
+        private final ActorRuntime runtime;
+        private final ActorId actorId;
+        private final long generation;
+        private final ExecutionContext.AllocationDomain allocation;
+        private final AtomicBoolean claimed = new AtomicBoolean();
+
+        private StateRegionMint(
+                ActorRuntime runtime, ActorId actorId, long generation,
+                ExecutionContext.AllocationDomain allocation) {
+            this.runtime = runtime;
+            this.actorId = actorId;
+            this.generation = generation;
+            this.allocation = allocation;
+        }
+    }
+
+    void claimStateRegionMint(
+            Object credential, ActorId actorId, long generation,
+            ExecutionContext.AllocationDomain allocation) {
+        if (!(credential instanceof StateRegionMint mint)
+                || mint.runtime != this
+                || !mint.actorId.equals(actorId)
+                || mint.generation != generation
+                || !mint.allocation.equals(allocation)
+                || !mint.claimed.compareAndSet(false, true)) {
+            throw new SecurityException(
+                    "actor state region requires unforgeable one-use runtime allocation proof");
+        }
+    }
+
+    /**
      * Create a bounded shared-state RW admission scope only during the
      * live owner's physical actor turn. The owner remains this ActorCell;
      * supervisors receive no raw state or allocation identity.
@@ -881,8 +917,10 @@ public final class ActorRuntime implements AutoCloseable {
                     new ExecutionContext.AllocationDomain(
                             ExecutionContext.AllocationKind.ACTOR,
                             regionId, regionId, cell.ref.generation());
+            StateRegionMint credential = new StateRegionMint(
+                    this, cell.ref.id(), cell.ref.generation(), ownerAllocation);
             ActorStateSupervisorLoans region = new ActorStateSupervisorLoans(
-                    this, cell.ref.id(), cell.ref.generation(),
+                    this, credential, cell.ref.id(), cell.ref.generation(),
                     ownerAllocation, maxPending, maxReaders);
             cell.supervisorStateRegions.add(region);
             return region;
