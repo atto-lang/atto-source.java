@@ -747,7 +747,22 @@ public final class Parser {
             }
             // Legacy 'fnc name' and explicit 'method name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
-            methods.add(parseMethod(annotations, mods, isAbstract));
+            Ast.MethodDecl member = parseMethod(annotations, mods, isAbstract);
+            // Newable's explicitly declared `fnc new` is a type-level
+            // factory even when the author omits the optional `static`
+            // modifier. Do not alter other methods or synthesize a factory.
+            if (member.name().equals("new") && !member.isStatic()
+                    && interfaces.stream().anyMatch(ref -> ref.name().equals("Newable"))) {
+                if (member.explicitReceiverType() != null) {
+                    throw error(previous(), "Newable.new cannot declare a self receiver");
+                }
+                member = new Ast.MethodDecl(member.name(), member.visibility(),
+                        true, member.isAbstract(), member.async(), member.suspends(),
+                        member.structural(), member.explicitReceiverType(),
+                        member.genericParameters(), member.parameters(), member.returnType(),
+                        member.annotations(), member.body(), member.effects());
+            }
+            methods.add(member);
         }
         consume(
                 classTerminator,
@@ -2343,6 +2358,17 @@ public final class Parser {
             }
         }
 
+        // Newable[T] is a type-level static factory trait application,
+        // not an array/collection sequence shape. Other bracketed type
+        // syntax retains the existing sequence-shape interpretation.
+        if (name.equals("Newable") && args.isEmpty() && match(LBRACKET)) {
+            if (check(RBRACKET)) throw error(peek(), "Newable[T] requires a type argument");
+            args.add(parseTypeRef());
+            if (match(COMMA)) {
+                throw error(previous(), "Newable[T] accepts exactly one type argument");
+            }
+            consume(RBRACKET, "expected ']' after Newable[T]");
+        }
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
             args.add(parseSequenceShapeDimension());
