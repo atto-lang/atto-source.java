@@ -15,7 +15,10 @@ import java.util.Set;
  */
 final class SingletonDependencyGraph<K> {
     private static final int MAX_DEPENDENCIES_PER_INITIALIZER = 64;
+    private static final int MAX_DOMAIN_DEPENDENCIES = 16_384;
     private final Map<K, Set<K>> dependencies = new HashMap<>();
+    private final Map<K, Set<K>> dependents = new HashMap<>();
+    private int edgeCount;
     // Completed lookups must not allocate/retain a ThreadLocal stack.
     private final ThreadLocal<ArrayDeque<K>> initializing = new ThreadLocal<>();
 
@@ -33,7 +36,14 @@ final class SingletonDependencyGraph<K> {
                 && children.size() >= MAX_DEPENDENCIES_PER_INITIALIZER) {
             throw new IllegalStateException("singleton initializer dependency quota exceeded");
         }
-        children.add(target);
+        if (!children.contains(target)) {
+            if (edgeCount >= MAX_DOMAIN_DEPENDENCIES) {
+                throw new IllegalStateException("singleton domain dependency quota exceeded");
+            }
+            children.add(target);
+            dependents.computeIfAbsent(target, ignored -> new HashSet<>()).add(current);
+            edgeCount++;
+        }
     }
 
     /** Only the thread that actually runs initialize.get() enters this stack. */
@@ -55,9 +65,27 @@ final class SingletonDependencyGraph<K> {
         }
         stack.pop();
         if (stack.isEmpty()) initializing.remove();
-        dependencies.remove(key);
-        dependencies.values().forEach(children -> children.remove(key));
-        dependencies.values().removeIf(Set::isEmpty);
+        Set<K> children = dependencies.remove(key);
+        if (children != null) {
+            for (K child : children) {
+                Set<K> reverse = dependents.get(child);
+                if (reverse != null) {
+                    reverse.remove(key);
+                    if (reverse.isEmpty()) dependents.remove(child);
+                }
+                edgeCount--;
+            }
+        }
+        Set<K> parents = dependents.remove(key);
+        if (parents != null) {
+            for (K parent : parents) {
+                Set<K> outgoing = dependencies.get(parent);
+                if (outgoing != null && outgoing.remove(key)) {
+                    edgeCount--;
+                    if (outgoing.isEmpty()) dependencies.remove(parent);
+                }
+            }
+        }
     }
 
     private boolean reaches(K start, K goal) {
