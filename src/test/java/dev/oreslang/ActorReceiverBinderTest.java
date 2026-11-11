@@ -273,7 +273,7 @@ final class ActorReceiverBinderTest {
     @Test
     void mailboxReceiveRejectsStructuralPayloadBeforeWitnessLowering() {
         rejects(module(actor()
-                + "  define mtd receive(Worker w)(ActorMail<record{value: int}> mail): void { return; }\\n"),
+                + "  define mtd receive(Worker w)(ActorMail<record{value: int}> mail): void { return; }\n"),
                 "external receive must be private");
     }
 
