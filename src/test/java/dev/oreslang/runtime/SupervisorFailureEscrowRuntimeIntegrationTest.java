@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -108,6 +109,26 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
                     ignored -> (message, turn) -> { });
             bridge.attach(fresh, null);
             assertThrows(IllegalStateException.class, () -> bridge.attach(fresh, null));
+            assertEquals(0, bridge.pendingCount());
+        }
+    }
+
+    @Test
+    void lateCoordinatorInstallationCannotOrphanExistingAttachedRefs() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            ActorRuntime.ActorRef<String> attached = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> { });
+            long nodeId = bridge.attach(attached, null);
+            var rejected = assertThrows(IllegalStateException.class,
+                    () -> new SupervisorEscrowSubtreeRecoveryV1(
+                            runtime, bridge, control, ignored -> false));
+            assertTrue(rejected.getMessage().contains("before first actor attachment"));
+            assertTrue(bridge.snapshot().containsKey(nodeId),
+                    "rejected coordinator installation must preserve existing CONTROL escrow");
+            assertEquals(2, bridge.snapshot().size(),
+                    "failed coordinator install must not create a phantom node");
             assertEquals(0, bridge.pendingCount());
         }
     }
