@@ -1,0 +1,8 @@
+// The field grouping must cover every actor-owned storage slot.
+define actor Counter as
+  state {
+    let int grouped;
+  }
+  let int ungrouped;
+  receive(ActorMail<String> mail): void { return; }
+end
