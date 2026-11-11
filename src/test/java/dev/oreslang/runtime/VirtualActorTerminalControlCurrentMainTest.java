@@ -223,6 +223,96 @@ final class VirtualActorTerminalControlCurrentMainTest {
     }
 
     @Test
+    @Timeout(40)
+    void suspendedTerminalPolicySerializesNoticesWithinSameActorGroup()
+            throws Exception {
+        try (ExecutorService control = Executors.newFixedThreadPool(3);
+             ActorRuntime runtime = runtimeWithControl(control)) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            var firstId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "first");
+            var secondId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "second");
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch secondEntered = new CountDownLatch(1);
+            CompletableFuture<Void> finishFirst = new CompletableFuture<>();
+            AtomicInteger enteredCount = new AtomicInteger();
+            group.installVirtualActorTerminalHandler(notice -> {
+                int ordinal = enteredCount.incrementAndGet();
+                if (ordinal == 1) {
+                    firstEntered.countDown();
+                    return finishFirst;
+                }
+                secondEntered.countDown();
+                return CompletableFuture.completedFuture(null);
+            });
+            var first = failingWorker(group);
+            var second = failingWorker(group);
+            group.reserveVirtualActorGeneration(firstId, 1L);
+            group.reserveVirtualActorGeneration(secondId, 1L);
+            group.bindVirtualActorIdentity(first, firstId, 1L);
+            group.bindVirtualActorIdentity(second, secondId, 1L);
+            failActor(first);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            failActor(second);
+            assertFalse(secondEntered.await(250, TimeUnit.MILLISECONDS),
+                    "second CONTROL policy must not reenter before first stage settles");
+            assertEquals(1, enteredCount.get());
+            finishFirst.complete(null);
+            assertTrue(secondEntered.await(5, TimeUnit.SECONDS));
+            assertEquals(2, enteredCount.get());
+            assertEquals(2L, awaitNextGeneration(group, firstId, 2L));
+            group.abortVirtualActorGeneration(firstId, 2L);
+            assertEquals(2L, awaitNextGeneration(group, secondId, 2L));
+            group.abortVirtualActorGeneration(secondId, 2L);
+            group.close();
+        }
+    }
+
+    @Test
+    @Timeout(40)
+    void unrelatedSupervisorGroupsContinueWhileOnePolicyIsSuspended()
+            throws Exception {
+        try (ExecutorService control = Executors.newFixedThreadPool(3);
+             ActorRuntime runtime = runtimeWithControl(control)) {
+            var supervisor = runtime.createSupervisor();
+            var blocked = runtime.createActorGroup(supervisor);
+            var independent = runtime.createActorGroup(supervisor);
+            var blockedId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "blocked");
+            var independentId = new VirtualActorActivationRegistry.Identity("tenant-a", "Cart", "independent");
+            CountDownLatch blockedEntered = new CountDownLatch(1);
+            CountDownLatch independentEntered = new CountDownLatch(1);
+            CompletableFuture<Void> resume = new CompletableFuture<>();
+            blocked.installVirtualActorTerminalHandler(notice -> {
+                blockedEntered.countDown();
+                return resume;
+            });
+            independent.installVirtualActorTerminalHandler(notice -> {
+                independentEntered.countDown();
+                return CompletableFuture.completedFuture(null);
+            });
+            var first = failingWorker(blocked);
+            var second = failingWorker(independent);
+            blocked.reserveVirtualActorGeneration(blockedId, 1L);
+            independent.reserveVirtualActorGeneration(independentId, 1L);
+            blocked.bindVirtualActorIdentity(first, blockedId, 1L);
+            independent.bindVirtualActorIdentity(second, independentId, 1L);
+            failActor(first);
+            assertTrue(blockedEntered.await(5, TimeUnit.SECONDS));
+            failActor(second);
+            assertTrue(independentEntered.await(5, TimeUnit.SECONDS),
+                    "unrelated group must not wait on suspended CONTROL policy");
+            assertThrows(IllegalStateException.class,
+                    () -> blocked.reserveNextVirtualActorGeneration(blockedId));
+            assertEquals(2L, awaitNextGeneration(independent, independentId, 2L));
+            independent.abortVirtualActorGeneration(independentId, 2L);
+            resume.complete(null);
+            assertEquals(2L, awaitNextGeneration(blocked, blockedId, 2L));
+            blocked.abortVirtualActorGeneration(blockedId, 2L);
+            blocked.close();
+            independent.close();
+        }
+    }
+
+    @Test
     void installingTerminalHandlerTwiceIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
