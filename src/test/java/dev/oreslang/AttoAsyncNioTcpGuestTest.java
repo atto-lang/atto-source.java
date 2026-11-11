@@ -1,7 +1,6 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
-import java.io.ByteArrayOutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -28,7 +27,6 @@ final class AttoAsyncNioTcpGuestTest {
         String source = """
                 pub async routine main(): void {
                   val listener = await network.listen_async("127.0.0.1", %d);
-                  stdio.println("READY");
                   val socket = await listener.accept_async();
                   val bytes = await socket.read_bytes_async(1024);
                   await socket.write_bytes_async(bytes);
@@ -38,13 +36,12 @@ final class AttoAsyncNioTcpGuestTest {
                 }
                 """.formatted(port);
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         try (ExecutorService exec = Executors.newSingleThreadExecutor()) {
             Future<?> execution = exec.submit(() -> {
                 try (Context context = Context.newBuilder(OresLanguage.ID)
                         .allowAllAccess(false)
-                        .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=NETWORK,STDOUT"})
-                        .out(stdout).build()) {
+                        .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=NETWORK"})
+                        .build()) {
                     context.eval(Source.newBuilder(OresLanguage.ID, source,
                             "atto-nio2-binary-echo.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
@@ -52,22 +49,24 @@ final class AttoAsyncNioTcpGuestTest {
                     throw new RuntimeException(failure);
                 }
             });
-            boolean ready = false;
+            boolean echoed = false;
+            byte[] payload = {(byte) 0xff, 0, 13, 10, 1};
             for (int n = 0; n < 120; n++) {
-                if (stdout.toString().contains("READY")) { ready = true; break; }
                 if (execution.isDone()) {
                     execution.get(1, TimeUnit.SECONDS);
                     break;
                 }
-                Thread.sleep(50);
+                try (Socket client = new Socket("127.0.0.1", port)) {
+                    client.setSoTimeout(4000);
+                    client.getOutputStream().write(payload);
+                    assertArrayEquals(payload, client.getInputStream().readNBytes(payload.length));
+                    echoed = true;
+                    break;
+                } catch (java.net.ConnectException starting) {
+                    Thread.sleep(50);
+                }
             }
-            assertTrue(ready, "actual Atto guest did not start async NIO listener");
-            byte[] payload = {(byte) 0xff, 0, 13, 10, 1};
-            try (Socket client = new Socket("127.0.0.1", port)) {
-                client.setSoTimeout(4000);
-                client.getOutputStream().write(payload);
-                assertArrayEquals(payload, client.getInputStream().readNBytes(payload.length));
-            }
+            assertTrue(echoed, "real guest never served async NIO binary echo");
             execution.get(10, TimeUnit.SECONDS);
         }
     }
