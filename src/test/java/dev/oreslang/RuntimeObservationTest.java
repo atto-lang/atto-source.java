@@ -7,6 +7,9 @@ final class RuntimeObservationTest {
  @Test void revocationScopeForeignRuntimeAndGenerationFence() throws Exception {
   try (ActorRuntime r = new ActorRuntime(); ActorRuntime other = new ActorRuntime()) {
    var root = r.rootSupervisor(); var child = r.createChildSupervisor(root);
+   var expired = r.grantObservation(root,1);
+   Thread.sleep(5);
+   assertThrows(SecurityException.class, () -> r.observe(expired,100));
    var full = r.grantObservation(root,60000); var narrow = r.grantObservation(child,60000);
    var actor = r.<String>spawnShared(() -> (m,c) -> {});
    actor.send("SECRET");

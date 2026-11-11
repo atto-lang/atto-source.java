@@ -593,13 +593,13 @@ public final class ActorRuntime implements AutoCloseable {
     public ObservationGrant grantObservation(ActorSupervisor root, long ttlMillis) {
         requireSupervisorContext("grant runtime observation");
         requireCallerRuntimeAffinity("grant runtime observation");
-        if (supervisors.get(root.id) != root || ttlMillis < 1 || ttlMillis > 60000)
+        if (root == null || closed.get() || supervisors.get(root.id) != root || ttlMillis < 1 || ttlMillis > 60000)
             throw new SecurityException("observation denied");
         synchronized (observationLock) { return new ObservationGrant(root, ttlMillis); }
     }
     public void advanceObservationGeneration() {
         requireSupervisorContext("advance observation incarnation");
-        synchronized (observationLock) { observationGeneration++; observationRetired.clear(); }
+        synchronized (observationLock) { observationGeneration = Math.addExact(observationGeneration, 1); observationRetired.clear(); }
     }
     private boolean withinObservationScope(ActorSupervisor node, ActorSupervisor root) {
         for (ActorSupervisor cursor = node; cursor != null; cursor = cursor.parent)
@@ -633,7 +633,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Non-static inner capabilities still need an explicit runtime-owner check.
             if (grant.revoked || grant.generation != observationGeneration ||
                 supervisors.get(grant.root.id) != grant.root || closed.get() ||
-                System.nanoTime() >= grant.deadline) throw new SecurityException("observation denied");
+                System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
         }
         List<SupervisorObservation> ss = new ArrayList<>();
         List<ActorObservation> aa = new ArrayList<>();
@@ -666,7 +666,7 @@ public final class ActorRuntime implements AutoCloseable {
                 aa.add(a);
             }
             if (grant.revoked || grant.generation != observationGeneration || closed.get() ||
-                    System.nanoTime() >= grant.deadline) throw new SecurityException("observation denied");
+                    System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
         }
         // Ancestry is not authority. A parent outside this observation must not
         // leak through an otherwise correctly scoped child record.
@@ -685,7 +685,7 @@ public final class ActorRuntime implements AutoCloseable {
         // linearizes against this final disclosure fence.
         synchronized (observationLock) {
             if (grant.revoked || grant.generation != observationGeneration || closed.get() ||
-                    System.nanoTime() >= grant.deadline) throw new SecurityException("observation denied");
+                    System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
         }
         return new RuntimeObservation(grant.generation, partial, List.copyOf(ss), List.copyOf(scoped));
     }
