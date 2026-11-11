@@ -86,7 +86,7 @@ roles, side-effecting init, wrong mailbox types, arbitrary methods,
 duplicate startup, unknown receivers and legacy receiver aliases.
 
 The exact-head source-org JDK25 workflow runs this alongside 10 other suites,
-requiring at least **120** successful unskipped cases. At the time of writing,
+requiring at least **176** executed, unskipped cases (per-suite counts checked). At the time of writing,
 GitHub has been failing before runner admission. No successful JVM guest,
 JUnit, no-fallback Native Image or five-backend result is claimed.
 
