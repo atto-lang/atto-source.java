@@ -81,4 +81,31 @@ define module protocols as
     fnc call_async(Request request) => Future<Result<Reply, E>>;
   end
 
+
+  // Explicit fallible conversion. No implicit coercion is introduced.
+  define pub trait TryFrom<Src, Dst, E> as
+    fnc try_from(Src value) => Result<Dst, E>;
+  end
+
+  // Composition carries no privileged I/O authority by itself.
+  define pub trait ReadWrite<E> extends Read<E>, Write<E> as
+  end
+
+  // Transform is a sink of I and a source of O; one bounded pull at a time.
+  define pub trait Transform<I, O, E> extends Sink<I, E>, Source<O, E> as
+  end
+
+  // Whole-batch bounded admission; partial acceptance cannot report success.
+  define pub trait BatchWritable<T, E> as
+    fnc send_batch_async(Array<T> values) => Future<Result<void, E>>;
+  end
+
+  // Provider-neutral storage contract; does not grant filesystem, network or
+  // sealed actor-state access. Returned values are owned, not private aliases.
+  define pub trait KeyValueStore<K, V, E> as
+    fnc get_async(K key) => Future<Result<Option<V>, E>>;
+    fnc put_async(K key, V value) => Future<Result<void, E>>;
+    fnc delete_async(K key) => Future<Result<bool, E>>;
+  end
+
 end
