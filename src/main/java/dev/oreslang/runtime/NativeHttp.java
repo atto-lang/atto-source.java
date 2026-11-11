@@ -271,6 +271,10 @@ public final class NativeHttp implements AutoCloseable {
             final Set<Server> served = ConcurrentHashMap.newKeySet();
             final HttpPooledWorkerAdmissionFence admission =
                     new HttpPooledWorkerAdmissionFence();
+            // Only one host thread can initiate actor shutdown for a sealed
+            // generation. The ActorRuntime then seals ALL actor messages,
+            // including non-HTTP continuations, before finalizing physically.
+            final AtomicBoolean shutdownStopRequested = new AtomicBoolean();
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
@@ -663,10 +667,22 @@ public final class NativeHttp implements AutoCloseable {
             }
             try {
                 for (Handler.Worker worker : workers) {
-                    // An idle snapshot alone races a handoff that already
-                    // reserved this worker. The seal forbids any future
-                    // reservations, and quiescent() joins existing ones.
+                    // Reservation sealing is the HTTP dispatch linearization
+                    // point; wait out any pre-seal handoffs before closing the
+                    // actor mailbox. Never strand an accepted send by sealing
+                    // its actor before it has finished transferring the token.
+                    if (worker.admission.quiescent()
+                            && worker.shutdownStopRequested.compareAndSet(false, true)) {
+                        // ActorRuntime.gracefulStop atomically rejects all NEW
+                        // actor mailbox admission, drains accepted messages,
+                        // and publishes DONE only after physical finalization.
+                        context.actors().gracefulStop(worker.actor);
+                    }
+                    // A point-in-time idle snapshot is NOT a shutdown proof:
+                    // require a terminal ActorRuntime DONE after the durable
+                    // actor admission seal, plus the physical carrier gate.
                     if (!worker.admission.quiescent()
+                            || !worker.actor.done().isDone()
                             || !context.actors().httpCarrierQuiescent(worker.actor)) {
                         if (System.nanoTime() - startedNanos >= allowedNanos) {
                             failDrain(new TimeoutException(
