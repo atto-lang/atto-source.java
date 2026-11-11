@@ -62,8 +62,14 @@ check_cases() {
 }
 verify() {
   local receipt="$1" demo_sha="$2" compiler_sha="$3" demo="$4" status
-  [[ "$demo_sha" =~ ^[a-f0-9]{40}$ && "$compiler_sha" =~ ^[a-f0-9]{40}$ ]] ||
-    { reject 'invalid exact-head identifier'; return 1; }
+  local policy_sha="${ATTO_EXPECTED_POLICY_SHA:-}"
+  local run_id="${GITHUB_RUN_ID:-}" run_attempt="${GITHUB_RUN_ATTEMPT:-}" job="${GITHUB_JOB:-}"
+  [[ "$demo_sha" =~ ^[a-f0-9]{40}$ && "$compiler_sha" =~ ^[a-f0-9]{40}$ &&
+     "$policy_sha" =~ ^[a-f0-9]{40}$ ]] ||
+    { reject 'invalid exact demo/compiler/policy head identifier'; return 1; }
+  [[ "$run_id" =~ ^[0-9]{1,20}$ && "$run_attempt" =~ ^[1-9][0-9]{0,6}$ &&
+     "$job" == 'java-linked-guest' ]] ||
+    { reject 'missing/invalid GitHub Actions job-attempt identity'; return 1; }
   [[ -f "$receipt/identity.txt" && ! -L "$receipt/identity.txt" ]] ||
     { reject "missing identity receipt"; return 1; }
   [[ $(grep -Ec '^status=' "$receipt/identity.txt") -eq 1 ]] ||
@@ -74,6 +80,13 @@ verify() {
     { reject 'demo pin mismatch'; return 1; }
   grep -Fxq "compiler_head=$compiler_sha" "$receipt/identity.txt" ||
     { reject 'compiler pin mismatch'; return 1; }
+  # A successful receipt from an older GitHub run, another attempt or a
+  # different workflow job is not evidence for this execution.
+  for line in "policy_head=$policy_sha" "github_run_id=$run_id" \
+              "github_run_attempt=$run_attempt" "github_job=$job"; do
+    grep -Fxq "$line" "$receipt/identity.txt" ||
+      { reject "identity mismatch: ${line%%=*}"; return 1; }
+  done
   grep -Fxq 'positive_cases=3' "$receipt/identity.txt" ||
     { reject 'positive case count mismatch'; return 1; }
   grep -Fxq 'negative_cases=4' "$receipt/identity.txt" ||
