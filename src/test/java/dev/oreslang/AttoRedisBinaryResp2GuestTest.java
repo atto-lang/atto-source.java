@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Real compiler + Truffle actor execution of canonical Redis-repo .atto:
- * RESP2 incremental framing, typed KvCommand/KvReply, binary owned KV and
+ * RESP2 incremental framing, typed tuple command/reply mail, binary owned KV and
  * a real completion-driven NIO TCP listener. Java is only a test client.
  */
 final class AttoRedisBinaryResp2GuestTest {
@@ -223,12 +223,12 @@ final class AttoRedisBinaryResp2GuestTest {
         String code = source();
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(code));
         String typeBreak = code.replace(
-                "worker.send(new KvCommand(kind, key, value));",
+                "worker.send((kind, key, value));",
                 "worker.send(\"untyped text\");");
         assertNotEquals(code, typeBreak);
         assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(typeBreak),
-                "ActorMail<KvCommand> must reject string messages");
+                "ActorMail<Tuple<int,List<int>,List<int>>> must reject string messages");
         String ioBreak = code.replace("socket.read_bytes_async(1024)",
                 "socket.read_line()");
         assertNotEquals(code, ioBreak);
