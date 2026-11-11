@@ -6,20 +6,20 @@
 // Binary values/keys use List<int> (0..255); owned Bytes still needs a runtime type.
 
 define class KvCommand as
-  final int kind;
-  final List<int> key;
-  final List<int> value;
+  final int kind = 0;
+  final List<int> key = [];
+  final List<int> value = [];
 end
 
 define class KvReply as
-  final int kind;
-  final List<int> value;
+  final int kind = 0;
+  final List<int> value = [];
 end
 
 define class KvEntry as
-  final List<int> key;
-  final List<int> value;
-  final bool live;
+  final List<int> key = [];
+  final List<int> value = [];
+  final bool live = false;
 end
 
 define class RespReader as
@@ -35,7 +35,7 @@ define class RespReader as
   let List<List<int>> args = [];
 end
 
-pub fnc copy_bytes(List<int> bytes): List<int> {
+pub fnc copy_bytes(borrow List<int> bytes): List<int> {
   let List<int> copied = [];
   let int i = 0;
   loop {
@@ -45,7 +45,7 @@ pub fnc copy_bytes(List<int> bytes): List<int> {
   }
 }
 
-pub fnc same_bytes(List<int> left, List<int> right): bool {
+pub fnc same_bytes(borrow List<int> left, borrow List<int> right): bool {
   if left.size != right.size then return false; fi
   let int i = 0;
   loop {
@@ -55,7 +55,7 @@ pub fnc same_bytes(List<int> left, List<int> right): bool {
   }
 }
 
-pub fnc ascii_command(List<int> input, List<int> canonical): bool {
+pub fnc ascii_command(borrow List<int> input, List<int> canonical): bool {
   if input.size != canonical.size then return false; fi
   let int i = 0;
   loop {
@@ -69,19 +69,20 @@ pub fnc ascii_command(List<int> input, List<int> canonical): bool {
 
 // Output: 0 unknown/invalid arity, 1 PING, 2 GET, 3 SET, 4 DEL, 5 QUIT.
 // This only accepts exactly the supported arities, never a partial command.
-pub fnc command_kind(List<List<int>> args): int {
+pub fnc command_kind(borrow List<List<int>> args): int {
+  val command = args.get(0);
   if args.size == 1; do
-    if ascii_command(args.get(0), [80, 73, 78, 71]) then return 1; fi
-    if ascii_command(args.get(0), [81, 85, 73, 84]) then return 5; fi
+    if ascii_command(rt borrow command, [80, 73, 78, 71]) then return 1; fi
+    if ascii_command(rt borrow command, [81, 85, 73, 84]) then return 5; fi
     return 0;
   fi
   if args.size == 2; do
-    if ascii_command(args.get(0), [71, 69, 84]) then return 2; fi
-    if ascii_command(args.get(0), [68, 69, 76]) then return 4; fi
+    if ascii_command(rt borrow command, [71, 69, 84]) then return 2; fi
+    if ascii_command(rt borrow command, [68, 69, 76]) then return 4; fi
     return 0;
   fi
   if args.size == 3; do
-    if ascii_command(args.get(0), [83, 69, 84]) then return 3; fi
+    if ascii_command(rt borrow command, [83, 69, 84]) then return 3; fi
   fi
   return 0;
 }
@@ -89,7 +90,7 @@ pub fnc command_kind(List<List<int>> args): int {
 // The parser is a genuine byte-by-byte Atto state machine. It never treats
 // bulk payload CR/LF, NUL or invalid UTF-8 as delimiters and it never allocates
 // a declared oversized bulk body. Returns 0=incomplete, 1=frame, -1=invalid.
-pub fnc feed_resp2(RespReader r, int b): int {
+pub fnc feed_resp2(borrow mut RespReader r, int b): int {
   if b < 0 || b > 255 then return -1; fi
   r.bytes_total = r.bytes_total + 1;
   if r.bytes_total > 20576 then return -1; fi
@@ -166,7 +167,7 @@ pub fnc feed_resp2(RespReader r, int b): int {
   return -1;
 }
 
-pub fnc reset_resp2(RespReader r): void {
+pub fnc reset_resp2(borrow mut RespReader r): void {
   r.phase = 0;
   r.argc = 0;
   r.argc_digits = 0;
@@ -209,7 +210,7 @@ define actor BinaryKvActor as
       if i == self.entries.size then break; fi
       val entry = self.entries.get(i);
       if !entry.live && free_index == -1 then free_index = i; fi
-      if same_bytes(entry.key, cmd.key); do
+      if same_bytes(rt borrow entry.key, rt borrow cmd.key); do
         match_index = i;
         break;
       fi
@@ -220,12 +221,12 @@ define actor BinaryKvActor as
       if match_index == -1; do self.send(new KvReply(0, [])); return; fi
       val found = self.entries.get(match_index);
       if !found.live; do self.send(new KvReply(0, [])); return; fi
-      self.send(new KvReply(2, copy_bytes(found.value)));
+      self.send(new KvReply(2, copy_bytes(rt borrow found.value)));
       return;
     fi
 
     if cmd.kind == 3; do
-      val replacement = new KvEntry(copy_bytes(cmd.key), copy_bytes(cmd.value), true);
+      val replacement = new KvEntry(copy_bytes(rt borrow cmd.key), copy_bytes(rt borrow cmd.value), true);
       if match_index >= 0; do
         self.entries.set(match_index, replacement);
       elseif free_index >= 0; do
@@ -244,7 +245,7 @@ define actor BinaryKvActor as
       if match_index == -1; do self.send(new KvReply(4, [])); return; fi
       val existing = self.entries.get(match_index);
       if !existing.live; do self.send(new KvReply(4, [])); return; fi
-      self.entries.set(match_index, new KvEntry(copy_bytes(existing.key), [], false));
+      self.entries.set(match_index, new KvEntry(copy_bytes(rt borrow existing.key), [], false));
       self.send(new KvReply(3, []));
       return;
     fi
@@ -256,7 +257,7 @@ end
 
 // RESP bulk encoding in Atto: decimal length with no host itoa, UTF-8 or
 // parser shortcuts. The initial v1 byte API is still List<int>, not Bytes.
-pub fnc encode_bulk(List<int> value): List<int> {
+pub fnc encode_bulk(borrow List<int> value): List<int> {
   let List<int> out = [36];
   let int left = value.size;
   let int divisor = 10000;
@@ -294,7 +295,7 @@ pub fnc encode_bulk(List<int> value): List<int> {
 pub fnc encode_reply(KvReply reply): List<int> {
   if reply.kind == 0 then return [36, 45, 49, 13, 10]; fi
   if reply.kind == 1 then return [43, 79, 75, 13, 10]; fi
-  if reply.kind == 2 then return encode_bulk(reply.value); fi
+  if reply.kind == 2 then return encode_bulk(rt borrow reply.value); fi
   if reply.kind == 3 then return [58, 49, 13, 10]; fi
   if reply.kind == 4 then return [58, 48, 13, 10]; fi
   if reply.kind == 5 then return [43, 80, 79, 78, 71, 13, 10]; fi
@@ -320,7 +321,7 @@ pub async routine main(): void {
     let int i = 0;
     loop {
       if i == chunk.size then break; fi
-      val int state = feed_resp2(reader, chunk.get(i));
+      val int state = feed_resp2(rt mut borrow reader, chunk.get(i));
       if state == -1; do
         await socket.write_bytes_async([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]);
         await socket.close_async();
@@ -330,7 +331,7 @@ pub async routine main(): void {
         return;
       fi
       if state == 1; do
-        val int kind = command_kind(reader.args);
+        val int kind = command_kind(rt borrow reader.args);
         if kind == 5; do
           await socket.write_bytes_async([43, 79, 75, 13, 10]);
           await socket.close_async();
@@ -341,12 +342,12 @@ pub async routine main(): void {
         fi
         let List<int> key = [];
         let List<int> value = [];
-        if reader.args.size >= 2 then key = copy_bytes(reader.args.get(1)); fi
-        if reader.args.size >= 3 then value = copy_bytes(reader.args.get(2)); fi
+        if reader.args.size >= 2 then val selected_key = reader.args.get(1); key = copy_bytes(rt borrow selected_key); fi
+        if reader.args.size >= 3 then val selected_value = reader.args.get(2); value = copy_bytes(rt borrow selected_value); fi
         worker.send(new KvCommand(kind, key, value));
         val output = (await worker.outputs.next()).value.unwrap();
         await socket.write_bytes_async(encode_reply(output.value));
-        reset_resp2(reader);
+        reset_resp2(rt mut borrow reader);
       fi
       i = i + 1;
     }
