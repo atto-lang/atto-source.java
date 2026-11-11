@@ -5121,7 +5121,9 @@ public final class Parser {
             consume(LBRACKET, "expected '[' after arr");
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
             consume(RBRACKET, "expected ']' after arr literal");
-            return new Ast.ListExpr(items);
+            // arr[...] is an explicit array constructor, unlike bare [...].
+            // Do not permit contextual coercion to a finite Tuple type.
+            return new Ast.ListExpr(items, true);
         }
         if (match(NLEX)) {
             if (check(PIPE)) return parsePipeLambda(true);
