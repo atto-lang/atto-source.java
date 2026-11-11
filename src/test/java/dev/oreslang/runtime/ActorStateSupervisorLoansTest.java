@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,8 +30,7 @@ final class ActorStateSupervisorLoansTest {
         final AtomicReference<ActorStateSupervisorLoans> region = new AtomicReference<>();
         final ConcurrentLinkedQueue<ActorStateSupervisorLoans.Grant> grants =
                 new ConcurrentLinkedQueue<>();
-        final AtomicReference<ActorStateSupervisorLoans.Loan> actorLoan =
-                new AtomicReference<>();
+        final AtomicInteger ownerReadOperations = new AtomicInteger();
         final AtomicReference<Throwable> denied = new AtomicReference<>();
         final ActorRuntime.ActorRef<String> worker;
 
@@ -53,9 +53,29 @@ final class ActorStateSupervisorLoansTest {
                                     denied.set(rejected);
                                 }
                             }
-                            case "owner-read" -> actorLoan.set(
-                                    region.get().ownerReadAsync().join());
-                            case "owner-release" -> actorLoan.get().close();
+                            case "owner-read" -> {
+                                try {
+                                    region.get().withOwnerRead(ownerReadOperations::incrementAndGet);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "owner-write-throw" -> {
+                                try {
+                                    region.get().withOwnerWrite(() -> {
+                                        throw new IllegalStateException("injected owner handler failure");
+                                    });
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "quota" -> {
+                                try {
+                                    region.get().delegateRead(supervisor);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
                             default -> throw new IllegalArgumentException(message);
                         }
                     });
@@ -124,10 +144,14 @@ final class ActorStateSupervisorLoansTest {
             assertEquals(1, region.outstandingGrantCount(),
                     "rejection by a foreign supervisor must not consume grant");
 
+            sendAndDrain(fixture.worker, "create");
             var secondRegion = fixture.region.get();
+            assertNotSame(region, secondRegion);
+            assertThrows(SecurityException.class,
+                    () -> secondRegion.redeem(grant, fixture.supervisor),
+                    "a token from one actor region cannot be replayed into another");
             // A separate region requires an independently minted token.
             var loan = region.redeem(grant, fixture.supervisor).join();
-            assertSame(region, secondRegion);
             assertEquals(0, region.outstandingGrantCount());
             assertEquals(1, region.activeReaders());
             assertThrows(SecurityException.class,
@@ -168,22 +192,37 @@ final class ActorStateSupervisorLoansTest {
     }
 
     @Test
-    void actorOwnedReadAndDelegatedWriteShareOneLockDomain() throws Exception {
+    void actorOwnedReadIsLexicalAndFailsFastAgainstDelegatedWrite() throws Exception {
         try (var fixture = new Fixture()) {
             var region = fixture.create();
-            sendAndDrain(fixture.worker, "owner-read");
-            assertEquals(1, region.activeReaders());
-            assertThrows(SecurityException.class,
-                    () -> fixture.actorLoan.get().close(),
-                    "host must not terminate another actor turn's read loan");
-
             var grant = fixture.issue("write");
-            var pending = region.redeem(grant, fixture.supervisor);
-            assertFalse(pending.isDone());
-            sendAndDrain(fixture.worker, "owner-release");
-            pending.join().close();
-            assertEquals(0, region.activeReaders());
+            var writer = region.redeem(grant, fixture.supervisor).join();
+            sendAndDrain(fixture.worker, "owner-read");
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get(),
+                    "owner turn must not park its carrier to await supervisor write");
+            assertEquals(0, fixture.ownerReadOperations.get());
+            assertEquals(1, region.activeWriters());
+
+            writer.close();
+            fixture.denied.set(null);
+            sendAndDrain(fixture.worker, "owner-read");
+            assertNull(fixture.denied.get());
+            assertEquals(1, fixture.ownerReadOperations.get());
+            assertEquals(0, region.activeReaders(),
+                    "owner read must be released before mailbox turn exits");
+        }
+    }
+
+    @Test
+    void failedLexicalOwnerHandlerStillReleasesItsExclusiveLoan() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            sendAndDrain(fixture.worker, "owner-write-throw");
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get());
             assertEquals(0, region.activeWriters());
+            assertEquals(0, region.pendingCount());
+            sendAndDrain(fixture.worker, "owner-read");
+            assertEquals(1, fixture.ownerReadOperations.get());
         }
     }
 
@@ -236,12 +275,10 @@ final class ActorStateSupervisorLoansTest {
                 tokens.add(fixture.issue("read"));
             }
             assertEquals(64, region.outstandingGrantCount());
-            assertThrows(java.util.concurrent.ExecutionException.class, () -> {
-                // quota rejection is thrown from the actor message handler.
-                fixture.worker.send("read");
-                fixture.worker.drain().get(5, TimeUnit.SECONDS);
-            });
-            assertEquals(64, region.outstandingGrantCount());
+            sendAndDrain(fixture.worker, "quota");
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get());
+            assertEquals(64, region.outstandingGrantCount(),
+                    "failed issue cannot enlarge the capability ledger");
         }
     }
 }
