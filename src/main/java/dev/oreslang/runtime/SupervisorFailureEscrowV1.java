@@ -97,6 +97,27 @@ final class SupervisorFailureEscrowV1 {
         nodes.put(id, new Cell(id, parentId, generation, reserve(), parent.depth + 1));
     }
 
+    /** Revoke a RESERVED but NEVER PUBLISHED child. Must execute under the
+     * bridge publication monitor before a supervisor can publish failure.
+     * A live/published or terminal CONTROL node must never be erased. */
+    synchronized void rollbackUnpublishedChild(long id, long parentId, long generation) {
+        Cell cell = requireNode(id);
+        if (id == rootId || cell.parentId != parentId
+                || cell.generation != generation || !cell.alive || cell.fenced
+                || cell.pending || cell.terminal != null || cell.dataInFlight != 0
+                || cell.dataCommitted != 0 || cell.dataAborted != 0) {
+            throw new IllegalStateException("cannot roll back a published CONTROL child");
+        }
+        for (Cell other : nodes.values()) {
+            if (other.parentId == id) {
+                throw new IllegalStateException("cannot revoke a child with descendants");
+            }
+        }
+        if (nodes.remove(id) != cell) {
+            throw new IllegalStateException("CONTROL rollback identity changed");
+        }
+    }
+
     /** In-flight descendants may themselves fail after an ancestor is fenced. */
     synchronized Notice fail(long id) {
         Cell cell = requireNode(id);
