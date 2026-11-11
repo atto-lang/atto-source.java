@@ -137,7 +137,7 @@ final class ActorStateSupervisorLoansTest {
             assertThrows(SecurityException.class,
                     () -> region.delegateRead(fixture.supervisor));
             assertThrows(SecurityException.class,
-                    () -> region.ownerReadAsync());
+                    () -> region.withOwnerRead(() -> { }));
             assertEquals(0, region.activeReaders());
         }
     }
