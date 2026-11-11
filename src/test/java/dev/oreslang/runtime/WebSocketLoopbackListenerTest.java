@@ -62,6 +62,126 @@ final class WebSocketLoopbackListenerTest {
         }
     }
 
+    /**
+     * Genuine source ActorCodeExecutor mailbox dispatch and TCP transport,
+     * but the executor here is a HOST FIXTURE, not parsed/compiled EchoActor.atto.
+     */
+    @Test
+    void sourceActorTextEntersActualSourceReceiveMailbox() throws Exception {
+        var received = new java.util.concurrent.CountDownLatch(1);
+        var deliveries = new java.util.concurrent.atomic.AtomicInteger();
+        try (var store = new SharedCodeImageStore();
+             var actors = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("app/echo.atto",
+                    dev.oreslang.parser.Parser.parse(
+                            "pub routine main(): void { return; }"));
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String name, ActorRuntime.ActorContext<Object> context) {
+                    assertEquals("EchoActor", name);
+                    return () -> context.self().id();
+                }
+                @Override public void receiveActor(
+                        String name, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    assertEquals("EchoActor", name);
+                    assertEquals(context.self().id(), state.ownerActorId());
+                    assertEquals(context.self().id(), mail.recipient());
+                    assertEquals(mail, context.currentMail().orElseThrow());
+                    assertEquals("hello", mail.value());
+                    assertEquals(0L, mail.sequence());
+                    deliveries.incrementAndGet();
+                    context.runtime().emitCurrentActorOutput("echo:" + mail.value());
+                    received.countDown();
+                }
+            };
+            ActorRuntime.ActorRef<Object> actor = actors.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    executor, "EchoActor");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            var outputStream = actor.outputs();
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, actor.address(), actor::isAlive);
+                    sendMaskedText(client, "hello");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertTrue(conn.dispatchHostSourceActorText(
+                            handle, tenant, actors, actor));
+                    assertTrue(received.await(3, TimeUnit.SECONDS));
+                    assertEquals(1, deliveries.get());
+                    assertEquals(0, conn.pendingActorTicketCount());
+                    var result = outputStream.next().get(3, TimeUnit.SECONDS);
+                    assertFalse(result.done());
+                    assertEquals(actor.id(), result.value().actorId());
+                    assertEquals("echo:hello", result.value().value());
+                    // For now this last outbound hop is a trusted host relay;
+                    // guest output-to-wire still needs its runtime-owned binder.
+                    conn.sendTextForActorAsync(handle, tenant, actor.address(),
+                            (String) result.value().value())
+                            .get(3, TimeUnit.SECONDS);
+                    byte[] expected = "echo:hello".getBytes(StandardCharsets.UTF_8);
+                    byte[] frame = client.getInputStream()
+                            .readNBytes(expected.length + 2);
+                    assertEquals(0x81, Byte.toUnsignedInt(frame[0]));
+                    assertEquals(expected.length, Byte.toUnsignedInt(frame[1]));
+                    assertArrayEquals(expected,
+                            java.util.Arrays.copyOfRange(frame, 2, frame.length));
+                    conn.close();
+                }
+            } finally {
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
+    void sourceActorBridgeRejectsHostBehaviorBeforeDequeue() throws Exception {
+        try (var actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> host = actors.spawnPrivateTrusted(
+                    context -> (mail, turn) -> fail("not a source actor"));
+            host.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, host.address(), host::isAlive);
+                    sendMaskedText(client, "refuse");
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, host.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertThrows(SecurityException.class,
+                            () -> conn.dispatchHostSourceActorText(
+                                    handle, tenant, actors, host));
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "rejection must occur before any physical ticket loan");
+                    conn.close();
+                }
+            } finally {
+                host.cancel();
+            }
+        }
+    }
+
     @Test
     void hostActorOutputTraversesAuthenticatedWebSocketAsText() throws Exception {
         try (var actors = new ActorRuntime()) {
