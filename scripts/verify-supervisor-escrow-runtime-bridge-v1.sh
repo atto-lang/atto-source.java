@@ -2,6 +2,16 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+actual_head="$(git rev-parse HEAD)"
+if [[ -n "${EXPECTED_HEAD:-}" && "$actual_head" != "$EXPECTED_HEAD" ]]; then
+  printf 'WRONG_TESTED_HEAD expected=%s actual=%s\n' "$EXPECTED_HEAD" "$actual_head" >&2
+  exit 5
+fi
+printf 'SUPERVISOR_TESTED_COMMIT=%s\n' "$actual_head"
+java -version 2>&1 | head -n 3
+javac -version 2>&1
+mvn -version | head -n 4
+
 verify_blob() {
   local path="$1" expected="$2" actual
   actual="$(git hash-object "$path")"
@@ -36,3 +46,7 @@ for spec in 'SupervisorFailureEscrowRuntimeIntegrationTest:3' 'SupervisorEscrowS
   done
 done
 echo 'PASS exact-source supervisor runtime bridge: 16 real ActorRuntime JUnit tests, 0 failed/errored/skipped'
+test "$(git rev-parse HEAD)" = "$actual_head" || {
+  echo 'GIT_HEAD_CHANGED_DURING_TEST' >&2; exit 6;
+}
+printf 'SUPERVISOR_VERIFIED_EXACT_HEAD=%s\n' "$actual_head"
