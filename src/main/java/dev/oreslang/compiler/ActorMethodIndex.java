@@ -43,17 +43,19 @@ public final class ActorMethodIndex {
             boolean generic,
             boolean structural,
             boolean checkedEffects,
-            boolean abstractMethod) {
+            boolean abstractMethod,
+            boolean unloweredExternal) {
         public MethodSignature {
             argumentTypes = List.copyOf(argumentTypes);
             mutableArguments = List.copyOf(mutableArguments);
         }
         /** Eligibility for static declaration-only nominal contract matching.
-         * Never a proof of actual actor mailbox or ownership execution. */
+         * Out-of-line bodies without full type/effect proof remain ineligible.
+         * Never a proof of actor mailbox or ownership execution. */
         public boolean declarationEligible() {
             return visibility == Ast.Visibility.PUBLIC
                     && !async && !suspends && !generic && !structural
-                    && !checkedEffects && !abstractMethod;
+                    && !checkedEffects && !abstractMethod && !unloweredExternal;
         }
     }
 
@@ -155,7 +157,7 @@ public final class ActorMethodIndex {
                                     method.structural() || method.parameters().stream()
                                             .anyMatch(Ast.Param::structural)
                                             || method.explicitReceiverType() != null,
-                                    !method.effects().isEmpty(), method.isAbstract());
+                                    !method.effects().isEmpty(), method.isAbstract(), false);
                             if (slots.putIfAbsent(key, signature) != null) {
                                 throw new IllegalArgumentException(
                                         "duplicate actor method slot '" + actorName + "."
@@ -197,7 +199,7 @@ public final class ActorMethodIndex {
                     binding.methodUnit(), method.visibility(),
                     method.parameters().stream().map(Ast.Param::type).toList(),
                     method.parameters().stream().map(Ast.Param::mutable).toList(),
-                    method.returnType(), false, false, false, false, false, false);
+                    method.returnType(), false, false, false, false, false, false, true);
             if (slots.putIfAbsent(methodKey, signature) != null) {
                 throw new IllegalArgumentException(
                         "duplicate inline/out-of-line actor method slot: " + methodKey);
