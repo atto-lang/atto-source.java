@@ -31,6 +31,11 @@ public class SingletonDependencyGraphSmoke {
     g.begin("z");for(int i=0;i<64;i++)g.dependOn("dep"+i);
     fail(()->g.dependOn("extra"),"quota");g.finish("z");
     g.begin("z");g.dependOn("extra");g.finish("z");ok(true,"cleanup");
+    // The 65th nested initializer fails before pushing or leaking a key.
+    for(int i=0;i<64;i++)g.begin("nested"+i);
+    fail(()->g.begin("overflow"),"depth exceeded");
+    for(int i=63;i>=0;i--)g.finish("nested"+i);
+    g.begin("after-limit");g.finish("after-limit");ok(true,"depth cleanup");
     System.out.println("PASS checks="+checks);
   }
 }
