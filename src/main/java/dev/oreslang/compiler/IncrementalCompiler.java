@@ -506,7 +506,8 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.actorContract() ? "actor-contract "
+                    : iface.moduleContract() ? "contract " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
