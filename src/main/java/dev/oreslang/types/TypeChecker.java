@@ -4060,6 +4060,11 @@ public final class TypeChecker {
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
+            if (call.callee() instanceof Ast.LambdaExpr && fn.result() == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "immediately invoked lambda requires a statically known return type; "
+                                + "declare its result type for complex control-flow bodies");
+            }
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
@@ -4907,19 +4912,38 @@ public final class TypeChecker {
                     }
                     result = declaredLambdaResult;
                 } else {
-                    // A one-expression return block has an unambiguous result
-                    // type. Infer it without inventing a return type for more
-                    // complex control flow, and still check the complete block.
-                    // This preserves source-level |args| -> { return expr; }
-                    // as a callable whose result can be used in typed code.
-                    if (lambda.blockBody().size() == 1
-                            && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
-                            && returned.value() != null) {
-                        Type inferredReturn = typeOf(returned.value(), lambdaEnv, generics, self);
-                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, inferredReturn, self);
+                    // Infer a terminal direct return even with lexical prefix
+                    // statements. The result expression must see locals defined
+                    // in the prefix, but the prefix may not contain hidden early
+                    // function returns. For complex control-flow bodies require
+                    // an explicit lambda return type for an immediate call.
+                    List<Ast.Stmt> body = lambda.blockBody();
+                    boolean terminalReturn = !body.isEmpty()
+                            && body.getLast() instanceof Ast.ReturnStmt returned
+                            && returned.value() != null;
+                    boolean simplePrefix = terminalReturn
+                            && body.subList(0, body.size() - 1).stream().allMatch(statement ->
+                                    statement instanceof Ast.BindingStmt
+                                            || statement instanceof Ast.ExprStmt
+                                            || statement instanceof Ast.DeferStmt);
+                    if (simplePrefix) {
+                        Ast.ReturnStmt returned = (Ast.ReturnStmt) body.getLast();
+                        Env inferenceEnv = new Env(lambdaEnv);
+                        Env oldScope = currentTypeScope;
+                        currentTypeScope = inferenceEnv;
+                        Type inferredReturn;
+                        try {
+                            checkStatementsInExistingScope(
+                                    body.subList(0, body.size() - 1), inferenceEnv,
+                                    generics, Primitive.VOID, self);
+                            inferredReturn = typeOf(returned.value(), inferenceEnv, generics, self);
+                        } finally {
+                            currentTypeScope = oldScope;
+                        }
+                        checkCallableBlock(body, lambdaEnv, generics, inferredReturn, self);
                         result = inferredReturn;
                     } else {
-                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+                        checkCallableBlock(body, lambdaEnv, generics, Unknown.INSTANCE, self);
                         result = Unknown.INSTANCE;
                     }
                 }
@@ -8345,8 +8369,13 @@ public final class TypeChecker {
                 && call.callee() instanceof Ast.LambdaExpr lambda
                 && lambda.parameters().size() == call.arguments().size()
                 && lambda.expressionBody() == null
-                && lambda.blockBody().size() == 1
-                && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned) {
+                && !lambda.blockBody().isEmpty()
+                && lambda.blockBody().getLast() instanceof Ast.ReturnStmt returned
+                && lambda.blockBody().subList(0, lambda.blockBody().size() - 1)
+                        .stream().allMatch(statement ->
+                                statement instanceof Ast.BindingStmt
+                                        || statement instanceof Ast.ExprStmt
+                                        || statement instanceof Ast.DeferStmt)) {
             return isEmptyListValue(returned.value());
         }
         return false;
