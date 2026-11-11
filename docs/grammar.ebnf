@@ -61,10 +61,13 @@ actor_callable_decl
    execution. Canonical receiver-first and legacy name-first spellings have
    the same AST identity. Neither grants runtime receiver authority. *)
 external_actor_method_decl
-                = "define" visibility "mtd"
+                = [ "define" ] visibility [ "external" ] "mtd"
                   ( "(" type_ref IDENT ")" callable_name
                   | callable_name "(" type_ref IDENT ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
+(* For nominal actor receiver methods named init or receive, the explicit
+   external marker is mandatory. init: private () -> void; receive:
+   private (ActorMail<T>) -> void. Both are compiler-owned ingress only. *)
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]

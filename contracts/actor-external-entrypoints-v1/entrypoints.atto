@@ -1,0 +1,9 @@
+namespace foo;
+// Activation-only ingress. Not an ordinary callable method.
+external mtd (Foo f) init(): void {
+    return;
+}
+// Mailbox-only ingress. Never a direct or captured method call.
+external mtd (Foo f) receive(ActorMail<int> mail): void {
+    return;
+}

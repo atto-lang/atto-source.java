@@ -8,6 +8,9 @@ on:
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
       - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/ActorExternalEntrypointTest.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'contracts/actor-external-entrypoints-v1/**'
       - 'contracts/cross-file-actor-mtd-v1/**'
       - '.github/workflows/cross-file-actor-mtd-junit.yml'
   workflow_dispatch:
@@ -61,7 +64,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest,ActorExternalEntrypointTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -70,7 +73,8 @@ jobs:
           for suite in \
               CrossFileActorReceiverBindingTest \
               ActorReceiverBinderTest \
-              ExternalActorReceiverAstAdmissionTest; do
+              ExternalActorReceiverAstAdmissionTest \
+              ActorExternalEntrypointTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             test -s "$report"
             grep -q '<testcase ' "$report"

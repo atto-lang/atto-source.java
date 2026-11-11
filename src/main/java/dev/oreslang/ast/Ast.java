@@ -155,7 +155,15 @@ public final class Ast {
     public record ExternalActorMethodDecl(
             String actorName, String receiverName, String name,
             Visibility visibility, List<Param> parameters,
-            TypeRef returnType, List<Stmt> body) implements Decl {
+            TypeRef returnType, List<Stmt> body,
+            boolean runtimeExternal) implements Decl {
+        // Compatibility constructor: unmarked methods are NOT runtime ingress.
+        public ExternalActorMethodDecl(
+                String actorName, String receiverName, String name,
+                Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body) {
+            this(actorName, receiverName, name, visibility, parameters, returnType, body, false);
+        }
         public ExternalActorMethodDecl {
             if (actorName == null || actorName.isBlank()
                     || receiverName == null || receiverName.isBlank()

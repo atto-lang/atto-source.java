@@ -140,20 +140,20 @@ final class ActorReceiverBinderTest {
     @Test
     void publicReceiveMustNotBePromotedToMailboxApi() {
         rejects(module(actor()
-                + "  define pub mtd receive(Worker w)(ActorMail<int> mail): void { return; }\n"),
+                + "  define pub external mtd receive(Worker w)(ActorMail<int> mail): void { return; }\n"),
                 "external receive must be private");
     }
 
     @Test
     void validPrivateReceiveHookShapeIsBoundButNotExecutable() {
         assertEquals(1, bind(module(actor()
-                + "  define mtd receive(Worker w)(ActorMail<int> mail): void { return; }\n")).size());
+                + "  define external mtd receive(Worker w)(ActorMail<int> mail): void { return; }\n")).size());
     }
 
     @Test
     void wrongMailboxPayloadIsRejectedBeforeRuntimeLowering() {
         rejects(module(actor()
-                + "  define mtd receive(Worker w)(int value): void { return; }\n"),
+                + "  define external mtd receive(Worker w)(int value): void { return; }\n"),
                 "external receive must be private");
     }
 

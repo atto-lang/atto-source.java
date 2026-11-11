@@ -179,11 +179,26 @@ public final class Parser {
                 continue;
             }
 
+            // 'external' is a contextual actor receiver ingress marker, never
+            // an unscoped function/visibility capability. 'define' is optional.
+            if (isContextualIdentifier("external") && checkNextLexeme("mtd")) {
+                advance();
+                rootDeclarations.add(parseExternalActorMethod(annotations, modifiers, true));
+                continue;
+            }
+            if (isExternalActorMethodHead()) {
+                rootDeclarations.add(parseExternalActorMethod(annotations, modifiers, false));
+                continue;
+            }
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                boolean runtimeExternal = matchContextualKeyword("external");
                 if (isExternalActorMethodHead()) {
-                    rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    rootDeclarations.add(parseExternalActorMethod(annotations, modifiers, runtimeExternal));
                     continue;
+                }
+                if (runtimeExternal) {
+                    throw error(previous(), "'external' is allowed only for nominal actor mtd declarations");
                 }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
@@ -435,10 +450,21 @@ public final class Parser {
             return parseDefinedInterface(modifiers.visibility, INTERFACE);
         }
 
+        if (isContextualIdentifier("external") && checkNextLexeme("mtd")) {
+            advance();
+            return parseExternalActorMethod(annotations, modifiers, true);
+        }
+        if (isExternalActorMethodHead()) {
+            return parseExternalActorMethod(annotations, modifiers, false);
+        }
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            boolean runtimeExternal = matchContextualKeyword("external");
             if (isExternalActorMethodHead()) {
-                return parseExternalActorMethod(annotations, modifiers);
+                return parseExternalActorMethod(annotations, modifiers, runtimeExternal);
+            }
+            if (runtimeExternal) {
+                throw error(previous(), "'external' is allowed only for nominal actor mtd declarations");
             }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
@@ -654,7 +680,7 @@ public final class Parser {
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
-            List<Ast.Annotation> annotations, Modifiers modifiers) {
+            List<Ast.Annotation> annotations, Modifiers modifiers, boolean runtimeExternal) {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
@@ -676,6 +702,10 @@ public final class Parser {
         if (receiverFirst) {
             name = consumeCallableName("expected external actor method name after receiver");
         }
+        if ((name.equals("init") || name.equals("receive")) && !runtimeExternal) {
+            throw error(previous(), "ACTOR_ENTRYPOINT_EXTERNAL_REQUIRED: actor "
+                    + name + " requires explicit 'external mtd' runtime ingress");
+        }
         if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
                 "on_recover").contains(name)) {
             throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
@@ -696,7 +726,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body);
+                modifiers.visibility, parameters, returns, body, runtimeExternal);
     }
 
     private Ast.ClassDecl parseClass(

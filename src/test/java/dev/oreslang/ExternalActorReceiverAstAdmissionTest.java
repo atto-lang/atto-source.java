@@ -38,7 +38,7 @@ final class ExternalActorReceiverAstAdmissionTest {
     void moduleScopedExternalMtdPreservesItsDeclarationKind() {
         assertInstanceOf(Ast.ExternalActorMethodDecl.class,
                 declaration("define module workers as\n"
-                        + "  define mtd receive(Worker worker)(int value): void { return; }\n"
+                        + "  define external mtd receive(Worker worker)(int value): void { return; }\n"
                         + "end\n"));
     }
 

@@ -355,6 +355,13 @@ public final class ActorReceiverBinder {
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
         String name = method.name();
+        // Independent validation is required: embedding tools may construct
+        // an AST without passing through the production parser.
+        if ((name.equals("init") || name.equals("receive")) && !method.runtimeExternal()) {
+            throw new IllegalArgumentException(
+                    "ACTOR_ENTRYPOINT_EXTERNAL_REQUIRED: actor " + name
+                            + " requires explicit external ingress");
+        }
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
             throw new IllegalArgumentException(
@@ -375,7 +382,7 @@ public final class ActorReceiverBinder {
                         "external receive must be private and accept one "
                                 + "ActorMail<T> argument with void return");
             }
-        } else if (name.equals("on_start") || name.equals("tear_down")) {
+        } else if (name.equals("init") || name.equals("on_start") || name.equals("tear_down")) {
             if (method.visibility() != Ast.Visibility.PRIVATE
                     || !method.parameters().isEmpty()
                     || !isVoid(method.returnType())) {
