@@ -28,6 +28,67 @@ class NativeHttpTest {
         assertFalse(NativeHttp.mayBeginDispatch(false, true));
     }
 
+    @Test void requestPermitRetirementWaitsForDispatchLeaseAndPhysicalActorExit() {
+        // Production State.release() invokes this predicate under its State
+        // monitor. All eight combinations are part of the shutdown contract.
+        for (boolean transportClosed : new boolean[]{false, true}) {
+            for (boolean dispatchInProgress : new boolean[]{false, true}) {
+                for (boolean actorPhysicallyDone : new boolean[]{false, true}) {
+                    boolean expected = transportClosed && !dispatchInProgress && actorPhysicallyDone;
+                    assertEquals(expected, NativeHttp.canRetireRequest(
+                                    transportClosed, dispatchInProgress, actorPhysicallyDone),
+                            "transportClosed=" + transportClosed
+                                    + ", dispatchInProgress=" + dispatchInProgress
+                                    + ", actorPhysicallyDone=" + actorPhysicallyDone);
+                }
+            }
+        }
+        assertFalse(NativeHttp.canRetireRequest(true, true, true),
+                "response close during handoff cannot release request admission");
+        assertFalse(NativeHttp.canRetireRequest(true, false, false),
+                "handoff alone cannot retire an actor with active physical carrier");
+        assertTrue(NativeHttp.canRetireRequest(true, false, true));
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(16)
+    @org.junit.jupiter.api.Timeout(8)
+    void concurrentTimeoutDuringDispatchHandoffNeverRetiresEarly() throws Exception {
+        var handoffStarted = new CountDownLatch(1);
+        var releaseHandoff = new CountDownLatch(1);
+        var inDispatch = new java.util.concurrent.atomic.AtomicBoolean();
+        var retired = new java.util.concurrent.atomic.AtomicInteger();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> selectedWorker = executor.submit(() -> {
+                inDispatch.set(true);
+                handoffStarted.countDown();
+                try {
+                    if (!releaseHandoff.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("handoff signal lost");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                } finally {
+                    inDispatch.set(false);
+                }
+            });
+            try {
+                assertTrue(handoffStarted.await(5, TimeUnit.SECONDS));
+                // Timeout closes the transport while a selected worker is
+                // not yet associated with the HTTP State; actor completion
+                // cannot make its reservation prematurely reusable.
+                if (NativeHttp.canRetireRequest(true, inDispatch.get(), true)) {
+                    retired.incrementAndGet();
+                }
+                assertEquals(0, retired.get());
+            } finally {
+                releaseHandoff.countDown();
+            }
+            selectedWorker.get(5, TimeUnit.SECONDS);
+            assertTrue(NativeHttp.canRetireRequest(true, inDispatch.get(), true));
+        }
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
