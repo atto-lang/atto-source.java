@@ -1751,6 +1751,22 @@ public final class TypeChecker {
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
             }
 
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("tear_down")) {
+                // Defense in depth: AST producers and compiler transformations
+                // must not turn supervisor-owned teardown into an ordinary
+                // public actor method even if they bypass the source parser.
+                if (method.visibility() == Ast.Visibility.PUBLIC
+                        || method.isStatic() || method.isAbstract()
+                        || method.async() || method.suspends()
+                        || !method.effects().isEmpty()
+                        || method.arity() != 0
+                        || !method.genericParameters().isEmpty()
+                        || !method.returnType().equals(Ast.TypeRef.simple("void"))) {
+                    throw new IllegalArgumentException(
+                            "actor tear_down is a private synchronous runtime-only lifecycle hook");
+                }
+            }
             boolean actorStartupHook = method.name().equals("on_start");
             boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
                     && method.name().equals("receive");
