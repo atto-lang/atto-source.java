@@ -72,12 +72,6 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
-    /**
-     * The ActorExecutionContext covers a throughput batch. Neuron state
-     * authority must be narrower: one admitted mailbox envelope or the
-     * actor's startup initialization, never the entire batch.
-     */
-    private static final ThreadLocal<Object> CURRENT_NEURON_SCALAR_SCOPE = new ThreadLocal<>();
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -302,16 +296,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRef<?> actor;
         private final Object executionDomain;
         private final ActorExecutionContext turnContext;
-        private final Object envelopeScope;
+        private final long scopeEpoch;
 
         private NeuronActorTurnProof(ActorRuntime runtime, ActorRef<?> actor,
                 Object executionDomain, ActorExecutionContext turnContext,
-                Object envelopeScope) {
+                long scopeEpoch) {
             this.runtime = runtime;
             this.actor = actor;
             this.executionDomain = executionDomain;
             this.turnContext = turnContext;
-            this.envelopeScope = envelopeScope;
+            this.scopeEpoch = scopeEpoch;
         }
 
         ActorRuntime runtime() { return runtime; }
@@ -320,8 +314,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         boolean validOnCurrentTurn() {
             if (CURRENT_ACTOR_EXECUTION.get() != turnContext
-                    || envelopeScope == null
-                    || CURRENT_NEURON_SCALAR_SCOPE.get() != envelopeScope
+                    || scopeEpoch <= 0
                     || turnContext.kind() != ActorKind.SHARED
                     || turnContext.runtime() != runtime
                     || !turnContext.actorId().equals(actor.id())
@@ -334,19 +327,20 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 return !cell.stopped.get() && !cell.finalized
                         && !cell.forceKillFenced && !runtime.closed.get()
+                        && cell.neuronScopeEpoch == scopeEpoch
                         && cell.activeTurns == 1 && cell.carrierActive
                         && cell.carrierOwnerThread == Thread.currentThread()
                         && cell.scheduled.get();
             }
         }
 
-        /** Identity-only logical handler key, verified again on every access. */
+        /** Stable owner key, with per-envelope scope epoch checked above. */
         Object checkedHandlerIdentity() {
             if (!validOnCurrentTurn()) {
                 throw new SecurityException(
                         "neuron protected state requires an admitted live shared actor turn");
             }
-            return envelopeScope;
+            return actor;
         }
     }
 
@@ -367,7 +361,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         NeuronActorTurnProof proof = new NeuronActorTurnProof(
                 current.runtime(), cell.ref, cell.executionDomain, current,
-                CURRENT_NEURON_SCALAR_SCOPE.get());
+                cell.neuronScopeEpoch);
         if (!proof.validOnCurrentTurn()) {
             throw new SecurityException(
                     "neuron proof requires an admitted physical actor turn");
@@ -8477,6 +8471,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorRef<M> ref;
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
+        /** One monotonic scope for activation, then each mailbox command.
+         *  Reuse cannot authorize a stale neuron critical-state loan. */
+        private long neuronScopeEpoch;
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
@@ -9565,6 +9562,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void advanceNeuronScopeEpoch() {
+            if (neuronScopeEpoch == Long.MAX_VALUE) {
+                throw new IllegalStateException("neuron actor message scope sequence exhausted");
+            }
+            neuronScopeEpoch++;
+        }
+
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
             // A nested physical dispatch on this thread (including into a
@@ -9586,6 +9590,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
                 if (!turnActive) return;
+                advanceNeuronScopeEpoch();
                 watchdogLease = ActorTurnWatchdog.enter(
                         lease -> recordWatchdogOverrun(this, lease));
 
@@ -9621,8 +9626,6 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() && !sourceStopCleanupActive) return;
 
                 if (!stopped.get() && behavior == null && codeActorState == null) {
-                    CURRENT_NEURON_SCALAR_SCOPE.set(new Object());
-                    try {
                     if (codeExecutor != null) {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
@@ -9649,9 +9652,6 @@ public final class ActorRuntime implements AutoCloseable {
                             validatePrivateBehaviorState(ref.id(), created);
                         }
                         behavior = created;
-                    }
-                    } finally {
-                        CURRENT_NEURON_SCALAR_SCOPE.remove();
                     }
                     // The startup outcome is linearized under the actor
                     // lifecycle monitor, but OresFuture settlement drains
@@ -9697,9 +9697,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
                     // close/permit release across every dispatch path.
+                    advanceNeuronScopeEpoch();
                     try (MessageEnvelope activeEnvelope = envelope) {
-                        CURRENT_NEURON_SCALAR_SCOPE.set(activeEnvelope);
-                        try {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
@@ -9763,9 +9762,6 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
-                        } finally {
-                            CURRENT_NEURON_SCALAR_SCOPE.remove();
-                        }
                     }
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
@@ -9816,7 +9812,6 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
                     // throw; never strand actor authority on a reused carrier.
-                    CURRENT_NEURON_SCALAR_SCOPE.remove();
                     CURRENT_ACTOR_EXECUTION.remove();
                     currentActor.remove();
                 }
