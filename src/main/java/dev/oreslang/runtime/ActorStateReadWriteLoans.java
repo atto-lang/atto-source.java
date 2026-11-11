@@ -172,6 +172,52 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     }
 
     /**
+     * Trusted immediate-admission paths for physical actor turns.
+     *
+     * Unlike acquireReadAsync/acquireWriteAsync, these never register a
+     * pending Future or park a carrier. null means a legitimate conflict or
+     * queue fairness fence; invalid identity/generation remains an error.
+     */
+    ReadLoan tryAcquireReadNow(Object handler, long expectedGeneration) {
+        Objects.requireNonNull(handler, "handler");
+        synchronized (monitor) {
+            String error = admissionError(handler, expectedGeneration);
+            if (error != null) throw new IllegalStateException(error);
+            try {
+                if (writer != null || !pending.isEmpty()
+                        || activeReaders >= maxActiveReaders) return null;
+                return grantReaderLocked(handler);
+            } finally {
+                // Successful grants retain identity in the active ledger.
+                // Rejected immediate admission must never reserve a turn.
+                if (!identitiesHeldByActiveLocked(handler)) identities.remove(handler);
+            }
+        }
+    }
+
+    WriteLoan tryAcquireWriteNow(Object handler, long expectedGeneration) {
+        Objects.requireNonNull(handler, "handler");
+        synchronized (monitor) {
+            String error = admissionError(handler, expectedGeneration);
+            if (error != null) throw new IllegalStateException(error);
+            try {
+                if (writer != null || activeReaders != 0 || !pending.isEmpty())
+                    return null;
+                return grantWriterLocked(handler);
+            } finally {
+                if (!identitiesHeldByActiveLocked(handler)) identities.remove(handler);
+            }
+        }
+    }
+
+    private boolean identitiesHeldByActiveLocked(Object handler) {
+        for (Loan loan : active) {
+            if (loan.handler == handler && !loan.released) return true;
+        }
+        return false;
+    }
+
+    /**
      * Logical handler identity must be unique per in-flight turn. A handler
      * cannot reacquire either mode until its previous loan is closed.
      */
