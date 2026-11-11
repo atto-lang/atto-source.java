@@ -45,7 +45,10 @@ final class ExternalActorReceiverAstAdmissionTest {
     @Test
     void externalReceiverIsNotExecutableWithoutActorPermitLowering() {
         Ast.Program parsed = Parser.parse(
-                "define mtd update(Worker worker)(int delta): void { return; }");
+                "define module workers as\n"
+                        + "  pub define actor Worker as end\n"
+                        + "  define mtd update(Worker worker)(int delta): void { return; }\n"
+                        + "end\n");
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(parsed));
         assertTrue(error.getMessage().contains("EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED"),
