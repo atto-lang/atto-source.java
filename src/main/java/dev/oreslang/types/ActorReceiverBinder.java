@@ -309,6 +309,35 @@ public final class ActorReceiverBinder {
             }
         }
 
+        // Resolve bootstrap conflicts over the ENTIRE namespace before
+        // binding any method. Init and on_start are mutually exclusive even
+        // when one is in-class and the other is attached from another file.
+        // This pass is order independent and never grants runtime authority.
+        Map<String, Set<String>> startupRoles = new LinkedHashMap<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.ClassDecl klass
+                    && klass.actorKind() != Ast.ActorKind.NONE) {
+                for (Ast.MethodDecl owned : klass.methods()) {
+                    if (owned.name().equals("init") || owned.name().equals("on_start")) {
+                        startupRoles.computeIfAbsent(klass.name(),
+                                ignored -> new LinkedHashSet<>()).add(owned.name());
+                    }
+                }
+            } else if (declaration instanceof Ast.ExternalActorMethodDecl attached
+                    && nominalActors.containsKey(attached.actorName())
+                    && (attached.name().equals("init") || attached.name().equals("on_start"))) {
+                startupRoles.computeIfAbsent(attached.actorName(),
+                        ignored -> new LinkedHashSet<>()).add(attached.name());
+            }
+        }
+        for (Map.Entry<String, Set<String>> entry : startupRoles.entrySet()) {
+            if (entry.getValue().contains("init") && entry.getValue().contains("on_start")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_INIT_ON_START_CONFLICT: actor '" + entry.getKey()
+                                + "' may not register both init and legacy on_start");
+            }
+        }
+
         for (Ast.Decl declaration : module.declarations()) {
             if (!(declaration instanceof Ast.ExternalActorMethodDecl method)) continue;
             Ast.Decl target = nominalActors.get(method.actorName());
@@ -318,6 +347,15 @@ public final class ActorReceiverBinder {
                                 + "' has no nominal actor '" + method.actorName()
                                 + "' declared in the same module; imported actors and "
                                 + "actors in other modules cannot grant receiver authority");
+            }
+            // A fresh canonical declaration does not inherit the pre-v1
+            // on_start adapter; mixing spellings must never double-start.
+            if (target instanceof Ast.StandaloneActorDecl standalone
+                    && standalone.receiverName() == null
+                    && method.name().equals("on_start")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_LEGACY_START_UNSUPPORTED: declare actor requires "
+                                + "external init, not legacy on_start");
             }
             // Canonical declarations use the strict runtime ingress ABI.
             // Legacy 'define actor A as a;' and inline class actors retain
