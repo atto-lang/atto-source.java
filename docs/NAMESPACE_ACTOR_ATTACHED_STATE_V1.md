@@ -12,7 +12,7 @@ schema may live in different files of **one verified package and namespace**.
 ```atto
 // foo/actor.atto
 namespace foo;
-define actor Foo implements ActorXYZ;
+declare pub actor Foo implements ActorXYZ;
 
 // foo/state.atto
 namespace foo;
@@ -28,8 +28,7 @@ pub mtd (Foo f) bar(): void {
 }
 ```
 
-The semicolon actor head is a declaration of the **type**, never an actor
-instance, ActorRef, singleton or static value. `pub mtd` without `define`
+`declare actor Foo implements ActorXYZ;` is a distinct **declaration-only nominal type**, never an empty `ClassDecl`, actor instance, ActorRef, singleton or static value. A full body uses `define actor Foo as ... end`; `define actor Foo;` is rejected to avoid misrepresenting an incomplete definition as implemented. This preserves the difference between declaration and implementation. `pub mtd` without `define`
 is a parsed alias of `define pub mtd`. Neither syntax authorizes a free
 function, actor-owned self value, state field exposure or caller-dispatched
 lifecycle invocation. `ActorXYZ` contract satisfaction by external methods
@@ -143,3 +142,28 @@ Release requires real Java/Graal guest execution, same-turn and remote
 ActorRef calls, negative compiler fixtures, atomic state initialization and
 abort, stale-epoch/cancellation/supervisor/tenant races, native AOT and
 backend-specific proofs. Unsupported backends must fail closed.
+
+## Canonical declare/define distinction (2026-11-11)
+
+A bodyless actor with behavior or state implemented in other files MUST use
+`declare actor Foo implements ActorXYZ;`. A complete inline actor retains
+`define actor Foo as ... end`. The parser preserves the former as a separate
+`DeclaredActorDecl` instead of manufacturing an empty executable
+`ClassDecl`. Neither form automatically grants mailbox authority or a
+state loan.
+
+Visibility is private by default. The example uses
+`declare pub actor Foo implements ActorXYZ;` because it exports a `pub mtd`
+receiver. `declare actor Foo;` is syntactically valid but a public receiver
+method on a private actor is a static error. This prevents private actor
+type exposure through method exports.
+
+Contract satisfaction, codegen and ABI export of `declare actor` still
+fail closed at the linker/TypeChecker boundary, even if the static binder
+finds matching methods and state. No executable actor is implied.
+
+The comprehensive `NamespaceActorStateAttachmentTest` class now has
+**28 authored JUnit tests**, NOT EXECUTED at this time, including distinct
+AST/visibility, bodyless define rejection, duplicate and mixed declaration
+collisions, illegal inline bodies, unsupported generics, duplicate contract
+claims, and unlowered guest execution.
