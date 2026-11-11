@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/ActorMethodIndex.java'
+      - 'src/main/java/dev/oreslang/compiler/ActorDescriptorIndex.java'
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
       - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
       - 'src/main/java/dev/oreslang/types/ActorStateBinder.java'
@@ -44,6 +45,7 @@ jobs:
           printf 'RECEIPT git_tree=%s\n' "$(git rev-parse HEAD^{tree})"
           for file in \
               src/main/java/dev/oreslang/compiler/ActorMethodIndex.java \
+              src/main/java/dev/oreslang/compiler/ActorDescriptorIndex.java \
               src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java \
               src/test/java/dev/oreslang/ManifestNamespaceActorTopologyTest.java; do
             test -s "$file"
