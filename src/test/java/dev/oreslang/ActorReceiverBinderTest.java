@@ -271,6 +271,13 @@ final class ActorReceiverBinderTest {
     }
 
     @Test
+    void mailboxReceiveRejectsStructuralPayloadBeforeWitnessLowering() {
+        rejects(module(actor()
+                + "  define mtd receive(Worker w)(ActorMail<record{value: int}> mail): void { return; }\\n"),
+                "external receive must be private");
+    }
+
+    @Test
     void localActorInAnotherSourceUnitDoesNotResolveExternalMethod() {
         // A matching spelling in a different unit is not an authorization.
         assertEquals(0, bind(module(actor())).size());
