@@ -17,7 +17,7 @@ verify_blob src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java ee0c4d9b48fc7664e6985e84e07e2f77a6cec818
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java 79c8bf1ec6245ff1f45de04accfc6d8832a7a1e5
 verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java 4f44466d69b4440400d1d5de533917d1b7257521
-verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java bf6fac2823c0ac09e3197ebf093e6cf649f56701
+verify_blob src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java b1198abedece2d0783617749208024a8cab9adbd
 
 # The existing dependency-free 557-assertion host lane remains mandatory.
 bash scripts/verify-supervisor-failure-escrow-v1.sh
