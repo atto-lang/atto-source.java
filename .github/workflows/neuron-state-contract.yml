@@ -8,9 +8,11 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/compiler/NeuronStateLayoutV0.java'
+      - 'src/main/java/dev/oreslang/compiler/NeuronScalarScopeV0.java'
       - 'src/main/java/dev/oreslang/runtime/ActorStateReadWriteLoans.java'
       - 'src/test/java/dev/oreslang/NeuronActorV0Test.java'
       - 'src/test/java/dev/oreslang/NeuronStateLayoutV0Test.java'
+      - 'src/test/java/dev/oreslang/NeuronScalarScopeV0Test.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateReadWriteLoansTest.java'
       - '.github/workflows/neuron-state-contract.yml'
   workflow_dispatch:
@@ -57,7 +59,7 @@ jobs:
       - name: Run protected-state AST and host-only loan-contract JUnit cases
         run: |
           set -euo pipefail
-          mvn -B -ntp '-Dtest=NeuronActorV0Test,NeuronStateLayoutV0Test,ActorStateReadWriteLoansTest' test
+          mvn -B -ntp '-Dtest=NeuronActorV0Test,NeuronStateLayoutV0Test,NeuronScalarScopeV0Test,ActorStateReadWriteLoansTest' test
           echo "NEURON_STATE_HOST_TESTS_EXECUTED=1"
 
       # Important: this is a compiler/host contract gate only, not a guest
@@ -105,5 +107,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp '-Dtest=NeuronActorV0Test,NeuronStateLayoutV0Test,ActorStateReadWriteLoansTest' test
+          mvn -B -ntp '-Dtest=NeuronActorV0Test,NeuronStateLayoutV0Test,NeuronScalarScopeV0Test,ActorStateReadWriteLoansTest' test
           echo "NEURON_SELFHOST_HOST_TESTS_EXECUTED=1"
