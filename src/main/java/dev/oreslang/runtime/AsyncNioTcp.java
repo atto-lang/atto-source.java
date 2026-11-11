@@ -163,23 +163,28 @@ public final class AsyncNioTcp {
                     channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
                             new CompletionHandler<Integer, Void>() {
                         @Override public void completed(Integer count, Void ignored) {
-                            reading.set(false);
                             if (closed.get()) {
+                                reading.set(false);
                                 callback.reject(new IOException("socket retired during read"));
                                 return;
                             }
                             if (count == null || count < 0) {
+                                reading.set(false);
                                 callback.resolve(List.of()); // EOF, zero-count never indicates EOF.
                                 return;
                             }
                             if (count == 0) {
-                                // NIO2 is permitted to complete a read with zero bytes.
-                                // Re-arm rather than misreporting EOF.
-                                reading.set(true);
-                                channel.read(buffer, IO_TIMEOUT_SECONDS,
-                                        TimeUnit.SECONDS, null, this);
+                                // Keep the admission claim until a real byte/EOF arrives.
+                                try {
+                                    channel.read(buffer, IO_TIMEOUT_SECONDS,
+                                            TimeUnit.SECONDS, null, this);
+                                } catch (RuntimeException failure) {
+                                    reading.set(false);
+                                    callback.reject(failure);
+                                }
                                 return;
                             }
+                            reading.set(false);
                             buffer.flip();
                             ArrayList<Integer> bytes = new ArrayList<>(count);
                             while (buffer.hasRemaining()) bytes.add(buffer.get() & 0xff);
@@ -334,8 +339,13 @@ public final class AsyncNioTcp {
                             return;
                         }
                         if (buffer.hasRemaining()) {
-                            channel.write(buffer, IO_TIMEOUT_SECONDS,
-                                    TimeUnit.SECONDS, null, this);
+                            try {
+                                channel.write(buffer, IO_TIMEOUT_SECONDS,
+                                        TimeUnit.SECONDS, null, this);
+                            } catch (RuntimeException failure) {
+                                writing.set(false);
+                                callback.reject(failure);
+                            }
                         } else {
                             writing.set(false);
                             callback.resolve(null);
