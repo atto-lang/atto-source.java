@@ -220,7 +220,9 @@ public final class ActorDescriptorIndex {
                         selector.methodName(), selector.arity());
                 var origin = witness.boundMethods().get(sourceSlot);
                 if (origin == null || !origin.methodUnit().equals(signature.declaringUnit())
-                        || !signature.declarationEligible()) {
+                        || signature.async() || signature.suspends() || signature.generic()
+                        || signature.structural() || signature.checkedEffects()
+                        || signature.abstractMethod()) {
                     throw new IllegalArgumentException(
                             "ACTOR_DESCRIPTOR_UNVERIFIED_METHOD: " + sourceSlot);
                 }
