@@ -1,7 +1,8 @@
-name: Actor declare/external exact-head JDK25 JUnit (static gate)
+name: Actor ingress exact-head JDK25 JUnit and inline guest gate
 
 # No private-source export, carrier mirror, pull_request_target or write token.
-# This checks parser/binder/static admission ONLY, never guest actor execution.
+# This checks static actor declaration + inline mailbox guest execution.
+# It NEVER certifies executable 'declare actor' lowering or backend parity.
 on:
   pull_request:
     paths:
@@ -9,12 +10,18 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java'
       - 'src/test/java/dev/oreslang/ActorExternalEntrypointModifierTest.java'
       - 'src/test/java/dev/oreslang/DeclaredActorNominalSyntaxTest.java'
       - 'src/test/java/dev/oreslang/DeclaredActorHardeningTest.java'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
       - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/ActorReceiveIngressBoundaryTest.java'
+      - 'src/test/java/dev/oreslang/ActorReceiveIngressGuestExecutionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorInitPublicationGateTest.java'
+      - 'src/test/resources/atto/actor-ingress/**'
       - '.github/workflows/actor-declare-external-jdk25-exact-head.yml'
   workflow_dispatch:
 
@@ -26,10 +33,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  static-compiler-junit:
+  java-static-actor-and-inline-guest:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - name: Checkout exact source revision without persisting credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -55,6 +62,9 @@ jobs:
           printf 'RECEIPT actor_external_pom_blob=%s\n' "$(git hash-object pom.xml)"
           printf 'RECEIPT actor_external_parser_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/parser/Parser.java)"
           printf 'RECEIPT actor_external_binder_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/types/ActorReceiverBinder.java)"
+          test "$(git hash-object src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java)" = '74e43e03e7a7b4220279dfd146553deee58714a6'
+          test "$(git hash-object src/test/java/dev/oreslang/ActorReceiveIngressGuestExecutionTest.java)" = 'f2e008869c9652dc6beab5461f716e2d487f127e'
+          printf 'RECEIPT imported_exact_init_gate_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java)"
 
       - name: Prepare GraalVM Java 25 toolchain
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned v1
@@ -63,14 +73,14 @@ jobs:
           distribution: graalvm
           cache: maven
 
-      - name: Execute actual parser, binder, package-scoped and hardened declaration JUnit suites
+      - name: Execute parser, binder, ingress, one-shot gate and real inline actor guest JUnit
         shell: bash
         run: |
           set -euo pipefail
           javac -version 2>&1 | grep -Eq '^javac 25([. ]|$)'
           mvn -version
           mvn -B -ntp \
-            -Dtest=ActorExternalEntrypointModifierTest,DeclaredActorNominalSyntaxTest,DeclaredActorHardeningTest,ActorReceiverBinderTest,CrossFileActorReceiverBindingTest,ExternalActorReceiverAstAdmissionTest \
+            -Dtest=ActorExternalEntrypointModifierTest,DeclaredActorNominalSyntaxTest,DeclaredActorHardeningTest,ActorReceiverBinderTest,CrossFileActorReceiverBindingTest,ExternalActorReceiverAstAdmissionTest,ActorReceiveIngressBoundaryTest,ActorReceiveIngressGuestExecutionTest,ActorInitPublicationGateTest \
             -DfailIfNoTests=true test
           echo 'RECEIPT actor_external_maven_test_step=EXECUTED'
 
@@ -90,6 +100,9 @@ jobs:
               'ActorReceiverBinderTest',
               'CrossFileActorReceiverBindingTest',
               'ExternalActorReceiverAstAdmissionTest',
+              'ActorReceiveIngressBoundaryTest',
+              'ActorReceiveIngressGuestExecutionTest',
+              'runtime.ActorInitPublicationGateTest',
           )
           total = 0
           for suite in suites:
@@ -108,8 +121,9 @@ jobs:
                   raise SystemExit(f'INVALID_SUREFIRE_RESULT:{suite}:tests={count}:testcases={actual}:fail={failures}:errors={errors}:skipped={skipped}')
               total += count
               print(f'RECEIPT junit={suite} tests={count} sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')
-          if total < 64:
+          if total < 88:
               raise SystemExit(f'INSUFFICIENT_TESTS:{total}')
           print(f'RECEIPT actor_external_junit=EXECUTED_VERIFIED total={total}')
-          print('RECEIPT guest_actor_executed=FALSE native_image_executed=FALSE five_backend_parity=UNVERIFIED')
+          print('RECEIPT inline_actor_mailbox_guest=JVM_EXECUTED_VERIFIED')
+          print('RECEIPT declared_actor_guest=UNVERIFIED native_image=UNVERIFIED five_backend_parity=UNVERIFIED')
           PY
