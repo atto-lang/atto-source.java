@@ -101,6 +101,10 @@ public final class ActorReceiverBinder {
                 category = "type alias";
             }
             if (typeName != null) {
+                if (typeName.equals("Symbol")) {
+                    throw new IllegalArgumentException(
+                            "Symbol is a reserved nominal built-in; standalone actors may not shadow it");
+                }
                 String previous = declaredTypes.putIfAbsent(typeName, category);
                 if (previous != null) {
                     throw new IllegalArgumentException(
@@ -119,6 +123,17 @@ public final class ActorReceiverBinder {
                                 + "' has no nominal actor '" + method.actorName()
                                 + "' declared in the same module; imported actors and "
                                 + "actors in other modules cannot grant receiver authority");
+            }
+            Ast.Visibility actorVisibility =
+                    target instanceof Ast.StandaloneActorDecl standalone
+                            ? standalone.visibility()
+                            : ((Ast.ClassDecl) target).visibility();
+            if (method.visibility() == Ast.Visibility.PUBLIC
+                    && actorVisibility != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "public external actor method '" + module.name() + "."
+                                + method.name() + "' cannot expose private actor '"
+                                + method.actorName() + "'");
             }
             if (target instanceof Ast.ClassDecl klass) {
                 if (!klass.genericParameters().isEmpty()) {
