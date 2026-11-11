@@ -1,0 +1,16 @@
+define enum Light as
+  Red
+  Green
+end
+
+define untrusted actor LightEcho as
+  receive(ActorMail<Light> mail): void {
+    self.send(mail.value);
+    self.end();
+    return;
+  }
+end
+
+pub routine main(): void {
+  return;
+}
