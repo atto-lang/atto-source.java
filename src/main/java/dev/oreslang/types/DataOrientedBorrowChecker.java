@@ -51,6 +51,9 @@ public final class DataOrientedBorrowChecker {
             requireNonBlankIfPresent(component, "component");
             requireNonBlankIfPresent(field, "field");
             if (epoch < 0) throw new IllegalArgumentException("negative storage epoch");
+            if (archetype == null && component != null) {
+                throw new IllegalArgumentException("component requires archetype");
+            }
             if (component == null && field != null) {
                 throw new IllegalArgumentException("field requires component");
             }
@@ -94,6 +97,11 @@ public final class DataOrientedBorrowChecker {
     public static boolean canRunConcurrently(List<Loan> left, List<Loan> right) {
         left = List.copyOf(left);
         right = List.copyOf(right);
+        // A malformed individual workset must never be admitted simply
+        // because the competing workset is empty or disjoint. Check both
+        // sets before looking at pairwise cross-set scheduling conflicts.
+        requireInternallyValid(left);
+        requireInternallyValid(right);
         for (Loan a : left) {
             for (Loan b : right) {
                 if (conflicts(a, b)) return false;
