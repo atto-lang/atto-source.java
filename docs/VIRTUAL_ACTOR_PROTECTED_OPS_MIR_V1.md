@@ -32,3 +32,24 @@ A private source-org checkout-free smoke workflow separately checks whether GitH
 - Nonzero exact-head CI/JUnit/Surefire evidence, overflow-to-CONTROL positive and negative guest execution, backend parity, independent review and dependency-ordered merges.
 
 **Do not remove the fail-closed compiler gate until all applicable runtime, AOT and security guarantees have executable proof.**
+
+## Audit hardening: overflow is not a normal return
+
+The candidate operation stream has an explicit, immutable, compiler-owned
+`OverflowExit` attached to the trapping addition. It obligates a future
+backend to discard the pending write, unwind the exclusive loan, fence the
+failed physical generation, emit sanitized terminal CONTROL, and await the
+supervisor's asynchronous acknowledgement before any replacement binds.
+These are mandatory semantics **not implemented** by this static patch.
+`verifyCandidate` rejects skipped/swapped/additional operations and missing
+exceptional edges, but cannot authorize execution.
+
+The first backend must implement a true exceptional control-flow edge (not
+fallthrough to STORE), trap cleanup and physical quiescence; prove old actor
+state never commits after overflow, no stale handle survives and generation
+N+1 is fenced until CONTROL ack. A compiler plan alone is not that proof.
+
+Two additional JUnit methods test deletions of each instruction, STORE/add
+reordering, injected duplicate STORE, unchecked replacement, null overflow
+edge and private exceptional-plan construction. **Source-authored only** until
+the source-org runner executes these tests with real reports.
