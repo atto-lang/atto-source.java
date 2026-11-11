@@ -1,0 +1,171 @@
+package dev.oreslang.runtime;
+
+import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Direct tests for the staged v2 lossless CONTROL reservation ledger.
+ * These tests do NOT assert that the live ActorRuntime routes child failure
+ * callbacks through this ledger yet.
+ */
+@Timeout(15)
+final class ActorSupervisorControlLanePortTest {
+    private static ActorRuntime.ActorFailureNotice notice(
+            ActorRuntime.ActorId child, long generation, long sequence) {
+        return new ActorRuntime.ActorFailureNotice(
+                child, generation, Optional.empty(),
+                ActorRuntime.ActorKind.SHARED,
+                ActorRuntime.ActorFailureKind.FAILURE,
+                sequence, "test.Failure");
+    }
+
+    @Test
+    void missingSecondRootReservationRejectsWholeTransferWithoutPartialMove() {
+        var parent = new ActorSupervisorControlLane(2);
+        var root = new ActorSupervisorControlLane(2);
+        var a = ActorRuntime.ActorId.create();
+        var b = ActorRuntime.ActorId.create();
+        parent.reserve(a, 7);
+        parent.reserve(b, 8);
+        root.reserve(a, 7);
+        assertTrue(parent.publish(notice(a, 7, 1)));
+        assertTrue(parent.publish(notice(b, 8, 2)));
+
+        assertThrows(IllegalStateException.class,
+                () -> parent.transferPublishedTo(root));
+        assertEquals(2, parent.snapshot().pending(),
+                "preflight must not partially migrate already-published failures");
+        assertEquals(0, parent.snapshot().transferred());
+        assertEquals(0, root.snapshot().pending());
+        assertEquals(0, root.snapshot().published());
+
+        root.reserve(b, 8);
+        parent.transferPublishedTo(root);
+        assertEquals(0, parent.snapshot().reserved());
+        assertEquals(0, parent.snapshot().pending());
+        assertEquals(2, parent.snapshot().transferred());
+        assertEquals(2, root.snapshot().pending());
+
+        var first = root.poll().orElseThrow();
+        assertEquals(a, first.actor());
+        root.ack(a, 7);
+        var second = root.poll().orElseThrow();
+        assertEquals(b, second.actor());
+        root.ack(b, 8);
+        assertEquals(0, root.snapshot().reserved());
+        assertEquals(2, root.snapshot().acknowledged());
+    }
+
+    @Test
+    void staleOrOccupiedRootReservationNeverConsumesParentNotice() {
+        var parent = new ActorSupervisorControlLane(1);
+        var root = new ActorSupervisorControlLane(1);
+        var child = ActorRuntime.ActorId.create();
+        parent.reserve(child, 41);
+        root.reserve(child, 40);
+        assertTrue(parent.publish(notice(child, 41, 1)));
+
+        assertThrows(IllegalStateException.class,
+                () -> parent.transferPublishedTo(root));
+        assertEquals(1, parent.snapshot().pending());
+        assertEquals(0, parent.snapshot().transferred());
+        assertEquals(0, root.snapshot().published());
+        root.retireGracefully(child, 40);
+
+        root.reserve(child, 41);
+        assertTrue(root.publish(notice(child, 41, 99)));
+        assertThrows(IllegalStateException.class,
+                () -> parent.transferPublishedTo(root));
+        assertEquals(1, parent.snapshot().pending());
+        assertEquals(0, parent.snapshot().transferred());
+        assertEquals(1, root.snapshot().published());
+    }
+
+    @Test
+    void transferredInFlightNoticeCannotBeDroppedByParentAck() {
+        var parent = new ActorSupervisorControlLane(2);
+        var root = new ActorSupervisorControlLane(2);
+        var a = ActorRuntime.ActorId.create();
+        var b = ActorRuntime.ActorId.create();
+        parent.reserve(a, 1);
+        parent.reserve(b, 1);
+        root.reserve(a, 1);
+        root.reserve(b, 1);
+        assertTrue(parent.publish(notice(a, 1, 10)));
+        assertTrue(parent.publish(notice(b, 1, 11)));
+        assertEquals(a, parent.poll().orElseThrow().actor());
+
+        parent.transferPublishedTo(root);
+        assertEquals(0, parent.snapshot().reserved());
+        assertEquals(0, parent.snapshot().inFlight());
+        assertEquals(2, parent.snapshot().transferred());
+        assertThrows(IllegalStateException.class, () -> parent.ack(a, 1));
+
+        assertEquals(a, root.poll().orElseThrow().actor());
+        root.retry(a, 1);
+        assertEquals(b, root.poll().orElseThrow().actor());
+        root.ack(b, 1);
+        assertEquals(a, root.poll().orElseThrow().actor());
+        root.ack(a, 1);
+        assertEquals(0, root.snapshot().reserved());
+        assertEquals(2, root.snapshot().acknowledged());
+    }
+
+    @Test
+    void opposingTransfersDoNotDeadlockAndRetainEveryNotice() throws Exception {
+        var a = new ActorSupervisorControlLane(2);
+        var b = new ActorSupervisorControlLane(2);
+        var childA = ActorRuntime.ActorId.create();
+        var childB = ActorRuntime.ActorId.create();
+        // Pre-reserve both IDs in both lanes to make both transfers initially
+        // eligible, then race the two opposing handovers.
+        a.reserve(childA, 1);
+        a.reserve(childB, 1);
+        b.reserve(childA, 1);
+        b.reserve(childB, 1);
+        assertTrue(a.publish(notice(childA, 1, 1)));
+        assertTrue(b.publish(notice(childB, 1, 2)));
+
+        CountDownLatch go = new CountDownLatch(1);
+        AtomicReference<Throwable> unexpected = new AtomicReference<>();
+        Runnable aToB = () -> {
+            try {
+                if (!go.await(5, TimeUnit.SECONDS)) throw new AssertionError("start timeout");
+                a.transferPublishedTo(b);
+            } catch (IllegalStateException expectedAfterCompetingTransfer) {
+                // The other transfer may have moved the destination's prior
+                // notice first; fail-closed preflight is allowed.
+            } catch (Throwable failure) {
+                unexpected.compareAndSet(null, failure);
+            }
+        };
+        Runnable bToA = () -> {
+            try {
+                if (!go.await(5, TimeUnit.SECONDS)) throw new AssertionError("start timeout");
+                b.transferPublishedTo(a);
+            } catch (IllegalStateException expectedAfterCompetingTransfer) {
+                // See the symmetric race explanation above.
+            } catch (Throwable failure) {
+                unexpected.compareAndSet(null, failure);
+            }
+        };
+        Thread one = new Thread(aToB, "control-a-to-b");
+        Thread two = new Thread(bToA, "control-b-to-a");
+        one.start();
+        two.start();
+        go.countDown();
+        one.join(5_000);
+        two.join(5_000);
+        assertFalse(one.isAlive(), "A -> B must not hang acquiring monitors");
+        assertFalse(two.isAlive(), "B -> A must not hang acquiring monitors");
+        assertNull(unexpected.get());
+        assertEquals(2, a.snapshot().pending() + b.snapshot().pending(),
+                "two immutable notices must remain exactly once");
+    }
+}
