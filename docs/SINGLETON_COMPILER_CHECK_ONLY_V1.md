@@ -80,3 +80,20 @@ runner/job/run IDs and stepful result before promoting a check-only pass.
 
 Tracking: conformance #650/#651, Java #2343/#2316, LLVM #1203,
 .NET #267, Wasm #191, Forge #146/#159.
+
+## Additional compiler gate hardening — 2026-11-11
+
+`SingletonCheckOnly.check` now validates field name uniqueness and the
+64-field budget **after AST construction**, not only during parsing. This
+rejects forged/rewritten ASTs and future transformation passes that might
+bypass syntax-time checks. Explicit `Double.NaN` and nonfinite double
+values cannot enter a singleton's primitive immutable literal proof.
+Two JUnit regression methods exercise fabricated AST declarations directly,
+including positive/negative infinity and NaN.
+
+There are now **12 authored JUnit test methods** in
+`SingletonCheckOnlyTest`. They have **not** been confirmed to execute at
+the current branch head. Normal `Parser.parse`, `TypeChecker`,
+`OwnershipChecker`, and `OresEvalRootNode` remain fail-closed for runtime
+singleton activation. This code is **not** Java guest lowering, AOT, once-only
+runtime publication, a cross-isolate registry or five-backend parity evidence.
