@@ -16,9 +16,9 @@ equality immediately after creation:
 | `src/otel.ores` | `0f53db094ed9794b271b341aa889cb51656b4812` |
 | `tests/smoke.ores` | `6480413e7a6f8b6bef1a8a279f777f8293dc9937` |
 | `tests/span-finish-admission-retry.ores` | `7d72f983cf09ede66ea8a62c2e17e60f7b03f6ba` |
-| `tools/telemetry-check/src/main.rs` | `9d692d836552736fb3e990a1a8257cad9a660434` |
-| `tools/telemetry-check/Cargo.toml` | `f9c9779bd3a895f096ce013819087c059fcc6a48` |
-| `tools/telemetry-check/Cargo.lock` | `f857130281cc51f23b0c5d9ef72ffa2882402be1` |
+| `tools/telemetry-check/src/main.rs` | `baee942bd7860cd327d34b6c4ab78c03f21cd0ba` |
+| `tools/telemetry-check/Cargo.toml` | `55fbd9508b735d0248c80339234cd82eb533275a` |
+| `tools/telemetry-check/Cargo.lock` | `cc5a82761a5188f1a2ed4f9ec67e566ddfed7f45` |
 
 `verification/otel/async/execute-async-otel-guest.sh` rechecks all
 six source blobs, the exact checkout SHA, clean non-build sources, guest
@@ -42,7 +42,7 @@ The `guardrails.sh` helper is identical to Java OTel PR #2876's SHA
 `f0ff0cd1c8068f44603bef556381a56f4835fd19`.
 The location-adapted Bash negative suite
 `test-guardrails.sh` Git blob is
-`d3d2d02ba7d3aa5303c158e7bc5e4226d4c2ac02`.
+`5a4b551986033ec8b33042db404d95a594654e9b`.
 Both were executed on local Linux, with the exact Git blob matches
 verified: class/JAR mutation, native ELF/managed launcher spoofing,
 symlinks, nonzero exits, 1 MiB stdout/stderr ceilings and stale output
@@ -81,3 +81,39 @@ GraalVM 25.3.4.1 warns that `--no-fallback` is deprecated/no-effect, so this
 gate verifies actual ELF, dynamic loader exclusions and runtime build-info
 instead of relying on that flag. It does not prove independently compiled
 Oreslang guest AOT or OTLP exporter/collector integration.
+
+## 2026-11-11 strict JSON and fail-closed receipt hardening
+
+The source-owned Rust checker now rejects duplicate JSON object member names
+**recursively**, including nested maps/arrays and escaped-equivalent keys
+(e.g., `"\\u0073ignal"` vs `"signal"`). Previously, direct decoding to
+`serde_json::Value` could silently overwrite duplicate properties. Explicit
+`serde` is now locked as a direct dependency, and regression tests cover
+duplicate top-level/nested keys alongside valid UTF-8, strings and signed-i64
+records. The original OTel source and Java-pinned checker blobs were compared
+after copying and matched byte-for-byte (see table above).
+
+`execute-async-otel-guest.sh` now also clears receipts before each invocation
+and removes any partial receipts on failure, including a first-fixture success
+followed by a second-fixture or final compiler artifact hash failure.
+
+**Actually executed locally:** Linux `bash -n` and the
+`verification/otel/async/test-guardrails.sh` negative suite on exactly these
+GitHub blob IDs:
+
+- `guardrails.sh`: `f0ff0cd1c8068f44603bef556381a56f4835fd19`
+- `test-guardrails.sh`: `5a4b551986033ec8b33042db404d95a594654e9b`
+- `execute-async-otel-guest.sh`: `d43965ad1cc8838f14d84aa00bac41797a45ef3d`
+
+The new receipt test creates a disposable local Git checkout with deliberately
+missing pinned guest source, injects stale success receipts, invokes the
+**actual guest launch script**, verifies admission is denied and checks that
+both stale receipts are removed. The tests passed. They run only harmless
+source-free processes: **no real Oreslang compiler, guest, Maven, Native Image
+or Rust Cargo checker has been executed on this exact PR head**.
+
+The latest exact-head [private Actions run #43104211353](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/43104211353)
+still failed before any runner was assigned (prerequisite job
+`runner_id=null`, `steps=null`; JVM and AOT jobs skipped).
+Do not promote source-only test coverage or the stricter oracle itself to
+real guest parity evidence.
