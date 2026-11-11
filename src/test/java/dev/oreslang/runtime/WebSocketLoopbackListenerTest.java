@@ -26,6 +26,43 @@ final class WebSocketLoopbackListenerTest {
      * Not proof that an AttoLang source receive handler has been lowered.
      */
     @Test
+    void actorBoundUtf8FailuresCannotPublishWireFrames() throws Exception {
+        int port = unusedPort();
+        try (var io = new AsyncNativeIo(4);
+             var listener = listen(io, port, 1)) {
+            var pending = listener.acceptAsync();
+            try (var client = new Socket("127.0.0.1", port)) {
+                sendOpening(client, port);
+                assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                var connection = pending.get(3, TimeUnit.SECONDS);
+                var tenant = java.util.UUID.randomUUID();
+                var runtimeId = java.util.UUID.randomUUID();
+                var owner = new ActorRuntime.ActorAddress(runtimeId,
+                        ActorRuntime.ActorId.create(), 1,
+                        ActorRuntime.ActorKind.PRIVATE, "local-process");
+                var handle = connection.bindActorHost(tenant, owner, () -> true);
+
+                assertThrows(IllegalArgumentException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, owner, "\uD800"));
+                assertThrows(IllegalArgumentException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, owner, "\uDC00"));
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> connection.sendTextForActorAsync(
+                                handle, tenant, owner, "é".repeat(600)),
+                        "600 UTF-16 units encode as 1200 bytes above 1024 limit");
+                connection.sendTextForActorAsync(
+                        handle, tenant, owner, "ok").get(3, TimeUnit.SECONDS);
+                assertArrayEquals(new byte[] {(byte) 0x81, 2, 'o', 'k'},
+                        client.getInputStream().readNBytes(4),
+                        "invalid UTF-8 sends must not publish a partial frame");
+                connection.close();
+            }
+        }
+    }
+
+    @Test
     void hostActorOutputTraversesAuthenticatedWebSocketAsText() throws Exception {
         try (var actors = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> actor = actors.spawnPrivateTrusted(
