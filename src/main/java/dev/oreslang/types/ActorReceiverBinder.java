@@ -32,11 +32,20 @@ public final class ActorReceiverBinder {
 
     public record Binding(Ast.Decl nominalActor, Ast.ExternalActorMethodDecl method) {
         public Binding {
-            if (!(nominalActor instanceof Ast.StandaloneActorDecl)
-                    && !(nominalActor instanceof Ast.ClassDecl)) {
+            java.util.Objects.requireNonNull(method, "external actor method");
+            String targetName;
+            if (nominalActor instanceof Ast.StandaloneActorDecl standalone) {
+                targetName = standalone.name();
+            } else if (nominalActor instanceof Ast.ClassDecl klass
+                    && klass.actorKind() != Ast.ActorKind.NONE) {
+                targetName = klass.name();
+            } else {
                 throw new IllegalArgumentException("receiver target must be a nominal actor declaration");
             }
-            java.util.Objects.requireNonNull(method, "external actor method");
+            if (!targetName.equals(method.actorName())) {
+                throw new IllegalArgumentException(
+                        "receiver binding's actor identity must match the external method target");
+            }
         }
     }
 
