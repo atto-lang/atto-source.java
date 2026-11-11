@@ -76,3 +76,23 @@ type/method signatures are required for source and binary consumers.
 
 Until gate 3 and 4 receipts exist, cross-backend and binary-package parity
 remain **UNVERIFIED**.
+
+## Audit hardening — scope boundaries and Newable
+
+The formatter must not reclassify an invalid class/actor nested type as a
+valid module declaration. `define pub fnc ... :: ... end` owns exactly
+one callable scope frame, even though its header starts with `define`.
+
+The reference Java type checker now rejects source-authored `new()`
+members without an explicit implemented `Newable` interface/trait.
+A matching nominal name alone is insufficient: the resolved contract
+must declare a typed `new` callable of matching arity. This is a
+**negative admission guard**, not evidence of a functioning type-level
+factory protocol. In particular, the current interface implementation
+model describes ordinary instance members; static trait witnesses and
+specialization for `Cart.new()` still need distinct semantic/AOT work.
+
+No ordinary class, macro, package import or native backend may synthesize
+`.new()` merely because `new Cart()` intrinsic construction is available.
+Until the static Newable trait protocol is implemented and checked against
+source-free package consumers, that behavior is **NOT VERIFIED**.
