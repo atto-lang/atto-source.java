@@ -174,6 +174,20 @@ self_test() {
   printf 'java.lang.RuntimeException\n' > "$t/missing-import-check.stderr"
   if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'JVM exception accepted'; exit 1; fi
   reject_count=$((reject_count+1))
+  printf '%s:1:1: error: import foo does not resolve to a file\n' \
+    "$t/native-multifile/negative/missing-helper.atto" > "$t/missing-import-check.stderr"
+  printf '0\n\n' > "$t/linked-function-guest.exit"
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'extra exit record newline accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  printf '0\n' > "$t/linked-function-guest.exit"
+  printf '%s:1:1: error: import foo does not resolve to a file\nTRAILING' \
+    "$t/native-multifile/negative/missing-helper.atto" > "$t/missing-import-check.stderr"
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'trailing unterminated diagnostic accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
+  printf '%s:1:1: error: import foo does not resolve to a file\r\n' \
+    "$t/native-multifile/negative/missing-helper.atto" > "$t/missing-import-check.stderr"
+  if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'control-byte diagnostic accepted'; exit 1; fi
+  reject_count=$((reject_count+1))
   # Mutate identity and attestations independently of case contents.
   sed -i 's/github_run_attempt=1/github_run_attempt=2/' "$t/identity.txt"
   if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
