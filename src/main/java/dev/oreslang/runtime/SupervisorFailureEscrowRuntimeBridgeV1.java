@@ -91,8 +91,55 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         ledger.registerChild(id, parentId, actor.generation());
     }
 
+    /**
+     * Runtime-only inherited CONTROL authority. The caller MUST hold this
+     * bridge's monitor through both reservation and actor publication.
+     * Neither a guest actor nor a supervisor-policy callback can mint IDs.
+     */
+    synchronized long reserveInheritedChildFromRuntime(
+            ActorRuntime.ActorRef<?> child, long parentNodeId, long parentGeneration) {
+        Objects.requireNonNull(child, "child");
+        if (!ledger.mayAdmit(parentNodeId, parentGeneration)) {
+            throw new IllegalStateException("parent supervisor CONTROL is fenced or stale");
+        }
+        long nodeId = nextId.getAndIncrement();
+        if (nodeId < 2) throw new IllegalStateException("CONTROL identities exhausted");
+        ledger.registerChild(nodeId, parentNodeId, child.generation());
+        boolean mapped = false;
+        try {
+            if (ids.putIfAbsent(child.id(), nodeId) != null) {
+                throw new IllegalStateException("duplicate inherited CONTROL ActorRef");
+            }
+            mapped = true;
+            SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+            if (coordinator != null) coordinator.registerInheritedChildFromRuntime(nodeId, child);
+            return nodeId;
+        } catch (RuntimeException | Error failure) {
+            if (mapped) ids.remove(child.id(), nodeId);
+            ledger.rollbackUnpublishedChild(nodeId, parentNodeId, child.generation());
+            throw failure;
+        }
+    }
+
+    /** Only permitted before runtime publishes the child to actors/parent/
+     * group registries, while holding the same bridge publication monitor. */
+    synchronized void rollbackInheritedChildFromRuntime(
+            ActorRuntime.ActorRef<?> child, long nodeId,
+            long parentNodeId) {
+        Objects.requireNonNull(child, "child");
+        if (!Objects.equals(ids.get(child.id()), nodeId)) {
+            throw new IllegalStateException("inherited CONTROL rollback identity mismatch");
+        }
+        ledger.rollbackUnpublishedChild(nodeId, parentNodeId, child.generation());
+        SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+        if (coordinator != null) coordinator.rollbackInheritedChildFromRuntime(nodeId, child);
+        if (!ids.remove(child.id(), nodeId)) {
+            throw new IllegalStateException("inherited CONTROL child mapping changed");
+        }
+    }
+
     /** Called by ActorRuntime at the first non-cancellation terminal fault. */
-    void failedFromRuntime(long id) {
+    synchronized void failedFromRuntime(long id) {
         ledger.fail(id);
         // The ledger is fenced before the notification; the coordinator only
         // queues CONTROL work and may not run guest or child callbacks inline.
@@ -101,7 +148,7 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
     }
 
     /** Called by ActorRuntime after real actor finalization. */
-    void finalizedFromRuntime(long id, boolean failed) {
+    synchronized void finalizedFromRuntime(long id, boolean failed) {
         if (failed) {
             // An on_stop/final-cleanup fault may be the first failure.
             failedFromRuntime(id);
