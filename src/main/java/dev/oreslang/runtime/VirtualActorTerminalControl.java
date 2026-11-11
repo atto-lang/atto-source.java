@@ -25,28 +25,6 @@ import java.util.function.Function;
  * logical identity until a separately reviewed recovery protocol exists.
  */
 final class VirtualActorTerminalControl {
-    enum Kind { TERMINAL_FAILURE, CANCELLED }
-
-    record Notice(
-            ActorRuntime.SupervisorId supervisorId,
-            ActorRuntime.ActorGroupId groupId,
-            VirtualActorActivationRegistry.Identity identity,
-            long generation,
-            ActorRuntime.ActorId actorId,
-            Kind kind,
-            String failureClass) {
-        Notice {
-            Objects.requireNonNull(supervisorId, "supervisorId");
-            Objects.requireNonNull(groupId, "groupId");
-            VirtualActorRuntimeGenerationFence.validate(identity);
-            Objects.requireNonNull(actorId, "actorId");
-            Objects.requireNonNull(kind, "kind");
-            Objects.requireNonNull(failureClass, "failureClass");
-            if (generation <= 0 || failureClass.isBlank() || failureClass.length() > 256)
-                throw new IllegalArgumentException("invalid virtual terminal receipt");
-        }
-    }
-
     private record Binding(
             ActorRuntime.ActorGroup group,
             ActorRuntime.SupervisorId supervisor,
@@ -54,14 +32,14 @@ final class VirtualActorTerminalControl {
             VirtualActorActivationRegistry.Identity identity,
             long generation,
             ActorRuntime.ActorId actorId,
-            Function<Notice, CompletionStage<Void>> handler) { }
+            Function<ActorRuntime.VirtualActorTerminalNotice, CompletionStage<Void>> handler) { }
 
     private static final class Delivery {
         final Binding binding;
-        final Notice notice;
+        final ActorRuntime.VirtualActorTerminalNotice notice;
         boolean dispatched;
 
-        Delivery(Binding binding, Notice notice) {
+        Delivery(Binding binding, ActorRuntime.VirtualActorTerminalNotice notice) {
             this.binding = binding;
             this.notice = notice;
         }
@@ -98,7 +76,7 @@ final class VirtualActorTerminalControl {
                VirtualActorActivationRegistry.Identity identity,
                long generation,
                ActorRuntime.ActorId actorId,
-               Function<Notice, CompletionStage<Void>> handler) {
+               Function<ActorRuntime.VirtualActorTerminalNotice, CompletionStage<Void>> handler) {
         Objects.requireNonNull(group, "group");
         Objects.requireNonNull(supervisor, "supervisor");
         Objects.requireNonNull(groupId, "groupId");
@@ -142,11 +120,11 @@ final class VirtualActorTerminalControl {
             binding = bindings.remove(actorId);
         }
         if (binding == null || cause == null) return; // Graceful passivation.
-        Kind kind = cause instanceof CancellationException
-                ? Kind.CANCELLED : Kind.TERMINAL_FAILURE;
-        final Notice notice;
+        ActorRuntime.VirtualActorTerminalKind kind = cause instanceof CancellationException
+                ? ActorRuntime.VirtualActorTerminalKind.CANCELLED : ActorRuntime.VirtualActorTerminalKind.TERMINAL_FAILURE;
+        final ActorRuntime.VirtualActorTerminalNotice notice;
         try {
-            notice = new Notice(
+            notice = new ActorRuntime.VirtualActorTerminalNotice(
                     binding.supervisor(), binding.groupId(), binding.identity(),
                     binding.generation(), actorId, kind, cause.getClass().getName());
         } catch (RuntimeException | Error invalidNotice) {
@@ -221,7 +199,7 @@ final class VirtualActorTerminalControl {
     private void executeOnControl(
             ActorRuntime.ActorGroupId groupId, Lane lane, Delivery delivery) {
         Binding binding = delivery.binding;
-        Notice notice = delivery.notice;
+        ActorRuntime.VirtualActorTerminalNotice notice = delivery.notice;
         VirtualActorRuntimeGenerationFence.TerminalDecisionLease lease;
         try {
             lease = binding.group().beginVirtualActorTerminalDecision(
