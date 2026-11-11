@@ -6,7 +6,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,7 +78,7 @@ public final class StaticWitnessAotPlan {
             var resolution = checkedRegistry.resolveWithBindings(typeclass, groundArguments);
             var instance = resolution.instance();
             requireSymbol(instance.dictionarySymbol(), "dictionary symbol");
-            var prior = dictionaryOwners.putIfAbsent(instance.dictionarySymbol(), instance);
+            var prior = dictionaryOwners.get(instance.dictionarySymbol());
             if (prior != null && !prior.equals(instance)) {
                 throw new IllegalArgumentException(
                         "distinct static witnesses reuse one dictionary ABI symbol");
@@ -93,12 +92,16 @@ public final class StaticWitnessAotPlan {
                 throw new IllegalArgumentException("AOT static witness specialization budget exceeded");
 
             String target = callable + "$witness$" + sha256(key);
-            String priorOrigin = targetOrigins.putIfAbsent(target, key);
+            String priorOrigin = targetOrigins.get(target);
             if (priorOrigin != null && !priorOrigin.equals(key))
                 throw new IllegalArgumentException("static witness target symbol collision");
             Entry selected = new Entry(
                     callable, typeclass, groundArguments,
                     instance.dictionarySymbol(), target, resolution.bindings());
+            // All fallible validation precedes mutation. Rejected input must
+            // leave the compiler's reachable specialization plan unchanged.
+            dictionaryOwners.putIfAbsent(instance.dictionarySymbol(), instance);
+            targetOrigins.putIfAbsent(target, key);
             specializations.put(key, selected);
             return selected;
         }
