@@ -124,4 +124,96 @@ final class BoundedDemandChannelTest {
                 new BoundedDemandChannel<String>(1, 1, 8, 1, ignored -> 9)
                         .offer("big"));
     }
+
+    @Test
+    void completedStreamCannotBeCancelledAfterTerminal() {
+        var port = ints(2, 2, 16);
+        var sub = port.subscribe();
+        sub.request(2);
+        assertTrue(port.offer(11).admitted());
+        assertTrue(port.offer(22).admitted());
+        assertTrue(port.complete());
+        assertFalse(port.cancel(), "complete is an irrevocable terminal outcome");
+        assertEquals(2, port.queuedCount(), "cancel cannot erase committed completion items");
+        var first = sub.poll().delivery().orElseThrow();
+        var second = sub.poll().delivery().orElseThrow();
+        assertEquals(11, first.value());
+        assertEquals(22, second.value());
+        assertTrue(sub.ack(first.ticket()));
+        assertTrue(sub.ack(second.ticket()));
+        assertEquals(BoundedDemandChannel.PollStatus.COMPLETE, sub.poll().status());
+        assertEquals(0, port.retainedBytes());
+    }
+
+    @Test
+    void completionAndCancellationRacePublishesExactlyOneTerminal() throws Exception {
+        for (int attempt = 0; attempt < 64; attempt++) {
+            var port = ints(2, 2, 16);
+            var sub = port.subscribe();
+            sub.request(1);
+            assertTrue(port.offer(7).admitted());
+            var gate = new java.util.concurrent.CountDownLatch(1);
+            var completeWon = new java.util.concurrent.atomic.AtomicBoolean();
+            var cancelWon = new java.util.concurrent.atomic.AtomicBoolean();
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread complete = new Thread(() -> {
+                try {
+                    gate.await();
+                    completeWon.set(port.complete());
+                } catch (Throwable ex) { failure.compareAndSet(null, ex); }
+            });
+            Thread cancel = new Thread(() -> {
+                try {
+                    gate.await();
+                    cancelWon.set(port.cancel());
+                } catch (Throwable ex) { failure.compareAndSet(null, ex); }
+            });
+            complete.start();
+            cancel.start();
+            gate.countDown();
+            complete.join(5_000);
+            cancel.join(5_000);
+            assertFalse(complete.isAlive());
+            assertFalse(cancel.isAlive());
+            assertNull(failure.get());
+            assertTrue(completeWon.get() ^ cancelWon.get(), "exactly one terminal wins");
+            if (completeWon.get()) {
+                var item = sub.poll().delivery().orElseThrow();
+                assertEquals(7, item.value());
+                assertTrue(sub.ack(item.ticket()));
+                assertEquals(BoundedDemandChannel.PollStatus.COMPLETE, sub.poll().status());
+            } else {
+                assertEquals(BoundedDemandChannel.PollStatus.CANCELLED, sub.poll().status());
+            }
+            assertEquals(0, port.retainedBytes());
+        }
+    }
+
+    @Test
+    void invalidSizerNeverConsumesCreditOrPublishesValue() {
+        BoundedDemandChannel<Integer> port =
+                new BoundedDemandChannel<>(1, 1, 8, 1, x -> {
+                    if (x == -1) throw new IllegalArgumentException("invalid payload");
+                    return 8;
+                });
+        var sub = port.subscribe();
+        sub.request(1);
+        assertThrows(IllegalArgumentException.class, () -> port.offer(-1));
+        assertEquals(1, port.outstandingDemand());
+        assertEquals(0, port.queuedCount());
+        assertEquals(0, port.retainedBytes());
+        assertTrue(port.offer(5).admitted());
+        var item = sub.poll().delivery().orElseThrow();
+        assertEquals(5, item.value());
+        assertTrue(sub.ack(item.ticket()));
+    }
+
+    @Test
+    void pathologicalDescriptorBudgetsFailBeforeArrayAllocation() {
+        assertThrows(IllegalArgumentException.class,
+                () -> ints(BoundedDemandChannel.MAX_QUEUED_SLOTS + 1, 1, 8));
+        assertThrows(IllegalArgumentException.class,
+                () -> ints(1, BoundedDemandChannel.MAX_IN_FLIGHT + 1, 8));
+    }
+
 }
