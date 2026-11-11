@@ -206,7 +206,7 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
     public static final class MemoryStore implements Store {
         private record Slot(Identity id) {}
         private record Operation(Identity id, String op) {}
-        private record Dedup(byte[] digest, Result result) {}
+        private record Dedup(byte[] digest,long originEpoch,Result result) {}
         private final Map<ActorKey, Long> epochs = new HashMap<>();
         private final Map<Slot, Long> versions = new HashMap<>();
         private final Map<Slot, byte[]> snapshots = new HashMap<>();
@@ -233,7 +233,13 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
                 }
                 Dedup seen = operations.get(op);
                 if (seen != null) {
-                    out.add(Arrays.equals(seen.digest(), hash)
+                    // The current activation must be fenced, but its retry
+                    // compares the logical write against the original
+                    // operation epoch rather than changing the old digest.
+                    boolean same=seen.originEpoch()>0 &&
+                        seen.originEpoch()<=w.epoch() &&
+                        Arrays.equals(seen.digest(),digest(w,seen.originEpoch()));
+                    out.add(same
                         ? new Result(w.operationId(), Status.DUPLICATE, seen.result().version(), false)
                         : new Result(w.operationId(), Status.OP_ID_CONFLICT, -1, false));
                     continue;
@@ -246,7 +252,7 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
                 versions.put(slot, version + 1);
                 if (w.kind() == Kind.SNAPSHOT) snapshots.put(slot, w.payload());
                 Result result = new Result(w.operationId(), Status.COMMITTED, version + 1, false);
-                operations.put(op, new Dedup(hash, result));
+                operations.put(op, new Dedup(hash, w.epoch(), result));
                 out.add(result);
             }
             return out;
@@ -257,10 +263,13 @@ public final class BatchPersistenceSidecar implements AutoCloseable {
             byte[] data = snapshots.get(new Slot(id)); return data == null ? null : data.clone();
         }
         private static byte[] digest(Write w) {
+            return digest(w,w.epoch());
+        }
+        private static byte[] digest(Write w,long originalEpoch) {
             try {
                 MessageDigest sha = MessageDigest.getInstance("SHA-256");
                 for (String s : List.of(w.id().tenant(),w.id().actor(),w.id().state(),w.operationId(),
-                     Long.toString(w.epoch()),Long.toString(w.expectedVersion()),
+                     Long.toString(originalEpoch),Long.toString(w.expectedVersion()),
                      Integer.toString(w.schemaVersion()),w.kind().name())) {
                     byte[] data = s.getBytes(StandardCharsets.UTF_8);
                     sha.update(ByteBuffer.allocate(4).putInt(data.length).array()); sha.update(data);
