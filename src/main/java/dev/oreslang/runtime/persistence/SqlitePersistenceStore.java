@@ -219,6 +219,30 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
 
+    /**
+     * Checkpoint creation is state publication: it must not hide corrupted or
+     * missing earlier events behind a new snapshot_version. Validate inside
+     * the *same* BEGIN IMMEDIATE that will atomically write the checkpoint.
+     * Support mixed logical-command and legacy journals without copying or
+     * exporting any private source to an external test destination.
+     */
+    private void verifyPriorJournalBeforeSnapshot(Identity id,long head)
+            throws SQLException {
+        boolean commandTableExists=false;
+        try(PreparedStatement q=db.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' " +
+                "AND name='command_commits'")) {
+            try(ResultSet row=q.executeQuery()) {
+                commandTableExists=row.next();
+            }
+        }
+        Recovery verified=commandTableExists
+            ? SqliteCommandTransactionStore.verifyWithinCurrentTransaction(db,id)
+            : readRestoreWithinCurrentTransaction(id);
+        if(verified.version()!=head)
+            throw new SQLException("INCOMPLETE_ACTOR_JOURNAL");
+    }
+
     @Override public synchronized List<Result> commit(List<Write> batch) throws SQLException {
         checkOpen();Objects.requireNonNull(batch);
         List<Result> out=new ArrayList<>(batch.size());
@@ -261,6 +285,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                                        before,false));
                     continue;
                 }
+                if(w.kind()==Kind.SNAPSHOT)
+                    verifyPriorJournalBeforeSnapshot(id,before);
                 long next=before+1;
                 try(PreparedStatement q=db.prepareStatement("INSERT INTO state(tenant,actor,slot,version,snapshot_version,snapshot_schema,snapshot) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant,actor,slot) DO UPDATE SET version=excluded.version,snapshot_version=CASE WHEN ?=1 THEN excluded.snapshot_version ELSE state.snapshot_version END,snapshot_schema=CASE WHEN ?=1 THEN excluded.snapshot_schema ELSE state.snapshot_schema END,snapshot=CASE WHEN ?=1 THEN excluded.snapshot ELSE state.snapshot END")) {
                     bindKey(q,id);q.setLong(4,next);q.setLong(5,w.kind()==Kind.SNAPSHOT?next:0);q.setInt(6,w.kind()==Kind.SNAPSHOT?w.schemaVersion():0);
