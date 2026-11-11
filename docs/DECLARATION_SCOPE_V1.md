@@ -45,9 +45,9 @@ second binding kind, a new lexical scope, or a permission change.
 - Comments, string literals, and user identifiers are not rewritten by
   declaration normalization.
 - The `new T(...)` expression is intrinsic construction syntax. A
-  `T.new(...)` factory exists only when explicitly defined and admitted
-  by the user-defined `Newable` contract; this syntax change does not
-  synthesize a factory or claim to implement trait resolution.
+  `T.new(...)` factory exists only when explicitly defined under the
+  compiler-owned `Newable[T]` marker; this does not synthesize a factory.
+  General user-defined static trait protocols remain out of scope.
 
 ## AST and package identity
 
@@ -83,19 +83,11 @@ The formatter must not reclassify an invalid class/actor nested type as a
 valid module declaration. `define pub fnc ... :: ... end` owns exactly
 one callable scope frame, even though its header starts with `define`.
 
-The reference Java type checker now rejects source-authored `new()`
-members without an explicit implemented `Newable` interface/trait.
-A matching nominal name alone is insufficient: the resolved contract
-must declare a typed `new` callable of matching arity. This is a
-**negative admission guard**, not evidence of a functioning type-level
-factory protocol. In particular, the current interface implementation
-model describes ordinary instance members; static trait witnesses and
-specialization for `Cart.new()` still need distinct semantic/AOT work.
-
-No ordinary class, macro, package import or native backend may synthesize
-`.new()` merely because `new Cart()` intrinsic construction is available.
-Until the static Newable trait protocol is implemented and checked against
-source-free package consumers, that behavior is **NOT VERIFIED**.
+The Java reference compiler now enforces a sealed, zero-argument,
+type-level `Newable[T]` witness; its first slice is specified below.
+General user-defined static trait witnesses and binary-package AOT
+metadata are separate outstanding gates. `new Cart()` never forwards
+to `Cart.new()`.
 
 ## Newable[T] v1 executable admission contract (2026-11-10)
 
