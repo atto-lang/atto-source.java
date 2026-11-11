@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.nodes.OresEvalRootNode.NominalEnumValue;
+
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Array;
@@ -5712,6 +5714,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
+        // Nullary nominal enum variants are immutable, source-bound symbols.
+        // This is a logical mailbox charge, not a heap allocation or wire size.
+        if (value instanceof NominalEnumValue nominal && nominal.payload() == null) return 24L;
         return -1L;
     }
 
@@ -5763,6 +5768,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
+        if (value instanceof NominalEnumValue nominal && nominal.payload() == null) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
@@ -5805,6 +5811,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static boolean isScalar(Object value) {
+        // The concrete final class has a compiler-private constructor. Do not
+        // accept arbitrary SharedState implementations or payload-bearing ADTs.
+        if (value instanceof NominalEnumValue nominal) return nominal.payload() == null;
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
