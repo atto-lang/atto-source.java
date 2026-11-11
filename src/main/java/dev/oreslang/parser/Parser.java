@@ -1261,15 +1261,11 @@ public final class Parser {
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
         Ast.InterfaceDecl iface = parseInterface(visibility, true);
-        rejectForgedCompilerProtocol(iface.name());
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
         Ast.InterfaceDecl declaration = parseInterface(visibility);
-        if (kind == TRAIT || kind == INTERFACE) {
-            rejectForgedCompilerProtocol(declaration.name());
-        }
         interfaceKinds.put(declaration, kind);
         return declaration;
     }
@@ -1278,6 +1274,10 @@ public final class Parser {
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
         String name = consumeTypeDeclarationName("expected interface name");
+        // Deny compiler/runtime authority at the shared declaration parser,
+        // before parsing parents or members. Every trait/interface/contract
+        // spelling (including future parser entrypoints) passes this gate.
+        rejectForgedCompilerProtocol(name);
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
