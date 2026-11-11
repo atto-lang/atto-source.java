@@ -105,6 +105,29 @@ final class OresEnumSymbolActorMailTest {
         }
     }
 
+    @Test void freezeRejectsCapabilityInjectedByMutableMapDuringSnapshot() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var target = runtime.<Object>spawnShared(
+                    () -> (value, context) -> { });
+            target.ready().get(5, TimeUnit.SECONDS);
+            // Preflight sees only ordinary data; the third traversal injects
+            // a live actor capability while copying. Post-copy authorization
+            // must check the actual detached graph instead of trusting preflight.
+            var racing = new java.util.AbstractMap<String, Object>() {
+                int reads;
+                @Override public int size() { return 1; }
+                @Override public java.util.Set<Entry<String, Object>> entrySet() {
+                    return java.util.Set.of(Map.entry(
+                            "value", ++reads >= 3 ? target : "safe"));
+                }
+            };
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(racing));
+            target.stop();
+            assertTrue(target.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void untrustedIngressDeniesUnauthorisedEnumSymbolsEvenWhenNested() throws Exception {
         var red = OresEnumSymbol.declare(UNIT, "Light", CASES).caseNamed("Red");
         Method validator = ActorRuntime.class.getDeclaredMethod(
