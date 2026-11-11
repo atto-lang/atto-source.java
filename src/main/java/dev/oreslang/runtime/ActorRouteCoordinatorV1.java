@@ -91,6 +91,8 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
     interface PhysicalRouteWitness {
         boolean readyForPublication();
         boolean sameAuthorityDomain(PhysicalRouteWitness other);
+        /** Consumed once; no two logical actor identities may own one physical route. */
+        void bindToCoordinator(Object coordinator);
         void retireFromLogicalRoute();
     }
 
@@ -255,6 +257,12 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
                         prior.actorIdentity(), Math.addExact(prior.routeEpoch(), 1L),
                         proposed, checkedState, readyReplacement,
                         mailboxFreeze.dispatchWatermark());
+                // Bind the candidate exactly once before any irreversible
+                // mailbox/epoch publication. A separately managed physical
+                // actor must not become a route owned by two ActorRefs.
+                if (readyReplacement instanceof PhysicalRouteWitness witnessed) {
+                    witnessed.bindToCoordinator(ActorRouteCoordinatorV1.this);
+                }
                 try {
                     // Under this coordinator lock, no dispatch can use the newly
                     // unfrozen mailbox until the single volatile tuple is set.
@@ -330,8 +338,12 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
         this.generation = new ActorUpgradeEpochGate(actorIdentity, initialImage);
         this.mailbox = new LogicalActorProxyMailboxV1(
                 maxMessages, maxMessageBytes, maxRetainedBytes);
-        this.active = new Published<>(actorIdentity, 1, initialImage,
+        Published<R> first = new Published<>(actorIdentity, 1, initialImage,
                 initialState, initialPhysicalRoute, 0);
+        if (initialPhysicalRoute instanceof PhysicalRouteWitness witnessed) {
+            witnessed.bindToCoordinator(this);
+        }
+        this.active = first;
     }
 
     LogicalRef logicalRef() { return logicalRef; }
