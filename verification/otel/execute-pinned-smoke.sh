@@ -73,6 +73,7 @@ case "$mode" in
     # hashing the JDK's java launcher does not identify the Oreslang compiler.
     compiler_jar_before="$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)"
     classpath_before="$(sha256sum target/classpath.txt | cut -d' ' -f1)"
+    dependency_jars_before="$(otel_guardrails_classpath_digest target/classpath.txt)"
     classes_before="$(otel_guardrails_class_digest target/classes)"
     # Actual modular compiler launcher with linked .ores imports.
     otel_guardrails_run_guest "$output" "$java_bin" --enable-native-access=ALL-UNNAMED \
@@ -100,6 +101,7 @@ esac
 if [[ "$mode" == jvm ]]; then
   test "$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)" = "$compiler_jar_before"
   test "$(sha256sum target/classpath.txt | cut -d' ' -f1)" = "$classpath_before"
+  test "$(otel_guardrails_classpath_digest target/classpath.txt)" = "$dependency_jars_before"
   test "$(otel_guardrails_class_digest target/classes)" = "$classes_before"
 else
   test "$(sha256sum "$executable" | cut -d' ' -f1)" = "$aot_binary_before"
@@ -127,6 +129,7 @@ test "$(sha256sum "$output/guest.stdout.jsonl" | cut -d' ' -f1)" = "$stdout_dige
   if [[ "$mode" == jvm ]]; then
     printf 'compiler_jar_sha256=%s\n' "$compiler_jar_before"
     printf 'classpath_manifest_sha256=%s\n' "$classpath_before"
+    printf 'dependency_jars_sha256=%s\n' "$dependency_jars_before"
     printf 'loaded_class_tree_sha256=%s\n' "$classes_before"
   else
     printf 'native_image_no_fallback=true\n'
