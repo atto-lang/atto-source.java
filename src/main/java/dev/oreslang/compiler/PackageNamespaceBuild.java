@@ -118,9 +118,11 @@ public final class PackageNamespaceBuild {
         var receivers = ActorReceiverBinder.bindSourceSet(packageIdentity, parsed);
         var states = ActorStateBinder.bindSourceSet(packageIdentity, parsed);
         var methods = ActorMethodIndex.collect(packageIdentity, parsed, receivers);
+        var descriptors = ActorDescriptorIndex.collect(
+                packageIdentity, sourceSha256, methods, states, receivers);
         return new ActorTopology(packageIdentity,
                 sources.keySet().stream().sorted().toList(),
-                sourceSha256, methods, states, receivers);
+                sourceSha256, methods, states, receivers, descriptors);
     }
 
     public record ActorTopology(
@@ -129,7 +131,8 @@ public final class PackageNamespaceBuild {
             Map<String, String> sourceSha256,
             ActorMethodIndex actorMethods,
             Map<ActorStateBinder.Slot, ActorStateBinder.Binding> attachedStates,
-            Map<ActorReceiverBinder.SourceSlot, ActorReceiverBinder.SourceBinding> receiverMethods) {
+            Map<ActorReceiverBinder.SourceSlot, ActorReceiverBinder.SourceBinding> receiverMethods,
+            ActorDescriptorIndex actorDescriptors) {
         public ActorTopology {
             if (packageIdentity == null || packageIdentity.isBlank()) {
                 throw new IllegalArgumentException("missing manifest actor package identity");
@@ -145,6 +148,10 @@ public final class PackageNamespaceBuild {
             java.util.Objects.requireNonNull(actorMethods, "nominal actor index");
             attachedStates = Map.copyOf(attachedStates);
             receiverMethods = Map.copyOf(receiverMethods);
+            java.util.Objects.requireNonNull(actorDescriptors, "actor descriptors");
+            if (!actorDescriptors.descriptors().keySet().equals(actorMethods.actors().keySet())) {
+                throw new IllegalArgumentException("actor descriptors do not cover full source inventory");
+            }
         }
     }
 
