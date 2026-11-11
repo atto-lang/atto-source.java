@@ -8448,7 +8448,11 @@ public final class TypeChecker {
     private void requireEqualityComparable(Type left, Type right) {
         Type a = deref(left);
         Type b = deref(right);
-        if (strictAttoEquality && (a == Unknown.INSTANCE || b == Unknown.INSTANCE)) {
+        if (strictAttoEquality
+                && (Types.containsUncertainType(a) || Types.containsUncertainType(b))) {
+            // Generic/unknown equality is not AOT-safe until all generic
+            // instantiations are specialized with a statically proven Eq
+            // contract. Do not let permissive legacy overlap hide the gap.
             throw new IllegalArgumentException("ATTO_STRICT_UNRESOLVED_EQUALITY_TYPE: "
                     + a + " and " + b);
         }
