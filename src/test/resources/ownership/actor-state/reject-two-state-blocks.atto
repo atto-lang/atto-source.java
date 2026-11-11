@@ -1,0 +1,10 @@
+// One declared state container owns the actor's complete private state.
+define actor Counter as
+  state {
+    let int count;
+  }
+  state {
+    let int previous;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
