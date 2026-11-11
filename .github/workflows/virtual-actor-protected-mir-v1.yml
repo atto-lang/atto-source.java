@@ -59,7 +59,12 @@ jobs:
 
       - name: Compile and run protected MIR and entire stacked virtual actor suites
         shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          # On pull_request, GITHUB_SHA may identify the synthetic merge
+          # commit, not the actual PR head that checkout pinned.
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           set -euo pipefail
           mvn -B -ntp \
             -Dtest=VirtualActorProtectedOpsMirV1Test,VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
@@ -78,5 +83,6 @@ jobs:
             ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' "$report"
             echo "EXECUTED_JUNIT=$suite"
           done
-          echo "EXACT_HEAD_CHECKED=$GITHUB_SHA"
+          echo "EXACT_HEAD_CHECKED=$(git rev-parse HEAD)"
+          echo "EXACT_TREE_CHECKED=$(git rev-parse 'HEAD^{tree}')"
           echo "VIRTUAL_ACTOR_GUEST_LOWERING=STILL_UNSUPPORTED"
