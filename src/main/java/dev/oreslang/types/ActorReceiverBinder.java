@@ -1,12 +1,17 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Static-only nominal binding of external actor receiver declarations.
@@ -73,6 +78,123 @@ public final class ActorReceiverBinder {
             bindModule(module, bindings);
         }
         return Collections.unmodifiableMap(new LinkedHashMap<>(bindings));
+    }
+
+    /**
+     * An explicitly supplied package source set can resolve root-namespace
+     * external actor methods across files. This is STATIC METADATA ONLY:
+     * the caller must authenticate package membership separately, and the
+     * executable compiler must still reject external actor method bodies.
+     *
+     * In particular, equal textual namespaces do not imply cross-package
+     * authority. Named modules are never implicitly coalesced across files.
+     */
+    public record SourceSlot(
+            String packageIdentity, String namespace,
+            String actor, String name, int arity) {
+        public SourceSlot {
+            if (packageIdentity == null || packageIdentity.isBlank()
+                    || namespace == null || namespace.isBlank()
+                    || actor == null || actor.isBlank()
+                    || name == null || name.isBlank() || arity < 0) {
+                throw new IllegalArgumentException("invalid package actor receiver slot");
+            }
+        }
+    }
+
+    public record SourceBinding(
+            String actorUnit, String methodUnit, Binding nominalBinding) {
+        public SourceBinding {
+            java.util.Objects.requireNonNull(actorUnit, "actor source unit");
+            java.util.Objects.requireNonNull(methodUnit, "method source unit");
+            java.util.Objects.requireNonNull(nominalBinding, "nominal binding");
+        }
+    }
+
+    public static Map<SourceSlot, SourceBinding> bindSourceSet(
+            String packageIdentity, Map<String, Ast.Program> sourceUnits) {
+        if (packageIdentity == null || packageIdentity.isBlank()) {
+            throw new IllegalArgumentException("cross-file receiver binding requires a package identity");
+        }
+        java.util.Objects.requireNonNull(sourceUnits, "explicit package source units");
+        Map<String, List<Ast.Decl>> grouped = new TreeMap<>();
+        // AST declaration equality must never accidentally collapse source
+        // provenance; two identical declarations in different files still
+        // represent different identities and must fail duplicate checks.
+        Map<Ast.Decl, String> origins = new IdentityHashMap<>();
+        for (Map.Entry<String, Ast.Program> unit : new TreeMap<>(sourceUnits).entrySet()) {
+            String sourceId = unit.getKey();
+            if (sourceId == null || sourceId.isBlank() || sourceId.startsWith("/")
+                    || sourceId.contains("\\") || sourceId.contains("..")) {
+                throw new IllegalArgumentException("invalid package-relative source unit ID: " + sourceId);
+            }
+            Ast.Program program = java.util.Objects.requireNonNull(
+                    unit.getValue(), "source program");
+            String namespace = program.namespace();
+            if (namespace == null || namespace.isBlank()) {
+                throw new IllegalArgumentException(
+                        "cross-file actor methods require an explicit source namespace: " + sourceId);
+            }
+            for (Ast.ModuleDecl module : program.modules()) {
+                if (!Parser.ROOT_MODULE.equals(module.name())) {
+                    if (module.declarations().stream()
+                            .anyMatch(d -> d instanceof Ast.ExternalActorMethodDecl)) {
+                        throw new IllegalArgumentException(
+                                "named modules do not share cross-file actor receiver scope: " + sourceId);
+                    }
+                    continue;
+                }
+                List<Ast.Decl> declarations =
+                        grouped.computeIfAbsent(namespace, ignored -> new ArrayList<>());
+                for (Ast.Decl declaration : module.declarations()) {
+                    declarations.add(declaration);
+                    // IdentityHashMap preserves distinct same-content ASTs.
+                    origins.put(declaration, sourceId);
+                }
+            }
+        }
+
+        Map<SourceSlot, SourceBinding> resolved = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Ast.Decl>> group : grouped.entrySet()) {
+            if (group.getValue().stream()
+                    .noneMatch(d -> d instanceof Ast.ExternalActorMethodDecl)) {
+                continue;
+            }
+            Ast.ModuleDecl syntheticRoot = new Ast.ModuleDecl(
+                    Parser.ROOT_MODULE, List.of(), List.of(), group.getValue());
+            Map<Slot, Binding> local = new LinkedHashMap<>();
+            bindModule(syntheticRoot, local);
+            for (Map.Entry<Slot, Binding> entry : local.entrySet()) {
+                Binding binding = entry.getValue();
+                String actorUnit = origins.get(binding.nominalActor());
+                String methodUnit = origins.get(binding.method());
+                if (actorUnit == null || methodUnit == null) {
+                    throw new IllegalArgumentException(
+                            "external actor method has no source provenance");
+                }
+                if (!actorUnit.equals(methodUnit)) {
+                    Ast.Visibility visibility =
+                            binding.nominalActor() instanceof Ast.StandaloneActorDecl standalone
+                                    ? standalone.visibility()
+                                    : ((Ast.ClassDecl) binding.nominalActor()).visibility();
+                    if (visibility != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "cross-file external method cannot bind a private actor '"
+                                        + entry.getKey().actor() + "'");
+                    }
+                }
+                Slot slot = entry.getKey();
+                SourceSlot key = new SourceSlot(
+                        packageIdentity, group.getKey(), slot.actor(),
+                        slot.name(), slot.arity());
+                if (resolved.putIfAbsent(key, new SourceBinding(
+                        actorUnit, methodUnit, binding)) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate cross-file external actor method slot: " + key);
+                }
+            }
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(resolved));
     }
 
     private static void bindModule(
