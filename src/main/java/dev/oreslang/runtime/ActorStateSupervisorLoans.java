@@ -61,23 +61,30 @@ public final class ActorStateSupervisorLoans {
      * backing, not an observational copy of separate guest state.
      */
     public LongField declareOwnerLongField(String name, long initialValue) {
-        runtime.requireStateRegionOwnerTurn(actorId, actorGeneration);
         Objects.requireNonNull(name, "name");
         if (name.isBlank() || name.length() > 128) {
             throw new IllegalArgumentException("actor long field requires a bounded nonblank name");
         }
-        synchronized (gate) {
-            requireOpenLocked();
-            if (boundLongFields.size() >= MAX_BOUND_LONG_FIELDS) {
-                throw new IllegalStateException("actor typed long field quota exhausted");
+        // Registration is a WRITE, not a free metadata update: even field
+        // creation must linearize against outstanding supervisor readers and
+        // writers. Actor carriers cannot block; contention fails closed.
+        final LongField[] minted = new LongField[1];
+        withOwnerWrite(() -> {
+            synchronized (gate) {
+                requireOpenLocked();
+                if (boundLongFields.size() >= MAX_BOUND_LONG_FIELDS) {
+                    throw new IllegalStateException("actor typed long field quota exhausted");
+                }
+                if (boundLongFields.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "duplicate actor long field identity: " + name);
+                }
+                LongField field = new LongField(name, initialValue);
+                boundLongFields.put(name, field);
+                minted[0] = field;
             }
-            if (boundLongFields.containsKey(name)) {
-                throw new IllegalArgumentException("duplicate actor long field identity: " + name);
-            }
-            LongField field = new LongField(name, initialValue);
-            boundLongFields.put(name, field);
-            return field;
-        }
+        });
+        return minted[0];
     }
 
     private void requireBoundLongFieldLocked(LongField field) {
