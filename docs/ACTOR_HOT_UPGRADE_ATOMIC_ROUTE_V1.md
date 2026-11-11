@@ -54,8 +54,9 @@ timers, or native code-image holders are retired. Those need independent pins.
 
 ## Next production steps
 
-1. Move the stable logical route behind the compiler-generated `ActorRef`.
-   Fail closed on direct physical `ActorRef.send()` bypasses during handover.
+1. The claimed physical SHARED ActorRef now fails closed on raw send/sendAsync.
+   Next make compiler-generated guest ActorRefs address the stable logical
+   route rather than the sealed physical actor reference.
 2. Require a real runtime-minted candidate-ready/state-restore witness and
    old-version quiescence attestation before publication (including Task/FFI).
 3. Wire physical resource leases and supervisor CONTROL lane (PR #2835, #1476).
@@ -81,4 +82,4 @@ that is NOT evidence for the real ActorRuntime adapter or .atto compiler.
 - `ActorRuntimeHotRouteBridgeV1` now requires a runtime-issued `HotRoutePhysical<M>`, never a naked physical ActorRef. Every send consumes exactly one coordinator-minted, route-and-epoch-bound physical receipt before physical admission.
 - Each physical endpoint binds to one logical coordinator. A duplicate owner, foreign-runtime successor, unready actor or stale physical receipt fails closed. Old endpoints retire monotonically once the v2 logical route publishes.
 
-**Remaining limitations:** the logical send handle remains host-side, not yet the language-level guest `ActorRef`. Fencing a raw physical ActorRef does not redirect that raw ref. Existing physical messages admitted before claim require a separate processing drain, and external Task/FFI/borrow/continuation leases still require independent proof. Candidate state is host-supplied rather than compiler-migrated. Do not treat source Actions runs with zero executed steps as guest evidence.
+**Remaining limitations:** the logical send handle remains host-side, not yet the language-level guest `ActorRef`. Fencing a raw physical ActorRef does not redirect that raw ref. Physical mail admitted before claim is now captured by a runtime `ActorRef.drain()` barrier immediately after one-way sealing; both the old stage and a new candidate must wait for their respective preclaim processing receipts. This is not a physical Task/FFI/borrow/continuation quiescence proof, which remains an independent requirement. Candidate state is host-supplied rather than compiler-migrated. Do not treat source Actions runs with zero executed steps as guest evidence.
