@@ -2300,6 +2300,10 @@ public final class OwnershipChecker {
                 || member.member().equals("or_else") || member.member().equals("ok_or")
                 || member.member().equals("transpose");
         if (!query && !extracting) return null;
+        if ((member.member().equals("transpose") || member.member().equals("flatten"))
+                && !arguments.isEmpty()) {
+            throw error(member.member() + " requires zero arguments");
+        }
         // A nested call has no reliably resolved result type in this checker
         // until TypeChecker supplies its typed IR. Do not inspect it here and
         // then again in generic method dispatch: that double-checks affine
