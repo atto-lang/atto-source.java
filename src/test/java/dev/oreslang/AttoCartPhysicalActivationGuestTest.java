@@ -22,6 +22,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.LinkOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -48,10 +50,17 @@ import static org.junit.jupiter.api.Assertions.*;
 final class AttoCartPhysicalActivationGuestTest {
     private static final Path CONTRACT_ROOT = Path.of("contracts", "virtual-actor-cart-v1")
             .toAbsolutePath().normalize();
+    private static final Map<String, String> SOURCE_BLOBS = Map.of(
+            "positive/cart_ops.atto", "1db480666b6bca1233d9a37a6b97a12a7b03ec0e",
+            "positive/cart_main.atto", "ef042b5bf1ffae93b13e0a43dc2299901a477d38",
+            "negative/virtual_cart_unsupported.atto", "c684bf630127b2e31de39c8c6116838448729f43",
+            "expected/cart_main.stdout", "12716757f1d259c38db007611b92538586bc08e4");
     private static final String DOMAIN = "cart-tenant";
     @TempDir Path scratch;
 
-    private static Path contract(String relative) {
+    private static Path contract(String relative) throws Exception {
+        assertTrue(SOURCE_BLOBS.containsKey(relative),
+                "Cart contract source not in the reviewed immutable corpus");
         Path file = CONTRACT_ROOT;
         for (String component : relative.split("/")) {
             assertFalse(component.isBlank() || component.equals(".") || component.equals(".."),
@@ -62,6 +71,15 @@ final class AttoCartPhysicalActivationGuestTest {
         }
         assertTrue(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS),
                 "missing canonical Cart contract: " + relative);
+        byte[] contents = Files.readAllBytes(file);
+        assertTrue(contents.length > 0 && contents.length <= 8192,
+                "canonical Cart fixture size budget");
+        MessageDigest digest = MessageDigest.getInstance("SHA-1");
+        digest.update(("blob " + contents.length + "\\0")
+                .getBytes(StandardCharsets.US_ASCII));
+        digest.update(contents);
+        assertEquals(SOURCE_BLOBS.get(relative), HexFormat.of().formatHex(digest.digest()),
+                "canonical Cart fixture differs from its pinned Git blob");
         return file;
     }
 
