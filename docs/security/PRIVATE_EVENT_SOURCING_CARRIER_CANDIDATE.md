@@ -11,7 +11,7 @@
 - Source-free canary workflow on draft branch:
   `.github/workflows/atto-event-sourcing-source-free-canary.yml`
 - Pinned workflow blob SHA on that branch:
-  `2a2db7327bfcdb60c34374cf360c05e040acf35d`
+  `8e4b284d92b67208726bec6df8f16f4920c3ae76`
 - Latest confirmed successful source-free runner execution:
   [Actions run #42951516578](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951516578)
   (**8 executed steps; success**) and [run #42951509176](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951509176)
@@ -24,12 +24,12 @@
 - Java host persistence:
   `ores-truffle-oreslang/oreslang-source.java` draft PR #2757.
   Proposed exact SHA when written:
-  `1d918648ffa3b9aba9ad9d72f81c2ca6e24a142f` (tree `cef75701afdd635fbee41cc4d922cd66945828b5`).
+  `54380605a3e6ddd3cdc15c5338119244251e035e` (tree `dcd3c19d4826f8e0094e5b21abbad092054ff93e`).
   It is a fast-moving draft; re-read the head and tree after any approval.
 - Node host SQLite reference:
   `ores-truffle-oreslang/oreslang-platform-conformance` draft PR #668.
   Proposed exact SHA when written:
-  `1c57e1e579f2128bf5800053841f0a09059376f6` (tree `8e5a80f72a06d5082d9eeb124d7da14623cf217e`).
+  `3897b2ceac064a329f0c099d9025e1e2c7ba78a7` (tree `8836a46856556c7fe1f892015fccb2e62bec24a9`).
   Also refresh at actual handoff.
 
 Only a **source-owned, approved** publisher may enumerate the source tree,
@@ -105,3 +105,25 @@ evidence, not a claim that the account has unlimited future minutes.
 The exact carrier *execution* workflow, test-plan digest and tree
 handoff must be separately reviewed; the synthetic canary workflow
 blob alone does not authorize running any source.
+
+## Original-epoch replay proof candidate (2026-11-10)
+
+The Node reference now durably stores `operations.origin_epoch` and
+recomputes the complete legacy event and snapshot operation digest at
+recovery. Legacy rows lacking original epoch are intentionally unverified.
+Java already stores `ops.epoch` and `ops.expected`; its mixed and
+legacy verifiers now require positive origin epoch and the exact
+expected-version relationship in addition to payload/schema proof.
+
+The independently authored, **no-source/no-checkout** private runner
+[run #42953735486](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42953735486)
+passed 11 job steps, including 6/6 source-free original-epoch digest
+checks. It certifies neither these exact Node/Java source implementations
+nor a valid export permit. The candidate's workflow blob was read back
+as `8e4b284d92b67208726bec6df8f16f4920c3ae76`.
+
+The source/main and destination/main protection, independent security
+review, historical exposure incident and active destination allowlist
+remain mandatory stop conditions. Any approval must pin the *updated*
+exact source commit/tree before transfer; older proposed SHAs are
+superseded, not implicit approval.
