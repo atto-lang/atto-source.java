@@ -62,7 +62,7 @@ jobs:
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
             -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest,ActorStateBorrowReturnFenceTest,ActorStateFieldBorrowBoundaryTest -DfailIfNoTests=true test
-      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL, 12 actor-state, 7 return-fence and 8 field-path tests)
+      - name: Verify focused Surefire receipts (27 RW, 38 CONTROL, 12 actor-state, 7 return-fence and 8 field-path tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +72,7 @@ jobs:
           base = Path("target/surefire-reports")
           cases = {
               "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
-              "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
+              "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 38,
               "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 12,
               "dev.oreslang.ActorStateBorrowReturnFenceTest": 7,
               "dev.oreslang.ActorStateFieldBorrowBoundaryTest": 8,
