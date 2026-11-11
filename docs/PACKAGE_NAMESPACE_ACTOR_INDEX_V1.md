@@ -70,6 +70,13 @@ to 16 MiB, the source set to 4096 files, and aggregate source bytes to
 256 MiB. Units are sorted by normalized project-relative IDs for
 deterministic builds. External `ORESLANG_PATH` and manifest
 `source.import_paths` do **not** become namespace ownership roots.
+Until a separately versioned, trusted external-dependency manifest is
+available, this build API **rejects unresolved non-platform source imports**
+rather than letting the ambient resolver inject untracked witnesses.
+Compiler-owned `ores.core/`, `ores.std/`, legacy `std/`, and capability-
+gated `java:` imports retain their existing compiler-specific policies.
+Ordinary relative and bare imports must resolve to a supplied source unit
+within this package's discovered source set.
 
 Important operational limit: while this code checks symlink components
 and opens source files without following final-component links, an
