@@ -41,16 +41,17 @@ final class EnumMatchArmSyntaxGuestTest {
                         && fn.name().equals("next"))
                 .map(declaration -> (Ast.FunctionDecl) declaration)
                 .findFirst().orElseThrow();
-        Ast.ReturnStmt outerReturn = assertInstanceOf(
-                Ast.ReturnStmt.class, next.body().getFirst());
-        Ast.MatchExpr matched = assertInstanceOf(
-                Ast.MatchExpr.class, outerReturn.value());
+        Ast.MatchStmt matched = assertInstanceOf(
+                Ast.MatchStmt.class, next.body().getFirst());
+        assertTrue(matched.ordered());
         assertEquals(3, matched.arms().size());
-        for (Ast.MatchValueArm arm : matched.arms()) {
-            // Both source forms lower to an ARM_RESULT rather than escaping
-            // the enclosing callable with an inner FUNCTION_RETURN.
-            assertTrue(arm.prefixStatements().isEmpty());
-            assertInstanceOf(Ast.MemberExpr.class, arm.value());
+        for (Ast.MatchArm arm : matched.arms()) {
+            // Direct terminal return-match is normalized to one checked
+            // function return per ordered arm. No expression arm is discarded.
+            assertEquals(1, arm.body().size());
+            Ast.ReturnStmt terminal = assertInstanceOf(
+                    Ast.ReturnStmt.class, arm.body().getFirst());
+            assertInstanceOf(Ast.MemberExpr.class, terminal.value());
         }
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
