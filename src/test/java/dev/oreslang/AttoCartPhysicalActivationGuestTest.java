@@ -1,0 +1,231 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.runtime.VirtualActorActivationRegistry;
+import dev.oreslang.runtime.VirtualActorCurrentMainDirectory;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.Value;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * First JVM compiler-backed virtual-Cart *transition* slice.
+ *
+ * The code inside each physical ActorRuntime worker calls a real compiled
+ * guest .atto function. ActorGroup owns the worker and its generation; the
+ * directory reads the single runtime ledger. The logical identity survives
+ * STOP and the next physical incarnation. No mutable guest state crosses
+ * worker boundaries; the quantity starts at zero again on reactivation.
+ *
+ * This is not yet source-level 'define virtual actor Cart': TypeChecker
+ * deliberately rejects protected virtual actor MIR until compiler-owned
+ * state, auto-activation, CONTROL and persistence lowering are implemented.
+ * It also is not an AOT/native-image or cross-backend parity result.
+ */
+@Timeout(90)
+final class AttoCartPhysicalActivationGuestTest {
+    private static final String RESOURCE_ROOT = "/atto/virtual-cart-v1/";
+    private static final String DOMAIN = "cart-tenant";
+    @TempDir Path scratch;
+
+    private static String fixture(String name) throws Exception {
+        try (InputStream stream = AttoCartPhysicalActivationGuestTest.class
+                .getResourceAsStream(RESOURCE_ROOT + name)) {
+            assertNotNull(stream, "missing exact .atto fixture " + name);
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private Path stage(String name) throws Exception {
+        Path path = scratch.resolve(name);
+        Files.writeString(path, fixture(name), StandardCharsets.UTF_8);
+        return path;
+    }
+
+    /**
+     * One Truffle context per physical incarnation. Its guest state is only
+     * accessed by that nonreentrant worker; the host closes it after done().
+     * This adapter is intentionally test-scoped, not a public unsafe bridge.
+     */
+    private static final class CompiledCartTurn implements AutoCloseable {
+        private final Context context;
+        private final Value unit;
+        private int quantity;
+
+        CompiledCartTurn(String canonicalAtto) throws Exception {
+            // Use the production parser + static checker, not a Java numeric
+            // reference implementation posing as compiler-backed evidence.
+            TypeChecker.check(Parser.parse(canonicalAtto));
+            Context opened = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build();
+            try {
+                Source source = Source.newBuilder(OresLanguage.ID,
+                                canonicalAtto, "cart_ops.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral();
+                Value parsed = opened.parse(source);
+                parsed.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+                parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                this.unit = parsed;
+                this.context = opened;
+            } catch (Throwable failure) {
+                opened.close(true);
+                throw failure;
+            }
+        }
+
+        int apply(int delta) {
+            // The value comes from executing checked AttoLang bytecode/Truffle,
+            // NOT a Java quantity += delta operation.
+            quantity = unit.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                    "cart_step", quantity, delta).asInt();
+            return quantity;
+        }
+
+        @Override public void close() {
+            context.close();
+        }
+    }
+
+    @Test
+    void realLinkedAttoCartTransitionExecutesAndProducesExpectedGuestOutput()
+            throws Exception {
+        stage("cart_ops.atto");
+        Path entry = stage("cart_main.atto");
+        assertEquals(2, LinkedProgramRunner.validate(entry, Map.of()).units().size());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out, err);
+        assertEquals(2, result.units().size());
+        assertEquals("cart|2|7|5", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void oneLogicalCartAddressSurvivesPhysicalStopAndNewCompiledGuestActivation()
+            throws Exception {
+        String source = fixture("cart_ops.atto");
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            try (var directory = new VirtualActorCurrentMainDirectory(group, DOMAIN)) {
+                Object session = new Object();
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
+                VirtualActorActivationRegistry.Identity logical =
+                        directory.resolve("Cart", "order-42");
+                String stableAddress = directory.address(logical);
+                assertTrue(directory.inspect(grant, session, logical).isEmpty(),
+                        "obtaining a logical address must not start a physical worker");
+
+                AtomicReference<CompiledCartTurn> firstGuest = new AtomicReference<>();
+                AtomicInteger firstLastOutput = new AtomicInteger(-1);
+                assertEquals(1L, group.reserveNextVirtualActorGeneration(logical));
+                ActorRuntime.ActorRef<Integer> first = group.spawnWorker(
+                        ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(),
+                        actorContext -> {
+                            var guest = new CompiledCartTurn(source);
+                            firstGuest.set(guest);
+                            return (delta, ctx) -> firstLastOutput.set(guest.apply(delta));
+                        });
+                first.getReady().get(5, TimeUnit.SECONDS);
+                group.bindVirtualActorIdentity(first, logical, 1L);
+                first.send(2);
+                first.send(5);
+                first.drain().get(5, TimeUnit.SECONDS);
+                assertEquals(7, firstLastOutput.get(),
+                        "real .atto cart_step must run inside the first physical actor");
+                assertEquals(first.id(), directory.inspect(grant, session, logical)
+                        .orElseThrow().physicalActorId().orElseThrow());
+                first.gracefulStop().get(5, TimeUnit.SECONDS);
+                first.getDone().get(5, TimeUnit.SECONDS);
+                firstGuest.get().close();
+
+                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
+                        directory.inspect(grant, session, logical).orElseThrow().lifecycle());
+
+                AtomicReference<CompiledCartTurn> secondGuest = new AtomicReference<>();
+                AtomicInteger secondLastOutput = new AtomicInteger(-1);
+                assertEquals(2L, group.reserveNextVirtualActorGeneration(logical));
+                ActorRuntime.ActorRef<Integer> second = group.spawnWorker(
+                        ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                        actorContext -> {
+                            var guest = new CompiledCartTurn(source);
+                            secondGuest.set(guest);
+                            return (delta, ctx) -> secondLastOutput.set(guest.apply(delta));
+                        });
+                second.getReady().get(5, TimeUnit.SECONDS);
+                group.bindVirtualActorIdentity(second, logical, 2L);
+                assertNotEquals(first.id(), second.id(), "physical worker identity must change");
+                assertEquals(stableAddress, directory.address(logical),
+                        "logical address must not encode physical ActorId or generation");
+                assertEquals(2L, directory.inspectAddress(grant, session, stableAddress)
+                        .orElseThrow().activationGeneration());
+                assertEquals(second.id(), directory.inspect(grant, session, logical)
+                        .orElseThrow().physicalActorId().orElseThrow());
+                assertFalse(group.isCurrentVirtualActorGeneration(logical, 1L));
+                assertThrows(IllegalStateException.class, () -> first.send(99),
+                        "retired physical actor ref cannot target the new activation");
+
+                second.send(3);
+                second.drain().get(5, TimeUnit.SECONDS);
+                assertEquals(3, secondLastOutput.get(),
+                        "guest state was not restored: only stable ID survives this slice");
+                second.gracefulStop().get(5, TimeUnit.SECONDS);
+                second.getDone().get(5, TimeUnit.SECONDS);
+                secondGuest.get().close();
+                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
+                        directory.inspect(grant, session, logical).orElseThrow().lifecycle());
+            }
+            group.close();
+        }
+    }
+
+    @Test
+    void protectedVirtualActorIsStillRejectedBeforeAnyUnfencedLowering()
+            throws Exception {
+        String source = fixture("virtual_cart_unsupported.atto");
+        Ast.Program parsed = Parser.parse(source);
+        assertInstanceOf(Ast.VirtualActorDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(parsed));
+        assertTrue(error.getMessage().contains("VIRTUAL_ACTOR_MIR_UNSUPPORTED"),
+                "compiler must not silently alias virtual actor to an ordinary class");
+
+        Path file = stage("virtual_cart_unsupported.atto");
+        assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.validate(file, Map.of()),
+                "negative compile fixture must fail before any guest execution");
+    }
+
+    @Test
+    void cartGuestCheckedOverflowCannotWrapIntoNewActorState() throws Exception {
+        String source = fixture("cart_ops.atto");
+        try (CompiledCartTurn cart = new CompiledCartTurn(source)) {
+            assertEquals(Integer.MAX_VALUE, cart.apply(Integer.MAX_VALUE));
+            assertThrows(RuntimeException.class, () -> cart.apply(1),
+                    "AttoLang checked integer addition must reject overflow");
+        }
+    }
+}
