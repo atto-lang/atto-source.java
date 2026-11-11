@@ -169,7 +169,7 @@ final class NamespaceActorHeaderAdmissionTest {
     void borrowedActorMailPayloadFailsStaticAdmission() {
         var program = parse("""
                 declare pub actor Foo;
-                define mtd (Foo f) receive(ActorMail<borrow int> mail): void { return; }
+                external mtd (Foo f) receive(ActorMail<borrow int> mail): void { return; }
                 """);
         var error = assertThrows(IllegalArgumentException.class,
                 () -> ActorReceiverBinder.bindSourceSet(
