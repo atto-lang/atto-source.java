@@ -75,3 +75,19 @@ not remove this guard or forge a same-file shortcut.
 Different VMs, processes or Wasm linear memories still require
 explicit authenticated transport encoding. This local scalar bridge
 does not provide cross-domain raw memory sharing.
+
+## Detached-graph authorization hardening
+
+The older enum-compiler stack preflighted incoming mailbox graphs before
+creating the detached image. An untrusted or concurrently mutated Java
+collection can change between those traversals. The bridge now validates
+and re-authorizes the **actual prepared graph** before a mailbox quota
+reservation or publication, including UNTRUSTED enum export denial and
+nested runtime capability checks. Actor output publication and public
+`freeze()` also validate after the copy.
+
+`freezeRejectsCapabilityInjectedByMutableMapDuringSnapshot` constructs a
+Java Map whose entrySet changes after two read traversals. The first
+preflight sees harmless data; the detached graph contains an ActorRef.
+It must be rejected instead of becoming authorized by an earlier snapshot.
+This is an authored regression pending executable CI.
