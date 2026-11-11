@@ -78,11 +78,11 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
     long attach(ActorRuntime.ActorRef<?> ref, ActorRuntime.ActorRef<?> supervisor) {
         runtime.requireSupervisorShutdownAuthority("attach supervisor recovery actor");
         if (controlFault.get() != null) throw new IllegalStateException("CONTROL fault");
-        // Never hold the coordinator monitor while taking ActorRuntime's
-        // admission/actor lifecycle locks (faults acquire them in reverse).
-        long nodeId = bridge.attach(ref, supervisor);
-        synchronized (lock) { refs.put(nodeId, ref); }
-        return nodeId;
+        // The bridge now publishes the coordinator ref INSIDE its ledger
+        // admission transaction. A concurrent supervisor failure cannot
+        // observe a registered ledger node without this physical ActorRef.
+        // Do not hold coordinator.lock when acquiring runtime lifecycle locks.
+        return bridge.attach(ref, supervisor);
     }
 
     /**
