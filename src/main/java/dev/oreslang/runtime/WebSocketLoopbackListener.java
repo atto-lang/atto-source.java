@@ -893,6 +893,88 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                     context.actors(), actor, handler);
         }
 
+        /**
+         * Trusted compiler/runtime adapter, not an AttoLang guest method.
+         * Accept exactly one complete validated TEXT message for a compiled
+         * code actor. ActorRuntime.send() transfers the value into its normal
+         * bounded user mailbox, so the source code executor's receiveActor()
+         * runs on an actor turn with ActorInboxMail and actor-owned state.
+         *
+         * The connection ticket retains the exact actor/tenant/epoch lease
+         * until the runtime has accepted the message. A refused send closes
+         * the connection instead of silently dropping an admitted USER item.
+         * No socket, closure or mutable host state enters the guest message.
+         */
+        boolean dispatchNextSourceActorText(
+                WebSocketActorConnectionLease.Handle handle,
+                OresContext context, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(context, "runtime context");
+            requireContextActor(context, actor, "websocket.source-dispatch");
+            return dispatchSourceActorText(
+                    handle, context.contextId(), context.actors(), actor);
+        }
+
+        /** HOST-ONLY test seam; production must use OresContext authority. */
+        boolean dispatchHostSourceActorText(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            return dispatchSourceActorText(handle, tenant, runtime, actor);
+        }
+
+        private boolean dispatchSourceActorText(
+                WebSocketActorConnectionLease.Handle handle, UUID tenant,
+                ActorRuntime runtime, ActorRuntime.ActorRef<Object> actor) {
+            Objects.requireNonNull(runtime, "source actor runtime");
+            Objects.requireNonNull(actor, "source actor");
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.inActorGroupMailmanExecution()) {
+                throw new SecurityException(
+                        "source WebSocket delivery requires trusted host/supervisor");
+            }
+            if (!runtime.isSourceCodeActor(actor)) {
+                throw new SecurityException(
+                        "WebSocket source delivery requires live compiler-owned actor");
+            }
+            requireNet.accept(endpoint, "websocket.source-dispatch");
+            ActorDeliveryTicket ticket = dequeueActorTicket(
+                    handle, tenant, actor.address(), runtime, actor);
+            if (ticket == null) return false;
+            boolean transferred = false;
+            try {
+                if (ticket.message.opcode() != WebSocketFrameCodec.OPCODE_TEXT) {
+                    throw new IllegalArgumentException(
+                            "TEXT-only source actor bridge refuses binary USER mail");
+                }
+                if (!ticket.ownerLoan.mayDeliver(handle, tenant, actor.address())) {
+                    return false;
+                }
+                // MessageAssembler already validates complete TEXT UTF-8.
+                // Decode strictly again at this guest boundary, never replace
+                // malformed bytes with the Unicode replacement character.
+                String text;
+                try {
+                    text = StandardCharsets.UTF_8.newDecoder()
+                            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                            .decode(java.nio.ByteBuffer.wrap(ticket.message.payload()))
+                            .toString();
+                } catch (java.nio.charset.CharacterCodingException invalid) {
+                    throw new IllegalArgumentException(
+                            "invalid complete WebSocket TEXT UTF-8", invalid);
+                }
+                runtime.send(actor, text); // normal bounded, owned source mailbox
+                transferred = true;
+                return true;
+            } finally {
+                // Once admitted, the actor user mailbox owns the copied value.
+                // The transport's original ticket is settled exactly once.
+                ticket.close();
+                if (!transferred) {
+                    requestActiveWriteAbort();
+                }
+            }
+        }
+
         /** Host-only real-actor fixture with the same mailbox admission logic. */
         boolean dispatchHostActorMessage(
                 WebSocketActorConnectionLease.Handle handle, UUID tenant,

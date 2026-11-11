@@ -6207,6 +6207,20 @@ public final class ActorRuntime implements AutoCloseable {
                 && cell.ref.address().equals(address);
     }
 
+    /**
+     * Host/compile-time source actor admission check; an ActorId or a
+     * host BehaviorFactory is not proof of compiler-lowered receive.
+     */
+    boolean isSourceCodeActor(ActorRef<?> ref) {
+        requireSupervisorContext("bind a source actor to WebSocket transport");
+        Objects.requireNonNull(ref, "source actor");
+        if (!ref.ownedBy(this) || closed.get()) return false;
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell != null && cell.ref == ref && !cell.stopped.get()
+                && !cell.finalized && cell.codeExecutor != null
+                && cell.codeImage != null;
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
