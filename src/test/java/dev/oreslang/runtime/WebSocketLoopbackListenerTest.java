@@ -178,12 +178,79 @@ final class WebSocketLoopbackListenerTest {
                     assertThrows(SecurityException.class,
                             () -> conn.dispatchHostSourceActorText(
                                     handle, tenant, actors, host));
+                    assertThrows(SecurityException.class,
+                            () -> conn.relayHostNextSourceActorTextOutputAsync(
+                                    handle, tenant, actors, host),
+                            "a host BehaviorFactory cannot impersonate a source code actor");
                     assertEquals(0, conn.pendingActorTicketCount(),
                             "rejection must occur before any physical ticket loan");
                     conn.close();
                 }
             } finally {
                 host.cancel();
+            }
+        }
+    }
+
+    @Test
+    void sourceActorBridgeRejectsBinaryWithoutExecutingSourceReceive() throws Exception {
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try (var store = new SharedCodeImageStore();
+             var actors = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("app/binary-reject.atto",
+                    dev.oreslang.parser.Parser.parse(
+                            "pub routine main(): void { return; }"));
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String name, ActorRuntime.ActorContext<Object> context) {
+                    return () -> context.self().id();
+                }
+                @Override public void receiveActor(
+                        String name, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    delivered.incrementAndGet();
+                }
+            };
+            ActorRuntime.ActorRef<Object> actor = actors.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    executor, "TextOnly");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            int port = unusedPort();
+            try (var io = new AsyncNativeIo(4);
+                 var listener = listen(io, port, 1)) {
+                var pending = listener.acceptAsync();
+                try (var client = new Socket("127.0.0.1", port)) {
+                    sendOpening(client, port);
+                    assertTrue(readHead(client).startsWith("HTTP/1.1 101"));
+                    var conn = pending.get(3, TimeUnit.SECONDS);
+                    var tenant = java.util.UUID.randomUUID();
+                    var handle = conn.bindActorHost(
+                            tenant, actor.address(), actor::isAlive);
+                    // Valid masked BINARY frame; rejected by the TEXT-only
+                    // source-actor bridge, not by the RFC6455 parser.
+                    client.getOutputStream().write(new byte[] {
+                            (byte) 0x82, (byte) 0x81,
+                            1, 2, 3, 4, (byte) ('x' ^ 1)
+                    });
+                    client.getOutputStream().flush();
+                    assertEquals(WebSocketSessionState.ActionKind.USER_ENQUEUED,
+                            conn.readForActorAsync(handle, tenant, actor.address())
+                                    .get(3, TimeUnit.SECONDS).kind());
+                    assertThrows(IllegalArgumentException.class,
+                            () -> conn.dispatchHostSourceActorText(
+                                    handle, tenant, actors, actor));
+                    assertEquals(0, conn.pendingActorTicketCount(),
+                            "rejected binary must settle its physical delivery loan");
+                    assertEquals(0, delivered.get(),
+                            "binary must never become an untyped source actor mail");
+                    conn.close();
+                }
+            } finally {
+                actor.cancel();
             }
         }
     }
