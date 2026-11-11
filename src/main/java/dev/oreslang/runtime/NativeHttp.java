@@ -305,7 +305,17 @@ public final class NativeHttp implements AutoCloseable {
                             state.abort(503, false);
                             return;
                         }
-                        worker.actor.send(exchange.moveTo(worker.actor));
+                        try {
+                            worker.actor.send(exchange.moveTo(worker.actor));
+                        } finally {
+                            // DONE may win while dispatch is attaching this
+                            // generation. Do not retain a dead worker in the
+                            // listener/worker bidirectional reference sets.
+                            if (worker.actor.done().isDone()) {
+                                state.server.pooledWorkers.remove(worker);
+                                worker.served.remove(state.server);
+                            }
+                        }
                     } catch (RuntimeException failure) {
                         state.abort(mayBeginDispatch(closed, state.server.stopped)
                                 ? 500 : 503, false);
@@ -538,6 +548,23 @@ public final class NativeHttp implements AutoCloseable {
             }
             failOutsideMonitor(this, acceptToFail,
                     new IllegalStateException("HTTP server closed"));
+            // A listener may retain an accepted exchange forever if socket
+            // abort or its completion callback stalls. The carrier observer
+            // only starts AFTER all requests retire, so also bound the whole
+            // shutdown interval, not merely the pooled-carrier final phase.
+            long shutdownLimitMillis = Math.max(1_000L,
+                    Math.min(30_000L, (long) deadlineMillis + graceMillis));
+            final ScheduledFuture<?> overallDeadline;
+            try {
+                overallDeadline = timers.schedule(() -> failDrain(
+                        new TimeoutException("HTTP shutdown did not quiesce accepted requests"
+                                + " and physical actor carriers")),
+                        shutdownLimitMillis, TimeUnit.MILLISECONDS);
+            } catch (RejectedExecutionException unavailable) {
+                failDrain(unavailable);
+                return result;
+            }
+            result.whenCompleteRuntime((ignored, failure) -> overallDeadline.cancel(false));
             // The dispatcher has a virtual-thread fallback when the I/O pool
             // was already closed, so no shutdown Future is silently stranded.
             HttpResponseCleanupDispatcher.dispatch(io, () -> {
