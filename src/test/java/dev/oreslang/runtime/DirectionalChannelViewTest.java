@@ -167,6 +167,51 @@ final class DirectionalChannelViewTest {
     }
 
     @Test
+    void pendingDirectionalWriterCannotBeCommittedAfterOwnerClose() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var writer = channel.input();
+        var reader = channel.output();
+
+        assertTrue(writer.tryWrite(1));
+        var pending = writer.writeAsync(2);
+        assertFalse(pending.isDone(), "full channel must defer the second admission");
+        assertEquals(1, channel.pendingRegistrations());
+
+        var cause = new IllegalStateException("actor pipeline owner retired");
+        channel.close(cause);
+
+        // Already committed data survives close, but an uncommitted writer
+        // must never appear later as a phantom message.
+        assertEquals(1, reader.tryRead().orElseThrow());
+        var writeFailure = assertThrows(ChannelRuntime.ChannelClosedException.class,
+                pending::join);
+        assertSame(cause, writeFailure.getCause());
+        assertTrue(reader.tryRead().isEmpty());
+        var readFailure = assertThrows(ChannelRuntime.ChannelClosedException.class,
+                () -> reader.readAsync().join());
+        assertSame(cause, readFailure.getCause());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void separateDirectionalChannelsNeverShareQueueOrPendingSelectArms() {
+        var first = new ChannelRuntime.Channel<Integer>(1);
+        var second = new ChannelRuntime.Channel<Integer>(1);
+        var pending = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(first.output()))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(pending.isDone());
+
+        assertTrue(second.input().tryWrite(23));
+        assertFalse(pending.isDone(), "other channel must not wake this selector");
+        assertEquals(23, second.output().tryRead().orElseThrow());
+        assertTrue(first.input().tryWrite(41));
+        assertEquals(41, pending.join().value());
+        assertEquals(0, first.pendingRegistrations());
+        assertEquals(0, second.pendingRegistrations());
+    }
+
+    @Test
     void closeRemainsOwnedByTheFullChannelCapability() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         assertFalse(channel.input().isClosed());
