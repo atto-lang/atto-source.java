@@ -231,6 +231,38 @@ final class CoreProtocolsGuestTest {
                 "Ord<int> must inherit Eq<int>, not accept Eq<String>");
     }
 
+
+    @Test
+    void allNineteenCoreTraitsRejectMissingNominalWitnesses() throws Exception {
+        // Pure compiler negatives: no host I/O provider or actor privilege.
+        String[][] cases = {
+                {"Eq", "Eq<int>"}, {"Ord", "Ord<int>"},
+                {"Hash", "Hash"}, {"Clone", "Clone<int>"},
+                {"Read", "Read<int>"}, {"Write", "Write<int>"},
+                {"Flush", "Flush<int>"}, {"Close", "Close"},
+                {"AsyncClose", "AsyncClose<int>"}, {"Seek", "Seek<int>"},
+                {"Source", "Source<int, int>"}, {"Sink", "Sink<int, int>"},
+                {"IntoIterator", "IntoIterator<int>"},
+                {"Service", "Service<int, int, int>"},
+                {"TryFrom", "TryFrom<int, int, int>"},
+                {"ReadWrite", "ReadWrite<int>"},
+                {"Transform", "Transform<int, int, int>"},
+                {"BatchWritable", "BatchWritable<int, int>"},
+                {"KeyValueStore", "KeyValueStore<int, int, int>"}
+        };
+        assertEquals(19, cases.length);
+        for (String[] entry : cases) {
+            Path guest = temp.resolve("missing-" + entry[0].toLowerCase() + ".atto");
+            Files.writeString(guest,
+                    "import trait " + entry[0] + " from \"ores.core/protocols\";\n"
+                    + "define class Broken implements " + entry[1] + " as end\n"
+                    + "pub fnc main(): void { return; }\n");
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(guest, Map.of()),
+                    "missing inherited/direct method witness for " + entry[0]);
+        }
+    }
+
     @Test
     void unknownCoreModulesFailClosed() {
         assertThrows(IllegalArgumentException.class,
