@@ -266,16 +266,16 @@ final class AttoCartPhysicalActivationGuestTest {
                      ActorRuntime.DispatcherConfig.defaults(),
                      ActorRuntime.TurnExecutor.direct(),
                      task -> {
-                         var admission = new dev.oreslang.runtime.OresFuture<Void>();
+                         var admission = new CompletableFuture<Void>();
                          control.execute(() -> {
                              try {
                                  task.run();
-                                 admission.completeFromRuntime(null);
+                                 admission.complete(null);
                              } catch (Throwable problem) {
-                                 admission.failFromRuntime(problem);
+                                 admission.completeExceptionally(problem);
                              }
                          });
-                         return admission;
+                         return dev.oreslang.runtime.OresFuture.from(admission);
                      })) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             var identity = new VirtualActorActivationRegistry.Identity(
@@ -292,7 +292,7 @@ final class AttoCartPhysicalActivationGuestTest {
             AtomicReference<CompiledCartTurn> ownedGuest = new AtomicReference<>();
             AtomicLong lastSuccessful = new AtomicLong(-1L);
             assertEquals(1L, group.reserveNextVirtualActorGeneration(identity));
-            var physical = group.spawnWorker(
+            ActorRuntime.ActorRef<Long> physical = group.spawnWorker(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
                     actorContext -> {
                         var guest = new CompiledCartTurn(source);
