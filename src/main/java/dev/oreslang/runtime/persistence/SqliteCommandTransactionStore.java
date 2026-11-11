@@ -233,8 +233,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
            snapshot.length>1_048_576)
             throw new SQLException("INVALID_ACTOR_SNAPSHOT");
         try(PreparedStatement q=db.prepareStatement(
-                "SELECT schema,length(payload),substr(payload,1,1048577) " +
-                "FROM ops WHERE tenant=? AND actor=? AND slot=? " +
+                "SELECT schema,length(payload),substr(payload,1,1048577)," +
+                "epoch,expected FROM ops WHERE tenant=? AND actor=? AND slot=? " +
                 "AND kind=1 AND version=?")) {
             bindId(q,id);q.setLong(4,version);
             try(ResultSet r=q.executeQuery()) {
@@ -244,6 +244,7 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                 byte[] original=r.getBytes(3);
                 if(originalSchema!=schema || size!=snapshot.length ||
                    original==null || original.length!=size ||
+                   r.getLong(4)<1 || r.getLong(5)!=version-1 ||
                    !Arrays.equals(snapshot,original) || r.next())
                     throw new SQLException("CORRUPT_SNAPSHOT_PROOF");
             }
@@ -482,8 +483,8 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
             record Legacy(int schema, byte[] payload) {}
             java.util.Map<Long,Legacy> legacy=new java.util.HashMap<>();
             try(PreparedStatement s=db.prepareStatement(
-                    "SELECT version,schema,length(payload),substr(payload,1,1048577) " +
-                    "FROM ops WHERE tenant=? AND actor=? AND slot=? AND kind=2 " +
+                    "SELECT version,schema,length(payload),substr(payload,1,1048577)," +
+                    "epoch,expected FROM ops WHERE tenant=? AND actor=? AND slot=? AND kind=2 " +
                     "AND version>?")) {
                 bindId(s,id);s.setLong(4,snapshotVersion);
                 try(ResultSet r=s.executeQuery()){
@@ -493,6 +494,7 @@ public final class SqliteCommandTransactionStore implements AutoCloseable {
                         if(version<1 || version>headVersion || r.getInt(2)<1 ||
                            size<0 || size>1_048_576 ||
                            payload==null || payload.length!=size ||
+                           r.getLong(5)<1 || r.getLong(6)!=version-1 ||
                            legacy.put(version,new Legacy(r.getInt(2),payload))!=null)
                             throw new SQLException("CORRUPT_OPERATION_LEDGER");
                         if(legacy.size()>10000)throw new SQLException("ACTOR_JOURNAL_REPLAY_LIMIT");
