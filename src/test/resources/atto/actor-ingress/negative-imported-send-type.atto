@@ -1,0 +1,6 @@
+import actor Worker from "./worker";
+
+pub fnc relay(ActorRef<Worker> worker): void {
+  worker.send(42);
+  return;
+}

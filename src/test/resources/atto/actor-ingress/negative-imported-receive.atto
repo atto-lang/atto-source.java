@@ -1,0 +1,6 @@
+import actor Worker from "./worker";
+
+pub fnc attempt(Worker worker, ActorMail<String> mail): void {
+  worker.receive(mail);
+  return;
+}
