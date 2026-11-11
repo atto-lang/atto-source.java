@@ -1,0 +1,23 @@
+define enum Light as
+  Red
+  Green
+end
+
+define enum Status as
+  Red
+  Green
+end
+
+define actor LightEcho as
+  receive(ActorMail<Light> mail): void {
+    self.send(mail.value);
+    self.end();
+    return;
+  }
+end
+
+pub routine main(): void {
+  val worker = spawn LightEcho();
+  worker.send(Status.Red);
+  return;
+}
