@@ -26,9 +26,24 @@ The nominal binder accepts runtime role metadata **only** for private `init`/`re
 - No cross-file package provenance or contract witness integration beyond parent #2823's caller-supplied static source set; reconcile with #2813 and #2792.
 - The ABI must eventually encode entrypoint-role metadata, effect and generation scope in both the shared IR and every backend; this PR does not establish parity.
 
+## Compiler-gate hardening
+
+The same Java draft now prioritizes the external-receiver fail-closed diagnostic
+when a source unit contains an out-of-line external method, regardless of
+whether the actor declaration appears before or after it. A declared actor with
+no external methods remains rejected by `STANDALONE_ACTOR_LOWERING_UNSUPPORTED`.
+This removes source-order-dependent error reporting without enabling guest
+execution or relaxing the runtime admission boundary.
+
+The three new JUnit suites contain **64 authored test methods** (14 external,
+17 canonical declaration, and 33 adversarial hardening cases). A source-org
+exact-head JDK 25 workflow requires all six new/inherited suites to produce
+non-skipped, zero-error Surefire receipts, with at least 64 test cases total.
+The suites have not yet executed successfully on the source PR.
+
 ## Evidence required before integration
 
-Run `ActorExternalEntrypointModifierTest`, `DeclaredActorNominalSyntaxTest`, `DeclaredActorHardeningTest` (27 adversarial cases), plus the inherited `ActorReceiverBinderTest`, `ExternalActorReceiverAstAdmissionTest` and `CrossFileActorReceiverBindingTest` against the **exact final** commit SHA in an admitted JDK 25 runner. Then add real actor init/receive guest execution and negative diagnostics, complete Java no-fallback Native Image, and independently port LLVM/.NET/Wasm/Forge. Treat source-free inventory checks as insufficient.
+Run `ActorExternalEntrypointModifierTest`, `DeclaredActorNominalSyntaxTest`, `DeclaredActorHardeningTest` (33 adversarial cases), plus the inherited `ActorReceiverBinderTest`, `ExternalActorReceiverAstAdmissionTest` and `CrossFileActorReceiverBindingTest` against the **exact final** commit SHA in an admitted JDK 25 runner. Then add real actor init/receive guest execution and negative diagnostics, complete Java no-fallback Native Image, and independently port LLVM/.NET/Wasm/Forge. Treat source-free inventory checks as insufficient.
 
 Private source must not be mirrored to an unrelated organization without independently authorized exact-head publisher/carrier protection and review.
 
