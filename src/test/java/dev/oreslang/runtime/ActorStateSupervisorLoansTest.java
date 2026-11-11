@@ -281,4 +281,20 @@ final class ActorStateSupervisorLoansTest {
                     "failed issue cannot enlarge the capability ledger");
         }
     }
+
+    @Test
+    void callerCreatedOwnerRecordsCannotForgeRuntimeAllocationMints() {
+        try (var runtime = new ActorRuntime()) {
+            var invented = new ExecutionContext.AllocationDomain(
+                    ExecutionContext.AllocationKind.ACTOR, 1, 1, 7);
+            var inventedActor = ActorRuntime.ActorId.create();
+            assertThrows(SecurityException.class, () ->
+                    new ActorStateSupervisorLoans(
+                            runtime, new Object(), inventedActor, 7, invented, 2, 1));
+            assertThrows(SecurityException.class, () ->
+                    new ActorStateSupervisorLoans(
+                            runtime, null, inventedActor, 7, invented, 2, 1));
+        }
+    }
+
 }
