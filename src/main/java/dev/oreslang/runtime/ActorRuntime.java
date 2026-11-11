@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -570,6 +571,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /** Exactly one runtime-local generation authority for host virtual bindings. */
     private final VirtualActorRuntimeGenerationFence virtualActorFences;
+    /** Runtime-owned opt-in terminal CONTROL receipt transport, no per-actor pool. */
+    private final VirtualActorTerminalControl virtualActorTerminalControl;
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
     // Root is depth 0; child-supervisor admission permits at most 64 edges.
     private static final int MAX_SUPERVISOR_DEPTH = 64;
@@ -698,6 +701,8 @@ public final class ActorRuntime implements AutoCloseable {
         this.virtualActorFences = new VirtualActorRuntimeGenerationFence(dispatcherConfig.maxActors());
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        this.virtualActorTerminalControl = new VirtualActorTerminalControl(
+                dispatcherConfig.maxActors(), this.controlDispatcher, this.virtualActorFences);
         this.physicalStopDispatcher = physicalStopDispatcher;
         int physicalLimit = Integer.getInteger("ores.runtime.actor.max-active-turns", 0);
         if (physicalLimit < 0) {
@@ -3452,6 +3457,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final OresFuture<Void> closedWorkersDone =
                 new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
+        /** Optional host CONTROL callback; copied into each physical binding. */
+        private Function<VirtualActorTerminalControl.Notice, CompletionStage<Void>>
+                virtualActorTerminalHandler;
         // Trusted runtime resource closures, not guest callbacks. Invoked
         // outside authorityLock after the group is fenced but before worker
         // cancellation and event-bus teardown.
@@ -3541,6 +3549,25 @@ public final class ActorRuntime implements AutoCloseable {
          * authority lock fences releaseWorker and close. In this path,
          * lifecycleLock -> authorityLock matches termination ordering.
          */
+        /**
+         * Enable one bounded terminal CONTROL receipt callback per group.
+         * The dispatcher is VM-provided; callbacks must return a completion
+         * stage and remain fenced across asynchronous policy side effects.
+         * This is host-only, never callable from actor guest code.
+         */
+        public void installVirtualActorTerminalHandler(
+                Function<VirtualActorTerminalControl.Notice, CompletionStage<Void>> handler) {
+            requireSupervisor("install virtual actor terminal CONTROL handler");
+            requireCallerRuntimeAffinity("install virtual actor terminal CONTROL handler");
+            Objects.requireNonNull(handler, "handler");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (virtualActorTerminalHandler != null)
+                    throw new IllegalStateException("virtual terminal CONTROL handler already installed");
+                virtualActorTerminalHandler = handler;
+            }
+        }
+
         public void bindVirtualActorIdentity(
                 ActorRef<?> worker,
                 VirtualActorActivationRegistry.Identity identity,
@@ -3565,7 +3592,19 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException(
                                 "virtual worker is not live under this exact ActorGroup");
                     }
-                    virtualActorFences.bind(supervisor.id(), id, identity, generation, worker.id());
+                    var terminalHandler = virtualActorTerminalHandler;
+                    if (terminalHandler != null) {
+                        virtualActorTerminalControl.admit(
+                                this, supervisor.id(), id, identity, generation,
+                                worker.id(), terminalHandler);
+                    }
+                    try {
+                        virtualActorFences.bind(supervisor.id(), id, identity, generation, worker.id());
+                    } catch (RuntimeException | Error failure) {
+                        if (terminalHandler != null)
+                            virtualActorTerminalControl.discardUnbound(worker.id());
+                        throw failure;
+                    }
                 }
             }
         }
@@ -9293,7 +9332,15 @@ public final class ActorRuntime implements AutoCloseable {
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
             if (virtualPhysicalCleanupComplete && actorAndGroupDeregistered && parentReleased) {
-                try { virtualActorFences.retire(ref.id()); }
+                try {
+                    Throwable cause = ref.terminationCause.get();
+                    boolean terminalReceiptRequired = cause != null
+                            && virtualActorTerminalControl.registered(ref.id());
+                    // Publish "CONTROL pending" in the same atomic retirement
+                    // transition so a replacement cannot overtake dispatch.
+                    virtualActorFences.retire(ref.id(), terminalReceiptRequired);
+                    virtualActorTerminalControl.onRetired(ref.id(), cause);
+                }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
