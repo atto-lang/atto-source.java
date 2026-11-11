@@ -106,6 +106,33 @@ public final class ActorStateSupervisorLoans {
         return value[0];
     }
 
+    /**
+     * One physically coherent owner READ of several typed fields.
+     * The supplied names must match each nominal runtime-minted field.
+     * Snapshot values are immutable primitives; no region/loan escapes.
+     */
+    public Map<String, Long> snapshotOwnerLongFields(
+            Map<String, LongField> fields) {
+        Objects.requireNonNull(fields, "fields");
+        final Map<String, Long>[] snapshot = new Map[1];
+        withOwnerRead(() -> {
+            synchronized (gate) {
+                requireOpenLocked();
+                LinkedHashMap<String, Long> copied = new LinkedHashMap<>();
+                for (Map.Entry<String, LongField> entry : fields.entrySet()) {
+                    LongField field = entry.getValue();
+                    requireBoundLongFieldLocked(field);
+                    if (!field.name.equals(entry.getKey())) {
+                        throw new SecurityException("actor field identity and layout key differ");
+                    }
+                    copied.put(field.name, field.value);
+                }
+                snapshot[0] = java.util.Collections.unmodifiableMap(copied);
+            }
+        });
+        return snapshot[0];
+    }
+
     public void updateOwnerLongField(
             LongField field, java.util.function.LongUnaryOperator updater) {
         Objects.requireNonNull(updater, "updater");
