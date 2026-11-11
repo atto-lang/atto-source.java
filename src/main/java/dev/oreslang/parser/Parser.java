@@ -179,10 +179,21 @@ public final class Parser {
                 continue;
             }
 
+            // Canonical namespace attachment may omit 'define': pub mtd (Foo f) bar().
+            // It is still typed as a non-executable actor receiver, never a free fnc.
+            if (isExternalActorMethodHead()) {
+                rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                continue;
+            }
+
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
+                if (isActorStateAttachmentHead()) {
+                    rootDeclarations.add(parseActorStateAttachment(annotations, modifiers));
                     continue;
                 }
                 if (isProtectedDeclarationHead()) {
@@ -440,6 +451,9 @@ public final class Parser {
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
             }
+            if (isActorStateAttachmentHead()) {
+                throw error(peek(), "define state on actor is a package namespace-root declaration, not a module member");
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -641,6 +655,63 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /**
+     * Source-only sealed state attachment. Only explicit namespace-root files
+     * can later contribute a state witness to a manifest-verified package.
+     * No user declaration is authorized to create a state loan or actor heap.
+     */
+    private boolean isActorStateAttachmentHead() {
+        return isContextualIdentifier("state")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).lexeme().equals("on")
+                && tokens.get(current + 2).type() == ACTOR;
+    }
+
+    private Ast.ActorStateAttachmentDecl parseActorStateAttachment(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateNoModifiers(modifiers, "attached actor state declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "attached actor state declarations");
+        consumeContextualIdentifier("state", "expected 'state' for actor state attachment");
+        consumeContextualIdentifier("on", "expected 'on' after state");
+        consume(ACTOR, "expected 'actor' after state on");
+        String actorName = consumeTypeDeclarationName("expected nominal actor state owner");
+        consume(AS, "expected 'as' before actor state fields");
+        consume(LBRACE, "expected '{' for attached actor state schema");
+        List<Ast.AttachedActorStateField> fields = new ArrayList<>();
+        Set<String> seen = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            if (!match(LET, VAL)) {
+                throw error(peek(), "attached actor state fields require let or val (no public fields)");
+            }
+            Ast.BindingKind kind = previous().type() == LET
+                    ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
+            Ast.TypeRef type = parseTypeRef();
+            String fieldName = consume(IDENT, "expected attached actor state field name").lexeme();
+            if (!match(COLON, EQUAL)) {
+                throw error(peek(), "attached actor state default requires ':' or '='");
+            }
+            Ast.Expr initializer = parseExpression();
+            if (!seen.add(fieldName)) {
+                throw error(previous(), "duplicate attached actor state field '" + fieldName + "'");
+            }
+            try {
+                fields.add(new Ast.AttachedActorStateField(fieldName, kind, type, initializer));
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), invalid.getMessage());
+            }
+            if (fields.size() > 32) {
+                throw error(previous(), "attached actor state exceeds 32 fields");
+            }
+            if (!match(SEMICOLON) && !check(RBRACE)) {
+                throw error(peek(), "attached actor state fields require ';' separators");
+            }
+        }
+        consume(RBRACE, "expected '}' after attached actor state");
+        match(SEMICOLON);
+        if (fields.isEmpty()) throw error(previous(), "attached actor state requires at least one field");
+        return new Ast.ActorStateAttachmentDecl(actorName, fields);
     }
 
     /** Contextual mtd accepts both receiver-first and name-first declarations. */
@@ -1129,6 +1200,18 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // A semicolon declares an empty nominal actor type, not an actor
+        // instance. Preserve its actor contract list for later source-set proof.
+        if (match(SEMICOLON)) {
+            if (!generics.isEmpty() || !parents.isEmpty()
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(previous(), "compact actor declarations require a plain actor without inheritance, generics or transport specialization");
+            }
+            return new Ast.ClassDecl(name, visibility, false, actorKind,
+                    generics, parents, interfaces, List.of(), null, List.of(),
+                    new Ast.ActorConcurrency(prefix.transport(), 1, 1));
+        }
 
         // Standalone actor declaration: retain the receiver-binding name in
         // its own AST node. Never synthesize an empty class, dispatch table,
