@@ -170,6 +170,47 @@ final class ActorSourceLifecycleGateTest {
     }
 
     @Test
+    void authenticatedTeardownIsOnceOnlyAndSealsMailboxIngress() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.beginTeardown(owner, TYPE, state(owner));
+        assertEquals(ActorSourceLifecycleGate.Phase.TEARING_DOWN, gate.phase());
+        assertThrows(IllegalStateException.class,
+                () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        gate.close();
+        assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
+    }
+
+    @Test
+    void foreignTeardownCannotRevokeOwnedActor() {
+        var owner = ActorRuntime.ActorId.create();
+        var foreign = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        assertThrows(SecurityException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(foreign)));
+        assertEquals(ActorSourceLifecycleGate.Phase.READY, gate.phase());
+        assertThrows(SecurityException.class,
+                () -> gate.beginTeardown(foreign, TYPE, state(owner)));
+        assertDoesNotThrow(() -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
+    }
+
+    @Test
+    void failedStartupCannotInvokeTeardown() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.failInit();
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(owner)));
+    }
+
+    @Test
     void blankActorTypeCannotCreateGate() {
         var owner = ActorRuntime.ActorId.create();
         assertThrows(IllegalArgumentException.class,
