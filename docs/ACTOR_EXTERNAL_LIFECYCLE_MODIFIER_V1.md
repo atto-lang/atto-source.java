@@ -36,14 +36,36 @@ This removes source-order-dependent error reporting without enabling guest
 execution or relaxing the runtime admission boundary.
 
 The three new JUnit suites contain **64 authored test methods** (14 external,
-17 canonical declaration, and 33 adversarial hardening cases). A source-org
-exact-head JDK 25 workflow requires all six new/inherited suites to produce
-non-skipped, zero-error Surefire receipts, with at least 64 test cases total.
-The suites have not yet executed successfully on the source PR.
+17 canonical declaration, and 33 adversarial hardening cases). The integrated
+head now also carries the original #2822 receive-ingress compiler checks
+(including `IncrementalCompiler` imported ACTOR metadata), 13 source-level
+JUnit receive ingress cases, one **real inline actor mailbox guest execution**
+JUnit test, 15 Atto fixtures, and #2256's executable native-Java
+`ActorInitPublicationGate` staging component plus 10 gate JUnit cases.
+These 20 files were copied within the same private source repository by their
+unchanged Git blob SHA (no cross-org mirroring).
+
+The source-org exact-head JDK 25 workflow now requires **nine actual
+Surefire suites**, a total of at least **88 authored test cases**, no skipped,
+failed or errored tests, and the real inline-mailbox guest output assertion.
+The new guest test is for existing **inline class-like actors only**.
+The staged one-shot gate is still not wired into out-of-line `init` lowering.
+Neither establishes executable `declare actor` behavior. All nine suites
+remain unexecuted: the exact-head workflow run #43105295416 concluded failure
+with no runner and zero steps. Do not promote these tests as passes.
 
 ## Evidence required before integration
 
-Run `ActorExternalEntrypointModifierTest`, `DeclaredActorNominalSyntaxTest`, `DeclaredActorHardeningTest` (33 adversarial cases), plus the inherited `ActorReceiverBinderTest`, `ExternalActorReceiverAstAdmissionTest` and `CrossFileActorReceiverBindingTest` against the **exact final** commit SHA in an admitted JDK 25 runner. Then add real actor init/receive guest execution and negative diagnostics, complete Java no-fallback Native Image, and independently port LLVM/.NET/Wasm/Forge. Treat source-free inventory checks as insufficient.
+Run the nine-suite exact-head JDK 25 gate
+(`.github/workflows/actor-declare-external-jdk25-exact-head.yml`)
+on an admitted source-org runner. Fix any real compilation, parser/binder,
+receive guard, import-linker, host gate or inline-guest failure. Then
+integrate **typed out-of-line actor state, runtime-only external method
+dispatch and generation-bound actor ownership** with the existing
+`ActorRuntime` actor dispatcher and prove real `declare actor` guest
+startup/receive. Complete Java no-fallback Native Image and independently
+port LLVM/.NET/Wasm/Forge. Treat source-only inventory and zero-step Actions
+as insufficient.
 
 Private source must not be mirrored to an unrelated organization without independently authorized exact-head publisher/carrier protection and review.
 
