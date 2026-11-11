@@ -110,6 +110,20 @@ public final class OresCompiler {
     }
 
     /**
+     * Emit a real Java 8 classfile for the explicitly admitted, bounded
+     * AttoLang primitive subset. The source profile and ownership pass are
+     * enforced BEFORE code generation. This is an executable bytecode build
+     * artifact, not a Graal Native Image or no-JIT certificate.
+     */
+    public static RealtimePrimitiveCompiler.Artifact compileRealtimePrimitiveStrictAtto(
+            String source, String entry, int arity,
+            RealtimePrimitiveCompiler.Budget budget, java.nio.file.Path outputDirectory)
+            throws java.io.IOException {
+        Ast.Program checked = parseAndTypeCheckStrictAtto(source);
+        return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
+    }
+
+    /**
      * Conservative checked-AST actor callback preflight. This proves only
      * scalar syntax/effect exclusion, not actor heap or hard-RT execution.
      * The checked AST is produced here, never supplied by the caller.
