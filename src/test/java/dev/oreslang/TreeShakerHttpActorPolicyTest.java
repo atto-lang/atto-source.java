@@ -75,13 +75,8 @@ final class TreeShakerHttpActorPolicyTest {
         for (String fixture : List.of("serial-1x1.atto", "explicit-1x1.atto")) {
             TreeShaker.Result result = dev.oreslang.compiler.OresCompiler.compileForBuild(
                     fixture(fixture), BuildOptions.library(Map.of()));
-            assertTrue(result.retained("root.Endpoint")
-                            || result.retained("service.Endpoint")
-                            || result.program().modules().stream()
-                                    .flatMap(module -> module.declarations().stream())
-                                    .anyMatch(decl -> decl instanceof Ast.ClassDecl klass
-                                            && klass.name().equals("Endpoint")),
-                    "canonical Endpoint must not be optimized away");
+            assertTrue(result.retained(dev.oreslang.parser.Parser.ROOT_MODULE + ".Endpoint"),
+                    "public canonical Endpoint must not be optimized away");
             Ast.ClassDecl kept = result.program().modules().stream()
                     .flatMap(module -> module.declarations().stream())
                     .filter(Ast.ClassDecl.class::isInstance)
