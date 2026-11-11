@@ -28,6 +28,29 @@ if otel_guardrails_class_digest "$work/symlink-classes" >/dev/null 2>&1; then
   fail 'symbolic class-root accepted'
 fi
 
+# A classpath text file can remain unchanged while a dependency JAR changes.
+# These are dummy data files, not executable Java tests or actual OTel guests.
+mkdir -p "$work/deps"
+printf 'lib-one-v1' > "$work/deps/a.jar"
+printf 'lib-two-v1' > "$work/deps/b.jar"
+printf '%s:%s\n' "$work/deps/a.jar" "$work/deps/b.jar" > "$work/classpath.txt"
+jars_initial="$(otel_guardrails_classpath_digest "$work/classpath.txt")" ||
+  fail 'absolute classpath jar digests failed'
+printf 'lib-one-v2' > "$work/deps/a.jar"
+jars_next="$(otel_guardrails_classpath_digest "$work/classpath.txt")" ||
+  fail 'changed classpath jar digests failed'
+[[ "$jars_initial" != "$jars_next" ]] ||
+  fail 'runtime jar mutation was not detected'
+ln -s "$work/deps/a.jar" "$work/deps/evil.jar"
+printf '%s\n' "$work/deps/evil.jar" > "$work/classpath.txt"
+if otel_guardrails_classpath_digest "$work/classpath.txt" >/dev/null 2>&1; then
+  fail 'symlinked classpath dependency was accepted'
+fi
+printf '%s\n' relative/other.jar > "$work/classpath.txt"
+if otel_guardrails_classpath_digest "$work/classpath.txt" >/dev/null 2>&1; then
+  fail 'non-absolute classpath dependency was accepted'
+fi
+
 output="$work/capture"
 mkdir -p "$output"
 # Only exercise bounded launch mechanics with an ordinary shell command; NOT
