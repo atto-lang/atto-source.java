@@ -7549,27 +7549,41 @@ public final class TypeChecker {
             return;
         }
         for (Ast.Stmt stmt : lambda.blockBody()) {
-            Ast.Expr expression;
-            if (stmt instanceof Ast.ReturnStmt returned) expression = returned.value();
-            else if (stmt instanceof Ast.ExprStmt evaluated) expression = evaluated.expression();
-            else if (stmt instanceof Ast.BindingStmt binding) expression = binding.initializer();
-            else if (stmt instanceof Ast.DeferStmt defer) expression = defer.expression();
-            else {
+            if (inlineLambdaStatementMaySuspend(stmt)) {
                 throw new IllegalArgumentException(
-                        "immediately invoked lambda block requires checked resumable control flow: "
-                                + stmt.getClass().getSimpleName());
-            }
-            if (expression != null && hasSuspendingSumCallbackSyntax(expression)) {
-                throw new IllegalArgumentException(
-                        "immediately invoked lambda cannot suspend without resumable lowering");
+                        "immediately invoked lambda cannot suspend or use unaudited "
+                                + "control flow without resumable lowering");
             }
         }
+    }
+
+    private static boolean inlineLambdaStatementMaySuspend(Ast.Stmt stmt) {
+        Ast.Expr expression;
+        if (stmt instanceof Ast.ReturnStmt returned) expression = returned.value();
+        else if (stmt instanceof Ast.ExprStmt evaluated) expression = evaluated.expression();
+        else if (stmt instanceof Ast.BindingStmt binding) expression = binding.initializer();
+        else if (stmt instanceof Ast.DeferStmt defer) expression = defer.expression();
+        else if (stmt instanceof Ast.BlockStmt nested) {
+            return nested.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else {
+            // Unknown statement/control regions require a real resumable
+            // lowering proof; never classify them as non-suspending by omission.
+            return true;
+        }
+        return expression != null && hasSuspendingSumCallbackSyntax(expression);
     }
 
     private static boolean hasSuspendingSumCallbackSyntax(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr) return true;
         if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.RangeExpr range)
+            return hasSuspendingSumCallbackSyntax(range.start())
+                    || hasSuspendingSumCallbackSyntax(range.end());
+        if (expr instanceof Ast.BlockValueExpr block)
+            return block.prefixStatements().stream()
+                    .anyMatch(TypeChecker::inlineLambdaStatementMaySuspend)
+                    || hasSuspendingSumCallbackSyntax(block.value());
         if (expr instanceof Ast.BinaryExpr binary)
             return hasSuspendingSumCallbackSyntax(binary.left())
                     || hasSuspendingSumCallbackSyntax(binary.right());
