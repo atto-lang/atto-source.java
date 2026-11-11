@@ -1536,6 +1536,11 @@ public final class TypeChecker {
             // user method with the reserved name does not grant construction
             // or static-call authority, and must not bypass that trait gate.
             if (method.name().equals("new")) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot expose new(); "
+                                    + "actor activation requires runtime-owned spawn/virtual-actor admission");
+                }
                 boolean optedIn = klass.interfaces().stream()
                         .anyMatch(ref -> ref.name().equals("Newable"));
                 if (!optedIn) {
