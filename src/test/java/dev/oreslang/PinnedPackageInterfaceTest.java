@@ -153,6 +153,17 @@ final class PinnedPackageInterfaceTest {
                         Map.of("math", original.bytes())).packageInstanceId());
     }
 
+    @Test void rejectsSharedModelReservedAliasAndNamespaceKeys() {
+        var original = iface("math", "algebra");
+        var pin = new NamespacePin("math", original.sha256());
+        for (String reserved : List.of("constructor", "prototype", "__proto__", "__root__")) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    new NamespacePin(reserved, original.sha256()));
+            assertThrows(IllegalArgumentException.class, () ->
+                    new Lock(reserved, INSTANCE, COMPILER, TARGET, POLICY, List.of(pin)));
+        }
+    }
+
     @Test void deniesOversizedInterfaceBeforeCloningOrHashing() {
         var valid = iface("math", "algebra");
         byte[] giant = new byte[16 * 1024 * 1024 + 1];
