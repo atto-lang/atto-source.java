@@ -57,8 +57,8 @@ final class NominalEnumActorMailGuestTest {
                 .allowAllAccess(false).out(stdout).build()) {
             context.eval(program);
         }
-        assertEquals("LIGHT_ENUM_SHARED_MAIL_PASS\\n",
-                stdout.toString(StandardCharsets.UTF_8).replace("\\r", ""));
+        assertEquals("LIGHT_ENUM_SHARED_MAIL_PASS\n",
+                stdout.toString(StandardCharsets.UTF_8).replace("\r", ""));
     }
 
     @Test
