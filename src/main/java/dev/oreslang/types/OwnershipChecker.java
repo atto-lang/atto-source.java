@@ -1563,7 +1563,17 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
-                slots.add(info.type);
+                Ast.TypeRef slot = info.type;
+                // Preserve only independently provable scalar results (e.g.
+                // int + int) so a tuple-producing inline stage can feed the
+                // next tuple-destructuring stage. Unresolved call results and
+                // dynamic/operator-overloaded values remain $infer$ and fail
+                // closed at the next destructuring boundary.
+                if (slot != null && slot.name().equals("$infer$")) {
+                    Ast.TypeRef inferredSlot = syntacticType(item, scope);
+                    if (!inferredSlot.name().equals("$infer$")) slot = inferredSlot;
+                }
+                slots.add(slot);
             }
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
