@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -91,5 +92,33 @@ final class CanonicalDefineScopeTest {
         }) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
         }
+    }
+    @Test
+    void newIsOnlyAnExplicitNewableFactoryAndNeverAnImplicitConstructorAlias() {
+        for (String declaration : new String[] {
+                "pub fnc new(): Plain { return new Plain(); }",
+                "pub static fnc new(): Plain { return new Plain(); }"
+        }) {
+            Ast.Program parsed = Parser.parse("define class Plain as " + declaration + " end");
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+            assertTrue(failure.getMessage().contains("Newable"), failure.getMessage());
+        }
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define pub fnc bad(): int { val int new = 1; return 1; }"));
+    }
+
+    @Test
+    void newableTraitMethodNameParsesWithoutUnreservingNewEverywhere() {
+        Ast.InterfaceDecl contract = assertInstanceOf(Ast.InterfaceDecl.class,
+                onlyDeclaration("define trait Newable as fnc new(): int; end"));
+        assertEquals("new",
+                assertInstanceOf(Ast.InterfaceFunctionDecl.class, contract.members().getFirst()).name());
+    }
+
+    @Test
+    void executableScopesDoNotGainNestedDefineDeclarations() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define pub fnc top(): int { define fnc nested(): int { return 1; } return 1; }"));
     }
 }
