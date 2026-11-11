@@ -44,6 +44,31 @@ final class NominalEnumActorMailGuestTest {
     }
 
     @Test
+    void compiledClosedNullaryEnumCrossesSharedActorMailbox() throws Exception {
+        String guest = source("closed-enum-shared-mail");
+        Ast.Program parsed = Parser.parse(guest);
+        Ast.Program typed = TypeChecker.check(parsed);
+        OwnershipChecker.check(typed);
+        ReturnCleanupChecker.check(typed);
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(OresLanguage.ID, guest, "closed-enum-shared-mail.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(program);
+        }
+        assertEquals("LIGHT_ENUM_SHARED_MAIL_PASS\\n",
+                stdout.toString(StandardCharsets.UTF_8).replace("\\r", ""));
+    }
+
+    @Test
+    void untrustedActorCannotImportClosedEnumWithoutExportAuthorization() throws Exception {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source("untrusted-enum-mail-rejected"))),
+                "untrusted enum symbols need explicit receiver-approved export metadata");
+    }
+
+    @Test
     void cannotSendForeignNominalCaseToTypedActorMailbox() throws Exception {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source("foreign-enum-mail-rejected"))),
