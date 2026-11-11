@@ -106,7 +106,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 if(row.next())checkpoint=row.getLong(1);
             }
         }
-        if(checkpoint<0)throw new SQLException("INVALID_ACTOR_SNAPSHOT");
+        if(checkpoint<0 || checkpoint>version(id))
+            throw new SQLException("INVALID_ACTOR_SNAPSHOT");
         try(PreparedStatement q=db.prepareStatement(
                 "SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM events " +
                 "WHERE tenant=? AND actor=? AND slot=? AND version>?")) {
