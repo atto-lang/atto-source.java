@@ -8396,6 +8396,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCodeExecutor codeExecutor;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
+        /** One trusted lifecycle gate per physical source actor incarnation. */
+        private final ActorSourceLifecycleGate sourceLifecycleGate;
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
@@ -8558,6 +8560,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
+            this.sourceLifecycleGate = codeExecutor == null ? null
+                    : new ActorSourceLifecycleGate(ref.id(), codeActorType);
             this.parent = parent;
             // USER mail and runtime continuations are physically distinct
             // channels. Do not inflate the USER channel with CONTROL headroom.
@@ -9100,6 +9104,9 @@ public final class ActorRuntime implements AutoCloseable {
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
             staticSelectCursors.clear();
+            // Final physical retirement permanently revokes source ingress.
+            // No late or stale continuation may reopen this incarnation.
+            if (sourceLifecycleGate != null) sourceLifecycleGate.close();
             codeActorState = null;
             try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
@@ -9533,18 +9540,20 @@ public final class ActorRuntime implements AutoCloseable {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
                                 (ActorContext<Object>) (ActorContext<?>) context;
-                        ActorOwnedGuestState created =
-                                Objects.requireNonNull(
-                                        codeExecutor.initializeActor(
-                                                codeActorType,
-                                                sourceContext),
-                                        "source actor executor returned null state");
-                        if (!created.ownerActorId().equals(ref.id())) {
-                            throw new SecurityException(
-                                    "source actor state owner "
-                                            + created.ownerActorId()
-                                            + " does not match actor "
-                                            + ref.id());
+                        sourceLifecycleGate.beginInit(ref.id(), codeActorType);
+                        ActorOwnedGuestState created;
+                        try {
+                            created = Objects.requireNonNull(
+                                    codeExecutor.initializeActor(
+                                            codeActorType,
+                                            sourceContext),
+                                    "source actor executor returned null state");
+                            // The source image is executable shared code;
+                            // state ownership is minted only on this actor turn.
+                            sourceLifecycleGate.commitInit(created);
+                        } catch (Exception | Error startupFailure) {
+                            sourceLifecycleGate.failInit();
+                            throw startupFailure;
                         }
                         codeActorState = created;
                     } else {
@@ -9642,6 +9651,12 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
+                                    // Defense in depth: actor-owned state and
+                                    // recipient must belong to this live actor
+                                    // incarnation before entering guest code.
+                                    sourceLifecycleGate.requireReceive(
+                                            ref.id(), codeActorType,
+                                            codeActorState, sourceMail);
                                     codeExecutor.receiveActor(
                                             codeActorType,
                                             codeActorState,
