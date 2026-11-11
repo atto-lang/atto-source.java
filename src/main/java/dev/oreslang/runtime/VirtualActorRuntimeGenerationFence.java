@@ -40,6 +40,8 @@ final class VirtualActorRuntimeGenerationFence {
         ActorRuntime.ActorId physical;
         boolean terminalDecisionClaimed;
         boolean terminalDecisionInFlight;
+        boolean terminalControlPending;
+        boolean terminalControlFailed;
 
         Slot(ActorRuntime.SupervisorId supervisor) {
             this.supervisor = supervisor;
@@ -122,9 +124,10 @@ final class VirtualActorRuntimeGenerationFence {
                         "virtual actor group ownership transfer requires prior group closure");
             if (slot.physical != null)
                 throw new IllegalStateException("prior virtual actor has not physically retired");
-            if (slot.terminalDecisionInFlight)
+            if (slot.terminalDecisionInFlight || slot.terminalControlPending
+                    || slot.terminalControlFailed)
                 throw new IllegalStateException(
-                        "terminal CONTROL decision must settle before replacement");
+                        "virtual terminal CONTROL has not safely settled");
             if (slot.pending != null)
                 throw new IllegalStateException("virtual actor generation already pending");
             if (nextGeneration <= slot.generation)
@@ -176,6 +179,8 @@ final class VirtualActorRuntimeGenerationFence {
             slot.lastBoundGeneration = generation;
             slot.lastBoundActor = physical;
             slot.terminalDecisionClaimed = false;
+            slot.terminalControlPending = false;
+            slot.terminalControlFailed = false;
             slot.pending = null;
         }
     }
@@ -257,6 +262,20 @@ final class VirtualActorRuntimeGenerationFence {
             this.physical = physical;
         }
 
+        /** A failed policy decision cannot authorize a replacement. */
+        void quarantine() {
+            synchronized (monitor) {
+                if (released)
+                    throw new IllegalStateException("terminal decision already settled");
+                Slot slot = slots.get(identity);
+                if (slot == null || !slot.terminalDecisionInFlight ||
+                        slot.lastBoundGeneration != generation ||
+                        !physical.equals(slot.lastBoundActor))
+                    throw new IllegalStateException("terminal decision lease authority changed");
+                slot.terminalControlFailed = true;
+            }
+        }
+
         @Override public void close() {
             synchronized (monitor) {
                 if (released) return;
@@ -266,6 +285,10 @@ final class VirtualActorRuntimeGenerationFence {
                         slot.lastBoundGeneration != generation ||
                         !physical.equals(slot.lastBoundActor))
                     throw new IllegalStateException("terminal decision lease authority changed");
+                // Mark the automatic CONTROL receipt delivered only if its
+                // asynchronous policy completed without any quarantine.
+                if (!slot.terminalControlFailed)
+                    slot.terminalControlPending = false;
                 slot.terminalDecisionInFlight = false;
                 released = true;
             }
@@ -308,8 +331,12 @@ final class VirtualActorRuntimeGenerationFence {
         }
     }
 
-    /** Invoked only after successful physical and ActorGroup retirement. */
-    void retire(ActorRuntime.ActorId physical) {
+    /**
+     * Invoked only after successful physical and ActorGroup retirement.
+     * An opted-in failure receipt is marked pending atomically with physical
+     * release, so no successor can overtake CONTROL scheduling.
+     */
+    void retire(ActorRuntime.ActorId physical, boolean requiresTerminalControl) {
         Objects.requireNonNull(physical, "physical");
         synchronized (monitor) {
             var identity = byActor.get(physical);
@@ -322,6 +349,35 @@ final class VirtualActorRuntimeGenerationFence {
             // Only the exact runtime finalization path may mark the physical
             // generation retired, after the ActorGroup and ActorCell cleanup.
             slot.lastRetiredGeneration = slot.lastBoundGeneration;
+            if (requiresTerminalControl) slot.terminalControlPending = true;
+        }
+    }
+
+    /**
+     * Rejected CONTROL scheduling, lost delivery or failed asynchronous
+     * decision permanently quarantines this runtime-local generation.
+     * A stale receipt must not poison a newer identity.
+     */
+    void failTerminalDelivery(
+            ActorRuntime.SupervisorId supervisor,
+            ActorRuntime.ActorGroupId group,
+            VirtualActorActivationRegistry.Identity identity,
+            long generation,
+            ActorRuntime.ActorId physical) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(group, "group");
+        Objects.requireNonNull(physical, "physical");
+        validate(identity);
+        synchronized (monitor) {
+            Slot slot = slots.get(identity);
+            if (slot == null || !slot.supervisor.equals(supervisor)
+                    || !group.equals(slot.lastGroup)
+                    || generation != slot.generation
+                    || generation != slot.lastBoundGeneration
+                    || !physical.equals(slot.lastBoundActor))
+                return; // A superseded receipt must not fence a new worker.
+            slot.terminalControlFailed = true;
+            slot.terminalControlPending = true;
         }
     }
 
