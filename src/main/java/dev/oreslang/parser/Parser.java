@@ -1770,6 +1770,7 @@ public final class Parser {
                     || token.type() == GENERATOR || token.type() == NLEX
                     || token.type() == TRAP || token.type() == STATIC
                     || token.type() == ABSTRACT || token.type() == UNTRUSTED
+                    || token.type() == SHARED
                     || (token.type() == IDENT
                         && (token.lexeme().equals("shared")
                             || token.lexeme().equals("structural")))) {
