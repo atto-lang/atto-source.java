@@ -1,0 +1,45 @@
+// Runnable AttoLang KV owner behind the loopback-only RESP2 host transport.
+// This is EPHEMERAL: WAL, fsync, SST, actor supervised storage and Atto-native
+// networking are NOT implemented. Strings are ASCII hex of arbitrary bytes.
+// The host transports frames only; SET/GET/DEL state lives in this guest.
+pub routine main(): void {
+  let Map<string,string> values = ~map<string,string>();
+  stdio.println("READY");
+  loop {
+    val Option<string> incoming = stdio.stdin.read_line();
+    if incoming.is_none() {
+      return;
+    } fi
+    val string op = incoming.unwrap();
+    if op == "SET" {
+      val Option<string> key_line = stdio.stdin.read_line();
+      if key_line.is_none() { return; } fi
+      val Option<string> value_line = stdio.stdin.read_line();
+      if value_line.is_none() { return; } fi
+      values.set(key_line.unwrap(), value_line.unwrap());
+      stdio.println("OK");
+    } elseif op == "GET" {
+      val Option<string> key_line = stdio.stdin.read_line();
+      if key_line.is_none() { return; } fi
+      val found = values.get_optional(key_line.unwrap());
+      if found.is_none() {
+        stdio.println("NIL");
+      } else {
+        stdio.println("VALUE");
+        stdio.println(found.unwrap());
+      } fi
+    } elseif op == "DEL" {
+      val Option<string> key_line = stdio.stdin.read_line();
+      if key_line.is_none() { return; } fi
+      if values.delete(key_line.unwrap()) {
+        stdio.println("ONE");
+      } else {
+        stdio.println("ZERO");
+      } fi
+    } else {
+      // Protocol desynchronization is fatal, never silently continue.
+      stdio.println("ERR");
+      return;
+    } fi
+  }
+}
