@@ -40,7 +40,7 @@ pattern; only compiler/runtime-enforced guarded access can authorize a state
 read or write. A supervisor must never receive these capabilities.
 
 `src/test/java/dev/oreslang/runtime/ActorStateReadWriteLoansTest.java`
-contains **19 host-only JUnit test cases**, including reader batching, writer
+contains **20 host-only JUnit test cases**, including reader batching, writer
 fairness, cancellation, generation restart/retirement, unpublished grants,
 callback lock discipline, contention and epoch exhaustion. These are source
 tests pending executed CI receipts, not verified pass results. The targeted
@@ -76,9 +76,9 @@ A queued/failed job with
   accepted but again failed with `steps=null`, without Maven execution.
   No private source was copied to another organization.
 
-The 19 reader/writer JUnit methods, 10 neuron parser/type-check methods, and
-4 layout JUnit methods are **33 committed host tests, NOT EXECUTED** on the
-current exact PR tree. No compiled guest `.atto` inference is certified.
+The 20 reader/writer JUnit methods, 10 neuron parser/type-check methods,
+4 layout methods, and 13 scoped-scalar preflight methods are **47 committed
+JUnit tests, NOT EXECUTED** on the current exact PR tree. No compiled guest `.atto` inference is certified.
 
 ### Compiler scoped-scalar preflight (new, still fail closed)
 
@@ -105,12 +105,19 @@ or execute the neuron. The preflight:
   borrow checker must still validate all program paths and all methods, and
   bind the loan to the actual physical actor execution/heap generation.
 
-`NeuronScalarScopeV0Test` adds 12 source-level JUnit methods for valid
+`NeuronScalarScopeV0Test` adds 13 source-level JUnit methods for valid
 preflight shape and negative escape, side-effect, early-read, unexpected
 method and expression-depth cases. The targeted workflow includes this
 suite along with the prior three host suites. This is **not executable
 guest MIR**, and no current-head test pass may be asserted from these
 committed tests alone.
+
+- Scalar v0 requires an **explicit `return;`** after the
+  `on_start` critical-write block, consistent with AttoLang's explicit
+  function-return rules. The source fixture and tests use that form.
+- Retirement now attempts to fail **all queued Future waiters**, even if an
+  observer throws during settlement, and preserves physical loan cleanup
+  before state-storage zeroization.
 
 ### Guest/compiler next implementation slice
 
