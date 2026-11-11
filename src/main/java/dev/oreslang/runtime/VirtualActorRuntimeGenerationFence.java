@@ -81,9 +81,10 @@ final class VirtualActorRuntimeGenerationFence {
     }
 
     private void advanceDirectoryRevision() {
-        if (directoryRevision == Long.MAX_VALUE)
-            throw new IllegalStateException("virtual actor directory revision exhausted");
-        directoryRevision++;
+        // Even at saturation, activation/retirement must not partially fail
+        // AFTER mutating the authoritative slot. Pagination instead fails
+        // closed forever; never wrap revision and accept a stale cursor.
+        if (directoryRevision != Long.MAX_VALUE) directoryRevision++;
     }
 
     private static DirectoryEntry directoryEntry(
@@ -136,7 +137,8 @@ final class VirtualActorRuntimeGenerationFence {
                 throw new SecurityException("directory page cursor outside tenant");
         }
         synchronized (monitor) {
-            if (expectedRevision != 0 && expectedRevision != directoryRevision)
+            if (directoryRevision == Long.MAX_VALUE ||
+                    (expectedRevision != 0 && expectedRevision != directoryRevision))
                 throw new StaleDirectoryPageException();
             var rows = after == null ? slots.entrySet() : slots.tailMap(after, false).entrySet();
             List<DirectoryEntry> entries = new ArrayList<>(limit);
@@ -181,7 +183,7 @@ final class VirtualActorRuntimeGenerationFence {
     private static void validatePart(String value, String name, int maxBytes) {
         Objects.requireNonNull(value, name);
         // Bound allocation and Unicode normalization checks before UTF-8 encoding.
-        if (value.isEmpty() || value.length() > maxBytes ||
+        if (value.isBlank() || value.length() > maxBytes ||
                 value.getBytes(StandardCharsets.UTF_8).length > maxBytes ||
                 !Normalizer.isNormalized(value, Normalizer.Form.NFC))
             throw new IllegalArgumentException("invalid or noncanonical virtual actor " + name);
