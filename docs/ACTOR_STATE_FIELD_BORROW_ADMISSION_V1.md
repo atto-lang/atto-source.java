@@ -66,7 +66,7 @@ borrows must remain errors.
 
 ## Test and evidence contract
 
-Seven authored `ActorStateFieldBorrowBoundaryTest` JUnit cases:
+Eight authored `ActorStateFieldBorrowBoundaryTest` JUnit cases:
 
 - Stored field borrow via `rt borrow` is rejected by the **real**
   `OwnershipChecker` and full `TypeChecker` entrypoint.
@@ -79,10 +79,12 @@ Seven authored `ActorStateFieldBorrowBoundaryTest` JUnit cases:
   checking.
 - An actual Graal guest executes the safe actor scalar snapshot and
   produces `5`.
+- Existing nonactor indexed projected borrows still pass the full type
+  and ownership compiler, preventing accidental global over-restriction.
 
 Four new negative + one positive canonical `.atto` fixtures accompany
 these tests. The new focused CI gate is **27 RW + 32 CONTROL + 12
-state-group + 7 field-borrow = 78 authored JUnit cases**, with mandatory
+state-group + 8 field-borrow = 79 authored JUnit cases**, with mandatory
 non-skipped Surefire XML receipts. Authored is **NOT_EXECUTED** until a
 real runner executes JUnit and compiler-backed guest tests.
 
