@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      ATTO_EXPECTED_DEMO_SHA: 559460773500bc3ed4eac4f08329ccdc94e1a0f6
+      ATTO_EXPECTED_DEMO_SHA: 30eb32297c1a9f496d15adab6198052e884b19e0
       ATTO_EXPECTED_COMPILER_SHA: 6d8eb70048eafc9a84c5aebe9c1bb06104f16e76
       ATTO_EXPECTED_POLICY_SHA: ${{ github.sha }}
       ATTO_POLICY_DIR: ${{ github.workspace }}/policy
