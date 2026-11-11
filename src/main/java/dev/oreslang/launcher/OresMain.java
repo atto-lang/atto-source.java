@@ -341,7 +341,11 @@ public final class OresMain {
         }
 
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
-        int exitStatus = LinkedProgramRunner.runWithExitStatus(
+        int exitStatus = (policy.capabilities().contains(IsolatePolicy.Capability.STDIN)
+                ? LinkedProgramRunner.runWithInput(
+                        path, policy, permissions, permissionCheckMode, profile,
+                        allowedHostClasses, System.getenv(), System.in, System.out, System.err)
+                : LinkedProgramRunner.runWithExitStatus(
                 path,
                 policy,
                 permissions,
@@ -350,7 +354,7 @@ public final class OresMain {
                 allowedHostClasses,
                 System.getenv(),
                 System.out,
-                System.err).exitStatus();
+                System.err)).exitStatus();
         return exitStatus;
     }
 

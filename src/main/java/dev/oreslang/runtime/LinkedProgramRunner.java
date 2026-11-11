@@ -17,6 +17,8 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.FilterInputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -185,7 +187,7 @@ public final class LinkedProgramRunner {
             WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
         return runWithExitStatusInternal(entryFile, policy, permissions,
                 permissionCheckMode, executionProfile, allowedHostClasses,
-                environment, out, err, trustedWorkflowService);
+                environment, out, err, trustedWorkflowService, null);
     }
 
     public static RunResult runWithExitStatus(
@@ -200,7 +202,19 @@ public final class LinkedProgramRunner {
             OutputStream err) throws IOException {
         return runWithExitStatusInternal(entryFile, policy, permissions,
                 permissionCheckMode, executionProfile, allowedHostClasses,
-                environment, out, err, null);
+                environment, out, err, null, null);
+    }
+
+    /** Explicit host input admission; existing embedding APIs retain empty stdin. */
+    public static RunResult runWithInput(
+            Path entryFile, IsolatePolicy policy, RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode, ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses, Map<String, String> environment,
+            InputStream input, OutputStream out, OutputStream err) throws IOException {
+        policy.require(IsolatePolicy.Capability.STDIN, "host stdin admission");
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, null, java.util.Objects.requireNonNull(input));
     }
 
     private static RunResult runWithExitStatusInternal(
@@ -213,7 +227,8 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err,
-            WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
+            WorkflowHostServiceRegistry.Service trustedWorkflowService,
+            InputStream input) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -258,6 +273,9 @@ public final class LinkedProgramRunner {
                         permissionCheckMode);
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
+                if (input != null) builder.in(new FilterInputStream(input) {
+                    @Override public void close() { /* host retains ownership */ }
+                });
 
                 try (Context context = builder.build()) {
                     // Provision only the intended Oreslang context, before any
