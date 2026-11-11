@@ -77,7 +77,8 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
         Map<String, Integer> slots = new HashMap<>();
         for (int index = 0; index < scalarFieldNames.size(); index++) {
             String name = Objects.requireNonNull(scalarFieldNames.get(index), "scalar field name");
-            if (name.isBlank() || slots.putIfAbsent(name, index) != null)
+            if (name.isBlank() || name.length() > 128 || name.startsWith("$")
+                    || slots.putIfAbsent(name, index) != null)
                 throw new IllegalArgumentException("invalid or duplicate scalar state field: " + name);
         }
         this.generation = generation;
