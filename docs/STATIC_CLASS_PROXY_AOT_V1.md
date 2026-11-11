@@ -104,6 +104,10 @@ organization without explicit approved carrier terms.
 
 ## Additional fail-closed admissions (2026-11-10)
 
+Public method signatures containing unresolved local type aliases also
+reject until complete alias expansion and ownership proofs are available.
+Otherwise `AliasFoo = Foo` could evade the direct/nested return escape guard.
+
 The generated type must not select a local target `Foo` when an explicit
 import or namespace alias also binds `Foo`. The compiler rejects imported
 target-name capture instead of relying on unresolved symbol precedence.
@@ -112,8 +116,8 @@ Annotated constructors are rejected until wrapper metadata and effect rules are
 proven. Mutable `struct` arguments/returns, including nested generic types,
 also reject rather than forwarding mutable authority without a borrow proof.
 
-The Java JUnit suite now declares **16** focused checks and the source-org
-exact-head CI gate requires parsed Surefire XML with at least 16 test cases,
+The Java JUnit suite now declares **17** focused checks and the source-org
+exact-head CI gate requires parsed Surefire XML with at least 17 test cases,
 zero skipped/failures/errors, and no failure/error/skipped XML nodes.
 
 An alternate private CI carrier at `opto-sync-test/go-java-validation` has an
