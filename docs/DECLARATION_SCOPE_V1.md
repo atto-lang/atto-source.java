@@ -96,3 +96,41 @@ No ordinary class, macro, package import or native backend may synthesize
 `.new()` merely because `new Cart()` intrinsic construction is available.
 Until the static Newable trait protocol is implemented and checked against
 source-free package consumers, that behavior is **NOT VERIFIED**.
+
+## Newable[T] v1 executable admission contract (2026-11-10)
+
+The Java reference frontend now supports a **compiler-owned** static
+factory marker, distinct from ordinary instance interfaces:
+
+```atto
+define pub class Cart implements Newable[Cart] as
+  pub fnc new(): Cart {
+    return new Cart();
+  }
+end
+
+define pub fnc create(): Cart {
+  return Cart.new();
+}
+```
+
+A declared `fnc new` in a class explicitly implementing `Newable[T]`
+is lowered to a static member in the AST, even when the optional `static`
+keyword is omitted. It is not synthesized by the compiler and is never
+called by the intrinsic `new Cart()` expression.
+
+V1 deliberately supports **one zero-argument, public, synchronous,
+nongeneric** factory returning precisely its concrete owning class.
+`Newable[T]` and the compatible `Newable<T>` are accepted in an
+`implements` clause; `Newable` cannot be defined or shadowed by user
+source. Incorrect arity, visibility, return type, generic witness,
+abstract class and actor-factory attempts are rejected. Ordinary user
+class methods named `new` without the explicit marker are rejected.
+
+Backend AOT compilation, target-specific static witness metadata,
+portable binary `.atpkg` emission/linkage, parameterized factory
+signatures, generic classes, and user-defined static factory trait
+declarations remain separate gates. This is **not** a declaration of
+cross-backend or binary-package parity. Tests include parser/type-checker
+cases and a Graal guest case; passing status requires actual executed
+CI receipts, not merely the presence of source.
