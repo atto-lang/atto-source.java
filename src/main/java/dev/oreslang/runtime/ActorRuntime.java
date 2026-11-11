@@ -316,6 +316,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorRuntime runtime() { return runtime; }
         ActorId actorId() { return actor.id(); }
+        ActorRef<?> actorRef() { return actor; }
 
         boolean validOnCurrentTurn() {
             if (CURRENT_ACTOR_EXECUTION.get() != turnContext
