@@ -69,6 +69,14 @@ final class WebSocketLoopbackListenerTest {
                     assertEquals(expected.length, Byte.toUnsignedInt(actual[1]));
                     assertArrayEquals(expected,
                             java.util.Arrays.copyOfRange(actual, 2, actual.length));
+                    // The parent can observe output before the actor turn's
+                    // mailbox finally retires its delivery ticket; wait for
+                    // physical lease settlement, not merely output publication.
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                    while (conn.pendingActorTicketCount() != 0
+                            && System.nanoTime() < deadline) {
+                        Thread.sleep(5);
+                    }
                     assertEquals(0, conn.pendingActorTicketCount());
                     conn.close();
                 }
