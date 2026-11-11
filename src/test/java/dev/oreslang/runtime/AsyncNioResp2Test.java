@@ -44,8 +44,8 @@ final class AsyncNioResp2Test {
                 "*1\n",
                 "*1\r\n$0\r\n\r\n",
                 "*1\r\n$4\r\nPI\nG\r\n",
-                "*1\r\n$3\r\nB\u007f!\r\n",
-                "*1\r\n$3\r\n\u0000AA\r\n"
+                "*1\r\n$3\r\nB\177!\r\n",
+                "*1\r\n$3\r\n\0AA\r\n"
         }) {
             assertThrows(IOException.class, () ->
                     AsyncNioResp2.parse(ByteBuffer.wrap(ascii(malformed))),
