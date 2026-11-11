@@ -81,8 +81,8 @@ public final class Lexer {
                 } else add(DOT);
             }
             case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
-            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
-            case '^' -> add(CARET); case '~' -> add(TILDE);
+            case '*' -> add(STAR); case '%' -> throw error("removed operator '%' is not supported"); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
+            case '^' -> throw error("removed operator '^' or '^^' is not supported"); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
             case '!' -> add(match('=') ? BANG_EQUAL : BANG);
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
