@@ -119,9 +119,15 @@ final class AttoDemoMultifileSevenCaseGuestTest {
                 IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(program, Map.of()),
                 "a runtime failure does NOT count as compile-time rejection: " + relative);
-        assertTrue(rejected.getMessage() != null
-                        && rejected.getMessage().contains(diagnostic),
-                () -> "wrong compiler denial for " + relative + ": " + rejected.getMessage());
+        String message = rejected.getMessage();
+        assertTrue(message != null && message.contains(canonicalId(program)),
+                () -> "negative rejection must name its exact source unit: " + message);
+        assertTrue(message.contains(diagnostic),
+                () -> "wrong compiler denial for " + relative + ": " + message);
+        assertFalse(message.contains("Failed to execute goal")
+                        || message.contains("Exception in thread")
+                        || message.contains("NoClassDefFoundError"),
+                "Maven/JVM infrastructure errors cannot count as guest compiler rejections");
     }
 
     @Test
