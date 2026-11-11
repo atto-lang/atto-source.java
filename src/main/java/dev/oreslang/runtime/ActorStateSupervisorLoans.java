@@ -114,7 +114,8 @@ public final class ActorStateSupervisorLoans {
     public Map<String, Long> snapshotOwnerLongFields(
             Map<String, LongField> fields) {
         Objects.requireNonNull(fields, "fields");
-        final Map<String, Long>[] snapshot = new Map[1];
+        final java.util.concurrent.atomic.AtomicReference<Map<String, Long>> snapshot =
+                new java.util.concurrent.atomic.AtomicReference<>();
         withOwnerRead(() -> {
             synchronized (gate) {
                 requireOpenLocked();
@@ -127,10 +128,10 @@ public final class ActorStateSupervisorLoans {
                     }
                     copied.put(field.name, field.value);
                 }
-                snapshot[0] = java.util.Collections.unmodifiableMap(copied);
+                snapshot.set(java.util.Collections.unmodifiableMap(copied));
             }
         });
-        return snapshot[0];
+        return snapshot.get();
     }
 
     public void updateOwnerLongField(
