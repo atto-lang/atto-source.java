@@ -1,0 +1,9 @@
+// A local view cannot outlive the actor mailbox turn.
+define actor Counter as
+  state { let int count; }
+  leak(): borrow int {
+    val borrow int alias = rt borrow self.count;
+    return alias;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
