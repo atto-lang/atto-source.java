@@ -89,8 +89,8 @@ verify() {
     [[ "$count" == 1 ]] ||
       { reject "missing or duplicate provenance key: $key"; return 1; }
   done
-  grep -Fxq 'status=PASS' "$receipt/identity.txt" ||
-    { reject 'guest matrix did not finish'; return 1; }
+  grep -Fxq 'status=VERIFYING' "$receipt/identity.txt" ||
+    { reject 'receipt must be in pre-commit VERIFYING state'; return 1; }
   grep -Fxq "demo_head=$demo_sha" "$receipt/identity.txt" ||
     { reject 'demo pin mismatch'; return 1; }
   grep -Fxq "compiler_head=$compiler_sha" "$receipt/identity.txt" ||
@@ -156,7 +156,7 @@ self_test() {
           compiler-classes.sha256 runtime-dependencies.sha256; do
     sha256sum "$t/fake-artifact" > "$t/$hash_receipt"
   done
-  printf 'status=PASS\npolicy_head=%s\ngithub_run_id=4242\ngithub_run_attempt=1\ngithub_job=java-linked-guest\ndemo_head=%s\ncompiler_head=%s\npositive_cases=3\nnegative_cases=4\n' \
+  printf 'status=VERIFYING\npolicy_head=%s\ngithub_run_id=4242\ngithub_run_attempt=1\ngithub_job=java-linked-guest\ndemo_head=%s\ncompiler_head=%s\npositive_cases=3\nnegative_cases=4\n' \
     "$policy_sha" "$demo_sha" "$compiler_sha" > "$t/identity.txt"
   if ! GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
        ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
