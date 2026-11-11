@@ -1,0 +1,62 @@
+// Executable Atto actor KV smoke using the currently supported actor
+// field model. NOT sealed handle_state, WAL, disk storage or a TCP server.
+// A production version must replace direct fields with sealed state loans.
+define actor KvShardSmoke as
+  let Map<string,int> values;
+
+  on_start(): void {
+    self.values = ~map<string,int>();
+    return;
+  }
+
+  receive(ActorMail<string> mail): void {
+    if mail.value == "set"; do
+      self.values.set("answer", 41);
+      self.send("set");
+      return;
+    fi
+    if mail.value == "get"; do
+      val int value = self.values["answer"];
+      if value == 41; do
+        self.send("get");
+      else
+        self.send("bad");
+      fi
+      return;
+    fi
+    if mail.value == "delete"; do
+      val bool removed = self.values.delete("answer");
+      if removed; do
+        self.send("delete");
+      else
+        self.send("bad");
+      fi
+      self.end();
+      return;
+    fi
+    self.send("unknown");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn KvShardSmoke();
+  await worker.get_ready();
+
+  worker.send("set");
+  val first = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(first.value);
+  stdio.stdout.write("|");
+
+  worker.send("get");
+  val second = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(second.value);
+  stdio.stdout.write("|");
+
+  worker.send("delete");
+  val third = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(third.value);
+
+  await worker.get_done();
+  return;
+}

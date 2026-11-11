@@ -54,4 +54,24 @@ final class AttoRedisScalarMapMutationGuestTest {
                         + "let Map<string,int> db = ~map<string,int>(); "
                         + "db.set(\"k\", \"wrong\"); return; }"));
     }
+    @Test
+    void actualAttoActorOwnedMapRunsSetGetDelete() throws Exception {
+        String source;
+        try (InputStream input = AttoRedisScalarMapMutationGuestTest.class
+                .getResourceAsStream("/atto/redis-clone/redis_actor_guest.atto")) {
+            assertNotNull(input);
+            source = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        java.io.ByteArrayOutputStream stdout = new java.io.ByteArrayOutputStream();
+        Source artifact = Source.newBuilder(
+                OresLanguage.ID, source, "redis_actor_guest.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            assertDoesNotThrow(() -> context.eval(artifact));
+        }
+        assertEquals("set|get|delete", stdout.toString(StandardCharsets.UTF_8));
+    }
+
 }
