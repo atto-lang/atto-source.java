@@ -190,11 +190,13 @@ final class DeclaredActorHardeningTest {
     }
 
     @Test
-    void receiveCannotBeReboundByOverloadArity() {
+    void receiveCannotBeReboundByUnmarkedOverload() {
+        // The second receive() is denied at the explicit runtime-role marker
+        // boundary before its mailbox ABI shape can be considered.
         assertTrue(bindError("declare actor Vault;"
                 + "define external mtd (Vault v) receive(ActorMail<int> mail): void { return; }"
                 + "define mtd (Vault v) receive(): void { return; }")
-                .contains("ActorMail<T>"));
+                .contains("ACTOR_EXTERNAL_REQUIRED"));
     }
 
     @Test
