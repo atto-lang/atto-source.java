@@ -38,6 +38,8 @@ import java.util.TreeMap;
  */
 public final class PackageNamespaceBuild {
     public static final int MAX_SOURCE_FILES = 4096;
+    public static final int MAX_VISITED_ENTRIES = 131072;
+    public static final int MAX_SOURCE_DEPTH = 64;
     public static final long MAX_FILE_BYTES = 16L * 1024 * 1024;
     public static final long MAX_PACKAGE_SOURCE_BYTES = 256L * 1024 * 1024;
 
@@ -80,7 +82,11 @@ public final class PackageNamespaceBuild {
 
     public String packageIdentity() { return packageIdentity; }
 
-    public synchronized Result build() throws IOException {
+    /** The exact parsed bytes used by BOTH conformance audit and compilation. */
+    private record SourceSnapshot(
+            Map<String, String> text, Map<String, Ast.Program> parsed) { }
+
+    private SourceSnapshot snapshot() throws IOException {
         if (Files.isSymbolicLink(manifestPath)
                 || !Files.isRegularFile(manifestPath, LinkOption.NOFOLLOW_LINKS)
                 || !java.util.Arrays.equals(manifestFingerprint,
@@ -100,17 +106,110 @@ public final class PackageNamespaceBuild {
             throw new IllegalArgumentException(
                     "package '" + packageIdentity + "' has no .atto/.ores source files");
         }
-        // The same parsed source set feeds the registry and the compilation.
-        // No ambient package globals, cross-org classloader state or runtime
-        // actor receiver rights are created by this index.
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             parsed.put(entry.getKey(), Parser.parse(entry.getValue()));
         }
         validatePackageImportProvenance(parsed);
-        ActorMethodIndex index = ActorMethodIndex.collect(packageIdentity, parsed);
-        IncrementalCompiler.BuildResult compiled = compiler.compile(sources);
-        return new Result(packageIdentity, sources.keySet().stream().sorted().toList(),
+        if (!java.util.Arrays.equals(manifestFingerprint,
+                digest(boundedRead(manifestPath)))) {
+            throw new IllegalArgumentException(
+                    "package manifest changed while reading actor source set");
+        }
+        return new SourceSnapshot(sources, java.util.Collections.unmodifiableMap(parsed));
+    }
+
+    private static boolean hasDeclaredActors(Map<String, Ast.Program> programs) {
+        return programs.values().stream().flatMap(p -> p.modules().stream())
+                .filter(m -> Parser.ROOT_MODULE.equals(m.name()))
+                .flatMap(m -> m.declarations().stream())
+                .anyMatch(d -> d instanceof Ast.DeclaredActorDecl);
+    }
+
+    /** Manifest-derived static witness and index, not actor code generation. */
+    public record ActorAudit(
+            dev.oreslang.types.ActorContractWitness.Result contractWitness,
+            ActorMethodIndex actorMethods,
+            Map<String, String> sourceSha256,
+            String manifestSha256) {
+        public ActorAudit {
+            java.util.Objects.requireNonNull(contractWitness);
+            java.util.Objects.requireNonNull(actorMethods);
+            sourceSha256 = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(sourceSha256));
+        }
+    }
+
+    private ActorAudit auditSnapshot(SourceSnapshot snapshot) {
+        // A generic compile(Map) cannot claim source provenance; only this
+        // canonical .atto.pkg.toml source-set entrypoint may issue the audit.
+        if (!manifestPath.getFileName().toString()
+                .equals(OresProjectConfig.ATTO_MANIFEST_NAME)) {
+            throw new IllegalArgumentException(
+                    "declared actor witness requires canonical .atto.pkg.toml");
+        }
+        if (!hasDeclaredActors(snapshot.parsed())) {
+            throw new IllegalArgumentException(
+                    "manifest actor package contains no declaration-only actors");
+        }
+        var witness = dev.oreslang.types.ActorContractWitness.linkSourceSet(
+                packageIdentity, snapshot.parsed());
+        var index = ActorMethodIndex.collect(
+                packageIdentity, snapshot.parsed(), witness.boundMethods());
+        for (var proof : witness.actors().entrySet()) {
+            var actorKey = new ActorMethodIndex.ActorKey(
+                    proof.getKey().packageIdentity(),
+                    proof.getKey().namespace(), proof.getKey().actor());
+            if (!index.hasActor(actorKey)
+                    || !index.declaringUnit(actorKey).equals(proof.getValue().actorUnit())) {
+                throw new IllegalArgumentException(
+                        "declared actor witness/index provenance mismatch: " + actorKey);
+            }
+            for (var method : proof.getValue().methods()) {
+                var indexed = index.method(new ActorMethodIndex.MethodKey(
+                        actorKey, method.name(), method.arity()));
+                if (indexed == null
+                        || !indexed.declaringUnit().equals(method.methodUnit())
+                        || !indexed.declarationEligible()) {
+                    throw new IllegalArgumentException(
+                            "actor method index disagrees with static contract proof: "
+                                    + actorKey + "." + method.name());
+                }
+            }
+        }
+        Map<String, String> hashes = new LinkedHashMap<>();
+        for (var source : snapshot.text().entrySet()) {
+            hashes.put(source.getKey(), java.util.HexFormat.of().formatHex(
+                    digest(source.getValue().getBytes(StandardCharsets.UTF_8))));
+        }
+        return new ActorAudit(witness, index, hashes,
+                java.util.HexFormat.of().formatHex(manifestFingerprint));
+    }
+
+    /**
+     * Opt-in read-only audit. The manifest source set and source hashes are
+     * consumed by the same build entrypoint; no ambient package fallback.
+     */
+    public synchronized ActorAudit auditDeclaredActors() throws IOException {
+        return auditSnapshot(snapshot());
+    }
+
+    public synchronized Result build() throws IOException {
+        SourceSnapshot source = snapshot();
+        if (hasDeclaredActors(source.parsed())) {
+            // This is a COMPULSORY manifest-owned gate before incremental
+            // caching or guest code generation. A successful static witness
+            // cannot bypass the missing typed receiver/HIR/MIR lowering.
+            ActorAudit audit = auditSnapshot(source);
+            throw new IllegalArgumentException(
+                    "DECLARED_ACTOR_CODEGEN_UNSUPPORTED: verified "
+                            + audit.contractWitness().actors().size()
+                            + " declaration-only actor(s) but executable "
+                            + "external method dispatch/state loans are not lowered");
+        }
+        ActorMethodIndex index = ActorMethodIndex.collect(packageIdentity, source.parsed());
+        IncrementalCompiler.BuildResult compiled = compiler.compile(source.text());
+        return new Result(packageIdentity, source.text().keySet().stream().sorted().toList(),
                 index, compiled);
     }
 
@@ -162,6 +261,7 @@ public final class PackageNamespaceBuild {
     private Map<String, String> readCompleteSourceSet() throws IOException {
         TreeMap<String, Path> discovered = new TreeMap<>();
         Map<String, String> foldedIds = new LinkedHashMap<>();
+        int[] visitedEntries = {0};
         ArrayList<Path> roots = new ArrayList<>(config.sourceRoots());
         roots.sort((a, b) -> a.toString().compareTo(b.toString()));
         for (Path declared : roots) {
@@ -187,6 +287,11 @@ public final class PackageNamespaceBuild {
             Files.walkFileTree(lexical, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (++visitedEntries[0] > MAX_VISITED_ENTRIES
+                            || lexical.relativize(dir).getNameCount() > MAX_SOURCE_DEPTH) {
+                        throw new IllegalArgumentException(
+                                "package source entry/depth budget exceeded");
+                    }
                     if (attrs.isSymbolicLink() || Files.isSymbolicLink(dir)
                             || !dir.toAbsolutePath().normalize().startsWith(projectRoot)) {
                         throw new IllegalArgumentException(
@@ -197,6 +302,10 @@ public final class PackageNamespaceBuild {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (++visitedEntries[0] > MAX_VISITED_ENTRIES) {
+                        throw new IllegalArgumentException(
+                                "package source filesystem entry budget exceeded");
+                    }
                     if (attrs.isSymbolicLink() || Files.isSymbolicLink(file)) {
                         throw new IllegalArgumentException(
                                 "symlinked package source entry is forbidden: " + file);
