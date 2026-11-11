@@ -1,4 +1,7 @@
 name: Atto Java exact-head admission and guest receipts
+# Source-repository only. Does not authorize cross-org source transport.
+# A test result counts only if the job actually executes nonzero steps,
+# the immutable source SHA is recorded, and Surefire XML proves the suites ran.
 
 on:
   pull_request:
@@ -46,7 +49,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest \
+            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest,AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
             clean test
       - name: Require nonempty unskipped Surefire reports
         if: always()
@@ -60,7 +63,13 @@ jobs:
             dev.oreslang.launcher.OresMainSourceBudgetTest \
             dev.oreslang.config.OresProjectConfigTest \
             dev.oreslang.AttoCacheShapeAdmissionTest \
-            dev.oreslang.ProjectManifestImportTest; do
+            dev.oreslang.ProjectManifestImportTest \
+            dev.oreslang.AotDispatchPlannerV1Test \
+            dev.oreslang.CheckedDispatchPlanIntegrationV1Test \
+            dev.oreslang.AotDispatchGuestV1Test \
+            dev.oreslang.MethodOverloadTest \
+            dev.oreslang.ArityDispatchTableRuntimeTest \
+            dev.oreslang.ArityOverloadAotTest; do
             report="target/surefire-reports/TEST-${suite}.xml"
             test -s "$report"
             grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
@@ -71,6 +80,11 @@ jobs:
             printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
           done
           echo 'RECEIPT guest_42=asserted_by_AttoSourceAdmissionTest_and_AttoCacheShapeAdmissionTest'
+          echo 'RECEIPT dispatch_virtual_override=asserted_by_AotDispatchGuestV1Test stdout_expected=121020'
+          echo 'RECEIPT dispatch_jit_disabled_profile=asserted_by_AotDispatchGuestV1Test'
+          echo 'RECEIPT dispatch_ownership_and_target_identity=asserted_by_CheckedDispatchPlanIntegrationV1Test'
+          echo 'RECEIPT dispatch_native_guest_aot=NOT_EXECUTED'
+          echo 'RECEIPT dispatch_cross_backend_parity=NOT_EXECUTED'
       - name: Preserve compiler and guest test reports
         if: always()
         uses: actions/upload-artifact@v4
