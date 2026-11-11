@@ -6,6 +6,9 @@ import dev.oreslang.types.ActorReceiverBinder;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -191,4 +194,23 @@ final class ActorReceiverBinderTest {
         assertTrue(error.getMessage().contains("has no nominal actor"),
                 error.getMessage());
     }
+    @Test
+    void portableFixturesReachRealParserAndNominalBinder() throws IOException {
+        Path root = Path.of("contracts", "actor-receiver-binding-v1");
+        assertEquals(1, bind(Files.readString(root.resolve(
+                "accept_nominal_binding.atto"))).size());
+
+        Map<String, String> invalid = Map.of(
+                "reject_missing_actor.atto", "has no nominal actor",
+                "reject_cross_module_receiver.atto", "declared in the same module",
+                "reject_duplicate_external_slot.atto", "duplicate external actor method slot",
+                "reject_public_receive.atto", "external receive must be private",
+                "reject_in_class_collision.atto", "conflicts with an in-class actor method");
+        for (Map.Entry<String, String> entry : invalid.entrySet()) {
+            String source = Files.readString(root.resolve(entry.getKey()));
+            rejects(source, entry.getValue());
+        }
+    }
+
+
 }
