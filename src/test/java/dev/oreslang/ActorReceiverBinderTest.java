@@ -213,4 +213,18 @@ final class ActorReceiverBinderTest {
     }
 
 
+    @Test
+    void publicExternalMethodCannotExposePrivateNominalActor() {
+        rejects(module("  define actor Worker as worker;\n"
+                + method("get_count", "", "int")),
+                "cannot expose private actor");
+    }
+
+    @Test
+    void standaloneActorCannotImpersonateReservedSymbolType() {
+        rejects(module("  pub define actor Symbol as symbol;\n"),
+                "Symbol is a reserved nominal built-in");
+    }
+
+
 }
