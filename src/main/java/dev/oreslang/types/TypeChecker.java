@@ -1997,6 +1997,7 @@ public final class TypeChecker {
                     }
                     if (witness.async() || witness.suspends()
                             || witness.structural()
+                            || witness.explicitReceiverType() != null
                             || !witness.genericParameters().isEmpty()
                             || !witness.effects().isEmpty()) {
                         throw new IllegalArgumentException(
