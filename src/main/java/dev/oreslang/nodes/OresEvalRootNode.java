@@ -337,6 +337,12 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
+                        // Also deny raw parsed-AST callers that bypass normal
+                        // TypeChecker admission: no silent empty actor object.
+                        if (!klass.sealedStateFields().isEmpty())
+                            throw new IllegalStateException(
+                                    "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: "
+                                    + "sealed actor state cannot run as ordinary fields");
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);

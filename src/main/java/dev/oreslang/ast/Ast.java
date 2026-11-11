@@ -495,7 +495,8 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            List<ProtectedStateField> sealedStateFields) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
@@ -505,6 +506,24 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            sealedStateFields = List.copyOf(sealedStateFields);
+            if (!sealedStateFields.isEmpty()) {
+                if (actorKind == ActorKind.NONE)
+                    throw new IllegalArgumentException("sealed state requires an actor");
+                if (!fields.isEmpty())
+                    throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
+            }
+        }
+
+        /** Existing actor concurrency call sites default to no sealed state. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, List.of());
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */

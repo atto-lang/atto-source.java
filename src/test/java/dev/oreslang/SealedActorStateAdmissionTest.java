@@ -25,11 +25,68 @@ final class SealedActorStateAdmissionTest {
     }
 
     @Test void typedStateSchemaDoesNotBecomeAnOrdinaryActorField() {
+        var program = Parser.parse("""
+                define actor Ledger as
+                  state { let int phase = 0; }
+                end
+                """);
+        var actor = (dev.oreslang.ast.Ast.ClassDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        assertTrue(actor.fields().isEmpty(), "sealed metadata cannot be ordinary actor fields");
+        assertEquals(1, actor.sealedStateFields().size());
+        assertEquals("phase", actor.sealedStateFields().getFirst().name());
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.analyze(program));
+        assertTrue(failure.getMessage().contains("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED"));
+    }
+
+    @Test void sealedStateRejectsDuplicateAndMixedLayouts() {
         rejected("""
                 define actor Ledger as
-                  state { phase: String = "created"; }
+                  state { let int x = 1; }
+                  state { let int y = 2; }
                 end
-                """, "state ownership and handle_state lowering");
+                """, "duplicate sealed actor state");
+        rejected("""
+                define actor Ledger as
+                  let int legacy = 1;
+                  state { let int x = 2; }
+                end
+                """, "cannot mix ordinary actor fields");
+        rejected("""
+                define actor Ledger as
+                  state { let int x = 1; }
+                  let int legacy = 2;
+                end
+                """, "cannot mix ordinary actor fields");
+        rejected("""
+                define actor Ledger as
+                  state { pub let int x = 1; }
+                end
+                """, "requires private 'let'");
+        rejected("""
+                define actor Ledger as
+                  state { let int x = 1; let int x = 2; }
+                end
+                """, "duplicate sealed actor state field");
+    }
+
+    @Test void sealedStateRejectsDynamicInitializersAndUnsafeValues() {
+        rejected("""
+                define actor Ledger as
+                  state { let int x = acquire_secret(); }
+                end
+                """, "initializer must be a literal");
+        rejected("""
+                define actor Ledger as
+                  state { let Map<int,int> x = 1; }
+                end
+                """, "requires scalar int/bool fields");
+        rejected("""
+                define actor Ledger as
+                  state {}
+                end
+                """, "at least one field");
     }
 
     @Test void userCannotSpoofSealedStateAuthorityWithActorMethod() {

@@ -1171,6 +1171,14 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        // State metadata must NEVER be typechecked as ordinary actor fields.
+        // Only a compiler-issued, turn/incarnation-bound physical state region
+        // and verified non-suspending critical loan may lower these fields.
+        if (!klass.sealedStateFields().isEmpty())
+            throw new IllegalArgumentException(
+                    "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
+                    + klass.name() + "' requires compiler-sealed state ownership "
+                    + "and handle_state lowering; not yet enabled");
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
