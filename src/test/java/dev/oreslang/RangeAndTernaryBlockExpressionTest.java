@@ -137,6 +137,62 @@ final class RangeAndTernaryBlockExpressionTest {
     }
 
     @Test
+    void bareZeroArgTernaryThunksInvokeOnlySelectedBranch() throws Exception {
+        String source = wrap("""
+                val x: int = true ? || -> {
+                  return 42;
+                } : || -> {
+                  stdio.stdout.write("UNSELECTED");
+                  return 99;
+                };
+                stdio.stdout.write("after:");
+                stdio.stdout.write(x);
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("after:42", run(source));
+    }
+
+    @Test
+    void typedImmediateLambdaCallsWorkInBothTernaryArms() throws Exception {
+        String source = wrap("""
+                for id in 1..4 {
+                  val successors: Array<int> = id eq 3 ? (|int v| -> {
+                    return []
+                  })(3) : (|int g| -> {
+                    return [id + 1]
+                  })(5);
+                  stdio.stdout.write(id);
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("123", run(source));
+    }
+
+    @Test
+    void ordinaryLambdaValuesStayLazyUnlessCalled() throws Exception {
+        String source = wrap("""
+                val f = || -> {
+                  stdio.stdout.write("IMPLICIT_CALL_BUG");
+                  return 7;
+                };
+                val chosen = true ? (|| -> { return 11; }) : (|| -> { return 12; });
+                stdio.stdout.write(chosen());
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("11", run(source));
+    }
+
+    @Test
+    void invokedLambdaArgumentsRemainCheckedAndUnselectedBranchIsNotEvaluated() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap(
+                        "val x: int = true ? (|int v| -> { return v; })(\"not int\") : { 0 };"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap(
+                        "val x: int = true ? (|int v| -> { return v; })() : { 0 };"))));
+    }
+
+    @Test
     void ternaryRetainsRightAssociativityAndLazySelectedBranch() throws Exception {
         String source = wrap("""
                 val result: int = false ? { 1 } : true ? {
