@@ -49,3 +49,13 @@ does not certify guest execution or cross-backend parity.
 - A cross-file imported actor's receive cannot be called directly through a
   typed actor instance. Semantic resolution must preserve actor metadata.
 - These fixtures are compile-time tests, not scheduler delivery receipts.
+
+## Guest-execution acceptance
+
+In addition to compile-fail fixtures, run
+`ActorReceiveIngressGuestExecutionTest` against an exact compiler commit.
+Its `.atto` program uses `spawn`, `ActorRef.send`, runtime receive,
+actor output and `get_done`, with a bounded JUnit timeout. It must print
+exactly `delivered`. Passing type checking without evaluating the guest is
+not sufficient evidence. If the GitHub runner starts with zero steps, report
+runner-admission failure rather than guest test success or failure.
