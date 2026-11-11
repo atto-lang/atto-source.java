@@ -29,8 +29,8 @@ check_cases() {
   [[ "$(cat "$d/cases.tsv")" == "$expected" ]] ||
     { reject "case ledger missing, duplicate, reordered or forged status"; return 1; }
   for name in linked-function linked-module-class ownership-valid; do
-    check_ledger "$d" check "$name" 0 || return 1
-    check_ledger "$d" guest "$name" 0 || return 1
+    check_ledger "$d" "$name" check 0 || return 1
+    check_ledger "$d" "$name" guest 0 || return 1
     [[ ! -s "$d/$name-check.stdout" && ! -s "$d/$name-check.stderr" ]] ||
       { reject "positive source check emitted diagnostics"; return 1; }
     [[ ! -s "$d/$name-guest.stderr" && "$(cat "$d/$name-guest.stdout")" == 42 ]] ||
@@ -39,7 +39,7 @@ check_cases() {
       { reject "positive guest stdout must be exact 42 without newline"; return 1; }
   done
   for name in missing-import ambiguous-import ownership-conflict aliased-module-leak; do
-    check_ledger "$d" check "$name" 1 || return 1
+    check_ledger "$d" "$name" check 1 || return 1
     [[ ! -s "$d/$name-check.stdout" ]] || { reject "negative guest stdout"; return 1; }
     err="$d/$name-check.stderr"
     [[ $(wc -l < "$err") -eq 1 && $(wc -c < "$err") -le 8192 ]] ||
