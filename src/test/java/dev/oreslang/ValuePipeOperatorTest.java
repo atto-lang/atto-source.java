@@ -492,6 +492,7 @@ final class ValuePipeOperatorTest {
                   stdio.println(once() |> |n| -> n + n |> increment);
                   stdio.println(2 |> |n| -> (n |> increment) |> increment);
                   stdio.println(3 |> nlex |n| -> n + 1);
+                  stdio.println(2 |> |n| -> n + 1 |> |m| -> m * 2);
                   return;
                 }
                 """;
@@ -503,7 +504,7 @@ final class ValuePipeOperatorTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals(java.util.List.of("once", "15", "4", "4"),
+        assertEquals(java.util.List.of("once", "15", "4", "4", "6"),
                 output.toString(StandardCharsets.UTF_8).lines().toList());
     }
 
