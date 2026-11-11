@@ -90,24 +90,15 @@ case "$mode" in
       "$executable" --build-info ) > "$output/build-info.json"
     grep -Fq '"build_mode":"aot"' "$output/build-info.json"
     grep -Fq '"guest_execution":"interpreter-no-jit"' "$output/build-info.json"
-    # GraalVM 25.3.4.1 explicitly warns --no-fallback is deprecated with
-    # NO EFFECT. Do not treat its presence in Maven flags as AOT evidence.
-    # Instead validate the produced executable header, forbid JVM launcher
-    # shared-library dependencies, and assert baked-in native build mode.
-    test "$(head -c 4 "$executable" | od -An -tx1 | tr -d ' \n')" = 7f454c46
-    command -v readelf >/dev/null
+    # GraalVM 25.3.4.1 warns --no-fallback is deprecated with no effect.
+    # The host must be an actual ELF without ordinary libjvm/libjli/libjava.
+    aot_binary_before="$(otel_guardrails_native_host_digest "$executable")"
     readelf -h "$executable" > "$output/elf-header.txt"
-    grep -Eq 'Type:[[:space:]]+(EXEC|DYN)' "$output/elf-header.txt"
     readelf -d "$executable" > "$output/elf-dynamic.txt"
-    if grep -E 'Shared library: \\[(libjvm|libjli|libjava)\\.so' "$output/elf-dynamic.txt"; then
-      echo 'OTEL_AOT_DENIED: Java VM dynamic dependency' >&2
-      exit 65
-    fi
     : "${JAVA_HOME:?Require reviewed GraalVM JAVA_HOME}"
     test -x "$JAVA_HOME/bin/native-image"
     "$JAVA_HOME/bin/native-image" --version > "$output/native-image-version.txt"
     grep -q 'GraalVM' "$output/native-image-version.txt"
-    aot_binary_before="$(sha256sum "$executable" | cut -d' ' -f1)"
     otel_guardrails_run_guest "$output" "$executable" --mode=aot --platform=linux "$guest"
     ;;
 esac
@@ -119,7 +110,7 @@ if [[ "$mode" == jvm ]]; then
   test "$(otel_guardrails_classpath_digest target/classpath.txt)" = "$dependency_jars_before"
   test "$(otel_guardrails_class_digest target/classes)" = "$classes_before"
 else
-  test "$(sha256sum "$executable" | cut -d' ' -f1)" = "$aot_binary_before"
+  test "$(otel_guardrails_native_host_digest "$executable")" = "$aot_binary_before"
 fi
 
 # The original Rust oracle rejects missing/extra records, malformed JSON,
