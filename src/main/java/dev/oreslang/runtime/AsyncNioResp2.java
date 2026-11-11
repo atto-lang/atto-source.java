@@ -50,7 +50,7 @@ final class AsyncNioResp2 {
         int n = 0;
         for (int i = first; i < end; i++) {
             int digit = (bytes.get(i) & 0xff) - '0';
-            if (digit < 0 || digit > 9 || n > (max - digit) / 10) {
+            if (digit < 0 || digit > 9 || digit > max || n > (max - digit) / 10) {
                 throw new IOException("invalid or excessive RESP decimal");
             }
             n = n * 10 + digit;
