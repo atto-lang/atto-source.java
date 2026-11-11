@@ -15,6 +15,55 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(20)
 final class NeuronActorTurnProofRuntimeTest {
+    @Test void proofExpiresBetweenTwoMessagesInSamePhysicalThroughputBatch()
+            throws Exception {
+        AtomicReference<ActorRuntime.NeuronActorTurnProof> first =
+                new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch completed = new CountDownLatch(1);
+
+        // Throughput=8 permits consecutive messages on the same carrier.
+        // The neuron proof MUST still be scoped to the individual envelope.
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 2),
+                ActorRuntime.TurnExecutor.direct())) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                try {
+                    if (message == 1) {
+                        var proof = ActorRuntime.mintNeuronActorTurnProof();
+                        assertTrue(proof.validOnCurrentTurn());
+                        first.set(proof);
+                        context.self().send(2);
+                    } else if (message == 2) {
+                        var prior = first.get();
+                        assertNotNull(prior);
+                        assertFalse(prior.validOnCurrentTurn(),
+                                "same batch must NOT imply same message authority");
+                        assertThrows(SecurityException.class, prior::checkedHandlerIdentity);
+                        var fresh = ActorRuntime.mintNeuronActorTurnProof();
+                        assertTrue(fresh.validOnCurrentTurn());
+                        assertNotSame(prior, fresh);
+                        completed.countDown();
+                        context.self().stop();
+                    } else {
+                        throw new AssertionError("unexpected message " + message);
+                    }
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                    completed.countDown();
+                    context.self().stop();
+                }
+            });
+            actor.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            if (failure.get() != null)
+                throw new AssertionError("same-batch envelope fencing failed", failure.get());
+            assertNotNull(first.get());
+            assertFalse(first.get().validOnCurrentTurn());
+        }
+    }
+
     @Test void proofCannotBeMintedFromHostAndCannotEscapeItsPhysicalDispatch()
             throws Exception {
         assertThrows(SecurityException.class, ActorRuntime::mintNeuronActorTurnProof);
@@ -26,7 +75,7 @@ final class NeuronActorTurnProofRuntimeTest {
         CountDownLatch firstHandled = new CountDownLatch(1);
         CountDownLatch secondHandled = new CountDownLatch(1);
         // Throughput=1 forces a distinct physical actor dispatch per message.
-        var config = new ActorRuntime.DispatcherConfig(2, 2, 2, 1);
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 1, 2);
 
         try (var runtime = new ActorRuntime(
                 IsolatePolicy.developer(), config, ActorRuntime.TurnExecutor.direct())) {
