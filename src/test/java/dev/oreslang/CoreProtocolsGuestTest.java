@@ -2,10 +2,14 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.types.TypeChecker;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -17,7 +21,14 @@ final class CoreProtocolsGuestTest {
 
     @Test
     void protocolSourceIsRegisteredAndTypechecked() throws Exception {
-        assertTrue(CoreLibrarySources.packagedCorePaths().contains("protocols.ores"));
+        assertTrue(CoreLibrarySources.packagedCorePaths().contains("protocols.atto"));
+        assertFalse(CoreLibrarySources.packagedCorePaths().contains("protocols.ores"));
+        assertEquals("protocols.atto",
+                CoreLibrarySources.oresCoreFileName("ores.core/protocols"));
+        assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/protocols"),
+                CoreLibrarySources.oresCoreUnitId("ores.core/protocols.atto"));
+        assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/protocols"),
+                CoreLibrarySources.oresCoreUnitId("ores.core/protocols.ores"));
         String source = CoreLibrarySources.oresCoreSource("ores.core/protocols");
         assertTrue(source.contains("define pub trait Read<E>"));
         assertTrue(source.contains("define pub trait Write<E>"));
@@ -74,6 +85,54 @@ final class CoreProtocolsGuestTest {
         }
         assertFalse(source.contains("fnc read_blocking("));
         assertFalse(source.contains("fnc write_blocking("));
+    }
+
+    @Test
+    void canonicalAttoFixturesActuallyExecuteTraitMethods() throws Exception {
+        for (String fixture : new String[]{
+                "eq-positive.atto", "ord-inherited-positive.atto"}) {
+            Path source = Path.of("tests", "fixtures", "core-protocols-v1", fixture);
+            assertTrue(Files.isRegularFile(source), "missing real .atto fixture " + fixture);
+            // Admission alone does not prove trait method dispatch.
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+            var result = LinkedProgramRunner.runWithExitStatus(
+                    source, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(42, result.exitStatus(),
+                    "the real linked Atto guest must execute Eq/Ord methods: " + fixture);
+        }
+    }
+
+    @Test
+    void canonicalAttoNegativeFixturesRejectInvalidConformance() {
+        for (String fixture : new String[]{
+                "eq-missing-negative.atto", "eq-wrong-signature-negative.atto",
+                "eq-private-method-negative.atto", "ord-inherited-missing-negative.atto"}) {
+            Path source = Path.of("tests", "fixtures", "core-protocols-v1", fixture);
+            assertTrue(Files.isRegularFile(source), "missing negative .atto fixture " + fixture);
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+        }
+    }
+
+    @Test
+    void guestCannotForgeCompilerOwnedAutoTraitsOrSupervisorProtocols() {
+        for (String name : new String[]{
+                "Sendable", "Shareable", "Copy", "Drop",
+                "Receives", "Supervisor", "ActorLifecycle"}) {
+            for (String kind : new String[]{"trait", "interface"}) {
+                String source = "define pub " + kind + " " + name
+                        + " as fnc grant() => bool; end";
+                IllegalArgumentException denied = assertThrows(
+                        IllegalArgumentException.class, () -> Parser.parse(source),
+                        "unsafe user declaration " + kind + " " + name);
+                assertTrue(denied.getMessage().contains("compiler/runtime-owned"),
+                        denied.getMessage());
+            }
+        }
+        // User classes are not automatic safety proofs; conventional names
+        // remain legal as ordinary value types.
+        assertDoesNotThrow(() -> Parser.parse("define class Sendable as end"));
     }
 
     @Test
