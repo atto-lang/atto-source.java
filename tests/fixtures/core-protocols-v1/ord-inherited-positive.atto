@@ -1,0 +1,13 @@
+import trait Ord from "ores.core/protocols";
+
+define pub class Counter implements Ord<int> as
+  pub val int value;
+  pub constructor(int initial) { self.value = initial; }
+  pub equals(int other): bool { return self.value == other; }
+  pub compare(int other): int { return self.value - other; }
+end
+
+pub fnc main(): int {
+  val Counter counter = new Counter(42);
+  return counter.equals(42) ? counter.compare(41) + 41 : 7;
+}
