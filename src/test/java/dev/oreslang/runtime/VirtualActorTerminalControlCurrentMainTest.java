@@ -414,6 +414,38 @@ final class VirtualActorTerminalControlCurrentMainTest {
     }
 
     @Test
+    void failedPhysicalExitCannotDispatchControlOrReleaseQuarantinedIdentity()
+            throws Exception {
+        try (ExecutorService control = Executors.newSingleThreadExecutor();
+             ActorRuntime runtime = runtimeWithControl(control)) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            AtomicInteger deliveries = new AtomicInteger();
+            group.installVirtualActorTerminalHandler(notice -> {
+                deliveries.incrementAndGet();
+                return CompletableFuture.completedFuture(null);
+            });
+            var worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    factory -> (message, context) -> { });
+            worker.getReady().get(5, TimeUnit.SECONDS);
+            group.reserveVirtualActorGeneration(ID, 1L);
+            group.bindVirtualActorIdentity(worker, ID, 1L);
+            runtime.setActorExitHook(domain -> {
+                throw new IllegalStateException("exit cleanup failed");
+            });
+            worker.stop();
+            assertThrows(ExecutionException.class,
+                    () -> worker.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, deliveries.get(),
+                    "failed physical cleanup cannot forge a terminal receipt");
+            assertThrows(IllegalStateException.class,
+                    () -> group.reserveNextVirtualActorGeneration(ID),
+                    "unclean actor remains quarantined despite group deregistration");
+            group.close();
+        }
+    }
+
+    @Test
     void installingTerminalHandlerTwiceIsRejected() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
