@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -58,6 +59,18 @@ final class CrossFileActorReceiverBindingTest {
         assertEquals("b", bindings.get(slot("do_y")).nominalBinding().method().receiverName());
         assertEquals(Ast.Visibility.PRIVATE,
                 bindings.get(slot("do_y")).nominalBinding().method().visibility());
+        // Do not silently rewrite one call spelling into the other at parse
+        // time: both must survive until typed receiver-call lowering.
+        var body = bindings.get(slot("do_y")).nominalBinding().method().body();
+        assertEquals(3, body.size());
+        var bare = assertInstanceOf(Ast.CallExpr.class,
+                assertInstanceOf(Ast.ExprStmt.class, body.get(0)).expression());
+        assertEquals(new Ast.NameExpr("do_x"), bare.callee());
+        var dotted = assertInstanceOf(Ast.CallExpr.class,
+                assertInstanceOf(Ast.ExprStmt.class, body.get(1)).expression());
+        var member = assertInstanceOf(Ast.MemberExpr.class, dotted.callee());
+        assertEquals(new Ast.NameExpr("b"), member.receiver());
+        assertEquals("do_x", member.member());
         assertThrows(UnsupportedOperationException.class, bindings::clear);
     }
 
