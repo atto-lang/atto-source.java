@@ -21,30 +21,11 @@ mkdir -p "$output"
 rm -f -- "$output/guest.stdout.jsonl" "$output/guest.stderr.txt" \
   "$output/receipt.txt" "$output/build-info.json"
 
-# The smoke is deliberately tiny; never allow an unexpectedly chatty or stuck
-# guest to fill the runner disk or keep CI waiting indefinitely.
-run_bounded_guest() {
-  (
-    ulimit -f 1024  # 1 MiB (1024 KiB blocks on the Linux runner)
-    timeout --signal=TERM --kill-after=5s 30s "$@"
-  ) > "$output/guest.stdout.jsonl" 2> "$output/guest.stderr.txt"
-  test -f "$output/guest.stdout.jsonl"
-  test "$(wc -c < "$output/guest.stdout.jsonl")" -le 1048576
-  test "$(wc -c < "$output/guest.stderr.txt")" -le 1048576
-}
-
-# Hash every actual JVM bytecode class that the launcher loads rather than
-# treating a Maven JAR hash as proof of the unpackaged classpath contents.
-class_tree_digest() {
-  test -f target/classes/dev/oreslang/launcher/OresMain.class
-  test ! -L target/classes
-  test -z "$(find target/classes -type l -print -quit)"
-  find target/classes -type f -print0 |
-    LC_ALL=C sort -z |
-    xargs -0 sha256sum |
-    sha256sum | cut -d' ' -f1
-}
-
+# Keep bounded output and class-bytecode measurement under a separately
+# testable source-only helper; the caller remains responsible for real guest
+# execution provenance.
+# shellcheck source=verification/otel/guardrails.sh
+source verification/otel/guardrails.sh
 
 # Exact raw blob comparisons against the original OTel repository; the
 # canonical .ores fixture resolves ../src/otel relative to the snapshot.
@@ -84,9 +65,9 @@ case "$mode" in
     # hashing the JDK's java launcher does not identify the Oreslang compiler.
     compiler_jar_before="$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)"
     classpath_before="$(sha256sum target/classpath.txt | cut -d' ' -f1)"
-    classes_before="$(class_tree_digest)"
+    classes_before="$(otel_guardrails_class_digest target/classes)"
     # Actual modular compiler launcher with linked .ores imports.
-    run_bounded_guest "$java_bin" --enable-native-access=ALL-UNNAMED \
+    otel_guardrails_run_guest "$output" "$java_bin" --enable-native-access=ALL-UNNAMED \
       -Dpolyglot.engine.WarnInterpreterOnly=false \
       -cp "target/classes:$(cat target/classpath.txt)" \
       dev.oreslang.launcher.OresMain --mode=jit --platform=linux "$guest"
@@ -102,7 +83,7 @@ case "$mode" in
     # An ELF no-fallback native binary, never a Java-managed fallback.
     test "$(head -c 4 "$executable" | od -An -tx1 | tr -d ' \n')" = 7f454c46
     aot_binary_before="$(sha256sum "$executable" | cut -d' ' -f1)"
-    run_bounded_guest "$executable" --mode=aot --platform=linux "$guest"
+    otel_guardrails_run_guest "$output" "$executable" --mode=aot --platform=linux "$guest"
     ;;
 esac
 
@@ -110,7 +91,7 @@ esac
 if [[ "$mode" == jvm ]]; then
   test "$(sha256sum target/oreslang-source-0.1.0-SNAPSHOT.jar | cut -d' ' -f1)" = "$compiler_jar_before"
   test "$(sha256sum target/classpath.txt | cut -d' ' -f1)" = "$classpath_before"
-  test "$(class_tree_digest)" = "$classes_before"
+  test "$(otel_guardrails_class_digest target/classes)" = "$classes_before"
 else
   test "$(sha256sum "$executable" | cut -d' ' -f1)" = "$aot_binary_before"
 fi
