@@ -1,0 +1,7 @@
+// A supervisor never inherits direct public access to actor state.
+define actor Counter as
+  state {
+    pub let int count;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
