@@ -1,7 +1,6 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
-import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
@@ -12,10 +11,20 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class MaybeAdmissionFenceTest {
+    @Test
+    void checkedGuestFixtureIsRealAttoSourceAndPreservesFunctionReturnAndDefer() throws Exception {
+        String source = Files.readString(Path.of("tests/fixtures/maybe-result-defer-v1/return-diverges.atto"));
+        var typed = TypeChecker.check(Parser.parse(source));
+        OwnershipChecker.check(typed);
+        assertEquals("D8", run(source));
+    }
+
     @Test
     void questionEqualHasOneTokenAndDoesNotStealTernary() {
         var tokens = new Lexer("Ok(value) ?= get(); true ? 1 : 0;").scan();
