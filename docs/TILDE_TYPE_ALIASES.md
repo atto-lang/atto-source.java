@@ -105,7 +105,7 @@ pub fnc labels(): Tuple[string, string] {
 
 Return checking uses the existing fixed positional tuple kind: each slot's type
 and arity must match; a non-void function must return on every path. Explicit
-`~array(v1, v2)` remains an array value even in a tuple-expected return
+`~array(v1, v2)` and legacy `arr[v1, v2]` remain array values even in a tuple-expected return
 context, and must not be implicitly converted. The older ambiguous `[...]`
 literal retains its existing contextual tuple compatibility until a separate
 migration contract is approved. A user-declared `Tuple` class or alias cannot
