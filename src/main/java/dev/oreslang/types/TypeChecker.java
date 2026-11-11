@@ -115,6 +115,13 @@ public final class TypeChecker {
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
     private int loopDepth;
+    /**
+     * Only immediate arms of a ConditionalExpr may use BlockValueExpr. Track
+     * exact AST identity, not nesting depth, so synthesized or imported ASTs
+     * cannot inject a standalone value block through a nested initializer.
+     */
+    private final Set<Ast.BlockValueExpr> admittedTernaryArms =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
 
@@ -2497,6 +2504,10 @@ public final class TypeChecker {
             return new Named("Iterator", List.of(Primitive.INT));
         }
         if (expr instanceof Ast.BlockValueExpr block) {
+            if (!admittedTernaryArms.contains(block)) {
+                throw new IllegalArgumentException(
+                        "value blocks are valid only as immediate ternary arms");
+            }
             Env local = new Env(env);
             Env previousTypeScope = currentTypeScope;
             int previousLoopDepth = loopDepth;
@@ -2510,9 +2521,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "value block requires a statically known non-void result");
                 }
-                if (result instanceof Borrow) {
+                if (containsChannelBorrow(result, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            "borrowed values cannot escape a value block without proven loan lifetime");
+                            "borrowed values, including nested borrows, cannot escape "
+                                    + "a ternary value block without proven loan lifetimes");
                 }
                 return result;
             } finally {
@@ -2785,11 +2797,11 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> afterCondition = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
-            Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            Type left = typeOfTernaryArm(conditional.whenTrue(), env, generics, self);
             Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
-            Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            Type right = typeOfTernaryArm(conditional.whenFalse(), env, generics, self);
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
@@ -8200,6 +8212,22 @@ public final class TypeChecker {
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Types.unionOf(a, b);
+    }
+
+    private Type typeOfTernaryArm(
+            Ast.Expr arm, Env env, Set<String> generics, Type self) {
+        if (!(arm instanceof Ast.BlockValueExpr block)) {
+            return typeOf(arm, env, generics, self);
+        }
+        if (!admittedTernaryArms.add(block)) {
+            throw new IllegalArgumentException(
+                    "ternary block AST must not be recursively reused");
+        }
+        try {
+            return typeOf(block, env, generics, self);
+        } finally {
+            admittedTernaryArms.remove(block);
+        }
     }
 
     private static boolean isEmptyListValue(Ast.Expr expression) {
