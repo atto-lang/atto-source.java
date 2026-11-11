@@ -146,6 +146,29 @@ final class VirtualActorGuestInvocationMirV1Test {
     }
 
     @Test
+    void canonicalStandaloneNegativeAttoFilesRejectInBothMirAndProduction()
+            throws Exception {
+        for (String fixture : List.of(
+                "unawaited_cart.atto",
+                "wrong_nominal_cart.atto",
+                "unknown_method_cart.atto")) {
+            Path path = Path.of("contracts", "virtual-actor-guest-invoke-v1",
+                    "negative", fixture).toAbsolutePath().normalize();
+            assertFalse(Files.isSymbolicLink(path));
+            assertTrue(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS));
+            String source = Files.readString(path, StandardCharsets.UTF_8);
+            rejected(source);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains(
+                    "VIRTUAL_ACTOR_MIR_UNSUPPORTED"), failure::getMessage);
+            assertTrue(failure.getMessage().contains(
+                    "VIRTUAL_ACTOR_GUEST_INVOKE_MIR_UNSUPPORTED"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void productionTypeCheckerStillRejectsExecutableGuestVirtualActor()
             throws Exception {
         assertNotNull(lower(cart()));
