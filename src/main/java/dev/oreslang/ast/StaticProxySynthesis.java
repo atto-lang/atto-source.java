@@ -28,8 +28,16 @@ public final class StaticProxySynthesis {
         if (requestedNames.isEmpty()) return program;
         Set<String> requested = Set.copyOf(requestedNames);
         Map<String, Target> found = new LinkedHashMap<>();
+        // Resolution of generated nominal types is not yet namespace-qualified.
+        // A declaration in another module must not capture a synthetic name.
+        Set<String> occupiedNames = new HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) occupiedNames.add(klass.name());
+                if (declaration instanceof Ast.FunctionDecl fn) occupiedNames.add(fn.name());
+                if (declaration instanceof Ast.FieldDecl field) occupiedNames.add(field.name());
+                if (declaration instanceof Ast.InterfaceDecl iface) occupiedNames.add(iface.name());
+                if (declaration instanceof Ast.TypeAliasDecl alias) occupiedNames.add(alias.name());
                 if (declaration instanceof Ast.ClassDecl klass && requested.contains(klass.name())) {
                     if (found.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
                         throw fail("class '" + klass.name()
@@ -50,22 +58,14 @@ public final class StaticProxySynthesis {
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
         for (Ast.ModuleDecl module : program.modules()) {
             List<Ast.Decl> output = new ArrayList<>(module.declarations());
-            Set<String> occupied = new HashSet<>();
-            for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.ClassDecl klass) occupied.add(klass.name());
-                if (declaration instanceof Ast.FunctionDecl fn) occupied.add(fn.name());
-                if (declaration instanceof Ast.FieldDecl field) occupied.add(field.name());
-                if (declaration instanceof Ast.InterfaceDecl iface) occupied.add(iface.name());
-                if (declaration instanceof Ast.TypeAliasDecl alias) occupied.add(alias.name());
-            }
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.ClassDecl klass)
                         || !requested.contains(klass.name())) continue;
                 String generatedName = klass.name() + "Proxy";
-                if (occupied.contains(generatedName)) {
-                    throw fail("generated class '" + generatedName + "' collides with an existing declaration");
+                if (!occupiedNames.add(generatedName)) {
+                    throw fail("generated class '" + generatedName
+                            + "' collides with an existing or generated declaration");
                 }
-                occupied.add(generatedName);
                 output.add(proxyClass(klass, generatedName));
             }
             modules.add(new Ast.ModuleDecl(
@@ -98,6 +98,7 @@ public final class StaticProxySynthesis {
                         new Ast.NameExpr("target")))));
 
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        Set<Ast.MethodArity> emittedSlots = new HashSet<>();
         for (Ast.MethodDecl method : target.methods()) {
             // Class functions are not instance members. A later, explicit
             // class-facade feature may mirror static functions separately.
@@ -108,11 +109,26 @@ public final class StaticProxySynthesis {
                 throw fail("method '" + target.name() + "." + method.name() + "/"
                         + method.arity() + "' requires unsupported proxy effects/receiver/generics");
             }
+            if (!method.annotations().isEmpty()) {
+                // A typed annotation may change callable policy, argument defaults,
+                // return handling or codegen. Dropping it is not a safe delegation.
+                throw fail("annotated method requires checked proxy metadata: "
+                        + target.name() + "." + method.name());
+            }
+            if (!emittedSlots.add(method.overloadIdentity())) {
+                throw fail("ambiguous proxy method slot: " + target.name() + "."
+                        + method.name() + "/" + method.arity());
+            }
+            if (unsafeSignatureType(method.returnType())) {
+                throw fail("proxy return type needs ownership/borrow lowering: "
+                        + target.name() + "." + method.name());
+            }
             if (method.name().equals(TARGET_FIELD))
                 throw fail("proxy storage name collides with callable " + target.name() + "." + TARGET_FIELD);
             List<Ast.Expr> arguments = new ArrayList<>();
             for (Ast.Param parameter : method.parameters()) {
-                if (parameter.structural() || parameter.mutable())
+                if (parameter.structural() || parameter.mutable()
+                        || unsafeSignatureType(parameter.type()))
                     throw fail("proxy parameter borrows/structural contracts need proven reborrowing: "
                             + target.name() + "." + method.name());
                 arguments.add(new Ast.NameExpr(parameter.name()));
@@ -131,6 +147,21 @@ public final class StaticProxySynthesis {
         return new Ast.ClassDecl(generatedName, target.visibility(), false,
                 Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
                 List.of(delegate), constructor, methods);
+    }
+
+    /**
+     * Avoid forwarding borrowed/callable/inferred values until the compiler
+     * proves the target lifetime, alias rights and closure transport. Recurse
+     * through nested generic arguments (e.g. Option<borrow Foo>) as well.
+     */
+    private static boolean unsafeSignatureType(Ast.TypeRef type) {
+        if (type.isBorrow() || type.inferArguments()
+                || type.name().equals("Fnc") || type.name().equals("Routine")
+                || type.name().equals("$infer$")) return true;
+        for (Ast.TypeRef arg : type.arguments()) {
+            if (unsafeSignatureType(arg)) return true;
+        }
+        return false;
     }
 
     private static IllegalArgumentException fail(String message) {
