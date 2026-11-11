@@ -141,6 +141,15 @@ final class NamespaceActorStateAdmissionTest {
     }
 
     @Test
+    void inlineActorCannotAcquireOutOfLineStateSchema() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateBinder.bindSourceSet("demo@1.0.0",
+                        units("pub define actor Foo as end", state())));
+        assertTrue(error.getMessage().contains("requires a 'declare actor' header"),
+                error.getMessage());
+    }
+
+    @Test
     void ordinaryClassCannotAcquireActorState() {
         var error = assertThrows(IllegalArgumentException.class,
                 () -> ActorStateBinder.bindSourceSet("demo@1.0.0",
