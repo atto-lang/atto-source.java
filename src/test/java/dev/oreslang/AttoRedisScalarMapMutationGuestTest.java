@@ -71,7 +71,7 @@ final class AttoRedisScalarMapMutationGuestTest {
                 .allowAllAccess(false).out(stdout).build()) {
             assertDoesNotThrow(() -> context.eval(artifact));
         }
-        assertEquals("set|get|delete", stdout.toString(StandardCharsets.UTF_8));
+        assertEquals("nil|set|get|delete|nil", stdout.toString(StandardCharsets.UTF_8));
     }
 
 

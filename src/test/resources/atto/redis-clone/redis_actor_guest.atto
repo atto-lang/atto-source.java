@@ -16,11 +16,16 @@ define actor KvShardSmoke as
       return;
     fi
     if mail.value == "get"; do
-      val int value = self.values["answer"];
-      if value == 41; do
-        self.send("get");
+      // Absent GET must never throw or resurrect a deleted key.
+      val found = self.values.get_optional("answer");
+      if found.is_none(); do
+        self.send("nil");
       else
-        self.send("bad");
+        if found.unwrap() == 41; do
+          self.send("get");
+        else
+          self.send("bad");
+        fi
       fi
       return;
     fi
@@ -31,6 +36,9 @@ define actor KvShardSmoke as
       else
         self.send("bad");
       fi
+      return;
+    fi
+    if mail.value == "stop"; do
       self.end();
       return;
     fi
@@ -43,20 +51,31 @@ pub async routine main(): void {
   val worker = spawn KvShardSmoke();
   await worker.get_ready();
 
+  worker.send("get");
+  val missing_before = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(missing_before.value);
+  stdio.stdout.write("|");
+
   worker.send("set");
-  val first = (await worker.outputs.next()).value.unwrap();
-  stdio.stdout.write(first.value);
+  val inserted = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(inserted.value);
   stdio.stdout.write("|");
 
   worker.send("get");
-  val second = (await worker.outputs.next()).value.unwrap();
-  stdio.stdout.write(second.value);
+  val found = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(found.value);
   stdio.stdout.write("|");
 
   worker.send("delete");
-  val third = (await worker.outputs.next()).value.unwrap();
-  stdio.stdout.write(third.value);
+  val deleted = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(deleted.value);
+  stdio.stdout.write("|");
 
+  worker.send("get");
+  val missing_after = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(missing_after.value);
+
+  worker.send("stop");
   await worker.get_done();
   return;
 }
