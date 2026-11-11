@@ -9015,8 +9015,16 @@ public final class ActorRuntime implements AutoCloseable {
                         && codeActorState != null && !sourceReceiveSuspended) {
                     gracefulTeardownPending = true;
                 }
-                // STOP is single-shot. Reentrant supervisor/host requests must
-                // not re-close a channel or reset the cleanup admission fence.
+                // STOP is single-shot. Seal owner state/CONTROL grants
+                // *before* stopped=true is observable. The seal takes only
+                // each region monitor (no host Future callbacks), so a
+                // protected scalar write cannot linearize after STOP begins.
+                // createCurrentActorStateLoans uses this lifecycle monitor
+                // and cannot publish a new region during the seal.
+                if (stopped.get()) return;
+                for (ActorStateSupervisorLoans region : supervisorStateRegions) {
+                    region.sealFromRuntimeStop();
+                }
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
                 cleanupScheduler = sourceScheduler;
