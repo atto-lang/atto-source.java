@@ -60,6 +60,8 @@ jobs:
           for failure in ("failures", "errors", "skipped"):
               assert int(root.attrib.get(failure, "0")) == 0, f"nonzero {failure}"
           assert len(root.findall("testcase")) >= 16, "missing testcase evidence"
+          for element in ("failure", "error", "skipped"):
+              assert not root.findall(".//" + element), f"unexpected {element} node"
           print(f"ATTO_PROXY_TEST_COUNT={count}")
           print("ATTO_PROXY_GUEST_RECEIPT=present")
           PY
