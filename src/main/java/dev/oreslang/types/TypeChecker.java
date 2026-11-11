@@ -3109,7 +3109,8 @@ public final class TypeChecker {
                     // This target is a checked local function declaration in the
                     // immutable, macro-expanded program. A runtime lexical value
                     // still wins if the identifier is shadowed.
-                    if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                    if (target.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
                         recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
                                 target.name(), arity, target, null, null);
                     }
@@ -3874,7 +3875,8 @@ public final class TypeChecker {
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
                     // Only the exact class identity can consume this direct
                     // target: a new code generation has different AST owners.
-                    if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                    if (klass.genericParameters().isEmpty() && fn.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
                         recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.STATIC_METHOD,
                                 fn.name(), staticArity, null, klass, fn);
                     }
@@ -3994,7 +3996,8 @@ public final class TypeChecker {
                         // method slot, not a direct-call assertion. Runtime may
                         // skip the slot lookup only if the receiver's *actual*
                         // class identity equals the checked class identity.
-                        if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        if (klass.genericParameters().isEmpty() && method.genericParameters().isEmpty()
+                                && CheckedDispatchPlansV1.fixedSourceArity(call)) {
                             recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
                                     method.name(), methodArity, null, klass, method);
                         }
