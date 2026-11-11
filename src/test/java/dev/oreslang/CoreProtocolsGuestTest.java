@@ -170,6 +170,67 @@ final class CoreProtocolsGuestTest {
         assertDoesNotThrow(() -> Parser.parse("define class Sendable as end"));
     }
 
+
+    @Test
+    void allCanonicalProtocolImportSpellingsResolveToOneCompilerOwnedSource() throws Exception {
+        String source = CoreLibrarySources.oresCoreSource("ores.core/protocols");
+        String unit = CoreLibrarySources.oresCoreUnitId("ores.core/protocols");
+        for (String alias : new String[] {
+                "ores.core/protocols", "ores.core/protocols.atto",
+                "ores.core/protocols.ores"
+        }) {
+            assertEquals(source, CoreLibrarySources.oresCoreSource(alias), alias);
+            assertEquals(unit, CoreLibrarySources.oresCoreUnitId(alias), alias);
+        }
+        for (String invalid : new String[] {
+                "ores.core/../protocols", "ores.core/./protocols",
+                "ores.core/protocols/../numeric", "ores.core/protocols//child",
+                "ores.core/protocols.atto/child", "ores.core/%2e%2e/protocols",
+                "ores.core\\protocols", "ores.core/protocols\u0000",
+                "ores.std/protocols", "ores.core/"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> CoreLibrarySources.oresCoreSource(invalid), invalid);
+        }
+    }
+
+    @Test
+    void safetyAuthorityNamesRejectBeforeParsingAnyInvalidMembers() {
+        // The authority check must be at the shared declaration-name ingress.
+        // Otherwise an alternate trait/interface/contract path could reach
+        // ordinary nominal conformance before the reservation is checked.
+        for (String name : new String[] {
+                "Sendable", "Shareable", "Copy", "Drop", "Receives",
+                "Supervisor", "ActorLifecycle"
+        }) {
+            for (String kind : new String[] {"trait", "interface", "contract"}) {
+                String source = "define pub " + kind + " " + name
+                        + " as this_is_not_an_interface_member; end";
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class, () -> Parser.parse(source),
+                        kind + " " + name);
+                assertTrue(failure.getMessage().contains("compiler/runtime-owned"),
+                        kind + " " + name + ": " + failure.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void inheritedGenericRequirementCannotBeSatisfiedByWrongParameterType() throws Exception {
+        Path wrong = temp.resolve("wrong-inherited-generic.atto");
+        Files.writeString(wrong, """
+                import trait Ord from "ores.core/protocols";
+                define pub class Counter implements Ord<int> as
+                  pub equals(String other): bool { return true; }
+                  pub compare(int other): int { return 0; }
+                end
+                pub fnc main(): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(wrong, Map.of()),
+                "Ord<int> must inherit Eq<int>, not accept Eq<String>");
+    }
+
     @Test
     void unknownCoreModulesFailClosed() {
         assertThrows(IllegalArgumentException.class,
