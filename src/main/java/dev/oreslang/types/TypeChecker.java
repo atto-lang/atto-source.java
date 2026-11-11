@@ -4,6 +4,8 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.ast.CheckedDispatchPlansV1;
+import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -3080,6 +3082,15 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    // This target is a checked local function declaration in the
+                    // immutable, macro-expanded program. A runtime lexical value
+                    // still wins if the identifier is shadowed.
+                    if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        CheckedDispatchPlansV1.record(call, new CheckedDispatchPlansV1.Plan(
+                                AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                                AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL,
+                                target.name(), arity, target, null, null));
+                    }
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -3839,6 +3850,14 @@ public final class TypeChecker {
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    // Only the exact class identity can consume this direct
+                    // target: a new code generation has different AST owners.
+                    if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        CheckedDispatchPlansV1.record(call, new CheckedDispatchPlansV1.Plan(
+                                AotDispatchPlannerV1.CallKind.STATIC_METHOD,
+                                AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL,
+                                fn.name(), staticArity, null, klass, fn));
+                    }
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -3942,7 +3961,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -3951,6 +3970,17 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        // No sealed/final proof exists here. Record an open
+                        // method slot, not a direct-call assertion. Runtime may
+                        // skip the slot lookup only if the receiver's *actual*
+                        // class identity equals the checked class identity.
+                        if (CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                            CheckedDispatchPlansV1.record(call, new CheckedDispatchPlansV1.Plan(
+                                    AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
+                                    AotDispatchPlannerV1.Strategy.METHOD_SLOT,
+                                    method.name(), methodArity, null, klass, method));
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
