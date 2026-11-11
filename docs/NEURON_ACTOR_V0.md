@@ -155,11 +155,15 @@ state during its authenticated activation; the runtime rejects duplicate
 bindings, a mismatched `ActorRef`, or late attachment from a message turn.
 `ActorCell.finalizeStopLocked` closes and zeroizes that host state only after
 its existing physical turn/source-task/native-I/O quiescence gates, and only
-when every neuron scalar loan has been physically released. An unreleased
-loan **quarantines** the actor rather than allowing state reclamation or
-pretending successful termination. The real-runtime tests now assert that
-successful STOP automatically clears the state without a host/manual
-close call.
+when every neuron scalar loan has been physically released. An outstanding
+loan **delays finalization** rather than allowing premature reclamation.
+The last physical scope close notifies `ActorCell` outside the scalar monitor,
+which rechecks the normal STOP/source-task/native-I/O quiescence gates and
+zeroizes state only after all loans have drained. If a loan never closes,
+the actor remains stopped but not finalized; the supervisor must eventually
+quarantine/reap it under an explicit liveness policy, rather than silently
+freeing the memory. The real-runtime tests assert automatic successful STOP
+cleanup and late-loan-release finalization without a host/manual state close.
 
 **Still blocking guest enablement:** the compiler does not emit this bridge;
 the host lifecycle registration is not yet a general source actor ownership
@@ -170,8 +174,8 @@ These missing boundaries remain blocked by
 `NEURON_STATE_MIR_UNSUPPORTED`. Host-only tests do not certify
 source-compiled inference, native AOT, or arbitrary FFI memory reclamation.
 
-The targeted suite now has **55 committed JUnit methods** across seven test
-classes, including four real-runtime host tests and four typed-MIR descriptor
+The targeted suite now has **56 committed JUnit methods** across seven test
+classes, including five real-runtime host tests and four typed-MIR descriptor
 tests. At the time of this
 edit the exact-head GitHub-hosted test admission remains at
 `steps=null`; source tests are not executed receipts.
