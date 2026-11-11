@@ -150,15 +150,25 @@ denial, stable actor-derived generation, read/write initialization and the
 expected host scalar arithmetic result `2 * 3 + 1 = 7`. This result is
 **HOST-ONLY**, not compiled `.atto` inference and not an AOT receipt.
 
-**Critical missing integration:** the compiler does not yet emit this bridge,
-and the actor lifecycle does not yet automatically retire its
-`NeuronActorScalarTurnStateV0` when STOP, restart or force cancellation wins.
-A host must currently call `close()` and wait for all physical loans to
-drain before zeroization. A physical STOP racing an individual scalar
-read/write also needs a unified lifecycle/state-operation linearization
-proof before guest execution is permitted. These boundaries remain blocked
-by `NEURON_STATE_MIR_UNSUPPORTED`. Do not treat turn-proof tests as a
-guest compiler or deterministic memory-reclamation result.
+**New lifecycle integration:** an actor can bind exactly one host scalar
+state during its authenticated activation; the runtime rejects duplicate
+bindings, a mismatched `ActorRef`, or late attachment from a message turn.
+`ActorCell.finalizeStopLocked` closes and zeroizes that host state only after
+its existing physical turn/source-task/native-I/O quiescence gates, and only
+when every neuron scalar loan has been physically released. An unreleased
+loan **quarantines** the actor rather than allowing state reclamation or
+pretending successful termination. The real-runtime tests now assert that
+successful STOP automatically clears the state without a host/manual
+close call.
+
+**Still blocking guest enablement:** the compiler does not emit this bridge;
+the host lifecycle registration is not yet a general source actor ownership
+proof across backends; and an external STOP racing a single scalar write
+requires a unified lifecycle/state-operation linearization proof.
+Quarantined leaked-loan recovery needs an explicit supervisor policy.
+These missing boundaries remain blocked by
+`NEURON_STATE_MIR_UNSUPPORTED`. Host-only tests do not certify
+source-compiled inference, native AOT, or arbitrary FFI memory reclamation.
 
 The targeted suite now has **55 committed JUnit methods** across seven test
 classes, including four real-runtime host tests and four typed-MIR descriptor
