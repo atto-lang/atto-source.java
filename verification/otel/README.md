@@ -110,3 +110,59 @@ because the source org has exhausted Actions budget.
    **not** OTLP.
 5. Actual standalone compiled Oreslang guest AOT if required beyond the
    interpreter-only native host verified by this workflow.
+
+
+## 2026-11-11 execution harness hardening
+
+The workflow now has a third, **source-only** prerequisite job
+`otel-source-only-guardrails`. It checks pristine exact PR HEAD and runs
+`bash -n` plus `verification/otel/test-guardrails.sh`. Neither this job
+nor the source-only test script ever invokes the Oreslang compiler or claims
+to certify guest execution. The Java JVM and Native Image jobs depend on
+its actual successful execution.
+
+The testable `verification/otel/guardrails.sh` has two responsibilities:
+a bounded real subprocess launcher (`timeout` 30 seconds and 1 MiB
+per redirected stdout/stderr file on Ubuntu) and immutable JVM build-input
+measurement. For Java, candidate receipts now include all of:
+the Java launcher SHA256, Maven compiler JAR SHA256, sorted unpackaged
+`target/classes` source class-tree digest, classpath manifest SHA256,
+**every runtime dependency JAR's SHA256 in classpath order**, and raw
+guest stdout SHA256. If the loaded class/JAR bytes change during the
+run, the candidate is denied. The AOT executable is ELF-checked and
+rehashed before and after guest execution. All candidates remain
+`independently_certified=false`.
+
+The real guest launcher also rejects output symlinks, stale output,
+a changed source SHA, modified canonical OTel source blobs, missing runtime
+artifacts and process timeouts/nonzero exit status. It hashes captured
+stdout before and after the source-owned Rust semantic checker runs, so
+a file modified after semantic admission cannot receive a matching
+receipt.
+
+### Source-only local tests actually executed
+
+The two Bash guardrail/test file blobs were tested **byte-for-byte**
+against their checked-in GitHub versions on a Linux shell:
+
+```bash
+bash -n verification/otel/guardrails.sh
+bash -n verification/otel/test-guardrails.sh
+bash verification/otel/test-guardrails.sh
+```
+
+The local tests passed these safety controls using **dummy class/JAR
+data and harmless shell subprocesses only**: changed `.class` bytes,
+changed JAR contents without classpath text changes, class/JAR/output
+symlinks, relative dependency path rejection, stdout/stderr capture,
+nonzero exit status, stale-output clearing, and overflow of each 1 MiB
+output budget. These do not test or mock successful telemetry records;
+they explicitly output `NO_COMPILER_GUEST_EXECUTED_OR_CERTIFIED`.
+
+**Boundaries:** This does not hash/attest the Maven build toolchain
+itself, and a static hash of classes or JARs is not proof that code
+was actually compiled from the declared source. Native Image is a
+compiled host, not compiled standalone guest source. A signed or
+independently corroborated GitHub CI job and artifact chain is still
+required for parity promotion. The original OTel JSONL format is still
+not OpenTelemetry's OTLP wire format.
