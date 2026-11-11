@@ -1,6 +1,6 @@
 define enum Light as
   Red
-  Green(int)
+  Green: int
 end
 
 define actor LightEcho as
