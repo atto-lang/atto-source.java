@@ -67,7 +67,8 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     public ActorStateReadWriteLoans(long generation, int maxPending,
                                     int maxActiveReaders, List<String> scalarFieldNames) {
         if (generation < 1) throw new IllegalArgumentException("generation must be positive");
-        if (maxPending < 0) throw new IllegalArgumentException("negative pending capacity");
+        if (maxPending < 0 || maxPending > 65_536)
+            throw new IllegalArgumentException("pending capacity outside 0..65536");
         if (maxActiveReaders < 1 || maxActiveReaders > 65_536)
             throw new IllegalArgumentException("active reader capacity outside 1..65536");
         Objects.requireNonNull(scalarFieldNames, "scalarFieldNames");
