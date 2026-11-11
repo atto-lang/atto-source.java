@@ -7245,6 +7245,8 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private enum WebSocketNamespace { INSTANCE }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
@@ -7274,6 +7276,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
+                if (name.name().equals("websocket")) return WebSocketNamespace.INSTANCE;
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
@@ -7992,7 +7995,28 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
                 };
             }
+            if (receiver == WebSocketNamespace.INSTANCE) {
+                if (!name.equals("listen")) throw new IllegalArgumentException("unknown websocket member " + name);
+                return (Invokable) args -> {
+                    if (args.size() != 3) throw new IllegalArgumentException("websocket.listen(actor_type, port, origin)");
+                    String type = requireString(args.get(0), "actor type");
+                    Ast.ClassDecl declaration = requireLocalActorClass(type);
+                    if (declaration.actorKind() != Ast.ActorKind.SHARED)
+                        throw new IllegalArgumentException("experimental WebSocket adapter requires a shared source actor");
+                    return dev.oreslang.runtime.NativeWebSocket.listen(context, this, type,
+                            ((Number) args.get(1)).intValue(), requireString(args.get(2), "origin"));
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeWebSocket.Server server) {
+                return switch (name) {
+                    case "serve_one" -> (Invokable) args -> { requireZero(args, name); return server.serveOne(); };
+                    case "get_retired" -> (Invokable) args -> { requireZero(args, name); return server.retired(); };
+                    case "close" -> (Invokable) args -> { requireZero(args, name); server.close(); return null; };
+                    default -> throw new IllegalArgumentException("unknown WebSocket server member " + name);
+                };
+            }
             if (receiver instanceof HttpFacade http) {
+
                 return switch (name) {
                     case "handler" -> (Invokable) args -> {
                         String type = requireStringArg(args, "http.handler");

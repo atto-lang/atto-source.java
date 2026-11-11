@@ -107,6 +107,7 @@ public final class WebSocketHandshake {
     }
 
     private static boolean containsToken(String value, String required) {
+        boolean found = false;
         for (String raw : value.split(",", -1)) {
             String token = trimOptionalWhitespace(raw);
             if (token.isEmpty()) {
@@ -115,10 +116,10 @@ public final class WebSocketHandshake {
             }
             requireHttpToken(token);
             if (token.toLowerCase(Locale.ROOT).equals(required)) {
-                return true;
+                found = true;
             }
         }
-        return false;
+        return found;
     }
 
     private static String trimOptionalWhitespace(String value) {

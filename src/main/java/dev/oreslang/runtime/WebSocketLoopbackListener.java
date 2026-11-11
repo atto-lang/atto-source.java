@@ -279,7 +279,18 @@ final class WebSocketLoopbackListener implements AutoCloseable {
 
         private Connection(Socket socket) { this.socket = socket; }
 
+        /** Host supervisor only; never park an actor carrier during close flush. */
+        void awaitWriterIdle(int timeoutMillis) throws InterruptedException {
+            if (ActorRuntime.inActorExecution()) throw new SecurityException("host close flush only");
+            long end = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+            while (writerActive.get() || outbound.hasPending()) {
+                if (System.nanoTime() >= end) throw new IllegalStateException("WebSocket close flush deadline");
+                Thread.sleep(2);
+            }
+        }
+
         /** Host diagnostics; outstanding tickets are still actor lease owners. */
+
         int pendingActorTicketCount() {
             synchronized (lifecycleLock) { return pendingActorTickets; }
         }
@@ -573,11 +584,27 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (text.length() > maxFrameBytes) {
                 throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
             }
+            requireValidUnicodeScalars(text);
             return sendUser(WebSocketFrameCodec.OPCODE_TEXT,
                     text.getBytes(StandardCharsets.UTF_8));
         }
 
+        // Reconciled from #2360, also applied to the authenticated actor path.
+        private static void requireValidUnicodeScalars(String text) {
+            for (int i = 0; i < text.length(); i++) {
+                char value = text.charAt(i);
+                if (Character.isHighSurrogate(value)) {
+                    if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1)))
+                        throw new IllegalArgumentException("WebSocket text contains an unpaired UTF-16 surrogate");
+                    i++;
+                } else if (Character.isLowSurrogate(value)) {
+                    throw new IllegalArgumentException("WebSocket text contains an unpaired UTF-16 surrogate");
+                }
+            }
+        }
+
         OresFuture<Void> sendBinaryAsync(byte[] payload) {
+
             return sendUser(WebSocketFrameCodec.OPCODE_BINARY,
                     Objects.requireNonNull(payload, "payload"));
         }
@@ -618,6 +645,7 @@ final class WebSocketLoopbackListener implements AutoCloseable {
             if (text.length() > maxFrameBytes) {
                 throw new RejectedExecutionException("WebSocket outbound text exceeds frame limit");
             }
+            requireValidUnicodeScalars(text);
             return sendForActor(WebSocketFrameCodec.OPCODE_TEXT,
                     text.getBytes(StandardCharsets.UTF_8),
                     handle, tenant, authenticatedCaller);

@@ -137,7 +137,9 @@ final class WebSocketNioDuplex {
         }
         // Never pass zero to Selector.select: zero means infinite wait.
         long millis = Math.max(1L, (remaining + 999_999L) / 1_000_000L);
-        selector.select(millis);
+        // Channel close does not reliably wake a selector on every OS.
+        // Bound cancellation observation independently of the frame deadline.
+        selector.select(Math.min(millis, 50L));
         // Selection keys are level-triggered and remain in selectedKeys until
         // removed. Reusing an old key after an EAGAIN/zero-byte I/O result
         // can otherwise spin on stale readiness instead of parking.

@@ -43,7 +43,7 @@ final class WebSocketOpeningRequestTest {
                 "Host: second.example.test\r\n",
                 "Origin: https://second.example.test\r\n"
         }) {
-            String raw = baseHead()
+            String raw = baseHead().replace("Sec-WebSocket-Version: 13\r\n", "Sec-WebSocket-Version: 13\r\nOrigin: https://first.example.test\r\n")
                     .replace("\r\n\r\n", "\r\n" + duplicate + "\r\n");
             assertThrows(IllegalArgumentException.class, () ->
                     WebSocketOpeningRequest.read(bytes(raw), 4096, 32));
@@ -152,7 +152,7 @@ final class WebSocketOpeningRequestTest {
     @Test
     void enforcesByteAndHeaderCountBoundsBeforeUnboundedAccumulation() {
         assertThrows(IllegalArgumentException.class, () ->
-                WebSocketOpeningRequest.read(bytes(baseHead()), 256, 32));
+                WebSocketOpeningRequest.read(bytes(baseHead().replace("\r\n\r\n", "\r\nX-Padding: " + "a".repeat(256) + "\r\n\r\n")), 256, 32));
 
         String count = "GET /chat HTTP/1.1\r\n"
                 + "Host: example.test\r\n"

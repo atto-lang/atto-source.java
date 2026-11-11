@@ -323,7 +323,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "websocket", "WebSocketServer", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
@@ -2426,6 +2426,7 @@ public final class TypeChecker {
                     || name.name().equals("File")
                     || name.name().equals("network")
                     || name.name().equals("net")
+                    || name.name().equals("websocket")
                     || name.name().equals("http")
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
@@ -4014,7 +4015,8 @@ public final class TypeChecker {
                         || name.name().equals("File")
                         || name.name().equals("network")
                         || name.name().equals("net")
-                        || name.name().equals("http")
+                        || name.name().equals("websocket")
+                    || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
@@ -5638,7 +5640,17 @@ public final class TypeChecker {
         Type server = new Named("HttpServer", List.of());
         Type voidFuture = new Named("Future", List.of(Primitive.VOID));
         return switch (named.name()) {
+            case "websocket" -> switch (name) {
+                case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.STRING), new Named("WebSocketServer", List.of()));
+                default -> throw new IllegalArgumentException("unknown websocket member " + name);
+            };
+            case "WebSocketServer" -> switch (name) {
+                case "serve_one", "get_retired" -> new Function(List.of(), voidFuture);
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> throw new IllegalArgumentException("unknown WebSocketServer member " + name);
+            };
             case "http" -> switch (name) {
+
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
                 case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
@@ -5821,7 +5833,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().equals("WebSocketServer") || named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
