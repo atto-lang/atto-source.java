@@ -48,6 +48,24 @@ final class NestedFunctorAdtGuestTest {
     }
 
     @Test
+    void threeLayerMapsPreserveTaggedShapesAndSkipDormantCallbacks() throws Exception {
+        String text = fixture("nested-functor-depth-positive.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(text));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID, text, "nested-functor-depth-positive.atto")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(guest);
+        }
+        assertEquals("FNV2:" + "1".repeat(20) + ":END",
+                output.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void invalidFunctorDomainOrCarrierFailsBeforeGuestExecution() throws Exception {
         for (String filename : List.of(
                 "bad-result-flatten-error.atto",
@@ -59,7 +77,12 @@ final class NestedFunctorAdtGuestTest {
                 "bad-borrowed-result-flatten.atto",
                 "bad-borrowed-option-transpose.atto",
                 "bad-unresolved-transpose.atto",
-                "bad-adtdispatch-capture.atto")) {
+                "bad-adtdispatch-capture.atto",
+                "bad-three-layer-result-collapse.atto",
+                "bad-three-layer-option-collapse.atto",
+                "bad-deep-transpose-result-shape.atto",
+                "bad-deep-transpose-option-shape.atto",
+                "bad-deep-map-error-domain.atto")) {
             String text = fixture(filename);
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(text),
