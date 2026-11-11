@@ -135,6 +135,13 @@ public final class StaticProxySynthesis {
                 throw fail("proxy return type needs ownership/borrow lowering: "
                         + target.name() + "." + method.name());
             }
+            if (exposesTargetType(method.returnType(), target.name())) {
+                // Until trusted self-return rewriting exists, a returned Foo or
+                // Option<Foo> can expose the same target behind FooProxy and
+                // silently bypass any proxy-surface policy.
+                throw fail("proxy return type can expose the wrapped target: "
+                        + target.name() + "." + method.name());
+            }
             if (method.name().equals(TARGET_FIELD))
                 throw fail("proxy storage name collides with callable " + target.name() + "." + TARGET_FIELD);
             List<Ast.Expr> arguments = new ArrayList<>();
@@ -172,6 +179,14 @@ public final class StaticProxySynthesis {
                 || type.name().equals("$infer$")) return true;
         for (Ast.TypeRef arg : type.arguments()) {
             if (unsafeSignatureType(arg)) return true;
+        }
+        return false;
+    }
+
+    private static boolean exposesTargetType(Ast.TypeRef type, String targetName) {
+        if (type.name().equals(targetName)) return true;
+        for (Ast.TypeRef arg : type.arguments()) {
+            if (exposesTargetType(arg, targetName)) return true;
         }
         return false;
     }
