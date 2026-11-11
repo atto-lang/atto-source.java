@@ -3,6 +3,9 @@
 name: AttoLang native multi-file demo (compiler-owned)
 
 on:
+  # Source-free policy admission even before this new workflow reaches main.
+  push:
+    branches: ['ci/native-multifile-demos-owned-20261110']
   pull_request:
     paths:
       - '.github/workflows/atto-native-demo-owned.yml'
