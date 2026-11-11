@@ -55,7 +55,7 @@ final class VirtualActorTerminalControl {
     private final ActorRuntime.ControlDispatcher dispatcher;
     private final VirtualActorRuntimeGenerationFence fences;
     private final Map<ActorRuntime.ActorId, Binding> bindings = new HashMap<>();
-    private final Map<ActorRuntime.ActorGroupId, Lane> lanes = new HashMap<>();
+    private final Map<ActorRuntime.SupervisorId, Lane> lanes = new HashMap<>();
     // Bounds queued + executing CONTROL receipts, including suspended stages.
     private int outstanding;
     private final ThreadLocal<Boolean> submitting = new ThreadLocal<>();
@@ -111,8 +111,9 @@ final class VirtualActorTerminalControl {
     /**
      * Called after exact physical retirement and generation-fence publication.
      * No handler executes here; registrations are consumed exactly once.
-     * A single-flight lane per ActorGroup prevents callback reentrancy across
-     * suspended CompletionStages, while other groups remain independent.
+     * A single-flight lane per supervisor identity prevents callback
+     * reentrancy across different ActorGroups and suspended CompletionStages.
+     * Unrelated supervisors have independent bounded lanes.
      */
     void onRetired(ActorRuntime.ActorId actorId, Throwable cause) {
         Binding binding;
@@ -137,7 +138,7 @@ final class VirtualActorTerminalControl {
             if (outstanding >= capacity) {
                 rejected = true;
             } else {
-                Lane lane = lanes.computeIfAbsent(binding.groupId(), ignored -> new Lane());
+                Lane lane = lanes.computeIfAbsent(binding.supervisor(), ignored -> new Lane());
                 lane.waiting.addLast(new Delivery(binding, notice));
                 outstanding++;
                 if (!lane.active) {
@@ -147,17 +148,17 @@ final class VirtualActorTerminalControl {
             }
         }
         if (rejected) quarantine(binding);
-        else if (toSchedule != null) scheduleNext(binding.groupId(), toSchedule);
+        else if (toSchedule != null) scheduleNext(binding.supervisor(), toSchedule);
     }
 
-    private void scheduleNext(ActorRuntime.ActorGroupId groupId, Lane lane) {
+    private void scheduleNext(ActorRuntime.SupervisorId supervisorId, Lane lane) {
         Delivery delivery;
         synchronized (monitor) {
-            if (lanes.get(groupId) != lane) return; // Already failed/quarantined.
+            if (lanes.get(supervisorId) != lane) return; // Already failed/quarantined.
             delivery = lane.waiting.pollFirst();
             if (delivery == null) {
                 lane.active = false;
-                lanes.remove(groupId, lane);
+                lanes.remove(supervisorId, lane);
                 return;
             }
         }
@@ -175,29 +176,29 @@ final class VirtualActorTerminalControl {
                                 || ActorRuntime.isActorCarrierThread()
                                 || ActorRuntime.inActorExecution()) {
                             quarantine(delivery.binding);
-                            finish(groupId, lane);
+                            finish(supervisorId, lane);
                             return;
                         }
-                        executeOnControl(groupId, lane, delivery);
+                        executeOnControl(supervisorId, lane, delivery);
                     }), "CONTROL dispatcher returned null Future");
             accepted.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     quarantine(delivery.binding);
                     boolean ran;
                     synchronized (monitor) { ran = delivery.dispatched; }
-                    if (!ran) failLane(groupId, lane, delivery);
+                    if (!ran) failLane(supervisorId, lane, delivery);
                 }
             });
         } catch (RuntimeException | Error admissionFailure) {
             quarantine(delivery.binding);
-            failLane(groupId, lane, delivery);
+            failLane(supervisorId, lane, delivery);
         } finally {
             submitting.remove();
         }
     }
 
     private void executeOnControl(
-            ActorRuntime.ActorGroupId groupId, Lane lane, Delivery delivery) {
+            ActorRuntime.SupervisorId supervisorId, Lane lane, Delivery delivery) {
         Binding binding = delivery.binding;
         ActorRuntime.VirtualActorTerminalNotice notice = delivery.notice;
         VirtualActorRuntimeGenerationFence.TerminalDecisionLease lease;
@@ -206,7 +207,7 @@ final class VirtualActorTerminalControl {
                     notice.identity(), notice.generation(), notice.actorId());
         } catch (RuntimeException | Error rejected) {
             quarantine(binding);
-            finish(groupId, lane);
+            finish(supervisorId, lane);
             return;
         }
 
@@ -219,7 +220,7 @@ final class VirtualActorTerminalControl {
                 lease.quarantine();
                 lease.close();
             } finally {
-                finish(groupId, lane);
+                finish(supervisorId, lane);
             }
             return;
         }
@@ -229,7 +230,7 @@ final class VirtualActorTerminalControl {
                     if (error != null) lease.quarantine();
                     lease.close();
                 } finally {
-                    finish(groupId, lane);
+                    finish(supervisorId, lane);
                 }
             });
         } catch (RuntimeException | Error callbackRegistrationFailure) {
@@ -237,25 +238,25 @@ final class VirtualActorTerminalControl {
                 lease.quarantine();
                 lease.close();
             } finally {
-                finish(groupId, lane);
+                finish(supervisorId, lane);
             }
         }
     }
 
-    private void finish(ActorRuntime.ActorGroupId groupId, Lane lane) {
+    private void finish(ActorRuntime.SupervisorId supervisorId, Lane lane) {
         boolean more;
         synchronized (monitor) {
-            if (lanes.get(groupId) != lane) return;
+            if (lanes.get(supervisorId) != lane) return;
             if (outstanding < 1)
                 throw new IllegalStateException("terminal CONTROL outstanding accounting underflow");
             outstanding--;
             more = !lane.waiting.isEmpty();
             if (!more) {
                 lane.active = false;
-                lanes.remove(groupId, lane);
+                lanes.remove(supervisorId, lane);
             }
         }
-        if (more) scheduleNext(groupId, lane);
+        if (more) scheduleNext(supervisorId, lane);
     }
 
     /**
@@ -264,10 +265,10 @@ final class VirtualActorTerminalControl {
      * next generation. No callback runs while holding monitor.
      */
     private void failLane(
-            ActorRuntime.ActorGroupId groupId, Lane lane, Delivery active) {
+            ActorRuntime.SupervisorId supervisorId, Lane lane, Delivery active) {
         List<Binding> dropped = new ArrayList<>();
         synchronized (monitor) {
-            if (lanes.get(groupId) != lane) return;
+            if (lanes.get(supervisorId) != lane) return;
             dropped.add(active.binding);
             for (Delivery queued : lane.waiting) dropped.add(queued.binding);
             int count = dropped.size();
@@ -276,7 +277,7 @@ final class VirtualActorTerminalControl {
             outstanding -= count;
             lane.waiting.clear();
             lane.active = false;
-            lanes.remove(groupId, lane);
+            lanes.remove(supervisorId, lane);
         }
         for (Binding binding : dropped) quarantine(binding);
     }
