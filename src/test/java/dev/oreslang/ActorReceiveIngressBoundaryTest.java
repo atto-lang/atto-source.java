@@ -83,6 +83,26 @@ final class ActorReceiveIngressBoundaryTest {
     }
 
     @Test
+    void importedActorRefSendIsTypeCheckedAgainstLinkedReceive() {
+        var units = java.util.Map.of(
+                "src/worker.atto", fixture("imported-public-actor"),
+                "src/consumer.atto", fixture("positive-imported-send"));
+        assertDoesNotThrow(() -> new dev.oreslang.compiler.IncrementalCompiler().compile(units));
+    }
+
+    @Test
+    void importedActorRefSendRejectsWrongPayloadType() {
+        var units = java.util.Map.of(
+                "src/worker.atto", fixture("imported-public-actor"),
+                "src/consumer.atto", fixture("negative-imported-send-type"));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> new dev.oreslang.compiler.IncrementalCompiler().compile(units));
+        assertTrue(error.getMessage().contains("ActorRef.send mailbox value"),
+                error.getMessage());
+    }
+
+    @Test
     void externalMailboxSendRemainsLegal() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
                 fixture("positive-mailbox-send"))));

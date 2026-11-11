@@ -59,3 +59,14 @@ actor output and `get_done`, with a bounded JUnit timeout. It must print
 exactly `delivered`. Passing type checking without evaluating the guest is
 not sufficient evidence. If the GitHub runner starts with zero steps, report
 runner-admission failure rather than guest test success or failure.
+
+## Imported actor nominal metadata (linker regression)
+
+A linked `import actor Worker from "./worker"` is a nominal ACTOR import,
+not an opaque untyped value import. The import graph proves exported actor
+kind and public visibility, and the incremental compiler MUST pass that
+checked actor signature into TypeChecker and OwnershipChecker. Direct
+`worker.receive(mail)` is always rejected at resolved actor-method ingress;
+`ActorRef<Worker>.send(value)` uses `Worker.receive(ActorMail<T>)` to check
+the payload type. A missing linked actor signature is an admission error,
+never permission for unknown-method dispatch.

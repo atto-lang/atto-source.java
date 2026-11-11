@@ -13,7 +13,9 @@ final class ActorMailTypeContractTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   receive(ActorMail<String> mail): void {
-                    val String value = mail.value;
+                    // Mailbox envelopes are read-only; retain that capability
+                    // when projecting a payload rather than creating a mutable alias.
+                    const String value = mail.value;
                     val int sequence = mail.sequence;
                     val ActorId recipient = mail.recipient;
                     val Option<ActorId> sender = mail.sender;
