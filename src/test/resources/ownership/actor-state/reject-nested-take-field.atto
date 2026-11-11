@@ -1,0 +1,15 @@
+// No explicit take from a nested actor-owned path before move tombstones.
+define class Account as
+  let int balance = 8;
+end
+
+define actor Ledger as
+  state {
+    let Account account;
+  }
+  receive(ActorMail<String> mail): void {
+    val int stolen = rt take self.account.balance;
+    self.end();
+    return;
+  }
+end
