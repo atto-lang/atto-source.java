@@ -282,4 +282,45 @@ final class ActorSharedCodeImageWhitelistTest {
                     "denied actor state must not duplicate or grant code images");
         }
     }
+    @Test
+    void repeatedPrivateActorsReuseCodeImageButNotRetiredHeapState()
+            throws Exception {
+        Ast.Program parsedOnce =
+                Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage image =
+                    store.publish("app/shared-code-state.atto", parsedOnce);
+            var factory = new IndependentCounterFactory();
+
+            for (int incarnation = 0; incarnation < 16; ++incarnation) {
+                ActorRuntime.ActorRef<String> actor =
+                        runtime.spawnWithCodeImage(
+                                ActorRuntime.ActorKind.PRIVATE,
+                                IsolatePolicy.developer(), image, factory);
+                assertSame(image, runtime.codeImageFor(actor).orElseThrow());
+
+                // Each newly constructed private actor must start from zero,
+                // even after an earlier actor using identical code retired.
+                int increments = incarnation % 4;
+                for (int i = 0; i < increments; ++i) {
+                    actor.send("inc");
+                }
+                actor.send("report");
+
+                var step = actor.outputs().next().get(2, TimeUnit.SECONDS);
+                assertFalse(step.done(), "missing actor output " + incarnation);
+                assertEquals(increments, step.value().value(),
+                        "private state carried over across actor incarnations");
+                assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS),
+                        "actor did not terminate " + incarnation);
+                assertTrue(actor.failure().isEmpty(), "actor " + incarnation);
+                assertEquals(0L, runtime.privateMemoryBytes(),
+                        "terminated actor still owns private allocation bytes");
+            }
+            assertEquals(1, store.imageCount(),
+                    "fresh actor heaps must not require fresh code images");
+        }
+    }
+
 }
