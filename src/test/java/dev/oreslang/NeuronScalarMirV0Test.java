@@ -112,6 +112,108 @@ final class NeuronScalarMirV0Test {
         }
     }
 
+    private static NeuronScalarMirV0.GuardedScope write(
+            NeuronScalarMirV0.Instruction... instructions) {
+        return new NeuronScalarMirV0.GuardedScope(
+                NeuronScalarMirV0.GuardMode.CRITICAL_WRITE, List.of(instructions),
+                NeuronScalarMirV0.ExitPolicy.RELEASE_IN_FINALLY, false);
+    }
+
+    private static NeuronScalarMirV0.GuardedScope read(
+            NeuronScalarMirV0.Instruction... instructions) {
+        return new NeuronScalarMirV0.GuardedScope(
+                NeuronScalarMirV0.GuardMode.CRITICAL_READ, List.of(instructions),
+                NeuronScalarMirV0.ExitPolicy.RELEASE_IN_FINALLY, true);
+    }
+
+    private static NeuronScalarMirV0.Instruction op(NeuronScalarMirV0.Opcode code) {
+        return NeuronScalarMirV0.Instruction.arithmetic(code);
+    }
+
+    private static NeuronScalarMirV0.Instruction field(
+            NeuronScalarMirV0.Opcode code, String symbol) {
+        return NeuronScalarMirV0.Instruction.symbol(code, symbol);
+    }
+
+    @Test void constructedScopeCannotForgeStackUnderflowOrDanglingValues() {
+        assertThrows(IllegalArgumentException.class, () -> read(op(NEG_F64)));
+        assertThrows(IllegalArgumentException.class, () -> read(op(ADD_F64)));
+        assertThrows(IllegalArgumentException.class,
+                () -> write(field(STORE_STATE_F64, "weight")));
+        assertThrows(IllegalArgumentException.class,
+                () -> read(NeuronScalarMirV0.Instruction.scalar(1.0),
+                        NeuronScalarMirV0.Instruction.scalar(2.0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> write(NeuronScalarMirV0.Instruction.scalar(1.0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> write(NeuronScalarMirV0.Instruction.scalar(1.0),
+                        field(STORE_STATE_F64, "weight"),
+                        NeuronScalarMirV0.Instruction.scalar(2.0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> write(field(LOAD_INPUT_F64, "input"),
+                        field(STORE_STATE_F64, "weight")));
+        assertThrows(IllegalArgumentException.class,
+                () -> read(NeuronScalarMirV0.Instruction.scalar(1.0),
+                        field(STORE_STATE_F64, "weight")));
+    }
+
+    @Test void constructedPlanCannotForgeUnknownOrUninitializedStateSlots() {
+        var layout = new dev.oreslang.compiler.NeuronStateLayoutV0(
+                "LinearNeuron", List.of("weight", "bias"));
+        var readOnlyWeight = read(field(LOAD_STATE_F64, "weight"));
+        var initialWeight = write(NeuronScalarMirV0.Instruction.scalar(2.0),
+                field(STORE_STATE_F64, "weight"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new NeuronScalarMirV0.Plan("LinearNeuron", layout,
+                        initialWeight, readOnlyWeight));
+
+        var unknownWrite = write(NeuronScalarMirV0.Instruction.scalar(2.0),
+                field(STORE_STATE_F64, "missing"),
+                NeuronScalarMirV0.Instruction.scalar(1.0),
+                field(STORE_STATE_F64, "bias"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NeuronScalarMirV0.Plan("LinearNeuron", layout,
+                        unknownWrite, readOnlyWeight));
+
+        var duplicateWrite = write(NeuronScalarMirV0.Instruction.scalar(2.0),
+                field(STORE_STATE_F64, "weight"),
+                NeuronScalarMirV0.Instruction.scalar(1.0),
+                field(STORE_STATE_F64, "weight"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NeuronScalarMirV0.Plan("LinearNeuron", layout,
+                        duplicateWrite, readOnlyWeight));
+
+        var readBeforeWrite = write(field(LOAD_STATE_F64, "weight"),
+                field(STORE_STATE_F64, "weight"),
+                NeuronScalarMirV0.Instruction.scalar(1.0),
+                field(STORE_STATE_F64, "bias"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NeuronScalarMirV0.Plan("LinearNeuron", layout,
+                        readBeforeWrite, readOnlyWeight));
+
+        var fullWrite = write(NeuronScalarMirV0.Instruction.scalar(2.0),
+                field(STORE_STATE_F64, "weight"),
+                NeuronScalarMirV0.Instruction.scalar(1.0),
+                field(STORE_STATE_F64, "bias"));
+        var unknownRead = read(field(LOAD_STATE_F64, "secret"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NeuronScalarMirV0.Plan("LinearNeuron", layout,
+                        fullWrite, unknownRead));
+        var multipleInputAliases = read(
+                field(LOAD_INPUT_F64, "first"),
+                field(LOAD_INPUT_F64, "second"),
+                op(ADD_F64));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NeuronScalarMirV0.Plan("LinearNeuron", layout,
+                        fullWrite, multipleInputAliases));
+        assertDoesNotThrow(() -> new NeuronScalarMirV0.Plan(
+                "LinearNeuron", layout, fullWrite,
+                read(field(LOAD_STATE_F64, "weight"),
+                        field(LOAD_INPUT_F64, "input"), op(MUL_F64),
+                        field(LOAD_STATE_F64, "bias"), op(ADD_F64))));
+    }
+
     @Test void GeneratedMirDescriptorCannotBypassProductionGuestAdmission() {
         var descriptor = NeuronScalarMirV0.lower(actor(SOURCE));
         assertNotNull(descriptor.forward());
