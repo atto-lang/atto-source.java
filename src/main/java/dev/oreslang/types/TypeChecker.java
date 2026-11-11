@@ -8121,10 +8121,19 @@ public final class TypeChecker {
         receiver = deref(receiver);
         if (receiver instanceof Named named && named.name().equals("Map")
                 && named.arguments().size() == 2) {
-            // Only the read-only scalar size observation is currently
-            // guest-exposed. All mutation, lookup and transport APIs wait
-            // for a complete typed key/value and ownership admission gate.
-            return member.equals("size") ? Primitive.INT : null;
+            // Closed scalar map domains are already checked by the typed
+            // literal constructor. Admit explicit owned mutations only for
+            // these witnessed Map<K,V> types; runtime validates key/value
+            // domains and quota again. This does not authorize transport.
+            return switch (member) {
+                case "size" -> Primitive.INT;
+                case "set" -> new Function(
+                        List.of(named.arguments().get(0), named.arguments().get(1)),
+                        Primitive.VOID);
+                case "delete" -> new Function(
+                        List.of(named.arguments().get(0)), Primitive.BOOL);
+                default -> null;
+            };
         }
         if (receiver instanceof ListType list) {
             return switch (member) {
