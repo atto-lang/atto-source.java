@@ -19,6 +19,9 @@ CONTROL / physical generation-fence stack:
 - `contracts/virtual-actor-cart-v1/positive/cart_main.atto` imports and exercises this function via the production
   linked-source compiler and Graal/Truffle guest runner. Expected guest stdout
   is exactly `cart|2|7|5`, recorded in `contracts/virtual-actor-cart-v1/expected/cart_main.stdout`.
+- `contracts/virtual-actor-cart-v1/cases.json` is the shared backend-neutral
+  inventory with immutable Git blob identities, the expected stdout file,
+  the protected-MIR rejection, and the checked i64 overflow vector.
 - `contracts/virtual-actor-cart-v1/negative/virtual_cart_unsupported.atto` is a mandatory negative fixture for the
   desired `define virtual actor Cart` syntax. It MUST reject with
   `VIRTUAL_ACTOR_MIR_UNSUPPORTED` until the protected state/CONTROL MIR exists.
@@ -88,7 +91,7 @@ needs independent exact-head executed backend receipts.
 
 Run `.github/workflows/atto-cart-virtual-guest-current-main.yml` with
 actual nonzero job steps and `HEAD^{tree}` readback. It must execute
-`AttoCartPhysicalActivationGuestTest` plus the 37 parent-stack host JUnit
+`AttoCartPhysicalActivationGuestTest` (4 cases) plus the 37 parent-stack host JUnit
 methods and preserve Surefire XML showing nonzero passed tests with no errors,
 failures or skips. A zero-step job is `NOT_EXECUTED`, never a Java compiler
 failure, AOT certification or guest proof.
