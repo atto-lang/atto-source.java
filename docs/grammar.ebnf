@@ -17,6 +17,7 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
+                | declared_actor_decl
                 | actor_callable_decl
                 | external_actor_method_decl
                 | callable_decl
@@ -32,6 +33,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type
 
 module_member   = contract_decl
                 | actor_decl
+                | declared_actor_decl
                 | actor_callable_decl
                 | external_actor_method_decl
                 | callable_decl
@@ -61,10 +63,16 @@ actor_callable_decl
    execution. Canonical receiver-first and legacy name-first spellings have
    the same AST identity. Neither grants runtime receiver authority. *)
 external_actor_method_decl
-                = "define" visibility "mtd"
+                = "define" visibility [ "external" ] "mtd"
                   ( "(" type_ref IDENT ")" callable_name
                   | callable_name "(" type_ref IDENT ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
+
+(* A declared actor is a complete nominal identity with no body, not
+   an unresolved forward type or a zero-method executable actor. 'pub'
+   is placed after 'declare'. The former 'define actor A as a;' spelling
+   remains a compatibility spelling, not the canonical declaration. *)
+declared_actor_decl = "declare" visibility "actor" IDENT ";" ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
