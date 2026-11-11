@@ -42,17 +42,23 @@ only. Executable lowering must introduce a typed internal role/capability in
 HIR/MIR and invoke it exclusively in actor-owned runtime paths. The current
 `TypeChecker` correctly aborts before guest execution.
 
-## Exact-head source-org static verification
+## Exact-head source-org static and inline guest verification
 
 A dedicated read-only workflow exists at
 `.github/workflows/actor-declare-external-jdk25-exact-head.yml`.
 On same-repository PRs, it checks out the literal immutable PR head
 with no persisted credentials, verifies commit/tree/POM/parser/binder blob
-identities, requires GraalVM JDK 25, runs the three new and three inherited
-JUnit suites, and requires all six real Surefire XML files to contain
-nonzero, unskipped, zero-failure tests. No success is inferred from
-`workflow status=success` alone. The Surefire receipt explicitly labels
-`guest_actor_executed=FALSE`.
+identities, requires GraalVM JDK 25, and runs **nine JUnit suites**:
+six declaration/binder static suites, `ActorReceiveIngressBoundaryTest`,
+`ActorReceiveIngressGuestExecutionTest` (real inline actor mailbox guest),
+and `ActorInitPublicationGateTest` (one-shot native Java host model).
+All nine Surefire XML reports must have real unskipped, zero-failure cases;
+at least **88** authored cases are now in the integrated set (64 new
+declaration cases plus 13 receive negatives/positives, one JVM guest test,
+and 10 init gate model cases). This is NOT 88 executed cases until a runner
+starts and Maven completes. Neither a successful inline actor test nor
+an independently compiled host model establishes executable `declare actor`
+support. No success is inferred from `workflow status=success` alone.
 
 The following blockers must be resolved by a **trusted operator**, not by
 editing a draft PR to grant itself runner or export authority:
@@ -60,17 +66,21 @@ editing a draft PR to grant itself runner or export authority:
 1. At audit time, the source `main` API reported `protected: false`, so
    `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md` denies private-source
    transfers. Do **not** copy private sources to another org's Actions.
-2. Source-hosted workflows were failing without a runner (`runner_id=null`,
-   zero job steps). An Actions row with `conclusion=failure` and zero
-   steps does **not** show whether Java compiled.
+2. The exact-head integrated JUnit workflow, Actions
+   [#43105295416](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/43105295416),
+   had `runner_id=null`, `steps=0` and `conclusion=failure`.
+   This is not evidence of a Java test failure or guest execution.
 3. A source-org ephemeral JDK25 runner, if used, must satisfy the existing
    independent exact-head review and governance checks. Don't weaken those
    checks or use an unreviewed `workflow_dispatch` bypass.
 
 ## Runtime and backend release receipts (subsequent gate)
 
-Once actual static tests pass, integrate the three staged actors branches
-in a single reviewed integration head. Require:
+The exact-blob receive/guest fixtures from #2822 and the one-shot gate
+from #2256 are already staged on this Java integration head, without
+silently replacing the original implementation PRs. The executable
+`OresEvalRootNode`, `ActorRuntime`, typed inline `init`, and out-of-line
+actor role lowering are **not yet integrated or verified**. Require:
 - typed spawn arguments, exactly-once `init`, state-builder authenticity,
   atomic READY publication, startup failure supervision and cleanup;
 - bounded mailbox sends and `ActorMail<T>` decode with generation-scoped
