@@ -319,6 +319,17 @@ public final class ActorReceiverBinder {
                                 + "' declared in the same module; imported actors and "
                                 + "actors in other modules cannot grant receiver authority");
             }
+            // Canonical declarations use the strict runtime ingress ABI.
+            // Legacy 'define actor A as a;' and inline class actors retain
+            // their existing unmarked method compatibility until migration.
+            if (target instanceof Ast.StandaloneActorDecl standalone
+                    && standalone.receiverName() == null
+                    && (method.name().equals("init") || method.name().equals("receive"))
+                    && !method.runtimeEntrypoint()) {
+                throw new IllegalArgumentException(
+                        "ACTOR_EXTERNAL_REQUIRED: declared actor lifecycle method '"
+                                + method.name() + "' must use 'define external mtd'");
+            }
             // Lifecycle-public denial takes precedence over actor export visibility.
             validateHookShape(method);
             Ast.Visibility actorVisibility =
