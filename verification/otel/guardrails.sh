@@ -34,3 +34,22 @@ otel_guardrails_run_guest() {
   [[ "$(wc -c < "$output/guest.stdout.jsonl")" -le 1048576 ]] || return 1
   [[ "$(wc -c < "$output/guest.stderr.txt")" -le 1048576 ]] || return 1
 }
+
+# Hash Maven's actual dependency JAR bytes in the order loaded by -cp.
+# A classpath.txt digest alone cannot detect a modified dependency JAR.
+otel_guardrails_classpath_digest() {
+  local manifest="${1:?classpath manifest required}" path hash evidence=''
+  [[ -f "$manifest" && -s "$manifest" && ! -L "$manifest" ]] || return 1
+  local -a jars=()
+  local IFS=:
+  read -r -a jars < "$manifest" || true
+  [[ ${#jars[@]} -gt 0 && ${#jars[@]} -le 256 ]] || return 1
+  for path in "${jars[@]}"; do
+    [[ "$path" == /* && -f "$path" && -s "$path" && ! -L "$path" ]] || return 1
+    [[ "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 1
+    hash="$(sha256sum "$path" | cut -d' ' -f1)" || return 1
+    [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+    evidence+="$path:$hash;"
+  done
+  printf '%s' "$evidence" | sha256sum | cut -d' ' -f1
+}
