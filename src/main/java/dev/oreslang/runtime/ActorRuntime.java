@@ -472,6 +472,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
+    /** Actor-owned state-region identities are minted here, never by guest values. */
+    private final AtomicLong nextActorStateRegionId = new AtomicLong();
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
@@ -831,6 +833,107 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() && !cell.finalized) cell.finalizeStopLocked();
             cell.lifecycleLock.notifyAll();
+        }
+    }
+
+    /**
+     * Create a bounded shared-state RW admission scope only during the
+     * live owner's physical actor turn. The owner remains this ActorCell;
+     * supervisors receive no raw state or allocation identity.
+     *
+     * <p>This is a trusted host/compiler bridge, not guest syntax. Grant
+     * redemption is host CONTROL-only until compiler/CONTROL principal
+     * authentication and memory-operation lowering are implemented.</p>
+     */
+    public ActorStateSupervisorLoans createCurrentActorStateLoans(
+            int maxPending, int maxReaders) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || !currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException(
+                    "actor state region allocation requires the owning physical actor turn");
+        }
+        // A detached/cooperation-only actor may not mint a grant claiming
+        // supervision. The structured manager must already be installed.
+        ActorGroupId groupId = cell.managedByGroup.get();
+        ActorGroup group = groupId == null ? null : actorGroups.get(groupId);
+        if (group == null || group.closed()
+                || group.managedWorkers.get(cell.ref.id()) != cell.ref) {
+            throw new SecurityException(
+                    "state delegation requires a live structured supervisor-owned worker");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.sealing || cell.finalized
+                    || cell.carrierOwnerThread != Thread.currentThread()
+                    || cell.activeTurns != 1 || !cell.scheduled.get()) {
+                throw new IllegalStateException(
+                        "actor state region cannot be allocated after STOP or outside its turn");
+            }
+            if (cell.supervisorStateRegions.size() >= 32) {
+                throw new IllegalStateException("per-actor delegated region quota exhausted");
+            }
+            long regionId = nextActorStateRegionId.updateAndGet(value -> {
+                if (value == Long.MAX_VALUE) {
+                    throw new IllegalStateException("actor state region ids exhausted");
+                }
+                return value + 1;
+            });
+            ExecutionContext.AllocationDomain ownerAllocation =
+                    new ExecutionContext.AllocationDomain(
+                            ExecutionContext.AllocationKind.ACTOR,
+                            regionId, regionId, cell.ref.generation());
+            ActorStateSupervisorLoans region = new ActorStateSupervisorLoans(
+                    this, cell.ref.id(), cell.ref.generation(),
+                    ownerAllocation, maxPending, maxReaders);
+            cell.supervisorStateRegions.add(region);
+            return region;
+        }
+    }
+
+    /** Package-private guest-turn proof; metadata alone cannot mint grants. */
+    void requireStateRegionOwnerTurn(ActorId actorId, long generation) {
+        requireStateRegionOwnerReleaseTurn(actorId, generation);
+        ActorCell<?> cell = currentActor.get();
+        if (cell.stopped.get() || cell.sealing || cell.finalized) {
+            throw new SecurityException("stopped actor cannot issue state loans");
+        }
+    }
+
+    /** Physical unwind remains allowed after logical STOP seals admission. */
+    void requireStateRegionOwnerReleaseTurn(ActorId actorId, long generation) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || !cell.ref.id().equals(actorId)
+                || cell.ref.generation() != generation
+                || !currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException(
+                    "state operation requires its originating physical actor turn");
+        }
+    }
+
+    /** Host CONTROL is a temporary boundary, not guest supervisor identity. */
+    void requireSupervisorStateHostContext() {
+        requireSupervisorContext("redeem or release a state RW delegation");
+        requireCallerRuntimeAffinity("redeem or release a state RW delegation");
+    }
+
+    /** Exact direct structured manager; group membership alone never suffices. */
+    void requireDirectStateRegionSupervisor(
+            ActorId actorId, long generation, ActorSupervisor supervisor) {
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor) {
+            throw new SecurityException("foreign or stale supervisor capability");
+        }
+        ActorCell<?> cell = actors.get(actorId);
+        if (cell == null || cell.ref.generation() != generation
+                || cell.stopped.get() || cell.finalized) {
+            throw new SecurityException("actor incarnation is stopped or stale");
+        }
+        ActorGroupId groupId = cell.managedByGroup.get();
+        ActorGroup group = groupId == null ? null : actorGroups.get(groupId);
+        if (group == null || group.closed()
+                || group.supervisor != supervisor
+                || group.managedWorkers.get(actorId) != cell.ref) {
+            throw new SecurityException(
+                    "delegation requires the actor's exact live structured supervisor");
         }
     }
 
@@ -7575,6 +7678,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        /** Actor-owned scoped RW admissions, retained until STOP fully drains. */
+        private final Set<ActorStateSupervisorLoans> supervisorStateRegions =
+                ConcurrentHashMap.newKeySet();
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
@@ -8041,6 +8147,11 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor native I/O physical loan gate failed", gateFailure));
                 lifecycleLock.notifyAll();
                 return;
+            }
+            // These runtime-owned scopes cannot be bypassed by a host's
+            // separately configured external state-loan predicate.
+            for (ActorStateSupervisorLoans region : supervisorStateRegions) {
+                if (!region.physicallyRetired()) return;
             }
             try {
                 if (!stateLoanRetired.test(ref.id())) return;
@@ -8841,6 +8952,19 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduleTeardown = gracefulTeardownPending
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
+            }
+            // Revoke every outstanding grant and seal future admission
+            // OUTSIDE lifecycleLock: failing a pending OresFuture may invoke
+            // synchronous host observers. The physical-retirement gate above
+            // keeps the actor arena pinned until every loan and callback drains.
+            for (ActorStateSupervisorLoans region : List.copyOf(supervisorStateRegions)) {
+                try {
+                    region.revokeFromRuntimeStop();
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    throw fatal;
+                } catch (Throwable revocationFailure) {
+                    quarantineChildStopFailure(revocationFailure);
+                }
             }
             if (scheduleTeardown) schedule();
 
