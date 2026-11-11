@@ -20,10 +20,10 @@ It is deliberately a **draft**, not yet authorized for the v3 publisher.
 | Reviewed-candidate carrier PR | [#38](https://github.com/opto-sync-test/go-java-validation/pull/38) (draft) |
 | Candidate carrier base `main` | `db642bca2ed19ffa4262e85f95d8f296020b978c` (NOT a final reviewed merge SHA) |
 | Carrier workflow | `.github/workflows/oreslang-exact-tree-carrier.yml` |
-| Candidate workflow blob | `530d841c494cb3594ddd2b96d8ce3a5627d63214` |
+| Candidate workflow blob | `8f252830f6d62647c91e4a00182480808f5ac7a2` |
 | Candidate carrier CODEOWNERS blob | `0110a557c162204a399ebf1e628e50c9ed991439` |
-| Current carrier PR #38 head (not reviewed/merged) | `934323c03e868fad081b41539de730499822142c` |
-| Current carrier PR #38 tree (not reviewed/merged) | `c62370eda32123bd45c1d576a4eabaf9ca5be590` |
+| Current carrier PR #38 head (not reviewed/merged) | `b397077b56b66d1a2f345ef2a8a0cc110818a85d` |
+| Current carrier PR #38 tree (not reviewed/merged) | `fc3524c1a76099de481222265716ed22453a9296` |
 | Candidate trusted plan | `ci/test-plans/java-pr2836-actor-stack.json` |
 | Candidate plan blob | `7d6ca670536725e2f77717c63ea24227d51d29ac` |
 | Pinned source POM blob | `2e566927d4b8e07884ce53b0c463d440201fe54c` |
@@ -54,7 +54,7 @@ It is deliberately a **draft**, not yet authorized for the v3 publisher.
      `repository_id=1323598177`,
      `base_sha=<final independently reviewed carrier main SHA>`,
      `workflow_path=.github/workflows/oreslang-exact-tree-carrier.yml`,
-     `workflow_blob_sha=530d841c494cb3594ddd2b96d8ce3a5627d63214`,
+     `workflow_blob_sha=8f252830f6d62647c91e4a00182480808f5ac7a2`,
      `review_pr=38`, and only
      `test_plans["ci/test-plans/java-pr2836-actor-stack.json"]` with
      `blob_sha=7d6ca670536725e2f77717c63ea24227d51d29ac`
@@ -104,7 +104,7 @@ source export scope. No source mirror may occur before those changes.
 
 ## Source-free carrier regression checkpoint — 2026-11-11
 
-[Carrier run #42957248844](https://github.com/opto-sync-test/go-java-validation/actions/runs/42957248844) succeeded at draft PR #38 head `934323c03e868fad081b41539de730499822142c`: **36 source-free tests passed** (6 exact-tree verifier tests, 6 trusted-plan runner tests, 11 report-verifier tests and 13 PR2836 plan-integrity tests), with nine recorded `verifier-tests` steps. The `verify-carrier` source-bearing job was skipped. The workflow checked exact CODEOWNERS bytes; no private source was copied.
+[Carrier run #42957248844](https://github.com/opto-sync-test/go-java-validation/actions/runs/42957248844) succeeded at draft PR #38 head `b397077b56b66d1a2f345ef2a8a0cc110818a85d`: **36 source-free tests passed** (6 exact-tree verifier tests, 6 trusted-plan runner tests, 11 report-verifier tests and 13 PR2836 plan-integrity tests), with nine recorded `verifier-tests` steps. The `verify-carrier` source-bearing job was skipped. The workflow checked exact CODEOWNERS bytes; no private source was copied.
 
 This is an auditable **candidate**, not approved carrier main. Exact SHA/tree, carrier workflow blob, plan blob, and CODEOWNERS blob must be re-fetched after independent security review and merge. Source `main` protection and authorized private-source execution remain blocked. Any plan/code change invalidates older review/receipt expectations.
 
@@ -114,4 +114,14 @@ This is an auditable **candidate**, not approved carrier main. Exact SHA/tree, c
 
 **Scope of evidence:** Maven `dependency:go-offline` alone was insufficient: the first attempt missed `surefire-junit-platform:3.5.2`, and an explicit provider download missed `junit-platform-commons:1.9.3`. The final source-free proof warms the synthetic provider cache before offline rerun, but does **not** prove that all required AttoLang POM dependencies are cached, that process network egress is disabled, or that untrusted source may run safely. A separate reviewed, carrier-owned prefetch manifest and isolation gate are still needed before private compiler execution.
 
-Current **candidate** carrier PR head `934323c03e868fad081b41539de730499822142c`; candidate root tree `c62370eda32123bd45c1d576a4eabaf9ca5be590`; workflow blob `530d841c494cb3594ddd2b96d8ce3a5627d63214`; test-plan blob remains `7d6ca670536725e2f77717c63ea24227d51d29ac`. These identifiers require independent security review/merge attestation and must not be treated as a protected carrier base.
+Current **candidate** carrier PR head `b397077b56b66d1a2f345ef2a8a0cc110818a85d`; candidate root tree `fc3524c1a76099de481222265716ed22453a9296`; workflow blob `8f252830f6d62647c91e4a00182480808f5ac7a2`; test-plan blob remains `7d6ca670536725e2f77717c63ea24227d51d29ac`. These identifiers require independent security review/merge attestation and must not be treated as a protected carrier base.
+
+## Source-free Docker isolation and immutable Maven cache checkpoint
+
+[Carrier run #42967009809](https://github.com/opto-sync-test/go-java-validation/actions/runs/42967009809) — **SUCCESS** on current PR #38 head `b397077b56b66d1a2f345ef2a8a0cc110818a85d`: 43 source-free tests passed (6 provenance + 6 plan runner + 11 Surefire verifier + 13 test-plan scope + 7 actor execution guard), and one synthetic Java 25 JUnit test compiled and executed in Docker's network-disabled container. Source-bearing `verify-carrier` job was **SKIPPED**; no Atto private source copied or executed.
+
+The source-free execution proof used OCI image `maven@sha256:d4bb5796a17ab2422f609b764ba16ddcbd2e6ba5b639168eb9e99e6de8f1f431` with `--network none`, read-only source/root, no-new-privileges, dropped capabilities, bounded resources and explicit network TCP denial. Maven needs internal lock files even with `-o`; therefore the sandbox writes to a disposable cache copy, while preserving an untouched prefetched seed and comparing JAR/POM SHA-256 digests before/after. Receipts: `synthetic_container_tcp=BLOCKED`, `synthetic_dependency_sha256_integrity=PASS`, `synthetic_container_offline_jdk25_junit=PASS`.
+
+The proposed carrier now has a **fail-closed `PR #2836` host-execution guard**, with seven source-free regression tests. Until a separately independently reviewed source-bearing isolated executor and complete approved cache are available, even approval of the existing carrier PR will not permit host-side Atto Maven execution. This is intentional. Source `main` remains unprotected, source-side allowlist/contract authorization and independent exact-head review are not present, and the full AttoLang dependency graph and real compiler test execution are **NOT VERIFIED**.
+
+Re-verify latest candidate carrier root tree `fc3524c1a76099de481222265716ed22453a9296`, workflow blob `8f252830f6d62647c91e4a00182480808f5ac7a2`, plan blob `7d6ca670536725e2f77717c63ea24227d51d29ac`, CODEOWNERS blob `0110a557c162204a399ebf1e628e50c9ed991439`, isolated synthetic runner script blob `30bd01f2f006b0e544080d735010316d461d4d34`, and host-side execution guard blob `4409bb552a780f9b43faf378411ec774bbb07018` after every change. These are review candidates only, not protected-main approved identities.
