@@ -215,6 +215,10 @@ public final class ActorReceiverBinder {
                 }
             }
         }
+        // State declarations must be coherently attached before any nominal
+        // receiver index can be consumed, even if no external mtd mentions them.
+        // This is static metadata validation and confers zero state authority.
+        ActorStateBinder.bindSourceSet(packageIdentity, ordered);
         return Collections.unmodifiableMap(new LinkedHashMap<>(resolved));
     }
 
