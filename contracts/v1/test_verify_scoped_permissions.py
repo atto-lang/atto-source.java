@@ -50,10 +50,27 @@ class ScopedPermissionGateTests(unittest.TestCase):
             return gate.load_vectors(path)
 
     def test_exact_corpus_and_backends(self):
-        self.assertEqual(len(self.expected), 44)
+        self.assertEqual(len(self.expected), 52)
         self.assertTrue({"default-read-denied", "coarse-ceiling-net",
                          "endpoint-deny-portless", "serialized-no-escalation"}
                         .issubset(self.expected))
+
+    def test_literal_padded_permission_tokens_are_distinct(self):
+        # Target oracle only; native permission execution requires separate
+        # exact guest reports. Never normalize away authority-bearing spaces.
+        expected = {
+            "env-padded-grant-literal": "allow",
+            "env-padded-grant-not-trimmed": "deny",
+            "env-padded-deny-literal": "deny",
+            "env-padded-deny-not-trimmed": "allow",
+            "run-padded-grant-not-trimmed": "deny",
+            "run-padded-deny-not-trimmed": "allow",
+            "sys-padded-grant-not-trimmed": "deny",
+            "sys-padded-deny-not-trimmed": "allow",
+        }
+        for case_id, decision in expected.items():
+            with self.subTest(case_id=case_id):
+                self.assertEqual(self.expected.get(case_id), decision)
 
     def test_canonical_fixture_pin_rejects_changed_expected_outcome(self):
         gate.check_canonical_vectors(VECTORS)
