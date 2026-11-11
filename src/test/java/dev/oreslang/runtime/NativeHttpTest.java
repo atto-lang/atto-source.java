@@ -89,6 +89,126 @@ class NativeHttpTest {
         }
     }
 
+    @Test void physicalCarrierBarrierRequiresTransportStopCallbackExitAndNoActiveRequest() {
+        for (boolean transportStopped : new boolean[]{false,true}) {
+            for (boolean empty : new boolean[]{false,true}) {
+                for (int publishing : new int[]{0,1,2}) {
+                    assertEquals(transportStopped && empty && publishing == 0,
+                            NativeHttp.readyForCarrierBarrier(transportStopped, empty, publishing));
+                }
+            }
+        }
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(24)
+    @org.junit.jupiter.api.Timeout(10)
+    void completionCallbackCannotRaceLastExchangeOutOfCarrierBarrier() throws Exception {
+        var releasing = new java.util.concurrent.atomic.AtomicInteger();
+        var activeEmpty = new java.util.concurrent.atomic.AtomicBoolean();
+        var removed = new CountDownLatch(1);
+        var publish = new CountDownLatch(1);
+        try (var worker = Executors.newVirtualThreadPerTaskExecutor()) {
+            var future = worker.submit(() -> {
+                releasing.incrementAndGet();
+                try {
+                    activeEmpty.set(true);
+                    removed.countDown();
+                    if (!publish.await(5, TimeUnit.SECONDS)) throw new AssertionError("release gate");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                } finally {
+                    releasing.decrementAndGet();
+                }
+            });
+            try {
+                assertTrue(removed.await(5, TimeUnit.SECONDS));
+                assertFalse(NativeHttp.readyForCarrierBarrier(
+                        true, activeEmpty.get(), releasing.get()));
+            } finally {
+                publish.countDown();
+            }
+            future.get(5, TimeUnit.SECONDS);
+            assertTrue(NativeHttp.readyForCarrierBarrier(
+                    true, activeEmpty.get(), releasing.get()));
+        }
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(8)
+    @org.junit.jupiter.api.Timeout(25)
+    void pooledListenerDrainWaitsForPostResponseGuestCarrierExit() throws Exception {
+        String output = run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "ok");
+                    stdio.println("worker-finished");
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(server.port);
+                  val request = await server.accept();
+                  val completion = request.completion;
+                  handler.dispatch(rt mut borrow request);
+                  await completion;
+                  await server.shutdown(0);
+                  stdio.println("drain-finished");
+                  return;
+                }
+                """, port -> assertEquals(200, request(port, "GET", "/", "").statusCode()));
+        assertTrue(output.contains("worker-finished"), output);
+        assertTrue(output.contains("drain-finished"), output);
+        assertTrue(output.indexOf("worker-finished") < output.indexOf("drain-finished"),
+                "listener reported drained while its accepted receive was still running: " + output);
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(16)
+    @org.junit.jupiter.api.Timeout(12)
+    void repeatedConcurrentForcedCloseClaimsExactlyOneOwner() throws Exception {
+        var claimed = new java.util.concurrent.atomic.AtomicBoolean();
+        var winner = new java.util.concurrent.atomic.AtomicInteger();
+        var go = new CountDownLatch(1);
+        var ready = new CountDownLatch(16);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var tasks = new java.util.ArrayList<Future<?>>();
+            for (int i=0;i<16;i++) {
+                tasks.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!go.await(5,TimeUnit.SECONDS)) throw new AssertionError("missing start");
+                    if (NativeHttp.claimForcedClose(claimed)) winner.incrementAndGet();
+                    return null;
+                }));
+            }
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            go.countDown();
+            for(var task:tasks) task.get(5,TimeUnit.SECONDS);
+        }
+        assertEquals(1,winner.get());
+        assertFalse(NativeHttp.claimForcedClose(claimed));
+    }
+
+    @Test void pendingAcceptCallbacksCannotExecuteUnderListenerMonitor() throws Exception {
+        Object listenerMonitor=new Object();
+        OresFuture<Object> accepted = new OresFuture<>(() -> false, () -> { });
+        CountDownLatch called = new CountDownLatch(1);
+        var nestedLock = new java.util.concurrent.atomic.AtomicBoolean();
+        accepted.whenCompleteRuntime((value,error) -> {
+            nestedLock.set(Thread.holdsLock(listenerMonitor));
+            called.countDown();
+        });
+        synchronized (listenerMonitor) {
+            assertThrows(IllegalStateException.class,
+                    () -> NativeHttp.publishOutsideMonitor(listenerMonitor,accepted,"ok"));
+            assertFalse(accepted.isDone());
+        }
+        NativeHttp.publishOutsideMonitor(listenerMonitor,accepted,"ok");
+        assertTrue(called.await(5,TimeUnit.SECONDS));
+        assertFalse(nestedLock.get());
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
