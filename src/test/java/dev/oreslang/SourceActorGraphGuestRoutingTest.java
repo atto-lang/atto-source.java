@@ -5,6 +5,7 @@ import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * lowering, ActorStream typed port authority, supervisor restart, or native AOT.
  * Only the three actor receive() functions produce graph values.
  */
+@Timeout(30)
 final class SourceActorGraphGuestRoutingTest {
     private static final String SOURCE = loadSource();
 
@@ -48,6 +50,31 @@ final class SourceActorGraphGuestRoutingTest {
                     .buildLiteral());
         }
         assertEquals("19", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void actorMailboxOutputCannotBecomeProcessStdioWithoutCoordinator() throws Exception {
+        // Execute the same real three-actor source path, but remove only the
+        // coordinator's explicit process stdout write. ActorRef.send and
+        // outputs.next are mailbox transport, not host stdout.
+        String emission = "stdio.stdout.write(result.value.unwrap().value);";
+        assertTrue(SOURCE.contains(emission), "guest fixture changed unexpectedly");
+        String silentSource = SOURCE.replace(emission,
+                "val final_value = result.value.unwrap().value;");
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(silentSource)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, silentSource,
+                    "actor-graph-mailbox-not-stdout.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .buildLiteral());
+        }
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "actor-to-actor mailbox traffic must not leak to process stdout");
     }
 
     @Test
