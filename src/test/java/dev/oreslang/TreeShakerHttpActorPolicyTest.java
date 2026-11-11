@@ -54,7 +54,7 @@ final class TreeShakerHttpActorPolicyTest {
     }
 
     @Test
-    void NonHttpTransportDiscriminantsArePreserved() {
+    void nonHttpTransportDiscriminantsArePreserved() {
         for (Ast.ActorTransport transport : List.of(
                 Ast.ActorTransport.TCP, Ast.ActorTransport.WEBSOCKET,
                 Ast.ActorTransport.GENERIC)) {
