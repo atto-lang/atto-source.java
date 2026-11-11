@@ -1,6 +1,7 @@
 package dev.oreslang.runtime.persistence;
 
 import java.nio.file.Path;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -118,6 +119,11 @@ public final class SqliteCommandPersistence implements AutoCloseable {
             execute("CREATE TABLE IF NOT EXISTS command_v2_heads(tenant TEXT NOT NULL,actor TEXT NOT NULL,slot TEXT NOT NULL,version INTEGER NOT NULL,PRIMARY KEY(tenant,actor,slot))");
             execute("CREATE TABLE IF NOT EXISTS command_v2_events(tenant TEXT NOT NULL,actor TEXT NOT NULL,slot TEXT NOT NULL,version INTEGER NOT NULL,op_id TEXT NOT NULL,schema INTEGER NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(tenant,actor,slot,version))");
             execute("CREATE TABLE IF NOT EXISTS command_v2_receipts(tenant TEXT NOT NULL,actor TEXT NOT NULL,slot TEXT NOT NULL,op_id TEXT NOT NULL,command_hash TEXT NOT NULL,first_version INTEGER NOT NULL,last_version INTEGER NOT NULL,event_count INTEGER NOT NULL,result_bytes BLOB NOT NULL,PRIMARY KEY(tenant,actor,slot,op_id))");
+            // Versioned event checksums are separate to fail closed on older
+            // draft databases; never manufacture hashes for untrusted history.
+            execute("CREATE TABLE IF NOT EXISTS command_v2_event_digests(tenant TEXT NOT NULL,actor TEXT NOT NULL,slot TEXT NOT NULL,version INTEGER NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(tenant,actor,slot,version))");
+            execute("CREATE TRIGGER IF NOT EXISTS command_v2_event_digest_no_delete BEFORE DELETE ON command_v2_event_digests BEGIN SELECT RAISE(ABORT,'IMMUTABLE_EVENT_DIGEST'); END");
+            execute("CREATE TRIGGER IF NOT EXISTS command_v2_event_digest_no_update BEFORE UPDATE ON command_v2_event_digests BEGIN SELECT RAISE(ABORT,'IMMUTABLE_EVENT_DIGEST'); END");
             execute("CREATE TRIGGER IF NOT EXISTS command_v2_immutable_delete BEFORE DELETE ON command_v2_receipts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_COMMAND_RECEIPT'); END");
             execute("CREATE TRIGGER IF NOT EXISTS command_v2_immutable_update BEFORE UPDATE ON command_v2_receipts BEGIN SELECT RAISE(ABORT,'IMMUTABLE_COMMAND_RECEIPT'); END");
         } catch (SQLException error) {
@@ -142,6 +148,24 @@ public final class SqliteCommandPersistence implements AutoCloseable {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
             return java.util.HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
+    }
+    // Length-prefix every field: the checksum commits identity, event order,
+    // schema and bytes, rather than only the raw payload. It is not a MAC
+    // against a privileged database controller able to rewrite both tables.
+    private static void hashField(MessageDigest digest, byte[] bytes) {
+        digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
+        digest.update(bytes);
+    }
+    private static String eventDigest(Identity id,long version,String op,int schema,byte[] bytes) {
+        try {
+            MessageDigest digest=MessageDigest.getInstance("SHA-256");
+            for(String field:List.of("atto-command-v2-event-v1",id.tenant(),id.actor(),id.state(),op))
+                hashField(digest,field.getBytes(StandardCharsets.UTF_8));
+            digest.update(ByteBuffer.allocate(Long.BYTES+Integer.BYTES)
+                .putLong(version).putInt(schema).array());
+            hashField(digest,bytes);
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        }catch(NoSuchAlgorithmException error){throw new IllegalStateException(error);}
     }
     private void checkTenant(Identity id) { if (!tenant.equals(id.tenant())) fail("WRONG_TENANT"); }
     private static void bind(PreparedStatement q, Identity id) throws SQLException {
@@ -203,6 +227,13 @@ public final class SqliteCommandPersistence implements AutoCloseable {
                     bind(q,id);q.setLong(4,version+ ++i);q.setString(5,input.operationId());
                     q.setInt(6,input.schemaVersion());q.setBytes(7,payload);q.executeUpdate();
                 }
+                try (PreparedStatement q=db.prepareStatement(
+                        "INSERT INTO command_v2_event_digests VALUES(?,?,?,?,?)")) {
+                    bind(q,id);q.setLong(4,version+i);
+                    q.setString(5,eventDigest(id,version+i,input.operationId(),
+                        input.schemaVersion(),payload));
+                    q.executeUpdate();
+                }
             }
             long newVersion=version+i;
             try (PreparedStatement q=db.prepareStatement("INSERT INTO command_v2_heads VALUES(?,?,?,?) ON CONFLICT(tenant,actor,slot) DO UPDATE SET version=excluded.version")) {
@@ -237,7 +268,13 @@ public final class SqliteCommandPersistence implements AutoCloseable {
             if (epoch(id)!=epoch) fail("STALE_EPOCH");
             long version=head(id),cursor=0;
             ArrayList<Event> events=new ArrayList<>();
-            try (PreparedStatement q=db.prepareStatement("SELECT version,op_id,schema,payload FROM command_v2_events WHERE tenant=? AND actor=? AND slot=? ORDER BY version ASC LIMIT ?")) {
+            try (PreparedStatement q=db.prepareStatement(
+                    "SELECT e.version,e.op_id,e.schema,e.payload,d.digest "
+                    + "FROM command_v2_events e LEFT JOIN command_v2_event_digests d "
+                    + "ON d.tenant=e.tenant AND d.actor=e.actor AND d.slot=e.slot "
+                    + "AND d.version=e.version "
+                    + "WHERE e.tenant=? AND e.actor=? AND e.slot=? "
+                    + "ORDER BY e.version ASC LIMIT ?")) {
                 bind(q,id);q.setInt(4,MAX_REPLAY_EVENTS+1);
                 try (ResultSet rows=q.executeQuery()) {
                     while(rows.next()) {
@@ -247,7 +284,12 @@ public final class SqliteCommandPersistence implements AutoCloseable {
                         // Every replayed event must have one durable command receipt.
                         String op=rows.getString(2);
                         if (!receiptCovers(id,op,next)) fail("UNINDEXED_JOURNAL");
-                        events.add(new Event(next,rows.getInt(3),op,rows.getBytes(4)));
+                        byte[] payload=rows.getBytes(4);
+                        String recorded=rows.getString(5);
+                        if (payload==null || recorded==null ||
+                                !recorded.equals(eventDigest(id,next,op,rows.getInt(3),payload)))
+                            fail("CORRUPT_JOURNAL_PAYLOAD");
+                        events.add(new Event(next,rows.getInt(3),op,payload));
                         cursor=next;
                     }
                 }
