@@ -10984,13 +10984,13 @@ public final class OresEvalRootNode extends RootNode {
      * visible to authenticated supervisor CONTROL. No mirrored i64 map cell
      * remains in the guest object after binding.
      */
-    private static final class ActorManagedI64Fields
+    static final class ActorManagedI64Fields
             extends java.util.AbstractMap<String, Object> {
         private final ActorStateSupervisorLoans region;
         private final Map<String,Object> ordinary;
         private final Map<String,ActorStateSupervisorLoans.LongField> bound;
 
-        private ActorManagedI64Fields(
+        ActorManagedI64Fields(
                 ActorStateSupervisorLoans region,
                 Map<String,Object> ordinary,
                 Map<String,ActorStateSupervisorLoans.LongField> bound) {
