@@ -74,7 +74,7 @@ final class WithExpressionGuestTest {
     @Test
     void rejectsBorrowAndNonRecordAndSideEffectfulRhs() {
         IllegalArgumentException borrowed = rejects(readGuest("record-borrow-rejected.atto"));
-        assertTrue(borrowed.getMessage().contains("readonly structural record"),
+        assertTrue(borrowed.getMessage().contains("synchronous, effect-safe"),
                 borrowed::getMessage);
 
         IllegalArgumentException struct = rejects(readGuest("struct-rejected.atto"));
