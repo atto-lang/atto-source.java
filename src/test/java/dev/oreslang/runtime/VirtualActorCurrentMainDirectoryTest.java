@@ -92,8 +92,9 @@ final class VirtualActorCurrentMainDirectoryTest {
                 assertEquals(2L, directory.inspect(grant, session, id)
                         .orElseThrow().activationGeneration());
                 group.abortVirtualActorGeneration(id, 2L);
-                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
-                        directory.inspect(grant, session, id).orElseThrow().lifecycle());
+                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.ABORTED,
+                        directory.inspect(grant, session, id).orElseThrow().lifecycle(),
+                        "newer failed initialization must not be masked by old passivation");
             }
             group.close();
         }
@@ -277,6 +278,36 @@ final class VirtualActorCurrentMainDirectoryTest {
                 actor.getDone().get(5, TimeUnit.SECONDS);
                 assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.PASSIVATED,
                         directory.inspect(grant, session, id).orElseThrow().lifecycle());
+            }
+            group.close();
+        }
+    }
+
+    @Test
+    void failedExitHookAppearsQuarantinedAndCannotBeMistakenForPassivation()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
+                Object session = new Object();
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
+                var identity = directory.resolve("Cart", "failed-cleanup");
+                var physical = worker(group);
+                group.reserveVirtualActorGeneration(identity, 1L);
+                group.bindVirtualActorIdentity(physical, identity, 1L);
+                runtime.setActorExitHook(domain -> {
+                    throw new IllegalStateException("intentional physical exit failure");
+                });
+                physical.stop();
+                assertThrows(ExecutionException.class,
+                        () -> physical.getDone().get(5, TimeUnit.SECONDS));
+                var snapshot = directory.inspect(grant, session, identity).orElseThrow();
+                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.QUARANTINED,
+                        snapshot.lifecycle());
+                assertEquals(physical.id(), snapshot.physicalActorId().orElseThrow(),
+                        "failed cleanup must retain exact physical ownership");
+                assertThrows(IllegalStateException.class,
+                        () -> group.reserveNextVirtualActorGeneration(identity));
             }
             group.close();
         }
