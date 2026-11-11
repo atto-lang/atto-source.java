@@ -1,0 +1,20 @@
+define enum Light as
+    Red
+    Green
+    Yellow
+end
+
+fnc next(Light value): Light {
+    return match value over
+        on Light.Red -> Light.Green;
+        on Light.Green -> Light.Yellow;
+        on Light.Yellow -> Light.Red;
+    end
+}
+
+pub fnc main(): void {
+    stdio.println(next(Light.Red) == Light.Green);
+    stdio.println(next(Light.Green) == Light.Yellow);
+    stdio.println(next(Light.Yellow) == Light.Red);
+    return;
+}
