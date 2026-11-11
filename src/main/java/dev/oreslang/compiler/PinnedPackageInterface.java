@@ -160,12 +160,26 @@ public final class PinnedPackageInterface {
         if (envelopes.size() != lock.namespaces().size()) {
             throw new IllegalArgumentException("interface envelope inventory differs from lock");
         }
+        // A package can pin thousands of namespaces. A per-.oresi bound
+        // alone still permits gigabytes of aggregate hostile allocations.
+        // Check both limits before cloning any externally supplied bytes.
+        final long maxEnvelopeBytes = 16L * 1024 * 1024;
+        final long maxPackageBytes = 64L * 1024 * 1024;
+        long totalBytes = 0;
         Map<String, byte[]> snapshot = new HashMap<>();
-        envelopes.forEach((name, bytes) -> {
-            if (name == null || bytes == null || snapshot.putIfAbsent(name, bytes.clone()) != null) {
+        for (Map.Entry<String, byte[]> envelope : envelopes.entrySet()) {
+            String name = envelope.getKey();
+            byte[] bytes = envelope.getValue();
+            if (name == null || bytes == null || snapshot.containsKey(name)) {
                 throw new IllegalArgumentException("invalid or duplicate interface envelope");
             }
-        });
+            if (bytes.length > maxEnvelopeBytes ||
+                    bytes.length > maxPackageBytes - totalBytes) {
+                throw new IllegalArgumentException("package interface byte budget exceeded");
+            }
+            totalBytes += bytes.length;
+            snapshot.put(name, bytes.clone());
+        }
         Map<String, List<PublicSymbol>> index = new TreeMap<>();
         for (NamespacePin pin : lock.namespaces()) {
             byte[] data = snapshot.get(pin.namespace());
