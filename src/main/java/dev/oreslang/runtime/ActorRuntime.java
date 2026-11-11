@@ -881,7 +881,7 @@ public final class ActorRuntime implements AutoCloseable {
      * redemption is host CONTROL-only until compiler/CONTROL principal
      * authentication and memory-operation lowering are implemented.</p>
      */
-    public ActorStateSupervisorLoans createCurrentActorStateLoans(
+    ActorStateSupervisorLoans createCurrentActorStateLoans(
             int maxPending, int maxReaders) {
         ActorCell<?> cell = currentActor.get();
         if (cell == null || !currentThreadOwnsActorExecutionLease()) {
