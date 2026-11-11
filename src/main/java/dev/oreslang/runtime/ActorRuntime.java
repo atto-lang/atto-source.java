@@ -447,6 +447,34 @@ public final class ActorRuntime implements AutoCloseable {
         public static SupervisorId create() { return new SupervisorId(UUID.randomUUID()); }
     }
 
+    /** Immutable CONTROL metadata: no guest exception message, heap or payload. */
+    public enum VirtualActorTerminalKind { TERMINAL_FAILURE, CANCELLED }
+
+    /**
+     * Host-visible exact-generation terminal receipt, never guest callable.
+     * Actual policy authority is granted separately by a one-shot CONTROL
+     * decision lease after physical quiescence and supervisor validation.
+     */
+    public record VirtualActorTerminalNotice(
+            SupervisorId supervisorId,
+            ActorGroupId groupId,
+            VirtualActorActivationRegistry.Identity identity,
+            long generation,
+            ActorId actorId,
+            VirtualActorTerminalKind kind,
+            String failureClass) {
+        public VirtualActorTerminalNotice {
+            Objects.requireNonNull(supervisorId, "supervisorId");
+            Objects.requireNonNull(groupId, "groupId");
+            VirtualActorRuntimeGenerationFence.validate(identity);
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(failureClass, "failureClass");
+            if (generation <= 0 || failureClass.isBlank() || failureClass.length() > 256)
+                throw new IllegalArgumentException("invalid virtual terminal receipt");
+        }
+    }
+
     /** Stable machine-readable causes for synchronous mailbox admission failure. */
     public interface SendError {
         enum Reason {
@@ -3458,7 +3486,7 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
         /** Optional host CONTROL callback; copied into each physical binding. */
-        private Function<VirtualActorTerminalControl.Notice, CompletionStage<Void>>
+        private Function<VirtualActorTerminalNotice, CompletionStage<Void>>
                 virtualActorTerminalHandler;
         // Trusted runtime resource closures, not guest callbacks. Invoked
         // outside authorityLock after the group is fenced but before worker
@@ -3556,7 +3584,7 @@ public final class ActorRuntime implements AutoCloseable {
          * This is host-only, never callable from actor guest code.
          */
         public void installVirtualActorTerminalHandler(
-                Function<VirtualActorTerminalControl.Notice, CompletionStage<Void>> handler) {
+                Function<VirtualActorTerminalNotice, CompletionStage<Void>> handler) {
             requireSupervisor("install virtual actor terminal CONTROL handler");
             requireCallerRuntimeAffinity("install virtual actor terminal CONTROL handler");
             Objects.requireNonNull(handler, "handler");
