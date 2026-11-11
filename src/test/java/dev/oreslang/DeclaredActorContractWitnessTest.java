@@ -76,6 +76,23 @@ final class DeclaredActorContractWitnessTest {
     }
 
     @Test
+    void physicalFourFileCorpusProvesExactlyOneDeclaredActor() throws IOException {
+        var units = new LinkedHashMap<String, Ast.Program>();
+        for (String file : new String[] {
+                "actor.atto", "contract.atto", "methods.atto", "state.atto"}) {
+            var contents = Files.readString(
+                    Path.of("contracts", "declared-actor-witness-v1", file));
+            units.put("src/foo/" + file, Parser.parse(contents));
+        }
+        var receipt = ActorContractWitness.linkSourceSet("demo@1.0.0", units);
+        assertEquals(1, receipt.actors().size());
+        assertEquals(1, receipt.boundMethods().size());
+        assertEquals(1, receipt.actors().values().iterator().next().methods().size());
+        assertEquals("src/foo/state.atto",
+                receipt.actors().values().iterator().next().stateUnit());
+    }
+
+    @Test
     void missingRequiredMethodFailsClosed() {
         reject(DECL, CONTRACT,
                 NS + "pub mtd (Foo f) other(int x): int { return x; }",
