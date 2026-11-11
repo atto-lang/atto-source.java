@@ -8,6 +8,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryV1.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowSubtreeRecoveryIntegrationTest.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowDataAdmissionRaceStandalone.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorAtomicChildAdmissionStandalone.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorEscrowAdmissionLinearizationIntegrationTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java'
