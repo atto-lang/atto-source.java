@@ -892,6 +892,10 @@ public final class Parser {
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
         if (prefix.role() == Ast.ActorRole.NEURON && actorToken.type() != ACTOR)
             throw error(actorToken, "neuron actor v0 requires 'actor', not 'isoactor'");
+        if (prefix.role() == Ast.ActorRole.NEURON && kind != Ast.ActorKind.SHARED)
+            throw error(actorToken,
+                    "neuron actor v0 requires a shared actor; untrusted and isolated "
+                            + "activation need separate checked state admission");
         if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
                 || modifiers.isAbstract) {
