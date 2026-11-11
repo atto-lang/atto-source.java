@@ -375,12 +375,18 @@ final class ActorRouteCoordinatorV1Test {
         private final AtomicReference<Object> owner = new AtomicReference<>();
         volatile boolean ready;
         volatile boolean retired;
+        volatile boolean preclaimDrained = true;
 
         AttestedHostPhysical(Object domain, boolean ready) {
             this.domain = domain;
             this.ready = ready;
         }
-        @Override public boolean readyForPublication() { return ready && !retired; }
+        @Override public boolean readyForPublication() {
+            return ready && !retired && preclaimDrained;
+        }
+        @Override public boolean preclaimDirectMailDrained() {
+            return preclaimDrained;
+        }
         @Override public boolean sameAuthorityDomain(
                 ActorRouteCoordinatorV1.PhysicalRouteWitness other) {
             return other instanceof AttestedHostPhysical test && domain == test.domain;
@@ -433,6 +439,28 @@ final class ActorRouteCoordinatorV1Test {
             assertFalse(original.retired);
             stage.abort(seal);
             assertSame(original, authority.current().physicalRoute());
+        }
+    }
+
+    @Test void preclaimDirectPhysicalMailMustDrainBeforeCodeSwitch() {
+        Object seal = new Object();
+        Object runtimeDomain = new Object();
+        var old = new AttestedHostPhysical(runtimeDomain, true);
+        old.preclaimDrained = false;
+        try (var authority = new ActorRouteCoordinatorV1<>(
+                89, seal, image('a'), state(10), old, 4, 32, 128)) {
+            var candidate = new AttestedHostPhysical(runtimeDomain, true);
+            var stage = authority.stage(seal, image('b'));
+            assertFalse(stage.quiescent(seal),
+                    "messages admitted directly before sealing old physical ActorRef are still active");
+            assertFalse(stage.publish(seal, state(10), candidate));
+            assertSame(old, authority.current().physicalRoute());
+            assertFalse(old.retired);
+
+            old.preclaimDrained = true; // Host-only simulation of real ActorRef.drain() receipt
+            assertTrue(stage.quiescent(seal));
+            assertTrue(stage.publish(seal, state(10), candidate));
+            assertTrue(old.retired);
         }
     }
 
