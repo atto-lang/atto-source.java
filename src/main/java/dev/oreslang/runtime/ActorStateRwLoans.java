@@ -67,10 +67,28 @@ public final class ActorStateRwLoans implements AutoCloseable {
      * admission and the final physical reader/writer/completion retires.
      */
     public ActorStateRwLoans(int maxPending, Runnable retirementWakeup) {
+        this(maxPending, retirementWakeup, null);
+    }
+
+    /**
+     * Production actor-state allocation must bind its owner BEFORE the first
+     * acquisition. Otherwise an unrelated execution can claim an uninitialized
+     * region and make its own allocation appear authoritative. The nullable
+     * compatibility overload above remains for isolated host-only test ledgers.
+     */
+    ActorStateRwLoans(int maxPending, Runnable retirementWakeup,
+            ExecutionContext.AllocationDomain owningAllocation) {
         if (maxPending < 0) throw new IllegalArgumentException("negative state RW queue capacity");
+        if (owningAllocation != null
+                && (owningAllocation.kind() != ExecutionContext.AllocationKind.ACTOR
+                    || !owningAllocation.isBound())) {
+            throw new IllegalArgumentException(
+                    "actor state RW owner must be a live actor allocation domain");
+        }
         this.maxPending = maxPending;
         this.retirementWakeup = Objects.requireNonNull(
                 retirementWakeup, "retirementWakeup");
+        this.boundAllocation = owningAllocation;
     }
 
     /** Nonblocking physical-retirement receipt for ActorRuntime finalization. */
