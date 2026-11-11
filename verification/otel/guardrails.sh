@@ -64,7 +64,7 @@ otel_guardrails_native_host_digest() {
   grep -Eq 'Type:[[:space:]]+(EXEC|DYN)' <<< "$hdr" || return 1
   dynamic="$(readelf -d "$executable")" || return 1
   # A genuine Native Image host must not use the regular managed Java launcher.
-  if grep -Eq 'Shared library: \\[(libjvm|libjli|libjava)\\.so' <<< "$dynamic"; then
+  if grep -Eq 'Shared library: \[(libjvm|libjli|libjava)\.so' <<< "$dynamic"; then
     return 1
   fi
   hash="$(sha256sum "$executable" | cut -d' ' -f1)" || return 1
