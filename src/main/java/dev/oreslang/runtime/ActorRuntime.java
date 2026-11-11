@@ -2932,6 +2932,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Immediate mailbox admission without registering a producer waiter.
+         * A full USER mailbox returns false. All other send errors propagate.
+         */
+        public boolean trySend(M message) {
+            return ActorRuntime.this.trySend(this, message);
+        }
+
+        /**
          * Await mailbox admission without parking an actor carrier. Completion
          * means the immutable message envelope owns a mailbox slot; it is not a
          * handler-processing acknowledgement. Cancellation before admission
@@ -3029,6 +3037,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void send(M message) { ref.send(message); }
+
+        public boolean trySend(M message) { return ref.trySend(message); }
 
         public OresFuture<Void> sendAsync(M message) { return ref.sendAsync(message); }
 
@@ -6494,6 +6504,20 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+
+    /**
+     * Immediate admission probe. Only a full mailbox returns false.
+     * No pending writer is registered, no actor carrier is parked, and other
+     * errors retain the same typed diagnostics as send().
+     */
+    public <M> boolean trySend(ActorRef<M> ref, M message) {
+        try {
+            send(ref, message);
+            return true;
+        } catch (ActorMailboxFullException full) {
+            return false;
+        }
+    }
 
     /**
      * Awaitable actor-message admission with bounded producer retention.
