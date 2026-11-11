@@ -169,4 +169,22 @@ final class CheckedDispatchPlanIntegrationV1Test {
         assertNull(CheckedDispatchPlansV1.forProgram(genericMethod).get(methodCall),
                 "unmonomorphized method must not claim a checked static symbol");
     }
+
+    @Test
+    void repeatedExplicitScalarGenericCallsNeverInheritUncheckedAotProofs() throws Exception {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(Files.readString(
+                Path.of("tests/fixtures/dispatch/generic_i64_reuse_v1.atto"),
+                StandardCharsets.UTF_8));
+        var plans = CheckedDispatchPlansV1.forProgram(checked);
+        Ast.FunctionDecl main = function(checked, "main");
+        assertEquals(2, main.body().size());
+        for (Ast.Stmt statement : main.body()) {
+            Ast.CallExpr write = (Ast.CallExpr) ((Ast.ExprStmt) statement).expression();
+            Ast.CallExpr generic = (Ast.CallExpr) write.arguments().getFirst();
+            assertTrue(generic.typeArgumentsPresent());
+            assertEquals("int", generic.typeArguments().getFirst().name());
+            assertNull(plans.get(generic),
+                    "source-level generic target is not an emitted AOT specialization");
+        }
+    }
 }
