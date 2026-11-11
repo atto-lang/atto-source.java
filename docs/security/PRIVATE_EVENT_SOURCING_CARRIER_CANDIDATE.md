@@ -11,7 +11,7 @@
 - Source-free canary workflow on draft branch:
   `.github/workflows/atto-event-sourcing-source-free-canary.yml`
 - Pinned workflow blob SHA on that branch:
-  `8e4b284d92b67208726bec6df8f16f4920c3ae76`
+  `2e65288cc48cfd99562c5a686af5f1126cb493ad`
 - Latest confirmed successful source-free runner execution:
   [Actions run #42951516578](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951516578)
   (**8 executed steps; success**) and [run #42951509176](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951509176)
@@ -24,12 +24,12 @@
 - Java host persistence:
   `ores-truffle-oreslang/oreslang-source.java` draft PR #2757.
   Proposed exact SHA when written:
-  `54380605a3e6ddd3cdc15c5338119244251e035e` (tree `dcd3c19d4826f8e0094e5b21abbad092054ff93e`).
+  `63ca474557814319ae93a12cec9a34331651c2f3` (tree `7055795a7b79fb58bd6dc86ff316ee8587da78b2`).
   It is a fast-moving draft; re-read the head and tree after any approval.
 - Node host SQLite reference:
   `ores-truffle-oreslang/oreslang-platform-conformance` draft PR #668.
   Proposed exact SHA when written:
-  `3897b2ceac064a329f0c099d9025e1e2c7ba78a7` (tree `8836a46856556c7fe1f892015fccb2e62bec24a9`).
+  `6bebdf19c8ce328965d627c6b3ac00c6c26a8782` (tree `948c92cbfc7d1d6d0f34e25b1ed8711d73e261ac`).
   Also refresh at actual handoff.
 
 Only a **source-owned, approved** publisher may enumerate the source tree,
@@ -120,10 +120,35 @@ The independently authored, **no-source/no-checkout** private runner
 passed 11 job steps, including 6/6 source-free original-epoch digest
 checks. It certifies neither these exact Node/Java source implementations
 nor a valid export permit. The candidate's workflow blob was read back
-as `8e4b284d92b67208726bec6df8f16f4920c3ae76`.
+as `2e65288cc48cfd99562c5a686af5f1126cb493ad`.
 
 The source/main and destination/main protection, independent security
 review, historical exposure incident and active destination allowlist
 remain mandatory stop conditions. Any approval must pin the *updated*
 exact source commit/tree before transfer; older proposed SHAs are
 superseded, not implicit approval.
+
+## Compacted legacy receipt evidence (2026-11-10, source-free)
+
+- Candidate no-source branch `8b9a05bb8eb6c6853d0aa69e4badd3ef789d456d`,
+  immutable Git tree `e01f5d0b36bd4c16ea2cdfe7ec2710f669a8f6c8`.
+- [Run #42956100273](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42956100273)
+  succeeded on **12 executed job steps**, including 6/6 independent
+  SQLite tests for compacted historic receipt, new fenced epoch,
+  altered payload, stale epoch, tampered checkpoint, and missing
+  checkpoint denial.
+- Current proposed exact source identities are Java PR #2757
+  `63ca474557814319ae93a12cec9a34331651c2f3`
+  (tree `7055795a7b79fb58bd6dc86ff316ee8587da78b2`)
+  and conformance PR #668
+  `6bebdf19c8ce328965d627c6b3ac00c6c26a8782`
+  (tree `948c92cbfc7d1d6d0f34e25b1ed8711d73e261ac`).
+- The candidate's *source-free* workflow blob is
+  `2e65288cc48cfd99562c5a686af5f1126cb493ad`.
+  It is not a reviewed exact-source execution workflow.
+
+These SHAs are review inputs ONLY, not active authorization. Keep the
+private-source export DENIED until independent security approval,
+protected governance and the open historical exposure incident have
+been resolved. Only then may the source-owned publisher mirror a
+reviewed exact tree. No source was copied during this run.
