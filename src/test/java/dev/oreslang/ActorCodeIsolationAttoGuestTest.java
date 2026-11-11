@@ -49,8 +49,8 @@ final class ActorCodeIsolationAttoGuestTest {
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out, err);
-        assertEquals("3|7|42", out.toString(StandardCharsets.UTF_8),
-                "same compiled helper and actor handler must use independent state");
+        assertEquals("3|7|11|42", out.toString(StandardCharsets.UTF_8),
+                "shared Counter instances and isolated actor must retain private state");
     }
 
     @Test
@@ -73,6 +73,18 @@ final class ActorCodeIsolationAttoGuestTest {
                 () -> CapabilityChecker.check(
                         Parser.parse(source), IsolatePolicy.developer()));
         assertTrue(rejected.getMessage().contains("SHARED_MEMORY"),
+                rejected::getMessage);
+    }
+
+    @Test
+    void callableCodeIdentityNeverPermitsClosureTransportAsActorMail()
+            throws Exception {
+        String source = Files.readString(fixture("forbidden-callable-mail.atto"));
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(rejected.getMessage().contains("sendable")
+                        || rejected.getMessage().contains("actor-boundary"),
                 rejected::getMessage);
     }
 }
