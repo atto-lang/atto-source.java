@@ -13,7 +13,10 @@ It is **not** executable actor state and does not grant a critical section.\n\nT
   actor-execution gate, not execute or return state.
 
 `ActorStateBinder.bindSourceSet` is immutable static-only binding keyed by
-(package identity string, namespace, actor name). Its caller-provided source
+(package identity string, namespace, actor name). A state schema is
+only valid for a `declare actor` header; a full inline
+`define actor Foo as ... end` cannot silently acquire this separate
+state layout. Its caller-provided source
 map is NOT cryptographic package provenance. Connect it to the manifest-locked
 source inventory before issuing any code generation proof.
 
