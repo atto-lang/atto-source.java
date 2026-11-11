@@ -11,7 +11,7 @@
 - Source-free canary workflow on draft branch:
   `.github/workflows/atto-event-sourcing-source-free-canary.yml`
 - Pinned workflow blob SHA on that branch:
-  `9c6e5bd613cda733034758a5fbd323ff8470d213`
+  `2a2db7327bfcdb60c34374cf360c05e040acf35d`
 - Latest confirmed successful source-free runner execution:
   [Actions run #42951516578](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951516578)
   (**8 executed steps; success**) and [run #42951509176](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951509176)
@@ -80,3 +80,28 @@ execute. All implementation PRs remain DRAFT.
 This proposal is intentionally informational; it must not be treated
 as an authorization receipt, test pass or relaxation of the source
 security policy.
+
+
+## Latest JDK/JDBC no-source carrier admission proof (2026-11-10)
+
+- Exact candidate branch head: `c981205661d0ac7743879a79bb9dc95583ed112f`.
+- [Actions run #42952295710](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42952295710):
+  **SUCCESS, 10 executed job steps**, no checkout, `permissions: {}`.
+- Source-free local runner checks: 3 SQLite before/after-SIGKILL,
+  4 snapshot integrity, 7 replay-capacity, 6 checkpoint laundering,
+  and 3 native Node SQLite TEMP-trigger/COMMIT interception checks.
+- Native hosted JDK: **`javac 21.0.13`**; strict `-Xlint:all -Werror`
+  compiled a freshly authored independent Java/JDBC fixture.
+- Pinned SQLite JDBC version `3.53.4.0`, exact downloaded SHA-256
+  `bcb1f51e36f940867e83342f9efbf5968ac44a6bef4d397bb4af7b17b45cd2fb`.
+- Pinned SLF4J API version `2.0.17`, downloaded SHA-256
+  `7b751d952061954d5abfed7181c1f645d336091b679891591d63329c622eb832`.
+- Independent Java/JDBC WAL/FULL commit/rollback fixture passed 3/3
+  assertions after database reopen. **None of the private source
+  compiler/JDBC classes were built or run.**
+
+This is positive current candidate **toolchain/runner readiness**
+evidence, not a claim that the account has unlimited future minutes.
+The exact carrier *execution* workflow, test-plan digest and tree
+handoff must be separately reviewed; the synthetic canary workflow
+blob alone does not authorize running any source.
