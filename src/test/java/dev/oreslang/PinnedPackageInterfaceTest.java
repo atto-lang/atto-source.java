@@ -9,6 +9,7 @@ import dev.oreslang.compiler.PinnedPackageInterface.Lock;
 import dev.oreslang.compiler.PinnedPackageInterface.NamespacePin;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -113,6 +114,10 @@ final class PinnedPackageInterfaceTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new Lock("bad/alias", INSTANCE, COMPILER, TARGET, POLICY, List.of(ns)));
         assertThrows(IllegalArgumentException.class, () ->
+                new Lock("mathA", INSTANCE, COMPILER, TARGET, POLICY, List.of(ns)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Lock("_math", INSTANCE, COMPILER, TARGET, POLICY, List.of(ns)));
+        assertThrows(IllegalArgumentException.class, () ->
                 new Lock("math", "../outside", COMPILER, TARGET, POLICY, List.of(ns)));
         assertThrows(IllegalArgumentException.class, () ->
                 new NamespacePin("../cross_package", original.sha256()));
@@ -146,6 +151,44 @@ final class PinnedPackageInterfaceTest {
         assertEquals(established.packageInstanceId(),
                 PinnedPackageInterface.admit(established,
                         Map.of("math", original.bytes())).packageInstanceId());
+    }
+
+    @Test void rejectsImpossibleOresiEntryCountBeforeAllocation() {
+        byte[] forged = iface("math", "algebra").bytes();
+        int cursor = 7; // ORESI NUL v1 magic
+        for (int i = 0; i < 4; i++) {
+            int size = ByteBuffer.wrap(forged, cursor, 4).getInt();
+            cursor += 4 + size;
+        }
+        ByteBuffer.wrap(forged, cursor, 4).putInt(100000);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                ExportInterfaceCodec.decode(forged));
+        assertTrue(ex.getMessage().contains("impossible export count"));
+    }
+
+    @Test void rejectsMaliciousPublicSymbolNamesEvenWithMatchingDigest() {
+        for (String unsafe : List.of("bad/../escape", "bad\0name", "bad\u202ename")) {
+            var forged = ExportInterfaceCodec.encode(
+                    new Header("math", COMPILER, TARGET, POLICY),
+                    List.of(new Entry("algebra", Kind.MODULE, "algebra", ""),
+                            new Entry("algebra", Kind.FUNCTION, unsafe, "()int")));
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                    PinnedPackageInterface.admit(lock(forged),
+                            Map.of("math", forged.bytes())));
+            assertTrue(ex.getMessage().contains("unsafe public interface symbol name"));
+        }
+    }
+
+    @Test void preservesUnicodePublicIdentifiersAndFrozenWireBytes() {
+        var encoded = ExportInterfaceCodec.encode(
+                new Header("math", COMPILER, TARGET, POLICY),
+                List.of(new Entry("algebra", Kind.MODULE, "algebra", ""),
+                        new Entry("algebra", Kind.FUNCTION, "sum_\u03bb",
+                                "(int a,int b):int")));
+        assertEquals("b163a6b76ab78ae943efe70e3d28a270a35417b891fe6f6de7208625709cc0d2",
+                encoded.sha256());
+        assertEquals(2, PinnedPackageInterface.admit(lock(encoded),
+                Map.of("math", encoded.bytes())).namespaceExports("math").size());
     }
 
     @Test void distinctLockedPackageInstancesNeverCollapseByAlias() {
