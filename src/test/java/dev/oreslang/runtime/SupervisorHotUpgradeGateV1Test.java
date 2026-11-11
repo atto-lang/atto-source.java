@@ -155,7 +155,9 @@ final class SupervisorHotUpgradeGateV1Test {
         assertEquals(parentId, registry.parentOf(child));
         assertThrows(IllegalStateException.class, () -> gate.reserveControl(child));
         existing.close();
-        assertTrue(gate.retired());
+        // No false retirement while the closed supervisor still owns children.
+        assertFalse(gate.retired());
+        assertEquals(parentId, registry.parentOf(child));
         gate.close();
     }
 
@@ -203,4 +205,83 @@ final class SupervisorHotUpgradeGateV1Test {
             assertEquals(2, gate.snapshot().epoch());
         }
     }
+    @Test
+    void hierarchyCycleIsRejectedWithoutCorruptingParentRegistry() {
+        var registry = new SupervisorHotUpgradeGateV1.ChildRegistry();
+        UUID alpha = UUID.randomUUID();
+        UUID beta = UUID.randomUUID();
+        UUID gamma = UUID.randomUUID();
+        try (var a = gate(new Object(), registry, alpha, null);
+             var b = gate(new Object(), registry, beta, alpha);
+             var c = gate(new Object(), registry, gamma, beta)) {
+            a.attachChild(beta);
+            b.attachChild(gamma);
+            assertThrows(IllegalStateException.class, () -> c.attachChild(alpha),
+                    "alpha -> beta -> gamma -> alpha must fail");
+            assertNull(registry.parentOf(alpha));
+            assertEquals(alpha, registry.parentOf(beta));
+            assertEquals(beta, registry.parentOf(gamma));
+            assertFalse(c.snapshot().children().contains(alpha));
+            b.detachChild(gamma);
+            a.detachChild(beta);
+            c.attachChild(alpha); // no cycle once both prior edges are gone
+            assertEquals(gamma, registry.parentOf(alpha));
+        }
+    }
+
+    @Test
+    void concurrentCompetingParentClaimsHaveExactlyOneWinner() throws Exception {
+        var registry = new SupervisorHotUpgradeGateV1.ChildRegistry();
+        UUID child = UUID.randomUUID();
+        var a = gate(new Object(), registry, UUID.randomUUID(), null);
+        var b = gate(new Object(), registry, UUID.randomUUID(), null);
+        var start = new CountDownLatch(1);
+        var done = new CountDownLatch(2);
+        var success = new java.util.concurrent.atomic.AtomicInteger();
+        var rejected = new java.util.concurrent.atomic.AtomicInteger();
+        var errors = new AtomicReference<Throwable>();
+        Thread first = new Thread(() -> {
+            try { start.await(); a.attachChild(child); success.incrementAndGet(); }
+            catch (IllegalStateException expected) { rejected.incrementAndGet(); }
+            catch (Throwable failure) { errors.set(failure); }
+            finally { done.countDown(); }
+        });
+        Thread second = new Thread(() -> {
+            try { start.await(); b.attachChild(child); success.incrementAndGet(); }
+            catch (IllegalStateException expected) { rejected.incrementAndGet(); }
+            catch (Throwable failure) { errors.set(failure); }
+            finally { done.countDown(); }
+        });
+        first.setDaemon(true);
+        second.setDaemon(true);
+        first.start();
+        second.start();
+        try {
+            start.countDown();
+            assertTrue(done.await(5, TimeUnit.SECONDS), "parent claim threads stuck");
+            assertNull(errors.get());
+            assertEquals(1, success.get());
+            assertEquals(1, rejected.get());
+            UUID owner = registry.parentOf(child);
+            assertTrue(owner.equals(a.snapshot().supervisorId())
+                    || owner.equals(b.snapshot().supervisorId()));
+        } finally {
+            start.countDown();
+            first.join(5000);
+            second.join(5000);
+            a.close();
+            b.close();
+        }
+    }
+
+    @Test
+    void closedUnattachedSupervisorMayRetireAfterLeaseDrain() {
+        Object authority = new Object();
+        var gate = gate(authority, new SupervisorHotUpgradeGateV1.ChildRegistry(),
+                UUID.randomUUID(), null);
+        assertFalse(gate.retired());
+        gate.close();
+        assertTrue(gate.retired());
+    }
+
 }
