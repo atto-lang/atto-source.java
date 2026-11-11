@@ -39,7 +39,9 @@ public final class ActorReceiverBinder {
         public Binding {
             java.util.Objects.requireNonNull(method, "external actor method");
             String targetName;
-            if (nominalActor instanceof Ast.StandaloneActorDecl standalone) {
+            if (nominalActor instanceof Ast.DeclaredActorDecl declared) {
+                targetName = declared.name();
+            } else if (nominalActor instanceof Ast.StandaloneActorDecl standalone) {
                 targetName = standalone.name();
             } else if (nominalActor instanceof Ast.ClassDecl klass
                     && klass.actorKind() != Ast.ActorKind.NONE) {
@@ -64,6 +66,7 @@ public final class ActorReceiverBinder {
         boolean hasExternalActorSyntax = program.modules().stream().anyMatch(
                 module -> module.declarations().stream().anyMatch(
                         decl -> decl instanceof Ast.StandaloneActorDecl
+                                || decl instanceof Ast.DeclaredActorDecl
                                 || decl instanceof Ast.ExternalActorMethodDecl
                                 || decl instanceof Ast.ActorStateAttachmentDecl));
         // Do not perturb existing class-like actor programs before new
@@ -257,7 +260,11 @@ public final class ActorReceiverBinder {
                                     + "." + state.actorName() + "'");
                 }
             }
-            if (declaration instanceof Ast.StandaloneActorDecl actor) {
+            if (declaration instanceof Ast.DeclaredActorDecl actor) {
+                typeName = actor.name();
+                category = "declaration-only actor";
+                nominalActors.put(typeName, actor);
+            } else if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
                 if (!receiverAliases.add(actor.receiverName())) {
@@ -336,9 +343,11 @@ public final class ActorReceiverBinder {
                                 + "actors in other modules cannot grant receiver authority");
             }
             Ast.Visibility actorVisibility =
-                    target instanceof Ast.StandaloneActorDecl standalone
-                            ? standalone.visibility()
-                            : ((Ast.ClassDecl) target).visibility();
+                    target instanceof Ast.DeclaredActorDecl declared
+                            ? declared.visibility()
+                            : target instanceof Ast.StandaloneActorDecl standalone
+                                    ? standalone.visibility()
+                                    : ((Ast.ClassDecl) target).visibility();
             if (method.visibility() == Ast.Visibility.PUBLIC
                     && actorVisibility != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException(
