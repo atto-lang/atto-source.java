@@ -210,10 +210,10 @@ define actor BinaryKvActor as
   }
 
   receive(ActorMail<Tuple[int, List[int], List[int]]> mail): void {
-    val tuple = mail.value;
+    const tuple = mail.value;
     val int kind = tuple[0];
-    val List<int> key = tuple[1];
-    val List<int> value = tuple[2];
+    const List<int> key = tuple[1];
+    const List<int> value = tuple[2];
     if kind == 5; do self.end(); return; fi
     if kind == 1; do self.emit_reply(5, []); return; fi
     if kind == 0; do self.emit_reply(6, []); return; fi
