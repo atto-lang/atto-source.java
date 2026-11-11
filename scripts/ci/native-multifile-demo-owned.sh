@@ -134,15 +134,11 @@ if ! env -u ORESLANG_PATH timeout --signal=TERM --kill-after=5s 180s \
 fi
 [[ -s "$receipt/classpath.txt" && -d "$compiler/target/classes" ]] ||
   fail "runtime classpath/bytecode absent"
-find "$compiler/target/classes" -type f -print0 |
-  sort -z | xargs -0 -r sha256sum > "$receipt/compiler-classes.sha256"
-test -s "$receipt/compiler-classes.sha256"
-: > "$receipt/runtime-dependencies.sha256"
-while IFS= read -r dep || [[ -n "$dep" ]]; do
-  [[ -f "$dep" && ! -L "$dep" ]] || fail "invalid runtime dependency"
-  sha256sum "$dep" >> "$receipt/runtime-dependencies.sha256"
-done < <(tr ':' '\n' < "$receipt/classpath.txt")
-test -s "$receipt/runtime-dependencies.sha256"
+# Run the compiler-owned, adversarially tested classpath audit.
+# Never execute helper scripts fetched from the demo repository.
+bash "$policy/scripts/ci/atto-runtime-classpath-audit.sh" \
+  "$compiler/target/classes" "$receipt/classpath.txt" "$receipt"
+test -s "$receipt/runtime-dependencies.sha256" || fail "empty dependency evidence"
 runtime_cp="$compiler/target/classes:$(cat "$receipt/classpath.txt")"
 java -version > "$receipt/java.stdout" 2> "$receipt/java.stderr"
 printf 'case\tphase\texit\tverdict\n' > "$receipt/cases.tsv"
@@ -199,4 +195,10 @@ negative ownership-conflict "$demo/native-multifile/negative/ownership-conflict.
 negative aliased-module-leak "$demo/native-multifile/module/alias-leak.atto"
 sed -i 's/^status=GUEST_FAILED$/status=PASS/' "$receipt/identity.txt"
 printf 'positive_cases=3\nnegative_cases=4\n' >> "$receipt/identity.txt"
+# Independent receipt verification is mandatory before a PASS marker appears.
+if ! bash "$policy/scripts/ci/verify-atto-owned-matrix.sh" --verify \
+      "$receipt" "$ATTO_EXPECTED_DEMO_SHA" "$ATTO_EXPECTED_COMPILER_SHA" "$demo"; then
+  sed -i 's/^status=PASS$/status=RECEIPT_FAILED/' "$receipt/identity.txt"
+  fail 'independent seven-case receipt verification failed'
+fi
 echo "ATTO_OWNED_GUEST_PASS source=$ATTO_EXPECTED_COMPILER_SHA demo=$ATTO_EXPECTED_DEMO_SHA cases=7 (guest JIT, not AOT)"
