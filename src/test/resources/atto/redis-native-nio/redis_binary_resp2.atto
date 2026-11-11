@@ -331,7 +331,9 @@ pub async routine main(): void {
     if chunk.size == 0; do
       await socket.close_async();
       await listener.close_async();
-      worker.send((5, [], []));
+      let List<int> stop_key = [];
+      let List<int> stop_value = [];
+      worker.send((5, stop_key, stop_value));
       await worker.get_done();
       return;
     fi
@@ -344,7 +346,9 @@ pub async routine main(): void {
         await socket.write_bytes_async([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]);
         await socket.close_async();
         await listener.close_async();
-        worker.send((5, [], []));
+        let List<int> stop_key = [];
+      let List<int> stop_value = [];
+      worker.send((5, stop_key, stop_value));
         await worker.get_done();
         return;
       fi
@@ -354,7 +358,9 @@ pub async routine main(): void {
           await socket.write_bytes_async([43, 79, 75, 13, 10]);
           await socket.close_async();
           await listener.close_async();
-          worker.send((5, [], []));
+          let List<int> stop_key = [];
+      let List<int> stop_value = [];
+      worker.send((5, stop_key, stop_value));
           await worker.get_done();
           return;
         fi
