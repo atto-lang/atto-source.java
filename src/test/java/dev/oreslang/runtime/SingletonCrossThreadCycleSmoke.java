@@ -5,6 +5,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /** Runs the real application-domain snapshot registry against cross-thread cycles. */
 public final class SingletonCrossThreadCycleSmoke {
@@ -37,7 +38,15 @@ public final class SingletonCrossThreadCycleSmoke {
         return false;
     }
 
-    private static void crossThreadCycle(int size) throws Exception {
+    private static CompletableFuture<Object> lookup(
+            SingletonSharedDomain domain, SingletonSharedDomain.Key key,
+            Supplier<?> initializer, boolean checked) {
+        return checked
+                ? domain.snapshotOnceChecked(key, "a".repeat(64), initializer)
+                : domain.snapshotOnce(key, initializer);
+    }
+
+    private static void crossThreadCycle(int size, boolean checked) throws Exception {
         var domain = new SingletonSharedDomain();
         var names = new SingletonSharedDomain.Key[size];
         for (int i = 0; i < size; i++) {
@@ -51,11 +60,11 @@ public final class SingletonCrossThreadCycleSmoke {
             for (int i = 0; i < size; i++) {
                 final int index = i;
                 tasks[i] = CompletableFuture.supplyAsync(() ->
-                    domain.snapshotOnce(names[index], () -> {
+                    lookup(domain, names[index], () -> {
                         ready(rendezvous);
-                        return domain.snapshotOnce(names[(index + 1) % size],
-                                () -> 17L).join();
-                    }).join(), pool);
+                        return lookup(domain, names[(index + 1) % size],
+                                () -> 17L, checked).join();
+                    }, checked).join(), pool);
             }
             // Every root of a cycle must terminate exceptionally, never hang.
             for (int i = 0; i < size; i++) {
@@ -66,9 +75,9 @@ public final class SingletonCrossThreadCycleSmoke {
                     require(hasCycle(e), "cycle must be diagnosed, not timeout");
                 }
                 final int at = i;
-                var sticky = domain.snapshotOnce(names[at], () -> {
+                var sticky = lookup(domain, names[at], () -> {
                     throw new AssertionError("failed singleton was initialized twice");
-                });
+                }, checked);
                 try {
                     sticky.join();
                     throw new AssertionError("failed singleton was not sticky");
@@ -95,17 +104,17 @@ public final class SingletonCrossThreadCycleSmoke {
                 "nested canonical identity reused after completion");
     }
 
-    private static void ignoredDirectCycleCannotPublish() {
+    private static void ignoredDirectCycleCannotPublish(boolean checked) {
         var domain = new SingletonSharedDomain();
         var key = new SingletonSharedDomain.Key("pkg", "M", "Sticky");
-        var result = domain.snapshotOnce(key, () -> {
+        var result = lookup(domain, key, () -> {
             // An initializer must not be able to mask a detected cycle by
             // discarding the failed nested receipt and returning a constant.
-            var ignored = domain.snapshotOnce(key, () -> 91L);
+            var ignored = lookup(domain, key, () -> 91L, checked);
             require(ignored.isCompletedExceptionally(),
                     "direct recursive nested receipt must fail");
             return 42L;
-        });
+        }, checked);
         try {
             result.join();
             throw new AssertionError("ignored recursive lookup published a successful singleton");
@@ -113,7 +122,7 @@ public final class SingletonCrossThreadCycleSmoke {
             require(hasCycle(failure), "ignored nested cycle still poisons publication");
         }
         try {
-            domain.snapshotOnce(key, () -> 91L).join();
+            lookup(domain, key, () -> 91L, checked).join();
             throw new AssertionError("cycle failure was not sticky");
         } catch (CompletionException failure) {
             require(hasCycle(failure), "cycle failure remains sticky on subsequent lookup");
@@ -122,9 +131,12 @@ public final class SingletonCrossThreadCycleSmoke {
 
     public static void main(String[] args) throws Exception {
         checks = 0;
-        crossThreadCycle(2);
-        crossThreadCycle(3);
-        ignoredDirectCycleCannotPublish();
+        crossThreadCycle(2, false);
+        crossThreadCycle(3, false);
+        crossThreadCycle(2, true);
+        crossThreadCycle(3, true);
+        ignoredDirectCycleCannotPublish(false);
+        ignoredDirectCycleCannotPublish(true);
         acyclicIdentity();
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_PASS=true");
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_ASSERTIONS=" + checks);
