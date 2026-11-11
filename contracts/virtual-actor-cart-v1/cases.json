@@ -1,0 +1,40 @@
+{
+  "schema": "atto.virtual-cart-guest-slice.v1",
+  "scope": "compiler-backed-cart-transition-not-guest-virtual-actor",
+  "i64": true,
+  "positive": [
+    {
+      "id": "cart-linked-guest",
+      "entry": "positive/cart_main.atto",
+      "dependency": "positive/cart_ops.atto",
+      "stdout": "expected/cart_main.stdout",
+      "source_blobs": {
+        "entry": "ef042b5bf1ffae93b13e0a43dc2299901a477d38",
+        "dependency": "1db480666b6bca1233d9a37a6b97a12a7b03ec0e",
+        "stdout": "12716757f1d259c38db007611b92538586bc08e4"
+      }
+    }
+  ],
+  "negative": [
+    {
+      "id": "protected-virtual-actor-mir",
+      "entry": "negative/virtual_cart_unsupported.atto",
+      "source_blob": "c684bf630127b2e31de39c8c6116838448729f43",
+      "expect_diagnostic": "VIRTUAL_ACTOR_MIR_UNSUPPORTED"
+    },
+    {
+      "id": "cart-i64-overflow",
+      "entry": "positive/cart_ops.atto",
+      "public_function": "cart_step",
+      "args": [
+        "9223372036854775807",
+        "1"
+      ],
+      "expect": "checked-overflow-rejection"
+    }
+  ],
+  "notes": [
+    "AOT/backend parity is proposed; no backend execution attested by this inventory.",
+    "Host-only logical actor generations and the compiled guest transition are separate layers until virtual actor MIR lowering."
+  ]
+}
