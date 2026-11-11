@@ -1,0 +1,115 @@
+name: Actor declare/external exact-head JDK25 JUnit (static gate)
+
+# No private-source export, carrier mirror, pull_request_target or write token.
+# This checks parser/binder/static admission ONLY, never guest actor execution.
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/ActorExternalEntrypointModifierTest.java'
+      - 'src/test/java/dev/oreslang/DeclaredActorNominalSyntaxTest.java'
+      - 'src/test/java/dev/oreslang/DeclaredActorHardeningTest.java'
+      - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
+      - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
+      - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
+      - '.github/workflows/actor-declare-external-jdk25-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actor-declare-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static-compiler-junit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact source revision without persisting credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Verify source identity, clean worktree, and immutable tree receipt
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]]
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          printf 'RECEIPT actor_external_source_commit=%s\n' "$EXPECTED_HEAD"
+          printf 'RECEIPT actor_external_source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+          printf 'RECEIPT actor_external_pom_blob=%s\n' "$(git hash-object pom.xml)"
+          printf 'RECEIPT actor_external_parser_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/parser/Parser.java)"
+          printf 'RECEIPT actor_external_binder_blob=%s\n' "$(git hash-object src/main/java/dev/oreslang/types/ActorReceiverBinder.java)"
+
+      - name: Prepare GraalVM Java 25 toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned v1
+        with:
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Execute actual parser, binder, package-scoped and hardened declaration JUnit suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac -version 2>&1 | grep -Eq '^javac 25([. ]|$)'
+          mvn -version
+          mvn -B -ntp \
+            -Dtest=ActorExternalEntrypointModifierTest,DeclaredActorNominalSyntaxTest,DeclaredActorHardeningTest,ActorReceiverBinderTest,CrossFileActorReceiverBindingTest,ExternalActorReceiverAstAdmissionTest \
+            -DfailIfNoTests=true test
+          echo 'RECEIPT actor_external_maven_test_step=EXECUTED'
+
+      - name: Refuse empty, skipped or failed Surefire XML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          import hashlib
+
+          suites = (
+              'ActorExternalEntrypointModifierTest',
+              'DeclaredActorNominalSyntaxTest',
+              'DeclaredActorHardeningTest',
+              'ActorReceiverBinderTest',
+              'CrossFileActorReceiverBindingTest',
+              'ExternalActorReceiverAstAdmissionTest',
+          )
+          total = 0
+          for suite in suites:
+              path = Path('target/surefire-reports') / f'TEST-dev.oreslang.{suite}.xml'
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'MISSING_SUREFIRE_REPORT:{suite}')
+              root = ET.parse(path).getroot()
+              if root.tag != 'testsuite' or root.attrib.get('name') != f'dev.oreslang.{suite}':
+                  raise SystemExit(f'WRONG_SUREFIRE_SUITE:{suite}')
+              count = int(root.attrib.get('tests', '0'))
+              failures = int(root.attrib.get('failures', '0'))
+              errors = int(root.attrib.get('errors', '0'))
+              skipped = int(root.attrib.get('skipped', '0'))
+              actual = len(root.findall('testcase'))
+              if count < 1 or count != actual or failures or errors or skipped:
+                  raise SystemExit(f'INVALID_SUREFIRE_RESULT:{suite}:tests={count}:testcases={actual}:fail={failures}:errors={errors}:skipped={skipped}')
+              total += count
+              print(f'RECEIPT junit={suite} tests={count} sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')
+          if total < 56:
+              raise SystemExit(f'INSUFFICIENT_TESTS:{total}')
+          print(f'RECEIPT actor_external_junit=EXECUTED_VERIFIED total={total}')
+          print('RECEIPT guest_actor_executed=FALSE native_image_executed=FALSE five_backend_parity=UNVERIFIED')
+          PY
