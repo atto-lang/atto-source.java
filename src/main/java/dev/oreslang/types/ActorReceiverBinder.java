@@ -144,6 +144,16 @@ public final class ActorReceiverBinder {
                                 + method.actorName() + "'");
             }
             if (target instanceof Ast.ClassDecl klass) {
+                // External bodies must not accidentally override an inherited
+                // receiver slot. The current local-only binder has no
+                // validated hierarchy/linearization witness, so any parent
+                // requires a separate inherited-slot coherence pass first.
+                if (!klass.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "external receiver binding on inherited actor '"
+                                    + module.name() + "." + klass.name()
+                                    + "' requires inherited actor slot coherence");
+                }
                 if (!klass.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "external receiver method on generic actor '"
@@ -193,6 +203,8 @@ public final class ActorReceiverBinder {
                     || !method.parameters().getFirst().type().name().equals("ActorMail")
                     || method.parameters().getFirst().type().arguments().size() != 1
                     || method.parameters().getFirst().type().inferArguments()
+                    || method.parameters().getFirst().type().arguments().getFirst().isBorrow()
+                    || method.parameters().getFirst().type().arguments().getFirst().isClosedAggregateType()
                     || !isVoid(method.returnType())) {
                 throw new IllegalArgumentException(
                         "external receive must be private and accept one "
