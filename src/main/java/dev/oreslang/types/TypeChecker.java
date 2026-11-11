@@ -177,7 +177,8 @@ public final class TypeChecker {
                     // loan, code image or typed dispatch is lowered yet.
                     if (!actor.methods().isEmpty()) {
                         try {
-                            dev.oreslang.compiler.VirtualActorProtectedOpsMirV1.lower(actor);
+                            dev.oreslang.compiler.VirtualActorLogicalCallMirV1.lower(
+                                    program.namespace(), module.name(), actor);
                         } catch (IllegalArgumentException invalidMir) {
                             throw new IllegalArgumentException(
                                     "VIRTUAL_ACTOR_MIR_UNSUPPORTED: " + invalidMir.getMessage(),
