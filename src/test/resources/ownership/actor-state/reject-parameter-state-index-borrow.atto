@@ -1,0 +1,8 @@
+define actor Items as
+  state { let List<int> values; }
+  inspect(int index): void {
+    val borrow int view = rt borrow self.values[index];
+    return;
+  }
+  receive(ActorMail<String> mail): void { return; }
+end
