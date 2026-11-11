@@ -55,11 +55,11 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         if (nodeId < 2) {
             throw new IllegalStateException("supervisor CONTROL identities exhausted");
         }
+        // The runtime owns the lock order:
+        // runtimeLifecycleLock -> cell.lifecycleLock -> bridge publication.
+        // registerFromRuntime publishes the node, exact ActorRef mapping and
+        // recovery ref as ONE transaction before runtime exposes the binding.
         runtime.attachSupervisorEscrowActor(actor, this, nodeId, parentId);
-        Long prior = ids.putIfAbsent(actor.id(), nodeId);
-        if (prior != null) {
-            throw new IllegalStateException("actor CONTROL binding already exists");
-        }
         return nodeId;
     }
 
@@ -86,9 +86,37 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         return id;
     }
 
-    /** Called only by ActorRuntime while publishing a new trusted binding. */
-    void registerFromRuntime(ActorRuntime.ActorRef<?> actor, long id, long parentId) {
+    /** Called only by ActorRuntime under its lifecycle locks AND the bridge
+     * monitor, BEFORE publishing the ActorRuntime escrow binding. This must
+     * register the node, exact ActorRef and recovery cancellation handle
+     * atomically against terminal failure. */
+    synchronized void registerFromRuntime(
+            ActorRuntime.ActorRef<?> actor, long id, long parentId) {
+        Objects.requireNonNull(actor, "actor");
         ledger.registerChild(id, parentId, actor.generation());
+        boolean mapped = false;
+        try {
+            if (ids.putIfAbsent(actor.id(), id) != null) {
+                throw new IllegalStateException("actor already mapped to CONTROL");
+            }
+            mapped = true;
+            SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+            if (coordinator != null) {
+                coordinator.registerInheritedChildFromRuntime(id, actor);
+            }
+        } catch (RuntimeException | Error failure) {
+            if (mapped) ids.remove(actor.id(), id);
+            ledger.rollbackUnpublishedChild(id, parentId, actor.generation());
+            throw failure;
+        }
+    }
+
+    /** Runtime-only rollback if publishing the binding itself fails. Caller
+     * must still hold lifecycleLock and bridge monitor. No live actor has
+     * yet received the binding or a delivery opportunity. */
+    synchronized void rollbackHostAttachFromRuntime(
+            ActorRuntime.ActorRef<?> actor, long nodeId, long parentId) {
+        rollbackInheritedChildFromRuntime(actor, nodeId, parentId);
     }
 
     /**
