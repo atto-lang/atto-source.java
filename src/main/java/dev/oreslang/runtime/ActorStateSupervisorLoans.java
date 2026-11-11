@@ -69,9 +69,12 @@ public final class ActorStateSupervisorLoans {
     }
 
     /**
-     * No state or raw region reference escapes. Releasing on the host is
-     * permitted only outside a guest actor turn; owner loans must unwind on
-     * the original actor's physical execution lease.
+     * Host-only supervisor loan receipt: no state or raw region reference
+     * escapes. Closing is barred inside guest actor/Mailman execution.
+     * Owner turns never receive this type: they use withOwnerRead/Write
+     * with lexical try-with-resources cleanup instead.
+     *
+     * This host close is not yet a compiler-proven CONTROL unwind receipt.
      */
     public final class Loan implements AutoCloseable {
         private final ActorStateRwLoans.StateLoan delegate;
