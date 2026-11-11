@@ -1626,7 +1626,10 @@ public final class OwnershipChecker {
             if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
             else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
             else throw error("unknown anonymous aggregate kind " + object.kind());
-            return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(type,
+                    type.isReadonlyRecordType() && isCopyType(type)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
