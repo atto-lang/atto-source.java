@@ -1032,9 +1032,37 @@ public final class OwnershipChecker {
             mergeBranchState(base, exits);
             return result;
         }
-        if (expr instanceof Ast.WithExpr) {
-            throw error("with reconstruction requires field-wise move/copy proof and "
-                    + "a checked class copy contract; refusing implicit aliasing");
+        if (expr instanceof Ast.WithExpr update) {
+            // The type checker has already admitted only closed readonly record
+            // values. Reprove copyability independently: callers may invoke
+            // the ownership checker directly on an untyped source tree.
+            ValueInfo source = checkExpr(update.source(), scope, false);
+            if (source.type == null || !source.type.isReadonlyRecordType()
+                    || !isCopyType(source.type) || source.kind != ValueKind.COPY
+                    || source.borrowSource != null) {
+                throw error("with v1 needs an owned readonly Copy record; "
+                        + "move-only records, borrowed values and class copies need checked lowering");
+            }
+            Map<String, Ast.TypeRef> fields = source.type.recordMembers();
+            for (Ast.WithField change : update.changes()) {
+                Ast.TypeRef slot = fields.get(change.name());
+                if (slot == null) {
+                    throw error("unknown with field '" + change.name() + "'");
+                }
+                if (!isCopyType(slot) || containsMutexGuardType(slot)) {
+                    throw error("with field '" + change.name()
+                            + "' is not a verified Copy field");
+                }
+                ValueInfo replacement = checkExpr(change.value(), scope, true);
+                if (replacement.kind != ValueKind.COPY
+                        || replacement.borrowSource != null
+                        || isBorrowValue(replacement)
+                        || containsMutexGuardType(replacement.type)) {
+                    throw error("with replacement '" + change.name()
+                            + "' must be an owned Copy value, never a borrow or guard");
+                }
+            }
+            return new ValueInfo(source.type, ValueKind.COPY, null);
         }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
