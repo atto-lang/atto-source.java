@@ -29,3 +29,14 @@ Potential grammar `import pkg bar from "pkg:bar";`, `import module algebra from 
 4. Run one `.atto` consumer against source, verified source archive, and compatible target-specific compiled package, including JVM and GraalVM Native Image guest exit 42; negative fixtures must never publish partial artifacts.
 
 Any source-free test, JUnit-only decoder test or zero-step CI run is **NOT_EXECUTED** for AttoLang guest parity.
+
+## 2026-11-11 audit and hardening addendum
+
+The following defects/risks were addressed on this draft branch:
+
+- Added a check that the declared `.oresi` export count is possible within the actual remaining envelope bytes before allocating its decoded symbol table (`ExportInterfaceCodec.decode`).
+- Denied dangerous public symbol spellings containing slash/backslash, C0/C1 controls, bidi overrides, zero-width formatting, or Unicode tag controls. Ordinary Unicode identifiers remain permitted.
+- Enforced 16 MiB per-interface and 64 MiB aggregate package admission limits before cloning or decoding bytes; all consumed inputs are copied into an owned Java snapshot.
+- Expanded `PinnedPackageInterfaceTest` to 14 authored methods, including exact Java/native digest vectors, Unicode acceptance, hostile export names, mixed-case alias rejection, forged count, oversized interface and nominal package isolation.
+
+**Evidence status:** tests are committed but current source-org workflow has no executed steps. The test suite has not been run against a JDK25 compiler in an authorized CI environment. External `.oresi` provenance, actual signed package locks, type/layout ABI and guest linking remain unimplemented. Do not promote to executable package parity.
