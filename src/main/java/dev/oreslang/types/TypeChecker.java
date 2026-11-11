@@ -1742,6 +1742,14 @@ public final class TypeChecker {
 
         for (Ast.MethodDecl method : klass.methods()) {
             if (klass.actorKind() != Ast.ActorKind.NONE
+                    && (method.name().equals("on_stop")
+                            || method.name().equals("on_restart"))) {
+                throw new IllegalArgumentException(
+                        "actor control/lifecycle method '" + klass.name() + "."
+                                + method.name() + "' requires compiler-owned "
+                                + "generation-fenced lowering and cannot be user-defined");
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
                             || method.name().equals("end")
