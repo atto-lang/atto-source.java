@@ -37,7 +37,7 @@ final class NamespaceActorStateAdmissionTest {
     }
 
     private static String actor() {
-        return "pub define actor Foo;";
+        return "pub declare actor Foo;";
     }
 
     private static String state() {
@@ -62,6 +62,16 @@ final class NamespaceActorStateAdmissionTest {
                 () -> ActorStateBinder.bindSourceSet("fixture@1", source));
         assertTrue(denied.getMessage().contains("has no nominal actor"),
                 denied.getMessage());
+    }
+
+    @Test
+    void explicitDeclareActorWithoutBodyReceivesNoImplicitState() {
+        var declaration = parse("declare actor Foo;");
+        var actor = assertInstanceOf(Ast.StandaloneActorDecl.class,
+                declaration.modules().getFirst().declarations().getFirst());
+        assertEquals("Foo", actor.name());
+        assertTrue(ActorStateBinder.bindSourceSet(
+                "demo@1.0.0", Map.of("src/foo.atto", declaration)).isEmpty());
     }
 
     @Test
@@ -193,7 +203,7 @@ final class NamespaceActorStateAdmissionTest {
 
     @Test
     void stateOnActorWithContractDoesNotSatisfyContract() {
-        var source = units("pub define actor Foo implements ActorXYZ;", state());
+        var source = units("pub declare actor Foo implements ActorXYZ;", state());
         var error = assertThrows(IllegalArgumentException.class,
                 () -> ActorStateBinder.bindSourceSet("demo@1.0.0", source));
         assertTrue(error.getMessage().contains("ACTOR_CONTRACT_WITNESS_UNSUPPORTED"),
