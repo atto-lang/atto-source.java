@@ -55,3 +55,19 @@ Prefer statically resolved calls whenever the checked program proves their targe
 ## Next implementation ordering
 
 Java identity-bound interpreter proof (this PR; awaiting executable tests) -> checked native call-plan IR -> LLVM guest AOT lowering -> .NET Native AOT -> Wasm real guest module -> Forge native. Canonicalize the *semantics* first; separate backend capability flags from claims of tested parity. Propose compiler diagnostic `--emit-dispatch-plan` (not yet implemented) for each call site's strategy, proof and generation.
+
+### Generic calls remain outside proven direct-symbol dispatch
+
+The checked Java `TypeChecker` now records local direct/slot plans only
+when the selected declaration and its nominal receiver class have **no
+unresolved generic parameters**. A source-level resolved generic call is not
+yet a uniquely **emitted specialization**; its method name and source ABI
+must not be treated as proof that a monomorphized AOT body exists. The
+ordinary checked interpreter can still evaluate supported generic calls.
+
+A future compiler integration may re-enable such calls only **after**
+full typed, post-macro, borrow/effect/capability-approved instantiation
+closure, unique emitted-symbol assignment, precise ABI checks, and the
+bounds from common-source #265. Java's Truffle guest evaluator dispatch
+is not machine-code NativeAOT specialization. The tests in
+`CheckedDispatchPlanIntegrationV1Test` assert the generic exclusion.
