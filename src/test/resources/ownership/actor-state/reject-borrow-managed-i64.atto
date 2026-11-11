@@ -1,0 +1,11 @@
+// Physical backing for i64 does not turn a field reference into a transferable loan.
+define actor I64Counter as
+  state {
+    let i64 count;
+  }
+  receive(ActorMail<String> mail): void {
+    val borrow i64 alias = rt borrow self.count;
+    self.end();
+    return;
+  }
+end
