@@ -53,6 +53,10 @@ jobs:
           git hash-object src/test/java/dev/oreslang/VirtualActorLogicalCallMirV1Test.java
           git hash-object src/test/java/dev/oreslang/VirtualActorGuestInvocationMirV1Test.java
           git hash-object contracts/virtual-actor-guest-invoke-v1/positive/cart_resolve_and_invoke.atto
+          git hash-object contracts/virtual-actor-guest-invoke-v1/cases.json
+          git hash-object contracts/virtual-actor-guest-invoke-v1/negative/unawaited_cart.atto
+          git hash-object contracts/virtual-actor-guest-invoke-v1/negative/wrong_nominal_cart.atto
+          git hash-object contracts/virtual-actor-guest-invoke-v1/negative/unknown_method_cart.atto
           git hash-object src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java
           git hash-object contracts/virtual-actor-mir-v1/cases.json
           git hash-object contracts/virtual-actor-mir-v1/positive/cart_checked_contract.atto
