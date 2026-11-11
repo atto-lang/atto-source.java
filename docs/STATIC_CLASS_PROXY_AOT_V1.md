@@ -102,6 +102,29 @@ test or standalone Native Image success is claimed. Revalidate the subsequent
 branch commits too. Do not mirror private compiler source to another
 organization without explicit approved carrier terms.
 
+## Additional fail-closed admissions (2026-11-10)
+
+The generated type must not select a local target `Foo` when an explicit
+import or namespace alias also binds `Foo`. The compiler rejects imported
+target-name capture instead of relying on unresolved symbol precedence.
+
+Annotated constructors are rejected until wrapper metadata and effect rules are
+proven. Mutable `struct` arguments/returns, including nested generic types,
+also reject rather than forwarding mutable authority without a borrow proof.
+
+The Java JUnit suite now declares **16** focused checks and the source-org
+exact-head CI gate requires parsed Surefire XML with at least 16 test cases,
+zero skipped/failures/errors, and no failure/error/skipped XML nodes.
+
+An alternate private CI carrier at `opto-sync-test/go-java-validation` has an
+independently reviewable **source-free** [PR #40](https://github.com/opto-sync-test/go-java-validation/pull/40)
+for `ci/test-plans/java-pr2650-proxy.json`. It runs the targeted compiler suite
+offline and verifies its XML. This plan is **not** an authorization to export
+private source. The carrier workflow still executes its source plan on an
+ordinary runner and needs independent no-network/unprivileged isolation
+hardening before any private-source copy, in addition to source-main
+protection, approved destination and exact-tree/plan attestation.
+
 ## Wrapped-target escape admission
 
 A public method returning the proxied class itself (`Foo`, `self`, or a
