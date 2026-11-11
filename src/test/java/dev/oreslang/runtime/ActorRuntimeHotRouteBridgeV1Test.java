@@ -112,4 +112,40 @@ final class ActorRuntimeHotRouteBridgeV1Test {
             assertTrue(v1.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void physicalClaimIsOneWayAndDoesNotFenceUnrelatedActors()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger first = new AtomicInteger();
+            AtomicInteger second = new AtomicInteger();
+            var claimed = runtime.<Integer>spawnShared(
+                    () -> (mail, context) -> first.addAndGet(mail));
+            var unrelated = runtime.<Integer>spawnShared(
+                    () -> (mail, context) -> second.addAndGet(mail));
+            claimed.ready().get(5, TimeUnit.SECONDS);
+            unrelated.ready().get(5, TimeUnit.SECONDS);
+
+            var permit = runtime.claimPhysicalForHotRoute(claimed);
+            assertTrue(permit.readyForPublication());
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.claimPhysicalForHotRoute(claimed),
+                    "physical ActorRef cannot be enrolled twice");
+            assertThrows(SecurityException.class, () -> claimed.send(1));
+            assertThrows(SecurityException.class, () -> claimed.sendAsync(1));
+            unrelated.send(3);
+            unrelated.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(3, second.get());
+            assertEquals(0, first.get());
+
+            permit.retireFromLogicalRoute();
+            assertFalse(permit.readyForPublication());
+            assertThrows(SecurityException.class, () -> claimed.send(1),
+                    "retirement must not reopen stale raw physical delivery");
+            claimed.stop();
+            unrelated.stop();
+            assertTrue(claimed.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(unrelated.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
