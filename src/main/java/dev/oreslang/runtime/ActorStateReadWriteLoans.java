@@ -99,6 +99,11 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
     public int pendingCount() {
         synchronized (monitor) { return pending.size(); }
     }
+
+    /** Diagnostics only: callbacks waiting for host-only publication. */
+    public int pendingPublicationCount() {
+        synchronized (monitor) { return notifications.size(); }
+    }
     public int activeCount() {
         synchronized (monitor) { return active.size(); }
     }
@@ -263,6 +268,14 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
                 // previous completion callback is stalled on another thread.
                 // Do not wait for delayed publishGrant() to close the loan.
                 reserved = request.reservation;
+                if (reserved != null && request.publication != null) {
+                    // Remove the not-yet-started callback. Without this,
+                    // repeated cancel/reserve cycles could accumulate
+                    // arbitrarily many cancelled notification closures while
+                    // an earlier completion subscriber remains blocked.
+                    notifications.remove(request.publication);
+                    request.publication = null;
+                }
             }
         }
         if (reserved != null) reserved.close();
@@ -298,7 +311,9 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
                     ? grantReaderLocked(next.handler)
                     : grantWriterLocked(next.handler);
             next.reservation = loan;
-            notifications.addLast(() -> publishGrant(next, loan));
+            Runnable notification = () -> publishGrant(next, loan);
+            next.publication = notification;
+            notifications.addLast(notification);
             if (loan instanceof WriteLoan) return;
         }
     }
@@ -360,6 +375,7 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
         // Assigned while holding monitor when removed from the pending FIFO.
         // Cancellation may revoke the reserved loan before Future delivery.
         Loan reservation;
+        Runnable publication;
         Pending(Object handler) { this.handler = handler; }
         abstract boolean cancelled();
         abstract boolean complete(Loan loan);
