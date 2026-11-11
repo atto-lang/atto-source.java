@@ -439,6 +439,63 @@ final class ActorStateReadWriteLoansTest {
         }
     }
 
+    private static void exerciseCancelOfUnpublishedReservation(boolean cancelledWriter)
+            throws Exception {
+        long generation = cancelledWriter ? 202L : 201L;
+        var state = new ActorStateReadWriteLoans(generation, 3, 2,
+                java.util.List.of("weight"));
+        var initial = state.acquireWriteAsync(new Object(), generation).join();
+        var firstRead = state.acquireReadAsync(new Object(), generation);
+        dev.oreslang.runtime.OresFuture<? extends ActorStateReadWriteLoans.Loan> second =
+                cancelledWriter
+                        ? state.acquireWriteAsync(new Object(), generation)
+                        : state.acquireReadAsync(new Object(), generation);
+        var firstClosed = new CountDownLatch(1);
+        var allowPublisher = new CountDownLatch(1);
+        firstRead.whenCompleteRuntime((loan, failure) -> {
+            assertNull(failure);
+            loan.close();
+            firstClosed.countDown();
+            try {
+                assertTrue(allowPublisher.await(5, TimeUnit.SECONDS),
+                        "publisher must remain stalled while cancelling reservation");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+        Thread publisher = Thread.ofPlatform().start(initial::close);
+        try {
+            assertTrue(firstClosed.await(5, TimeUnit.SECONDS),
+                    "first grant did not publish");
+            assertFalse(second.isDone(), "second grant still unpublished");
+            assertEquals(1, state.activeCount(),
+                    "unpublished grant must hold physical loan accounting");
+
+            assertTrue(second.cancel(false));
+            assertTrue(second.isCancelled());
+            assertEquals(0, state.activeCount(),
+                    "cancellation must revoke a reserved loan without waiting for publisher");
+            assertEquals(0, state.pendingCount());
+            allowPublisher.countDown();
+            publisher.join(5_000);
+            assertFalse(publisher.isAlive());
+            assertEquals(0, state.activeCount());
+        } finally {
+            allowPublisher.countDown();
+            publisher.join(5_000);
+            state.close();
+        }
+    }
+
+    @Test void cancellingReservedReadReleasesCapabilityBeforePublication() throws Exception {
+        exerciseCancelOfUnpublishedReservation(false);
+    }
+
+    @Test void cancellingReservedWriterReleasesCapabilityBeforePublication() throws Exception {
+        exerciseCancelOfUnpublishedReservation(true);
+    }
+
     @Test void retirementDuringPublicationNeverReleasesUnpublishedGrantToGuest() throws Exception {
         var loans = new ActorStateReadWriteLoans(5, 3);
         var writer = loans.acquireWriteAsync(new Object(), 5).join();
