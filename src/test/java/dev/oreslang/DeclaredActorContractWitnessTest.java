@@ -293,6 +293,26 @@ final class DeclaredActorContractWitnessTest {
     }
 
     @Test
+    void manifestMustContainAtLeastOneDeclaredActor() throws IOException {
+        write("src/foo/contract.atto", CONTRACT);
+        var build = new ManifestActorContractBuild(manifest("demo"));
+        var failure = assertThrows(IllegalArgumentException.class, build::build);
+        assertTrue(failure.getMessage().contains("no declaration-only actors"),
+                failure.getMessage());
+    }
+
+    @Test
+    void invalidUtf8CannotBeNormalizedIntoSourceIdentity() throws IOException {
+        writeValidSources();
+        var build = new ManifestActorContractBuild(manifest("demo"));
+        Files.write(root.resolve("src/foo/extra.atto"),
+                new byte[] {(byte) 0xC3, (byte) 0x28});
+        var failure = assertThrows(IllegalArgumentException.class, build::build);
+        assertTrue(failure.getMessage().contains("valid UTF-8"),
+                failure.getMessage());
+    }
+
+    @Test
     void symlinkedSourceNeverBecomesNominalProof() throws IOException {
         writeValidSources();
         var build = new ManifestActorContractBuild(manifest("demo"));
