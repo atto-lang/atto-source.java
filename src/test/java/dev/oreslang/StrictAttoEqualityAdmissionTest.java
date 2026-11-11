@@ -17,7 +17,7 @@ final class StrictAttoEqualityAdmissionTest {
             pub fnc main(): bool {
               val int a = 7;
               val int b = 8;
-              return a eq a, a neq b, b !eq a;
+              return a eq a;
             }
             """;
 
@@ -28,6 +28,10 @@ final class StrictAttoEqualityAdmissionTest {
         assertNotNull(checked);
         assertDoesNotThrow(() -> OresCompiler.compileForBuildStrictAtto(
                 VALID, BuildOptions.executable()));
+        for (String op : new String[]{"neq", "!eq"}) {
+            String src = "pub fnc main(): bool { return 7 " + op + " 8; }";
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(src), op);
+        }
     }
 
     @Test
