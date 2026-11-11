@@ -50,6 +50,9 @@ public final class TypeChecker {
             "Channel", "Future", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
 
+    /** Strict source-profile flag is local to this checker; never process-global. */
+    private boolean strictAttoEquality;
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -209,6 +212,14 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        return checkTypesWithDiagnostics(program, false);
+    }
+
+    /**
+     * Explicit strict source profile. The normal linked/legacy checker stays
+     * unchanged; strict callers must not bypass this path after parsing.
+     */
+    public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program, boolean strictAttoEquality) {
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -216,6 +227,7 @@ public final class TypeChecker {
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
+        checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -8180,7 +8192,17 @@ public final class TypeChecker {
     private void requireEqualityComparable(Type left, Type right) {
         Type a = deref(left);
         Type b = deref(right);
-        if (Types.isNumeric(a) && Types.isNumeric(b)) return;
+        if (strictAttoEquality && (a == Unknown.INSTANCE || b == Unknown.INSTANCE)) {
+            throw new IllegalArgumentException("ATTO_STRICT_UNRESOLVED_EQUALITY_TYPE: "
+                    + a + " and " + b);
+        }
+        if (Types.isNumeric(a) && Types.isNumeric(b)) {
+            if (strictAttoEquality && !a.equals(b)) {
+                throw new IllegalArgumentException("ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES: "
+                        + a + " and " + b + "; explicit conversion required");
+            }
+            return;
+        }
         if (isStringLike(a) && isStringLike(b)) return;
         if (typesMayOverlap(a, b) || assignable(a, b) || assignable(b, a)) return;
         throw new IllegalArgumentException(
