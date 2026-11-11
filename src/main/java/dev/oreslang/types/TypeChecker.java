@@ -7565,9 +7565,61 @@ public final class TypeChecker {
         else if (stmt instanceof Ast.DeferStmt defer) expression = defer.expression();
         else if (stmt instanceof Ast.BlockStmt nested) {
             return nested.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.IfStmt conditional) {
+            return conditional.branches().stream().anyMatch(branch ->
+                    hasSuspendingSumCallbackSyntax(branch.condition())
+                            || branch.body().stream().anyMatch(
+                                    TypeChecker::inlineLambdaStatementMaySuspend))
+                    || conditional.elseBody().stream().anyMatch(
+                            TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.ForStmt loop) {
+            return (loop.initializer() != null
+                            && inlineLambdaStatementMaySuspend(loop.initializer()))
+                    || (loop.condition() != null
+                            && hasSuspendingSumCallbackSyntax(loop.condition()))
+                    || (loop.update() != null
+                            && hasSuspendingSumCallbackSyntax(loop.update()))
+                    || loop.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.ForOfStmt loop) {
+            return loop.asyncIteration()
+                    || hasSuspendingSumCallbackSyntax(loop.iterable())
+                    || loop.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            return loop.asyncIteration()
+                    || hasSuspendingSumCallbackSyntax(loop.iterable())
+                    || loop.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.DoWhileStmt loop) {
+            return hasSuspendingSumCallbackSyntax(loop.condition())
+                    || loop.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.LoopStmt loop) {
+            return loop.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.MatchStmt matched) {
+            return hasSuspendingSumCallbackSyntax(matched.subject())
+                    || matched.arms().stream().anyMatch(arm ->
+                            (arm.guard() != null
+                                    && hasSuspendingSumCallbackSyntax(arm.guard()))
+                                    || arm.body().stream().anyMatch(
+                                            TypeChecker::inlineLambdaStatementMaySuspend));
+        } else if (stmt instanceof Ast.SwitchStmt switched) {
+            return hasSuspendingSumCallbackSyntax(switched.subject())
+                    || switched.cases().stream().anyMatch(arm ->
+                            arm.constants().stream().anyMatch(
+                                    TypeChecker::hasSuspendingSumCallbackSyntax)
+                                    || arm.body().stream().anyMatch(
+                                            TypeChecker::inlineLambdaStatementMaySuspend))
+                    || switched.defaultBody().stream().anyMatch(
+                            TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.TryStmt attempted) {
+            return attempted.body().stream().anyMatch(TypeChecker::inlineLambdaStatementMaySuspend)
+                    || attempted.catchBody().stream().anyMatch(
+                            TypeChecker::inlineLambdaStatementMaySuspend)
+                    || attempted.finallyBody().stream().anyMatch(
+                            TypeChecker::inlineLambdaStatementMaySuspend);
+        } else if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) {
+            return false;
         } else {
-            // Unknown statement/control regions require a real resumable
-            // lowering proof; never classify them as non-suspending by omission.
+            // Task scopes, select, borrowed-scope lifetimes and other unknown
+            // control regions require a real resumable lowering proof.
             return true;
         }
         return expression != null && hasSuspendingSumCallbackSyntax(expression);
