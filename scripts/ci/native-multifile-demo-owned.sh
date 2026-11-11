@@ -138,7 +138,7 @@ find "$compiler/target/classes" -type f -print0 |
   sort -z | xargs -0 -r sha256sum > "$receipt/compiler-classes.sha256"
 test -s "$receipt/compiler-classes.sha256"
 : > "$receipt/runtime-dependencies.sha256"
-while IFS= read -r dep; do
+while IFS= read -r dep || [[ -n "$dep" ]]; do
   [[ -f "$dep" && ! -L "$dep" ]] || fail "invalid runtime dependency"
   sha256sum "$dep" >> "$receipt/runtime-dependencies.sha256"
 done < <(tr ':' '\n' < "$receipt/classpath.txt")
