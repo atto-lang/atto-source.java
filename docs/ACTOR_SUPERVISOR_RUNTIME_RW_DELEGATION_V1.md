@@ -52,6 +52,9 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
 
 - Many immutable readers may coexist up to `maxReaders`.
 - Writers are exclusive. Queued writers block later readers (FIFO).
+- An owner callback is guarded by its physical actor execution segment;
+  recursive same-region entry cannot impersonate a second reader by minting
+  a different synthetic execution identity.
 - A host owner callback `withOwnerRead` / `withOwnerWrite` runs entirely
   within a physical actor turn; it cannot park awaiting a contended region.
   The temporary loan is released with try-with-resources even if the
@@ -75,7 +78,7 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
 
 ## Test inventory and non-promotion gate
 
-`ActorStateSupervisorLoansTest` adds **12 authored JUnit cases** covering:
+`ActorStateSupervisorLoansTest` adds **13 authored JUnit cases** covering:
 
 1. Host and unsupervised actor cannot mint region.
 2. Foreign supervisor cannot issue an owner-turn grant.
@@ -89,9 +92,11 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
 10. Forged owner allocation record without one-use runtime mint rejected.
 11. Two concurrent host claimants cannot redeem the same grant twice.
 12. STOP fails queued grants while retaining active physical writer pins.
+13. A nested owner read cannot mint a second synthetic execution identity
+    to bypass same-physical-turn non-reentrancy.
 
 The focused exact-head workflow runs BOTH this suite and the existing
-**26-case `ActorStateRwLoansTest`** (38 authored cases minimum),
+**26-case `ActorStateRwLoansTest`** (39 authored cases minimum),
 requires real Surefire XML with zero failed, errored, or skipped cases,
 and uploads the two XML reports. Runner assignment with **nonzero
 executed steps** is required. Until that happens classify Java JUnit,
