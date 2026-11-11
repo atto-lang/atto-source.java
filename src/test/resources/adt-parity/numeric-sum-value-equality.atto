@@ -1,0 +1,15 @@
+// Canonical AttoLang guest regression: tags, not payload shape, define a sum.
+pub fnc main(): void {
+  val Option<Result<int, String>> left = Some(Ok(5));
+  val Option<Result<int, String>> equal = Some(Ok(5));
+  val Option<Result<int, String>> error = Some(Err("5"));
+  val Option<Result<int, String>> absent = None;
+  val Option<Option<int>> inner_none = Some(None);
+  val Option<Option<int>> outer_none = None;
+
+  stdio.println(left eq equal);
+  stdio.println(left neq error);
+  stdio.println(error neq absent);
+  stdio.println(inner_none neq outer_none);
+  return;
+}
