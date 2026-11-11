@@ -4,7 +4,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -113,8 +112,10 @@ public final class SingletonSharedDomain {
         boolean grantFromRuntime(T value) { return super.complete(value); }
         boolean failFromRuntime(Throwable error) { return super.completeExceptionally(error); }
     }
-    private final ThreadLocal<Set<Key>> activeInitializers =
-            ThreadLocal.withInitial(HashSet::new);
+    // Per-domain bounded dependency DAG; authority never comes from Java threads.
+    // The graph detects synchronous initializer wait cycles across carriers.
+    private final SingletonDependencyGraph<Key> initializerDependencies =
+            new SingletonDependencyGraph<>();
     private final Map<Turn, Principal> principals = new ConcurrentHashMap<>();
     private final Map<Key, Region> regions = new ConcurrentHashMap<>();
 
@@ -122,7 +123,7 @@ public final class SingletonSharedDomain {
      * Nonblocking publication receipt. Initialization runs on the first caller
      * outside the shared registry lock, completes exactly once, and is sticky
      * on failure. Compiler stage zero only admits constant primitive initializers.
-     * Recursive same-turn initialization fails instead of deadlocking.
+     * Recursive and cross-thread initializer dependency cycles fail instead of deadlocking.
      */
     public CompletableFuture<Object> snapshotOnce(Key key, Supplier<?> initialize) {
         return snapshotInternal(key, null, initialize);
@@ -157,10 +158,24 @@ public final class SingletonSharedDomain {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("singleton declaration schema mismatch"));
                 }
+                if (!existing.isDone()) {
+                    try {
+                        initializerDependencies.dependOn(key);
+                    } catch (IllegalStateException dependencyFailure) {
+                        return CompletableFuture.failedFuture(dependencyFailure);
+                    }
+                }
             } else {
                 if (values.size() >= maxSnapshots) {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("singleton identity quota exceeded"));
+                }
+                // Check the nesting quota before allocating/publishing a cell.
+                // A failed registration must never leave an unresolved future.
+                try {
+                    initializerDependencies.dependOn(key);
+                } catch (IllegalStateException dependencyFailure) {
+                    return CompletableFuture.failedFuture(dependencyFailure);
                 }
                 created = new CompletableFuture<>();
                 values.put(key, created);
@@ -170,16 +185,11 @@ public final class SingletonSharedDomain {
             }
         }
         if (existing != null) {
-            if (activeInitializers.get().contains(key)) {
-                existing.completeExceptionally(
-                        new IllegalStateException("singleton initializer cycle"));
-            }
             // Never leak the registry's writable completion receipt.
             return existing.copy();
         }
         final CompletableFuture<Object> published = created;
-        Set<Key> stack = activeInitializers.get();
-        stack.add(key);
+        initializerDependencies.begin(key);
         try {
             Object produced = initialize.get();
             if (produced instanceof java.util.concurrent.CompletionStage<?>) {
@@ -189,8 +199,7 @@ public final class SingletonSharedDomain {
         } catch (Throwable error) {
             published.completeExceptionally(error);
         } finally {
-            stack.remove(key);
-            if (stack.isEmpty()) activeInitializers.remove();
+            initializerDependencies.finish(key);
         }
         return published.copy();
     }
