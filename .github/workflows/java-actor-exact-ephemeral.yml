@@ -108,12 +108,13 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
+            -Dtest=AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,DispatchV1CorpusCompilerTest,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
             test
           for suite in \
             dev.oreslang.AotDispatchPlannerV1Test \
             dev.oreslang.CheckedDispatchPlanIntegrationV1Test \
             dev.oreslang.AotDispatchGuestV1Test \
+            dev.oreslang.DispatchV1CorpusCompilerTest \
             dev.oreslang.MethodOverloadTest \
             dev.oreslang.ArityDispatchTableRuntimeTest \
             dev.oreslang.ArityOverloadAotTest; do
