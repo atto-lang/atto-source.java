@@ -150,6 +150,27 @@ bash "$policy/scripts/ci/atto-runtime-classpath-audit.sh" \
 test -s "$receipt/runtime-dependencies.sha256" || fail "empty dependency evidence"
 runtime_cp="$compiler/target/classes:$(cat "$receipt/classpath.txt")"
 java -version > "$receipt/java.stdout" 2> "$receipt/java.stderr"
+# Host-side infrastructure admission, BEFORE entering the guest phase:
+# the sandboxed UID must be able to read the pinned JDK, launcher bytecode,
+# public demo inputs and every audited runtime JAR. Otherwise an OS permission
+# failure could masquerade as a language/compiler semantic failure.
+IFS=':' read -r -a sandbox_deps <<< "$(cat "$receipt/classpath.txt")"
+(( ${#sandbox_deps[@]} >= 1 )) || fail "no audited sandbox dependencies"
+if ! sudo -n env -i PATH=/usr/bin:/bin HOME=/nonexistent TMPDIR=/tmp LANG=C.UTF-8 \
+      /usr/bin/unshare --net -- \
+      /usr/bin/setpriv --reuid=65534 --regid=65534 \
+        --clear-groups --no-new-privs \
+      /bin/sh -c '
+        test "$(id -u)" -eq 65534 || exit 70
+        for path do
+          test -r "$path" || { echo "SANDBOX_UNREADABLE_PATH: $path" >&2; exit 70; }
+        done
+      ' sh "$JAVA_HOME/bin/java" \
+      "$compiler/target/classes/dev/oreslang/launcher/OresMain.class" \
+      "$demo/native-multifile/src/main.atto" "${sandbox_deps[@]}" \
+      > "$receipt/sandbox-readability.stdout" 2> "$receipt/sandbox-readability.stderr"; then
+  fail "isolated guest cannot read pinned runtime/input files; no guest verdict"
+fi
 printf 'case\tphase\texit\tverdict\n' > "$receipt/cases.tsv"
 sed -i 's/^status=NOT_EXECUTED$/status=GUEST_FAILED/' "$receipt/identity.txt"
 
