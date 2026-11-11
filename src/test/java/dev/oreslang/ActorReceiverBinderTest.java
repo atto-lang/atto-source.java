@@ -205,7 +205,10 @@ final class ActorReceiverBinderTest {
                 "reject_cross_module_receiver.atto", "declared in the same module",
                 "reject_duplicate_external_slot.atto", "duplicate external actor method slot",
                 "reject_public_receive.atto", "external receive must be private",
-                "reject_in_class_collision.atto", "conflicts with an in-class actor method");
+                "reject_in_class_collision.atto", "conflicts with an in-class actor method",
+                "reject_inherited_actor.atto", "requires inherited actor slot coherence",
+                "reject_borrowed_receive.atto", "external receive must be private",
+                "reject_structural_receive.atto", "external receive must be private");
         for (Map.Entry<String, String> entry : invalid.entrySet()) {
             String source = Files.readString(root.resolve(entry.getKey()));
             rejects(source, entry.getValue());
