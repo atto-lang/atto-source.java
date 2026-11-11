@@ -1129,11 +1129,40 @@ public final class NativeHttp implements AutoCloseable {
     private static void reject(HttpExchange raw, int status) {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
-    @Override public synchronized void close() {
-        closed = true;
-        for (Server server : List.copyOf(servers)) server.close();
-        for (Handler pool : pools) pool.stopPool();
-        pools.clear();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+    @Override public void close() {
+        List<Server> acceptedServers;
+        List<Handler> acceptedPools;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            acceptedServers = List.copyOf(servers);
+            acceptedPools = List.copyOf(pools);
+            pools.clear();
+        }
+        // Never publish a listener's OresFuture failure while holding the
+        // enclosing NativeHttp monitor. One failing socket cleanup must not
+        // strand siblings or leave executors alive.
+        RuntimeException firstFailure = null;
+        try {
+            for (Server server : acceptedServers) {
+                try { server.close(); }
+                catch (RuntimeException failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            for (Handler pool : acceptedPools) {
+                try { pool.stopPool(); }
+                catch (RuntimeException failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+        } finally {
+            timers.shutdownNow();
+            io.shutdownNow();
+            transfers.clear();
+        }
+        if (firstFailure != null) throw firstFailure;
     }
 }
