@@ -14,8 +14,35 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target/otel/rust-build
 
 jobs:
+  otel-source-only-guardrails:
+    name: OTel bounded guest harness negative controls (NOT guest execution)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact original PR head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check original SHA and pristine working tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Bash syntax for runner plus independent source-only guardrails
+        run: |
+          set -euo pipefail
+          bash -n verification/otel/execute-pinned-smoke.sh
+          bash -n verification/otel/guardrails.sh
+          bash -n verification/otel/test-guardrails.sh
+          bash verification/otel/test-guardrails.sh
+          echo 'SOURCE_ONLY: no Oreslang guest executed and no production parity certified'
+
   otel-jvm:
     name: Java/GraalVM JVM actual Oreslang guest
+    needs: otel-source-only-guardrails
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -76,6 +103,7 @@ jobs:
 
   otel-native-image:
     name: Full GraalVM Native Image --no-fallback actual Oreslang guest
+    needs: otel-source-only-guardrails
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
