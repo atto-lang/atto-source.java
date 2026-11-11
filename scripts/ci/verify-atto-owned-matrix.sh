@@ -56,7 +56,7 @@ check_cases() {
     # piggyback on an otherwise valid first diagnostic line.
     cmp -s "$err" <(printf '%s\n' "$file") ||
       { reject "extra/truncated diagnostic bytes: $name"; return 1; }
-    cmp -s "$err" <(LC_ALL=C tr -cd '\\012\\040-\\176' < "$err") ||
+    cmp -s "$err" <(LC_ALL=C tr -cd '\012\040-\176' < "$err") ||
       { reject "nonprintable diagnostic bytes: $name"; return 1; }
     [[ "$file" == "$entry:"* && "$file" == *"$pattern"* ]] ||
       { reject "negative lacks anchored compiler-owned diagnostic: $name"; return 1; }
