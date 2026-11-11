@@ -53,3 +53,9 @@ payload type syntax rejects inferred, borrow, callable and void shapes with a
 shape gates, not a transitive borrow checker or proof that user-defined types
 are safely transferable. Real `ActorMail<T>` identity must be resolved to a
 compiler-owned nominal type before any guest execution.
+
+Two additional cross-file negative tests assert that `external init` cannot
+be redefined in another compilation unit and `external receive` cannot be
+overloaded based on different `ActorMail<T>` payload types. Both use the
+original multi-source namespace binder, not a source-text regex. These tests
+must actually run before being counted as evidence.

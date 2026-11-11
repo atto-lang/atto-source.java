@@ -215,6 +215,33 @@ final class ActorExternalEntrypointTest {
                 ex.getMessage());
     }
 
+    private static Map<String, Ast.Program> namespaceEntrypointSourceUnits(
+            String firstMethod, String secondMethod) {
+        return Map.of(
+                "actor.atto", Parser.parse(ACTOR),
+                "first.atto", Parser.parse("namespace foo; " + firstMethod),
+                "second.atto", Parser.parse("namespace foo; " + secondMethod));
+    }
+
+    @Test void duplicateExternalInitAcrossFilesCannotOverrideActivationSlot() {
+        String init = "external mtd (Foo f) init(): void { return; }";
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("test-package",
+                        namespaceEntrypointSourceUnits(init, init)));
+        assertTrue(ex.getMessage().contains("duplicate external actor method slot"),
+                ex.getMessage());
+    }
+
+    @Test void crossFileReceiveCannotOverloadOnDifferentMailPayloadTypes() {
+        String integerMail = "external mtd (Foo f) receive(ActorMail<int> mail): void { return; }";
+        String textMail = "external mtd (Foo f) receive(ActorMail<String> mail): void { return; }";
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet("test-package",
+                        namespaceEntrypointSourceUnits(integerMail, textMail)));
+        assertTrue(ex.getMessage().contains("duplicate external actor method slot"),
+                ex.getMessage());
+    }
+
     @Test void crossFileNamespaceRetainsSourceProvenanceAndMarker() throws IOException {
         Path root = Path.of("contracts", "actor-external-entrypoints-v1");
         var sources = Map.of(
