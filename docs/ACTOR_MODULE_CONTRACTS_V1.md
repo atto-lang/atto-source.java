@@ -156,7 +156,10 @@ actor itself; a parent class method, private method, suspended/async method
 or explicit receiver with unproved lowering is not a witness. Runtime-only
 `tear_down`, CONTROL `on_*` hooks, compiler-owned `handle_state`, and
 special `receive` handlers cannot be laundered into ordinary public
-actor contracts. These hooks require their own typed lowering.
+actor contracts. The parser and type checker also reject `pub tear_down`
+even without a contract; teardown remains private and synchronous.
+`on_stop` and `on_restart` cannot be user-defined until compiler-owned
+generation-fenced CONTROL lowering exists. These hooks require their own typed lowering.
 It **does not** grant actor-state, mailbox-dispatch or supervisor authority. Imported
 cross-file actor contract metadata and external executable method
 bodies are outside this stage. The actor-contract fixture suite and
