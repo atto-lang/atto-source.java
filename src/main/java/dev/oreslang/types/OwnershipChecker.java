@@ -2821,6 +2821,16 @@ public final class OwnershipChecker {
         VarState source = returned.borrowSource == null
                 ? null
                 : ownershipRoot(returned.borrowSource);
+        // Actor self is technically an incoming borrowed receiver, but its
+        // lifetime is strictly the mailbox execution lease. The general
+        // incoming-parameter rule MUST NOT allow an actor's field (or an
+        // alias/projection of that field) to escape via return. A stale
+        // returned borrow would outlive actor STOP/restart and bypass the
+        // supervisor's scoped, generation-fenced state loans.
+        if (source != null && isActorConfinedBorrow(source)) {
+            throw error("actor-owned state borrow cannot escape its mailbox turn "
+                    + "as a returned field or projected alias");
+        }
         if (source != null && isIncomingBorrow(source)) return;
 
         String name = source == null ? "<unknown>" : source.debugName;
