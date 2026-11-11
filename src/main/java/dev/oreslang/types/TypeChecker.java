@@ -1996,8 +1996,7 @@ public final class TypeChecker {
                                         + required.parameters().size());
                     }
                     if (witness.async() || witness.suspends()
-                            || witness.generator() || witness.structural()
-                            || witness.nonLexical() || witness.trapped()
+                            || witness.structural()
                             || !witness.genericParameters().isEmpty()
                             || !witness.effects().isEmpty()) {
                         throw new IllegalArgumentException(
