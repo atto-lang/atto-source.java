@@ -18,7 +18,10 @@ Every target namespace declaration in the set participates in collision
 checks and the conservative ABI dependency closure.
 
 Positive: public non-generic `Cart` and non-generic `fnc tick(int):int`
-from separate files satisfy the namespace. Negative cases replace
+from separate files satisfy the namespace. `tick.atto` also declares
+`pub fnc main(): int { return 42; }` so a future admitted Java guest
+runner can independently report a real guest return receipt. Merely
+parsing/type-checking or discovering the function is NOT guest execution. Negative cases replace
 `shop/cart.atto` with the fixture in `reject_private_actor` (private
 actor) or `reject_wrong_namespace` (explicit namespace mismatch).
 Additional negative cases (missing files, duplicate actor/slot/claim,
