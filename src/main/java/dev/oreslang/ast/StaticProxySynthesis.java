@@ -175,7 +175,8 @@ public final class StaticProxySynthesis {
      */
     private static boolean unsafeSignatureType(Ast.TypeRef type) {
         if (type.isBorrow() || type.inferArguments()
-                || type.name().equals("Fnc") || type.name().equals("Routine")
+                || type.name().equals("Fnc") || type.name().equals("Function")
+                || type.name().equals("Routine")
                 || type.name().equals("$infer$")) return true;
         for (Ast.TypeRef arg : type.arguments()) {
             if (unsafeSignatureType(arg)) return true;
@@ -184,7 +185,7 @@ public final class StaticProxySynthesis {
     }
 
     private static boolean exposesTargetType(Ast.TypeRef type, String targetName) {
-        if (type.name().equals(targetName)) return true;
+        if (type.name().equals(targetName) || type.name().equals("self")) return true;
         for (Ast.TypeRef arg : type.arguments()) {
             if (exposesTargetType(arg, targetName)) return true;
         }
