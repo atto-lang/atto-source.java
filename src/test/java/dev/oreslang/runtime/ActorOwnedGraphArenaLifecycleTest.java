@@ -91,6 +91,18 @@ final class ActorOwnedGraphArenaLifecycleTest {
     }
 
     @Test
+    void emptyActorGraphStillReleasesBackingExactlyOnce() {
+        var calls = new AtomicInteger();
+        var graph = new ActorOwnedGraphArena<AutoCloseable>(2, 1, () -> {},
+                g -> calls.incrementAndGet());
+        graph.close();
+        graph.close();
+        assertTrue(graph.fullyClosed());
+        assertEquals(1, calls.get(),
+                "an empty preallocated drop staging array must still refund backing");
+    }
+
+    @Test
     void backingCannotReclaimBeforeEveryObjectDestructor() {
         var sequence = new ArrayList<String>();
         var graph = new ActorOwnedGraphArena<AutoCloseable>(3, 1, () -> {},
