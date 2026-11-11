@@ -5,19 +5,20 @@ import dev.oreslang.compiler.AotDispatchPlannerV1;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 
 /**
- * Identity-bound decisions issued after successful callable type resolution.
+ * Immutable compiler-issued call plans indexed by exact Program and CallExpr
+ * identity. There is deliberately no unscoped global per-call registry:
+ * failed/partial type checks must not publish optimizable guest calls.
  *
- * <p>No plan is inferred from runtime receiver names or from a JIT profile.
- * A method plan carries the checked class and declaration identity; the guest
- * evaluator may skip one slot lookup only when the actual class and code-owner
- * identities match. Other receivers use the pre-existing virtual lookup.
- * A failed or incomplete program is not executable through normal admission.
+ * <p>Plans do not authorize execution. The full compiler admission, ownership
+ * checking, and evaluator-side declaration/slot and generation checks remain
+ * independent prerequisites.
  */
 public final class CheckedDispatchPlansV1 {
     private CheckedDispatchPlansV1() { }
@@ -46,9 +47,10 @@ public final class CheckedDispatchPlansV1 {
                     }
                 }
                 case STATIC_METHOD, INSTANCE_METHOD -> {
-                    AotDispatchPlannerV1.Strategy required = kind == AotDispatchPlannerV1.CallKind.STATIC_METHOD
-                            ? AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
-                            : AotDispatchPlannerV1.Strategy.METHOD_SLOT;
+                    AotDispatchPlannerV1.Strategy required =
+                            kind == AotDispatchPlannerV1.CallKind.STATIC_METHOD
+                                    ? AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
+                                    : AotDispatchPlannerV1.Strategy.METHOD_SLOT;
                     if (strategy != required || function != null || receiverClass == null || method == null
                             || !method.name().equals(name) || method.arity() != arity
                             || method.isStatic() != (kind == AotDispatchPlannerV1.CallKind.STATIC_METHOD)) {
@@ -56,92 +58,54 @@ public final class CheckedDispatchPlansV1 {
                     }
                 }
                 default -> throw new IllegalArgumentException(
-                        "only locally resolved named callables have executable checked plans");
+                        "only resolved local named calls have executable checked plans");
             }
+        }
+
+        /** Extra lexical check, never used in place of the type checker. */
+        public void requireCallShape(Ast.CallExpr call) {
+            Objects.requireNonNull(call, "checked call");
+            if (call.arguments().size() != arity
+                    || call.arguments().stream().anyMatch(a -> a instanceof Ast.SpreadExpr)) {
+                throw new IllegalArgumentException("checked dispatch requires fixed source call arity");
+            }
+            if (kind == AotDispatchPlannerV1.CallKind.FREE_FUNCTION) {
+                if (!(call.callee() instanceof Ast.NameExpr n) || !name.equals(n.name())) {
+                    throw new IllegalArgumentException("checked free function must match named callee");
+                }
+            } else if (!(call.callee() instanceof Ast.MemberExpr m)
+                    || !name.equals(m.member())) {
+                throw new IllegalArgumentException("checked method must match named member");
+            }
+        }
+
+        /** Targets must remain identical across repeated admission of this AST. */
+        public boolean sameTargets(Plan other) {
+            return other != null && kind == other.kind && strategy == other.strategy
+                    && arity == other.arity && name.equals(other.name)
+                    && function == other.function
+                    && receiverClass == other.receiverClass && method == other.method;
         }
     }
 
-    /** Do not produce a partial plan for a spread whose runtime arity differs from syntax. */
     public static boolean fixedSourceArity(Ast.CallExpr call) {
+        Objects.requireNonNull(call, "call");
         return call.arguments().stream().noneMatch(arg -> arg instanceof Ast.SpreadExpr);
     }
 
-    private static final ReferenceQueue<Ast.CallExpr> CLEARED = new ReferenceQueue<>();
-    // A checked target may be its own enclosing FunctionDecl, whose body
-    // includes this CallExpr. A strong Plan value would retain the weak key
-    // through that cycle forever across hot reloads; keep values weak here.
-    // Checked programs instead retain proofs in their scoped snapshots.
-    private static final Map<IdentityKey, WeakReference<Plan>> PLANS = new HashMap<>();
-
-    private static final class IdentityKey extends WeakReference<Ast.CallExpr> {
-        private final int hash;
-        private IdentityKey(Ast.CallExpr call, ReferenceQueue<Ast.CallExpr> queue) {
-            super(Objects.requireNonNull(call, "checked call"), queue);
-            hash = System.identityHashCode(call);
-        }
-
-        @Override public int hashCode() { return hash; }
-
-        @Override public boolean equals(Object other) {
-            if (this == other) return true;
-            if (!(other instanceof IdentityKey key)) return false;
-            Ast.CallExpr left = get();
-            return left != null && left == key.get();
-        }
-    }
-
-    private static void expunge() {
-        Reference<? extends Ast.CallExpr> ref;
-        while ((ref = CLEARED.poll()) != null) PLANS.remove(ref);
-    }
-
-    /**
-     * Compiler-only intent: callers outside TypeChecker must not present
-     * arbitrary plans as admission evidence. A repeated check cannot change a
-     * previously published target for the same immutable AST node.
-     */
-    public static synchronized void record(Ast.CallExpr call, Plan plan) {
-        Objects.requireNonNull(call, "checked call");
-        Objects.requireNonNull(plan, "checked plan");
-        if (!fixedSourceArity(call) || plan.arity() != call.arguments().size()) {
-            throw new IllegalArgumentException("checked dispatch cannot change source call arity");
-        }
-        expunge();
-        IdentityKey key = new IdentityKey(call, CLEARED);
-        WeakReference<Plan> previousRef = PLANS.get(key);
-        Plan previous = previousRef == null ? null : previousRef.get();
-        if (previous == null) PLANS.put(key, new WeakReference<>(plan));
-        if (previous != null
-                && (previous.kind() != plan.kind() || previous.strategy() != plan.strategy()
-                    || !previous.name().equals(plan.name()) || previous.arity() != plan.arity()
-                    || previous.function() != plan.function()
-                    || previous.receiverClass() != plan.receiverClass()
-                    || previous.method() != plan.method())) {
-            throw new IllegalStateException(
-                    "same checked call expression acquired incompatible dispatch targets");
-        }
-    }
-
-    public static synchronized Plan lookup(Ast.CallExpr call) {
-        Objects.requireNonNull(call, "call");
-        expunge();
-        WeakReference<Plan> ref = PLANS.get(new IdentityKey(call, null));
-        return ref == null ? null : ref.get();
-    }
-
-    // Evaluators receive one immutable identity-indexed snapshot at link time.
-    // Guest calls never acquire the global proof-registry monitor.
     private static final ReferenceQueue<Ast.Program> CLEARED_PROGRAMS = new ReferenceQueue<>();
     private static final Map<ProgramKey, Map<Ast.CallExpr, Plan>> BY_PROGRAM = new HashMap<>();
 
     private static final class ProgramKey extends WeakReference<Ast.Program> {
         private final int hash;
+
         private ProgramKey(Ast.Program program, ReferenceQueue<Ast.Program> queue) {
             super(Objects.requireNonNull(program, "checked program"), queue);
             hash = System.identityHashCode(program);
         }
 
         @Override public int hashCode() { return hash; }
+
         @Override public boolean equals(Object other) {
             if (this == other) return true;
             if (!(other instanceof ProgramKey key)) return false;
@@ -150,46 +114,53 @@ public final class CheckedDispatchPlansV1 {
         }
     }
 
-    private static void expungePrograms() {
+    private static void expunge() {
         Reference<? extends Ast.Program> ref;
         while ((ref = CLEARED_PROGRAMS.poll()) != null) BY_PROGRAM.remove(ref);
     }
 
-    /** Called only after the full typed program has been validated. */
-    public static synchronized void publish(
-            Ast.Program program, Map<Ast.CallExpr, Plan> resolved) {
+    /**
+     * Publish only after successful macro-expanded type validation. The caller
+     * holds this full program and its identity-indexed checker-local targets.
+     * All entries are copied and shape-validated before any publication.
+     */
+    public static synchronized void publish(Ast.Program program, Map<Ast.CallExpr, Plan> resolved) {
         Objects.requireNonNull(program, "checked program");
-        Objects.requireNonNull(resolved, "resolved call plans");
-        expungePrograms();
-        IdentityHashMap<Ast.CallExpr, Plan> identity = new IdentityHashMap<>();
+        Objects.requireNonNull(resolved, "checked call plans");
+        IdentityHashMap<Ast.CallExpr, Plan> snapshot = new IdentityHashMap<>();
         for (Map.Entry<Ast.CallExpr, Plan> entry : resolved.entrySet()) {
             Ast.CallExpr call = Objects.requireNonNull(entry.getKey(), "checked call");
-            Plan plan = Objects.requireNonNull(entry.getValue(), "checked plan");
-            // Hold one strong reference for the whole comparison. Two weak
-            // lookups could observe GC between reads and spuriously reject
-            // a valid repeated type-check of the same AST.
-            Plan registered = lookup(call);
-            if (registered == null || (registered != plan && !registered.equals(plan))) {
-                throw new IllegalStateException("unregistered checked call plan");
-            }
-            identity.put(call, plan);
+            Plan plan = Objects.requireNonNull(entry.getValue(), "checked call plan");
+            plan.requireCallShape(call);
+            snapshot.put(call, plan);
         }
-        Map<Ast.CallExpr, Plan> snapshot =
-                java.util.Collections.unmodifiableMap(identity);
+        Map<Ast.CallExpr, Plan> immutable = Collections.unmodifiableMap(snapshot);
+        expunge();
         ProgramKey key = new ProgramKey(program, CLEARED_PROGRAMS);
-        Map<Ast.CallExpr, Plan> old = BY_PROGRAM.putIfAbsent(key, snapshot);
-        if (old != null && !old.equals(snapshot)) {
-            throw new IllegalStateException("conflicting checked dispatch snapshot for program");
+        Map<Ast.CallExpr, Plan> previous = BY_PROGRAM.get(key);
+        if (previous != null) {
+            if (previous.size() != immutable.size()) {
+                throw new IllegalStateException("conflicting checked dispatch snapshot for program");
+            }
+            for (Map.Entry<Ast.CallExpr, Plan> entry : immutable.entrySet()) {
+                Plan old = previous.get(entry.getKey());
+                if (!entry.getValue().sameTargets(old)) {
+                    throw new IllegalStateException(
+                            "same program identity acquired changed call targets");
+                }
+            }
+        } else {
+            BY_PROGRAM.put(key, immutable);
         }
     }
 
     /**
-     * Unpublished/rewritten ASTs receive no fast-path authority and preserve
-     * the interpreter's existing conservative name/slot lookup behavior.
+     * Unpublished or rewritten programs get no shortcut. The evaluator makes
+     * a single code-image-local immutable copy after verifying all link slots.
      */
     public static synchronized Map<Ast.CallExpr, Plan> forProgram(Ast.Program program) {
         Objects.requireNonNull(program, "program");
-        expungePrograms();
+        expunge();
         return BY_PROGRAM.getOrDefault(new ProgramKey(program, null), Map.of());
     }
 }
