@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
@@ -129,6 +132,84 @@ public final class SingletonCrossThreadCycleSmoke {
         }
     }
 
+    private static void poisonDuringFrozenSnapshotMustWin(boolean checked)
+            throws Exception {
+        var domain = new SingletonSharedDomain();
+        var a = new SingletonSharedDomain.Key("pkg", "M", "FreezeA");
+        var b = new SingletonSharedDomain.Key("pkg", "M", "FreezeB");
+        var bStarted = new CountDownLatch(1);
+        var aEnteredFreeze = new CountDownLatch(1);
+        var releaseFreeze = new CountDownLatch(1);
+        var letBObserveA = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            // A mutable host map is only a test hook: freeze must copy it
+            // before publication; guests cannot publish arbitrary source maps.
+            Map<String, Object> freezeBarrier = new LinkedHashMap<>() {
+                @Override public Set<Map.Entry<String, Object>> entrySet() {
+                    aEnteredFreeze.countDown();
+                    try {
+                        if (!releaseFreeze.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("freeze barrier timed out");
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("freeze barrier interrupted", ex);
+                    }
+                    return super.entrySet();
+                }
+            };
+            freezeBarrier.put("answer", 42L);
+            var taskB = CompletableFuture.supplyAsync(() ->
+                lookup(domain, b, () -> {
+                    bStarted.countDown();
+                    try {
+                        if (!letBObserveA.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("B cycle barrier timed out");
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(ex);
+                    }
+                    var cyclicReceipt = lookup(domain, a, () -> 99L, checked);
+                    require(cyclicReceipt.isCompletedExceptionally(),
+                            "B closes A->B->A while A is freezing");
+                    return 7L; // Deliberately ignore B's rejected cycle receipt.
+                }, checked).join(), pool);
+            require(bStarted.await(5, TimeUnit.SECONDS), "B initialized");
+            var taskA = CompletableFuture.supplyAsync(() ->
+                lookup(domain, a, () -> {
+                    // Establish A -> B before returning the host snapshot map.
+                    lookup(domain, b, () -> 11L, checked);
+                    return freezeBarrier;
+                }, checked).join(), pool);
+            require(aEnteredFreeze.await(5, TimeUnit.SECONDS),
+                    "A began freezing before B closes the dependency cycle");
+            letBObserveA.countDown();
+            require(taskB.orTimeout(5, TimeUnit.SECONDS).join().equals(7L),
+                    "B may recover after explicit failed nested lookup");
+            releaseFreeze.countDown();
+            try {
+                taskA.orTimeout(5, TimeUnit.SECONDS).join();
+                throw new AssertionError("poisoned freeze published a successful snapshot");
+            } catch (CompletionException failure) {
+                require(hasCycle(failure), "cycle poison defeats in-flight frozen candidate");
+            }
+            try {
+                lookup(domain, a, () -> 8L, checked).join();
+                throw new AssertionError("poisoned freeze lost sticky error");
+            } catch (CompletionException failure) {
+                require(hasCycle(failure), "poisoned freeze remains sticky");
+            }
+        } finally {
+            releaseFreeze.countDown();
+            letBObserveA.countDown();
+            pool.shutdownNow();
+            require(pool.awaitTermination(5, TimeUnit.SECONDS),
+                    "freeze/poison race leaves no host carrier blocked");
+        }
+    }
+
     private static Object nestedChain(SingletonSharedDomain domain, int depth,
                                       int maxDepth, boolean checked) {
         var key = new SingletonSharedDomain.Key("pkg", "M", "Nested" + depth);
@@ -172,6 +253,8 @@ public final class SingletonCrossThreadCycleSmoke {
         ignoredDirectCycleCannotPublish(true);
         depthBudgetIsStickyAndRecoverable(false);
         depthBudgetIsStickyAndRecoverable(true);
+        poisonDuringFrozenSnapshotMustWin(false);
+        poisonDuringFrozenSnapshotMustWin(true);
         acyclicIdentity();
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_PASS=true");
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_ASSERTIONS=" + checks);
