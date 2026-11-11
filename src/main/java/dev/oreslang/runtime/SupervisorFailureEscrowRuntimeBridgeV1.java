@@ -40,7 +40,7 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
      * call this before ready/send, never after an actor starts executing.
      * Physical ActorRef identity/generation are checked by ActorRuntime.
      */
-    long attach(ActorRuntime.ActorRef<?> actor, ActorRuntime.ActorRef<?> supervisor) {
+    synchronized long attach(ActorRuntime.ActorRef<?> actor, ActorRuntime.ActorRef<?> supervisor) {
         runtime.requireSupervisorShutdownAuthority("attach supervisor CONTROL child");
         Objects.requireNonNull(actor, "actor");
         long parentId = GUARDIAN;
@@ -55,11 +55,10 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         if (nodeId < 2) {
             throw new IllegalStateException("supervisor CONTROL identities exhausted");
         }
+        // Runtime invokes registerFromRuntime while holding the actor's
+        // lifecycle lock, ensuring no actor activation or coordinator
+        // cancellation can observe a half-attached CONTROL node.
         runtime.attachSupervisorEscrowActor(actor, this, nodeId, parentId);
-        Long prior = ids.putIfAbsent(actor.id(), nodeId);
-        if (prior != null) {
-            throw new IllegalStateException("actor CONTROL binding already exists");
-        }
         return nodeId;
     }
 
@@ -127,6 +126,12 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         runtime.requireSupervisorShutdownAuthority("install supervisor recovery CONTROL");
         Objects.requireNonNull(coordinator, "coordinator");
         if (recovery != null) throw new IllegalStateException("CONTROL coordinator already installed");
+        // Late installation would leave already-attached refs absent from the
+        // coordinator cancellation index. Require an empty attachment set.
+        if (!ids.isEmpty()) {
+            throw new IllegalStateException(
+                    "CONTROL coordinator must install before first actor attachment");
+        }
         recovery = coordinator;
     }
 
@@ -144,9 +149,38 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         return id;
     }
 
-    /** Called only by ActorRuntime while publishing a new trusted binding. */
-    void registerFromRuntime(ActorRuntime.ActorRef<?> actor, long id, long parentId) {
-        ledger.registerChild(id, parentId, actor.generation());
+    /**
+     * Runtime-only host attachment transaction. The ledger monitor orders
+     * registration, coordinator tracking and ActorRuntime binding against
+     * failure fencing; no third-party guest callbacks execute here.
+     */
+    void registerFromRuntime(
+            ActorRuntime.ActorRef<?> actor, long id, long parentId, Runnable publish) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(publish, "publish");
+        ledger.registerChildAtomically(id, parentId, actor.generation(), () -> {
+            if (ids.putIfAbsent(actor.id(), id) != null) {
+                throw new IllegalStateException("actor CONTROL identity already exists");
+            }
+            SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+            boolean tracked = false;
+            try {
+                if (coordinator != null) {
+                    coordinator.registerSpawnedChildFromRuntime(id, actor);
+                    tracked = true;
+                }
+                publish.run();
+            } catch (RuntimeException | Error failure) {
+                try {
+                    if (tracked) coordinator.rollbackSpawnedChildFromRuntime(id, actor);
+                } catch (RuntimeException | Error rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                } finally {
+                    ids.remove(actor.id(), id);
+                }
+                throw failure;
+            }
+        });
     }
 
     /** Called by ActorRuntime at the first non-cancellation terminal fault. */
