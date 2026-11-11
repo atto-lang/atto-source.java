@@ -1322,8 +1322,12 @@ public final class TypeChecker {
             // Only a closed nullary enum can be a freely shareable actor value.
             // The actor may use it without borrowing any same-file mutable
             // declaration. Preserve the original restriction for payload ADTs.
-            if (lexicalClassOrigin.actorKind() != Ast.ActorKind.UNTRUSTED
-                    && enumeration.cases().stream().allMatch(c -> c.payload() == null)) {
+            if (enumeration.cases().stream().allMatch(c -> c.payload() == null)) {
+                if (lexicalClassOrigin.actorKind() == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "untrusted actor '" + lexicalClassOrigin.name()
+                                    + "' requires authenticated export to receive nominal enum '" + name + "'");
+                }
                 return;
             }
             throw new IllegalArgumentException(
