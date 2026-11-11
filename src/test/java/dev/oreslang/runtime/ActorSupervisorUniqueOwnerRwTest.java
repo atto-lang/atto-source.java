@@ -19,6 +19,44 @@ final class ActorSupervisorUniqueOwnerRwTest {
     }
 
     @Test
+    void regionOwnerIsBoundAtAllocationBeforeAnyCallerCanClaimIt() {
+        var child = actor(901, 901, 42, 7);
+        var supervisor = actor(902, 902, 41, 7);
+        var restartedChild = actor(903, 903, 42, 8);
+        try (var region = new ActorStateRwLoans(4, () -> { },
+                child.allocationDomain())) {
+            assertTrue(region.acquireReadAsync(supervisor).isCompletedExceptionally(),
+                    "foreign first reader must not claim the region owner");
+            assertTrue(region.acquireWriteAsync(supervisor).isCompletedExceptionally(),
+                    "foreign first writer must not claim the region owner");
+            assertTrue(region.acquireReadAsync(restartedChild).isCompletedExceptionally(),
+                    "a restarted allocation cannot seize the old incarnation");
+            assertEquals(0, region.activeReaderCount());
+            assertEquals(0, region.activeWriterCount());
+            assertEquals(0, region.pendingCount());
+            var reader = region.acquireReadAsync(child).join();
+            assertTrue(reader.heldBy(child));
+            reader.close();
+            var writer = region.acquireWriteAsync(child).join();
+            assertTrue(writer.heldBy(child));
+            writer.close();
+            assertTrue(region.acquireWriteAsync(supervisor).isCompletedExceptionally(),
+                    "successful owner admission must not grant supervisor ownership");
+        }
+    }
+
+    @Test
+    void explicitRegionBindingRejectsNonActorOwnerDomains() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorStateRwLoans(1, () -> { },
+                        ExecutionContext.AllocationDomain.none()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorStateRwLoans(1, () -> { },
+                        new ExecutionContext.AllocationDomain(
+                                ExecutionContext.AllocationKind.RUNTIME, 9001, 7, 1)));
+    }
+
+    @Test
     void supervisorCannotReadOrWriteChildRegionEvenWithoutContention() {
         var child = actor(1, 11, 42, 7);
         var supervisor = actor(2, 12, 41, 7);
