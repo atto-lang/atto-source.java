@@ -172,17 +172,10 @@ public final class ActorReceiverBinder {
                     throw new IllegalArgumentException(
                             "external actor method has no source provenance");
                 }
-                if (!actorUnit.equals(methodUnit)) {
-                    Ast.Visibility visibility =
-                            binding.nominalActor() instanceof Ast.StandaloneActorDecl standalone
-                                    ? standalone.visibility()
-                                    : ((Ast.ClassDecl) binding.nominalActor()).visibility();
-                    if (visibility != Ast.Visibility.PUBLIC) {
-                        throw new IllegalArgumentException(
-                                "cross-file external method cannot bind a private actor '"
-                                        + entry.getKey().actor() + "'");
-                    }
-                }
+                // Method attachment is actor-owned code inside the same
+                // verified namespace, including for a non-public actor.
+                // This metadata does not make that actor public or authorize
+                // an unrelated function to call its private members.
                 Slot slot = entry.getKey();
                 SourceSlot key = new SourceSlot(
                         packageIdentity, group.getKey(), slot.actor(),
