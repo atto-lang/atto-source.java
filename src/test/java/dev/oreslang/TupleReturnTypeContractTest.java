@@ -177,6 +177,17 @@ final class TupleReturnTypeContractTest {
     }
 
     @Test
+    void inferredTupleGenericMarkerCannotBeSmuggledIntoEmptyShape() {
+        for (String annotation : new String[]{"Tuple<>[]", "~tuple<>[]"}) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(
+                            "fnc invalid(): " + annotation + " { return ~tuple(); }"), annotation);
+            assertTrue(error.getMessage().contains("sequence type shape cannot be empty"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void otherCollectionsStillRejectEmptySequenceShapes() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
