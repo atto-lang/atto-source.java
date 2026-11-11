@@ -4109,9 +4109,24 @@ public final class ActorRuntime implements AutoCloseable {
                 if (supervisorEscrowBindings.containsKey(ref.id())) {
                     throw new IllegalStateException("actor already has CONTROL authority");
                 }
-                bridge.registerFromRuntime(ref, nodeId, parentId);
-                supervisorEscrowBindings.put(
-                        ref.id(), new SupervisorEscrowBinding(bridge, nodeId, ref.generation()));
+                // Host attach follows exactly the same bridge publication
+                // boundary as an inherited child spawn. Never take the
+                // runtime/actor locks after the bridge monitor: ancestor
+                // terminal failure acquires cell.lifecycleLock -> bridge.
+                synchronized (bridge) {
+                    bridge.registerFromRuntime(ref, nodeId, parentId);
+                    SupervisorEscrowBinding binding =
+                            new SupervisorEscrowBinding(bridge, nodeId, ref.generation());
+                    try {
+                        if (supervisorEscrowBindings.putIfAbsent(ref.id(), binding) != null) {
+                            throw new IllegalStateException(
+                                    "actor CONTROL binding concurrently published");
+                        }
+                    } catch (RuntimeException | Error failure) {
+                        bridge.rollbackHostAttachFromRuntime(ref, nodeId, parentId);
+                        throw failure;
+                    }
+                }
             }
         }
     }
