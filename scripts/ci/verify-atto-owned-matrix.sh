@@ -7,7 +7,7 @@ check_ledger() {
   local d="$1" entry="$2" label="$3" expected_rc="$4"
   local file="$d/$entry-$label.exit"
   [[ -f "$file" && ! -L "$file" ]] || { reject "missing exit for $label/$entry"; return 1; }
-  [[ "$(cat "$file")" == "$expected_rc" ]] || { reject "wrong exit for $label/$entry"; return 1; }
+  cmp -s "$file" <(printf '%s\n' "$expected_rc") || { reject "wrong or noncanonical exit for $label/$entry"; return 1; }
   for suffix in stdout stderr; do
     [[ -f "$d/$entry-$label.$suffix" && ! -L "$d/$entry-$label.$suffix" ]] ||
       { reject "missing output stream for $label/$entry"; return 1; }
@@ -52,6 +52,12 @@ check_cases() {
       aliased-module-leak) entry="$demo/native-multifile/module/alias-leak.atto"; pattern='unknown class transport_contract.Request' ;;
     esac
     IFS= read -r file < "$err"
+    # No trailing unterminated text, NUL, CR or terminal-control bytes may
+    # piggyback on an otherwise valid first diagnostic line.
+    cmp -s "$err" <(printf '%s\n' "$file") ||
+      { reject "extra/truncated diagnostic bytes: $name"; return 1; }
+    cmp -s "$err" <(LC_ALL=C tr -cd '\\012\\040-\\176' < "$err") ||
+      { reject "nonprintable diagnostic bytes: $name"; return 1; }
     [[ "$file" == "$entry:"* && "$file" == *"$pattern"* ]] ||
       { reject "negative lacks anchored compiler-owned diagnostic: $name"; return 1; }
     [[ "$file" =~ :[0-9]+:[0-9]+:\ error:\  ]] ||
