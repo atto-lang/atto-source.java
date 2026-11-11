@@ -64,12 +64,12 @@ final class VirtualActorTruffleI64KernelV1Test {
                 () -> method.computeCandidate(Long.MIN_VALUE, -1L));
         assertThrows(ArithmeticException.class,
                 () -> method.computeCandidate(Long.MAX_VALUE, Long.MAX_VALUE));
-        // Pure kernel owns no actor heap, so a failed computation cannot
-        // mutate the last successful input or leak a borrow capability.
-        long state = 17L;
+        // Reusing the very same compiled call target after an overflow must
+        // not retain a partial numeric result or hidden per-call state.
         assertThrows(ArithmeticException.class,
                 () -> method.computeCandidate(Long.MAX_VALUE, 1L));
-        assertEquals(17L, state);
+        assertEquals(17L, method.computeCandidate(10L, 7L));
+        assertEquals(0L, method.computeCandidate(7L, -7L));
     }
 
     @Test
