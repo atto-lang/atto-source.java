@@ -1036,7 +1036,13 @@ final class WebSocketLoopbackListener implements AutoCloseable {
                         throw new SecurityException("foreign actor output stream");
                     }
                     next = stream.next();
-                    relay = new OresFuture<>(() -> next.cancel(false));
+                    // The relay is host-owned and must always cancel on
+                    // connection retirement. The underlying actor-channel
+                    // read is revoked best-effort in the cancellation hook;
+                    // its own admission decision must not prevent retiring
+                    // this connection-scoped observer.
+                    relay = new OresFuture<>(() -> true,
+                            () -> next.cancel(false));
                     pendingSourceOutputRelay = relay;
                 }
             }
