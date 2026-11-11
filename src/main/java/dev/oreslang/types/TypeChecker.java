@@ -2488,27 +2488,79 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    /**
+     * Narrow derived copy-contract for the first nominal with slice:
+     * immutable, non-actor, ctorless products of builtin Copy scalar fields.
+     * This is an explicit rt copy operation, NOT implicit Copy for classes.
+     */
+    private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || klass.constructor() != null || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.genericParameters().isEmpty()
+                || klass.fields().isEmpty()) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            Ast.TypeRef slot = field.type();
+            if (field.bindingKind() == Ast.BindingKind.LET
+                    || field.mutableReferent()
+                    || slot == null || slot.isBorrow() || slot.inferArguments()
+                    || !slot.arguments().isEmpty()
+                    || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                    || findClass(slot.name()) != null) return false;
+        }
+        return true;
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.WithExpr update) {
             Type receiver = typeOf(update.source(), env, generics, self);
-            // First executable slice reconstructs only readonly closed records.
-            // Mutable structs, nominal classes and actor-owned state need
-            // field-wise drop/identity and copy-contract proofs before admission.
-            if (!(receiver instanceof Record record)
-                    || record.kind() != AggregateKind.RECORD || !record.readOnly()) {
+            Type projected = receiver instanceof SelfType receiverSelf
+                    ? receiverSelf.bound() : receiver;
+            Record record = projected instanceof Record row
+                    && row.kind() == AggregateKind.RECORD && row.readOnly()
+                            ? row : null;
+            Ast.ClassDecl copyClass = null;
+            if (record == null && projected instanceof Named named) {
+                copyClass = findClass(named.name());
+                if (!withCopyEligibleClass(copyClass)) copyClass = null;
+            }
+            if (record == null && copyClass == null) {
                 throw new IllegalArgumentException(
-                        "with v1 requires a readonly structural record; "
-                                + "class, mutable struct, actor and borrowed updates remain disabled");
+                        "with requires a readonly structural record or a "
+                                + "compiler-certified immutable scalar-field class; "
+                                + "mutable classes, structs, actors and borrowed updates are disabled");
+            }
+            if (copyClass != null) {
+                if (!(update.source() instanceof Ast.RuntimeCallExpr ownership)
+                        || (!ownership.operation().equals("copy")
+                                && !ownership.operation().equals("take"))) {
+                    throw new IllegalArgumentException(
+                            "nominal class with updates require explicit rt copy or rt take");
+                }
             }
             for (Ast.WithField change : update.changes()) {
-                Type expected = record.members().get(change.name());
+                Type expected;
+                if (record != null) {
+                    expected = record.members().get(change.name());
+                } else {
+                    Ast.FieldDecl matched = null;
+                    for (Ast.FieldDecl field : copyClass.fields()) {
+                        if (field.name().equals(change.name())) matched = field;
+                    }
+                    if (matched == null) {
+                        throw new IllegalArgumentException(
+                                "unknown with field '" + change.name() + "'");
+                    }
+                    requireClassMemberVisible(matched.visibility(),
+                            copyClass, "field", matched.name());
+                    expected = classFieldType(copyClass, matched);
+                }
                 if (expected == null) {
                     throw new IllegalArgumentException(
                             "unknown with field '" + change.name() + "'");
                 }
-                // Until checked RHS effects are lowered to a resumable,
-                // transactionally published reconstruction, keep the accepted
-                // subset deterministic, synchronous and effect-free.
+                // Only synchronous/pure RHSs may participate in the first
+                // class/record reconstruction slice.
                 if (fieldInitializerMaySuspend(change.value())) {
                     throw new IllegalArgumentException(
                             "with field '" + change.name()
