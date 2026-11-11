@@ -129,6 +129,39 @@ public final class SingletonCrossThreadCycleSmoke {
         }
     }
 
+    private static Object nestedChain(SingletonSharedDomain domain, int depth,
+                                      int maxDepth, boolean checked) {
+        var key = new SingletonSharedDomain.Key("pkg", "M", "Nested" + depth);
+        return lookup(domain, key, () -> depth == maxDepth ? 42L
+                : nestedChain(domain, depth + 1, maxDepth, checked), checked).join();
+    }
+
+    private static void depthBudgetIsStickyAndRecoverable(boolean checked) {
+        var domain = new SingletonSharedDomain();
+        try {
+            nestedChain(domain, 0, 64, checked);
+            throw new AssertionError("65 nested initializers bypassed depth budget");
+        } catch (CompletionException e) {
+            require(e.getMessage() != null && e.getMessage().contains(
+                    "singleton initializer depth exceeded"),
+                    "depth violation must report bounded admission, not overflow");
+        }
+        var first = new SingletonSharedDomain.Key("pkg", "M", "Nested0");
+        try {
+            lookup(domain, first, () -> {
+                throw new AssertionError("failed nested singleton retried");
+            }, checked).join();
+            throw new AssertionError("depth failure was not sticky");
+        } catch (CompletionException e) {
+            require(e.getMessage() != null && e.getMessage().contains(
+                    "singleton initializer depth exceeded"),
+                    "depth rejection remains sticky for existing singleton");
+        }
+        Object safe = lookup(domain, new SingletonSharedDomain.Key(
+                "pkg", "M", "AfterDepthFailure"), () -> 37L, checked).join();
+        require(safe.equals(37L), "same domain can initialize a fresh key after depth failure");
+    }
+
     public static void main(String[] args) throws Exception {
         checks = 0;
         crossThreadCycle(2, false);
@@ -137,6 +170,8 @@ public final class SingletonCrossThreadCycleSmoke {
         crossThreadCycle(3, true);
         ignoredDirectCycleCannotPublish(false);
         ignoredDirectCycleCannotPublish(true);
+        depthBudgetIsStickyAndRecoverable(false);
+        depthBudgetIsStickyAndRecoverable(true);
         acyclicIdentity();
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_PASS=true");
         System.out.println("SINGLETON_CROSS_THREAD_CYCLE_ASSERTIONS=" + checks);
