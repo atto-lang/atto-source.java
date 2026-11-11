@@ -8816,6 +8816,12 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Map.delete");
                         return guestMap.take(args.getFirst()).present();
                     };
+                    case "get_optional" -> (Invokable) args -> {
+                        requireOne(args, "Map.get_optional");
+                        // Atomic lookup: no contains/get interleaving on shared maps.
+                        OresKeyedMap.Lookup<?> found = guestMap.lookup(args.getFirst());
+                        return new OptionValue(found.present(), found.value());
+                    };
                     default -> throw new IllegalArgumentException(
                             "guest Map member '" + name
                                     + "' is not admitted before typed ownership lowering");

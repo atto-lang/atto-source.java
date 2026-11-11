@@ -50,4 +50,18 @@ final class AttoRedisMutationAuditProbeTest {
             assertEquals(42, context.eval(artifact).asInt());
         }
     }
+
+    @Test
+    void optionalMapLookupEnforcesStaticKeyDomainAndNoEscapedCallable() {
+        rejects("collection member argument",
+                "pub fnc main(): int { let Map<string,int> db = ~map<string,int>(); "
+                + "db.get_optional(41); return 42; }");
+        rejects("direct-call-only",
+                "pub fnc main(): int { let Map<string,int> db = ~map<string,int>(); "
+                + "const f = db.get_optional; return 42; }");
+        rejects("proven String/Symbol key",
+                "pub fnc probe(Map<int,int> db): bool { "
+                + "return db.get_optional(42).is_some(); } "
+                + "pub fnc main(): int { return 42; }");
+    }
 }

@@ -4205,7 +4205,8 @@ public final class TypeChecker {
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null
                     && sumReceiver instanceof Named map && map.name().equals("Map")
-                    && (member.member().equals("set") || member.member().equals("delete"))) {
+                    && (member.member().equals("set") || member.member().equals("delete")
+                            || member.member().equals("get_optional"))) {
                 throw new IllegalArgumentException(
                         "Map." + member.member() + " is direct-call-only: "
                                 + "mutable Map method values cannot be captured or transported");
@@ -8185,6 +8186,9 @@ public final class TypeChecker {
                         Primitive.VOID);
                 case "delete" -> new Function(
                         List.of(named.arguments().get(0)), Primitive.BOOL);
+                case "get_optional" -> new Function(
+                        List.of(named.arguments().get(0)),
+                        new Named("Option", List.of(named.arguments().get(1))));
                 default -> null;
             };
         }

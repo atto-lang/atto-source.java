@@ -74,4 +74,27 @@ final class AttoRedisScalarMapMutationGuestTest {
         assertEquals("set|get|delete", stdout.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test
+    void atomicOptionalLookupPreservesPresentAbsentAcrossDelete() {
+        String src = """
+                pub fnc main(): int {
+                  let Map<string,int> db = ~map<string,int>();
+                  if db.get_optional("missing").is_some() then return 1; fi
+                  db.set("key", 41);
+                  val found = db.get_optional("key");
+                  if found.is_none() then return 2; fi
+                  db.delete("key");
+                  if db.get_optional("key").is_some() then return 3; fi
+                  return found.unwrap() + 1;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(src));
+        Source artifact = Source.newBuilder(OresLanguage.ID, src, "redis-optional-get.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42, context.eval(artifact).asInt());
+        }
+    }
 }
