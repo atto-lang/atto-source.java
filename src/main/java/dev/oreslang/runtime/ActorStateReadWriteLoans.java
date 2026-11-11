@@ -466,8 +466,24 @@ public final class ActorStateReadWriteLoans implements AutoCloseable {
             for (Pending next : abandoned) identities.remove(next.handler);
         }
         // Active loans survive until physical cleanup; heldBy() fences them now.
+        // One broken terminal observer must never prevent retirement of the
+        // rest of the pending queue. Futures settle outside the monitor.
+        Throwable firstObserverFailure = null;
         for (Pending next : abandoned) {
-            next.fail(new IllegalStateException("actor state generation retired"));
+            try {
+                next.fail(new IllegalStateException("actor state generation retired"));
+            } catch (Throwable failure) {
+                if (firstObserverFailure == null) firstObserverFailure = failure;
+                else if (firstObserverFailure != failure) {
+                    firstObserverFailure.addSuppressed(failure);
+                }
+            }
+        }
+        if (firstObserverFailure != null) {
+            if (firstObserverFailure instanceof Error fatal) throw fatal;
+            if (firstObserverFailure instanceof RuntimeException failure) throw failure;
+            throw new IllegalStateException(
+                    "state loan retirement observer failed", firstObserverFailure);
         }
     }
 }
