@@ -7,6 +7,9 @@ import dev.oreslang.types.ActorStateBinder;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -39,6 +42,26 @@ final class NamespaceActorStateAdmissionTest {
 
     private static String state() {
         return "define state on actor Foo as { let int x: 5; }";
+    }
+
+    @Test
+    void realTwoFileFixtureRetainsActorAndStateProvenance() throws IOException {
+        Path root = Path.of("contracts", "namespace-actor-state-v1");
+        var source = new LinkedHashMap<String, Ast.Program>();
+        source.put("src/foo/state.atto",
+                Parser.parse(Files.readString(root.resolve("state.atto"))));
+        source.put("src/foo/actor.atto",
+                Parser.parse(Files.readString(root.resolve("actor.atto"))));
+        var map = ActorStateBinder.bindSourceSet("fixture@1", source);
+        var slot = new ActorStateBinder.Slot("fixture@1", "foo", "Foo");
+        assertEquals("src/foo/actor.atto", map.get(slot).actorUnit());
+        assertEquals("src/foo/state.atto", map.get(slot).stateUnit());
+        source.put("src/foo/wrong.atto",
+                Parser.parse(Files.readString(root.resolve("reject_wrong_namespace.atto"))));
+        var denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateBinder.bindSourceSet("fixture@1", source));
+        assertTrue(denied.getMessage().contains("has no nominal actor"),
+                denied.getMessage());
     }
 
     @Test
