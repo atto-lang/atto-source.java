@@ -1,5 +1,10 @@
 name: Native Oreslang asynchronous OTel guest JVM and Native Image
 on:
+  push:
+    branches: [integration/otel-async-stdio-main-20261031]
+    paths:
+      - 'verification/otel/async/**'
+      - '.github/workflows/otel-async-native-guest.yml'
   pull_request:
     paths:
       - 'verification/otel/async/**'
