@@ -41,6 +41,8 @@ final class StrictAttoPrimitiveBytecodeTest {
             assertEquals((byte) 0xfe, bytes[1]);
             assertEquals((byte) 0xba, bytes[2]);
             assertEquals((byte) 0xbe, bytes[3]);
+            assertEquals(0, bytes[6], "Java 8 classfile major version high byte");
+            assertEquals(52, bytes[7] & 0xff, "Java 8 classfile major version");
             assertEquals(HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(bytes)),
                     artifact.bytecodeSha256());
@@ -72,11 +74,17 @@ final class StrictAttoPrimitiveBytecodeTest {
 
             Process process = new ProcessBuilder(
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                    "-Xint", // disable HotSpot JIT: generated guest bytecode is self-contained
                     "-cp", output.toString(), "Run")
                     .redirectErrorStream(true).start();
+            boolean finished = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                fail("generated Java-bytecode guest timed out");
+            }
             String stdout = new String(process.getInputStream().readAllBytes(),
                     StandardCharsets.UTF_8);
-            assertEquals(0, process.waitFor(), stdout);
+            assertEquals(0, process.exitValue(), stdout);
             assertEquals(expected[i], stdout, operators[i]);
         }
     }
