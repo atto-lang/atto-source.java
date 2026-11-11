@@ -1,8 +1,14 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.types.NumericValueEquality;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
@@ -48,4 +54,29 @@ final class NumericValueEqualityAdtTest {
                 9007199254740992.0d));
         assertFalse(NumericValueEquality.equals(42L, 42.5d));
     }
+    @Test
+    void nestedSumValueEqualityExecutesInActualAttoGuest() throws Exception {
+        String program;
+        try (InputStream in = getClass().getResourceAsStream(
+                "/adt-parity/numeric-sum-value-equality.atto")) {
+            assertNotNull(in, "missing canonical AttoLang guest fixture");
+            program = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, program, "numeric-sum-value-equality.atto")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("true\\ntrue\\ntrue\\ntrue\\n",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
 }
