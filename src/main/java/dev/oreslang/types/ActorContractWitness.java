@@ -103,7 +103,7 @@ public final class ActorContractWitness {
 
             for (var located : namespace.getValue()) {
                 Ast.Decl decl = located.declaration();
-                if (decl instanceof Ast.InterfaceDecl iface && !iface.moduleContract()) {
+                if (decl instanceof Ast.InterfaceDecl iface && iface.actorContract()) {
                     if (contracts.putIfAbsent(iface.name(),
                             new Located<>(located.sourceUnit(), iface)) != null) {
                         throw new IllegalArgumentException(
@@ -138,6 +138,11 @@ public final class ActorContractWitness {
                                         + name(actorName, interfaceName.name()));
                     }
                     Ast.InterfaceDecl iface = target.declaration();
+                    if (!iface.actorContract()) {
+                        throw new IllegalArgumentException(
+                                "declared actor implements target is not an actor contract: "
+                                        + iface.name());
+                    }
                     if (!iface.genericParameters().isEmpty() || !iface.parents().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "actor interface contract generics/inheritance require verified lowering: "
