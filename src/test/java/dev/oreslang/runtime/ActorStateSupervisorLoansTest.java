@@ -69,6 +69,15 @@ final class ActorStateSupervisorLoansTest {
                                     denied.set(rejected);
                                 }
                             }
+                            case "nested-owner" -> {
+                                try {
+                                    region.get().withOwnerRead(() ->
+                                            region.get().withOwnerRead(
+                                                    ownerReadOperations::incrementAndGet));
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
                             case "quota" -> {
                                 try {
                                     region.get().delegateRead(supervisor);
@@ -364,6 +373,24 @@ final class ActorStateSupervisorLoansTest {
             held.close();
             assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(region.physicallyRetired());
+        }
+    }
+
+
+    @Test
+    void nestedOwnerReadCannotLaunderRecursiveEntryViaNewExecutionId()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            sendAndDrain(fixture.worker, "nested-owner");
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get());
+            assertEquals(0, fixture.ownerReadOperations.get());
+            assertEquals(0, region.activeReaders(),
+                    "outer owner read must still unwind on nested denial");
+            fixture.denied.set(null);
+            sendAndDrain(fixture.worker, "owner-read");
+            assertNull(fixture.denied.get());
+            assertEquals(1, fixture.ownerReadOperations.get());
         }
     }
 
