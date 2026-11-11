@@ -99,7 +99,7 @@ final class CanonicalDefineScopeTest {
                 "pub fnc new(): Plain { return new Plain(); }",
                 "pub static fnc new(): Plain { return new Plain(); }"
         }) {
-            Ast.Program parsed = Parser.parse("define class Plain as " + declaration + " end");
+            Ast.Program parsed = Parser.parse("define pub class Plain as " + declaration + " end");
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class, () -> TypeChecker.check(parsed));
             assertTrue(failure.getMessage().contains("Newable"), failure.getMessage());
