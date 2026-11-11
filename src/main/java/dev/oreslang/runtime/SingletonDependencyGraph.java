@@ -16,6 +16,7 @@ import java.util.Set;
 final class SingletonDependencyGraph<K> {
     private static final int MAX_DEPENDENCIES_PER_INITIALIZER = 64;
     private static final int MAX_DOMAIN_DEPENDENCIES = 16_384;
+    private static final int MAX_INITIALIZER_DEPTH = 64;
     private final Map<K, Set<K>> dependencies = new HashMap<>();
     private final Map<K, Set<K>> dependents = new HashMap<>();
     private int edgeCount;
@@ -53,6 +54,9 @@ final class SingletonDependencyGraph<K> {
         if (stack == null) {
             stack = new ArrayDeque<>();
             initializing.set(stack);
+        }
+        if (stack.size() >= MAX_INITIALIZER_DEPTH) {
+            throw new IllegalStateException("singleton initializer depth exceeded");
         }
         stack.push(key);
     }
