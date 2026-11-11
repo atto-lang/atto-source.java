@@ -1,5 +1,8 @@
 # Java tenant runtime host: first source-guest integration slice
 
+**Canonical naming (2026-11-11): TenantVM** denotes the per-tenant execution compartment under OresVM; `TenantIsolateManager` is the existing Java trusted-context host implementation name, **not** a proven untrusted TenantVM. See [TenantVM naming](../TENANT_VM_NAMING_V1.md); no API or sandbox guarantee changes here.
+
+
 **Status: draft implementation / execution not yet verified.**
 
 This is a stacked implementation on Java PR #2278 (fail-closed physical
