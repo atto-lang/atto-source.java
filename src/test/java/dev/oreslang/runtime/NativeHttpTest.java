@@ -428,7 +428,7 @@ class NativeHttpTest {
             }
         }
         assertTrue(firstDrain.isDone(), "first listener never completed carrier drain");
-        assertTrue(output.toString(StandardCharsets.UTF_8).endsWith("2\\n0\\n"),
+        assertTrue(output.toString(StandardCharsets.UTF_8).endsWith("2\n0\n"),
                 "sealed worker must be replaced, not reused: " + output.toString(StandardCharsets.UTF_8));
     }
 
