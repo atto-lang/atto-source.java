@@ -2329,6 +2329,14 @@ public final class Parser {
             }
         }
 
+        // Tilde tuple calls are values, not return/parameter type annotations.
+        // A type witness may be written ~tuple<T...> for compatibility, but
+        // ~tuple(...) in type position must fail with a precise diagnostic.
+        if (explicitTildeType && name.equals("Tuple") && check(LPAREN)) {
+            throw error(peek(), "~tuple(...) constructs a value, not a type; "
+                    + "use Tuple[T1, T2, ...] in type annotations");
+        }
+
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
             args.add(parseSequenceShapeDimension());
