@@ -1,0 +1,35 @@
+name: Atto nominal enum compiled guest actor mail
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enum-actor-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact tested PR head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install GraalVM JDK25 and Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: graalvm
+          java-version: '25'
+          cache: maven
+      - name: Execute typed enum matcher and compiled actor mailbox guest tests
+        run: >-
+          mvn -B -ntp -Dtest=NominalEnumActorMailGuestTest,EnumMatchArmSyntaxGuestTest
+          -DfailIfNoTests=true test
+      - name: Preserve actual Surefire method reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-enum-guest-mail-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
