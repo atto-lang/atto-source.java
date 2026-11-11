@@ -70,7 +70,7 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
 
 ## Test inventory and non-promotion gate
 
-`ActorStateSupervisorLoansTest` adds **10 authored JUnit cases** covering:
+`ActorStateSupervisorLoansTest` adds **12 authored JUnit cases** covering:
 
 1. Host and unsupervised actor cannot mint region.
 2. Foreign supervisor cannot issue an owner-turn grant.
@@ -82,9 +82,11 @@ All owner and delegated loans share **one** `ActorStateRwLoans` arbiter:
 8. Cancelling queued grant does not pin reclamation.
 9. Bounded 64 unredeemed tokens.
 10. Forged owner allocation record without one-use runtime mint rejected.
+11. Two concurrent host claimants cannot redeem the same grant twice.
+12. STOP fails queued grants while retaining active physical writer pins.
 
 The focused exact-head workflow runs BOTH this suite and the existing
-**25-case `ActorStateRwLoansTest`** (35 authored cases minimum),
+**25-case `ActorStateRwLoansTest`** (37 authored cases minimum),
 requires real Surefire XML with zero failed, errored, or skipped cases,
 and uploads the two XML reports. Runner assignment with **nonzero
 executed steps** is required. Until that happens classify Java JUnit,
