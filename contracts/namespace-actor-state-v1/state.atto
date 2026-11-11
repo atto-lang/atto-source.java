@@ -1,0 +1,8 @@
+namespace foo;
+
+// One sealed, per-instance actor state schema; only compiler-owned critical
+// loans may expose a view once executable lowering is implemented.
+define state on actor Foo as {
+    let int x : 5;
+    val bool ready : true;
+}
