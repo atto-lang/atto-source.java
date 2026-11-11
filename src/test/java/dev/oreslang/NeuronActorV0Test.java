@@ -146,6 +146,7 @@ final class NeuronActorV0Test {
                       s.weight = 2.0;
                       s.bias = 1.0;
                     });
+                    return;
                   }
 
                   pub forward(float input): float {
