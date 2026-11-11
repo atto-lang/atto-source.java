@@ -43,7 +43,7 @@ final class AttoAsyncNioTcpGuestTest {
             Future<?> execution = exec.submit(() -> {
                 try (Context context = Context.newBuilder(OresLanguage.ID)
                         .allowAllAccess(false)
-                        .arguments(OresLanguage.ID, "--ores-capabilities=NETWORK,STDOUT")
+                        .arguments(OresLanguage.ID, new String[] {"--ores-capabilities=NETWORK,STDOUT"})
                         .out(stdout).build()) {
                     context.eval(Source.newBuilder(OresLanguage.ID, source,
                             "atto-nio2-binary-echo.atto")
