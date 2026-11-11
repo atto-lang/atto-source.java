@@ -223,7 +223,7 @@ final class SupervisorEscrowAdmissionLinearizationIntegrationTest {
             }
             assertFalse(bridge.snapshot().containsKey(candidateId),
                     "rollback may not leave a dangling CONTROL child");
-            assertEquals(1, bridge.snapshot().size() - 1,
+            assertEquals(2, bridge.snapshot().size(),
                     "only the guardian and original parent may remain");
             assertEquals(0, bridge.pendingCount(),
                     "aborted child publication must not forge terminal failure");
