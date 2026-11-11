@@ -164,6 +164,15 @@ self_test() {
     reject 'valid synthetic full receipt rejected'; exit 1
   fi
   local reject_count=0
+  # A forged terminal PASS before independent verification is an invalid input.
+  sed -i 's/^status=VERIFYING$/status=PASS/' "$t/identity.txt"
+  if GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GITHUB_JOB=java-linked-guest \
+       ATTO_EXPECTED_POLICY_SHA="$policy_sha" \
+       verify "$t" "$demo_sha" "$compiler_sha" "$t" >/dev/null 2>&1; then
+    reject 'unverified early PASS accepted as a verification input'; exit 1
+  fi
+  reject_count=$((reject_count+1))
+  sed -i 's/^status=PASS$/status=VERIFYING/' "$t/identity.txt"
   printf '\n' >> "$p"
   if check_cases "$t" "$t" >/dev/null 2>&1; then reject 'extra test row accepted'; exit 1; fi
   reject_count=$((reject_count+1))
