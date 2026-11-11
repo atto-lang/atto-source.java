@@ -37,10 +37,12 @@ final class EqualityIdentityOperatorTest {
         assertEquals(Token.Type.BANG, suffix.get(1).type(),
                 "!eq cannot consume a prefix of an identifier");
         assertEquals("eqvalue", suffix.get(2).lexeme());
-        assertThrows(IllegalArgumentException.class,
-                () -> new Parser(new Lexer("left ! eq right").scan()).parseExpression());
-        assertThrows(IllegalArgumentException.class,
-                () -> new Parser(new Lexer("left !eqvalue right").scan()).parseExpression());
+        // A raw expression parser intentionally does not consume EOF. Use a
+        // complete function body so trailing invalid tokens cannot go unseen.
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad(int left,int right):bool{return left ! eq right;}"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc bad(int left,int right):bool{return left !eqvalue right;}"));
 
 
         assertEquals("eq", binary("left eq right").operator());
