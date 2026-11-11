@@ -1,0 +1,7 @@
+namespace foo;
+
+define mtd (Bar b) do_y(): void {
+  do_x();
+  b.do_x();
+  return;
+}
