@@ -5,11 +5,22 @@ name: AttoLang native multi-file demo (compiler-owned)
 on:
   # Source-free policy admission even before this new workflow reaches main.
   push:
-    branches: ['ci/native-multifile-demos-owned-20261110']
+    branches: ['main', 'ci/native-multifile-demos-owned-20261110']
+    paths:
+      - '.github/workflows/atto-native-demo-owned.yml'
+      - 'scripts/ci/native-multifile-demo-owned.sh'
+      - 'scripts/ci/verify-atto-owned-matrix.sh'
+      - 'scripts/ci/atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/test-atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/AttoDemoSevenReceiptVerifier.java'
   pull_request:
     paths:
       - '.github/workflows/atto-native-demo-owned.yml'
       - 'scripts/ci/native-multifile-demo-owned.sh'
+      - 'scripts/ci/verify-atto-owned-matrix.sh'
+      - 'scripts/ci/atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/test-atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/AttoDemoSevenReceiptVerifier.java'
   workflow_dispatch:
 
 permissions:
