@@ -308,6 +308,8 @@ public final class ActorReceiverBinder {
                                 + "' declared in the same module; imported actors and "
                                 + "actors in other modules cannot grant receiver authority");
             }
+            // Lifecycle-public denial takes precedence over actor export visibility.
+            validateHookShape(method);
             Ast.Visibility actorVisibility =
                     target instanceof Ast.StandaloneActorDecl standalone
                             ? standalone.visibility()
@@ -335,7 +337,6 @@ public final class ActorReceiverBinder {
                                     + "' conflicts with an in-class actor method");
                 }
             }
-            validateHookShape(method);
             // Runtime lifecycle slots are nominal roles, not overloadable by
             // argument count. Preserve the old name/arity rule for ordinary mtd.
             if (method.name().equals("init") || method.name().equals("receive")) {
