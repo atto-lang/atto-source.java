@@ -98,6 +98,14 @@ public final class PackageNamespaceBuild {
         if (sources.isEmpty()) {
             throw new IllegalArgumentException("manifest package has no .atto/.ores sources");
         }
+        // Retain exact decoded source-byte receipts; no implicit normalization
+        // or unpinned ambient file can contribute nominal actor authority.
+        Map<String, String> sourceSha256 = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            sourceSha256.put(entry.getKey(), java.util.HexFormat.of().formatHex(
+                    digest(entry.getValue().getBytes(StandardCharsets.UTF_8))));
+        }
+        assertManifestUnchanged();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             parsed.put(entry.getKey(), Parser.parse(entry.getValue()));
@@ -111,12 +119,14 @@ public final class PackageNamespaceBuild {
         var states = ActorStateBinder.bindSourceSet(packageIdentity, parsed);
         var methods = ActorMethodIndex.collect(packageIdentity, parsed, receivers);
         return new ActorTopology(packageIdentity,
-                sources.keySet().stream().sorted().toList(), methods, states, receivers);
+                sources.keySet().stream().sorted().toList(),
+                sourceSha256, methods, states, receivers);
     }
 
     public record ActorTopology(
             String packageIdentity,
             List<String> sourceUnits,
+            Map<String, String> sourceSha256,
             ActorMethodIndex actorMethods,
             Map<ActorStateBinder.Slot, ActorStateBinder.Binding> attachedStates,
             Map<ActorReceiverBinder.SourceSlot, ActorReceiverBinder.SourceBinding> receiverMethods) {
@@ -125,6 +135,13 @@ public final class PackageNamespaceBuild {
                 throw new IllegalArgumentException("missing manifest actor package identity");
             }
             sourceUnits = List.copyOf(sourceUnits);
+            sourceSha256 = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(sourceSha256));
+            if (!sourceSha256.keySet().equals(Set.copyOf(sourceUnits))
+                    || sourceSha256.values().stream().anyMatch(
+                            hash -> hash == null || !hash.matches("[0-9a-f]{64}"))) {
+                throw new IllegalArgumentException("source SHA-256 receipts mismatch manifest inventory");
+            }
             java.util.Objects.requireNonNull(actorMethods, "nominal actor index");
             attachedStates = Map.copyOf(attachedStates);
             receiverMethods = Map.copyOf(receiverMethods);
