@@ -16,6 +16,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresEnumSymbol;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -132,6 +133,8 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final NominalEnumRegistry.Registry nominalEnums;
+        /** Only all-nullary closed enum declarations admit scalar mailbox values. */
+        private final Map<String, OresEnumSymbol.Declaration> nullaryEnumSymbols;
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -196,6 +199,15 @@ public final class OresEvalRootNode extends RootNode {
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.nominalEnums = NominalEnumRegistry.forProgram(program);
+            Map<String, OresEnumSymbol.Declaration> nullary = new HashMap<>();
+            for (NominalEnumRegistry.EnumType enumeration : nominalEnums.enums().values()) {
+                if (enumeration.cases().stream().allMatch(enumCase -> enumCase.payload() == null)) {
+                    nullary.put(enumeration.name(), OresEnumSymbol.declare(
+                            this.codeUnitId, enumeration.name(),
+                            enumeration.cases().stream().map(NominalEnumRegistry.Case::name).toList()));
+                }
+            }
+            this.nullaryEnumSymbols = Map.copyOf(nullary);
             indexImports();
             indexDeclarations();
         }
@@ -4538,6 +4550,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ReadonlyRecordValue(fields);
                 }
+                if (value instanceof OresEnumSymbol) return value;
                 if (value instanceof NominalEnumValue nominal) {
                     return nominal.payload() == null
                             ? nominal
@@ -5704,6 +5717,18 @@ public final class OresEvalRootNode extends RootNode {
                             enumCase.payload(),
                             args.getFirst(),
                             "enum constructor " + enumCase.qualifiedName());
+            // A closed enum containing only nullary variants is an immutable
+            // nominal scalar. The same value can cross actor-owned arenas as
+            // local mailbox data without a serialized representation.
+            OresEnumSymbol.Declaration closed = nullaryEnumSymbols.get(enumCase.owner());
+            if (closed != null) {
+                if (payload != null || enumCase.payload() != null) {
+                    throw new IllegalStateException("non-nullary enum escaped scalar admission");
+                }
+                return closed.caseNamed(enumCase.name());
+            }
+            // Payload-bearing or mixed enums retain the existing tagged value
+            // and must not inherit scalar/mailbox permission implicitly.
             return new NominalEnumValue(
                     codeUnitId,
                     enumCase.owner(),
@@ -8030,6 +8055,13 @@ public final class OresEvalRootNode extends RootNode {
                 NominalEnumRegistry.Case enumCase =
                         nominalEnums.caseOrNull(name);
                 if (enumCase != null) {
+                    OresEnumSymbol.Declaration closed = nullaryEnumSymbols.get(enumCase.owner());
+                    if (closed != null) {
+                        return constructor.arguments().isEmpty()
+                                && value instanceof OresEnumSymbol symbol
+                                && symbol.declaration().equals(closed)
+                                && symbol.caseName().equals(enumCase.name());
+                    }
                     if (!(value instanceof NominalEnumValue nominal)
                             || !nominal.ownerUnitId().equals(codeUnitId)
                             || !nominal.enumName().equals(enumCase.owner())
@@ -8254,6 +8286,11 @@ public final class OresEvalRootNode extends RootNode {
             NominalEnumRegistry.EnumType enumeration =
                     nominalEnums.enums().get(name);
             if (enumeration != null) {
+                OresEnumSymbol.Declaration closed = nullaryEnumSymbols.get(name);
+                if (closed != null) {
+                    return value instanceof OresEnumSymbol symbol
+                            && symbol.declaration().equals(closed);
+                }
                 if (!(value instanceof NominalEnumValue nominal)
                         || !nominal.ownerUnitId().equals(codeUnitId)
                         || !nominal.enumName().equals(name)) {
@@ -8297,6 +8334,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof OresEnumSymbol symbol) return symbol.declaration().enumName();
             if (value instanceof NominalEnumValue nominal) return nominal.enumName();
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
@@ -8434,6 +8472,12 @@ public final class OresEvalRootNode extends RootNode {
                         && a.id().equals(b.id());
             }
 
+            if (left instanceof OresEnumSymbol || right instanceof OresEnumSymbol) {
+                // Nullary case identity never aliases numeric tags, open Symbol
+                // literals, or a payload-bearing enum runtime value.
+                return left instanceof OresEnumSymbol a
+                        && right instanceof OresEnumSymbol b && a.equals(b);
+            }
             if (left instanceof NominalEnumValue
                     || right instanceof NominalEnumValue) {
                 if (!(left instanceof NominalEnumValue a)
@@ -8676,6 +8720,14 @@ public final class OresEvalRootNode extends RootNode {
             NominalEnumRegistry.EnumType enumType =
                     nominalEnums.enums().get(declared.name());
             if (enumType != null) {
+                OresEnumSymbol.Declaration closed = nullaryEnumSymbols.get(enumType.name());
+                if (closed != null) {
+                    if (!(value instanceof OresEnumSymbol symbol)
+                            || !symbol.declaration().equals(closed)) {
+                        throw returnTypeMismatch(callable, declared, value);
+                    }
+                    return symbol;
+                }
                 if (!(value instanceof NominalEnumValue nominal)
                         || !nominal.ownerUnitId().equals(codeUnitId)
                         || !nominal.enumName().equals(enumType.name())) {
@@ -9305,6 +9357,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof OresEnumSymbol) return true;
             if (value instanceof NominalEnumValue nominal) {
                 return nominal.payload() == null
                         || runtimeSharedSafe(nominal.payload(), seen);
