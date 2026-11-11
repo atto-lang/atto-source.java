@@ -18,8 +18,13 @@ instruction stream:
 6. END_EXCLUSIVE_WRITE field
 7. RETURN_VOID
 
-Every image self-verifies exact opcode order, state-field and argument
-binding, value result types, and balanced exclusive-loan scope. There is no
+Each emitted instruction also pins its typed virtual register definitions
+and uses: r0 is the exclusive loan, r1 the loaded state i64, r2 the
+argument i64, and r3 the checked-add i64. The store consumes r0 and r3;
+loan release consumes r0. The verifier rejects changed operand identities,
+use-before-definition, multiple definitions, wrong types, and unbalanced
+loan scope. Every image additionally self-verifies exact opcode order,
+field/argument binding and typed values. There is no
 `await`, call, pointer, captured closure, alias escape, concurrent reentry,
 unchecked arithmetic or implicit conversion instruction in this admitted
 subset. This is an **instruction-level compiler MIR**, not a Java

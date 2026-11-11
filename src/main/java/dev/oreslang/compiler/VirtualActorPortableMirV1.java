@@ -39,16 +39,29 @@ public final class VirtualActorPortableMirV1 {
         private final Opcode opcode;
         private final String subject;
         private final ResultType resultType;
+        private final int resultRegister;
+        private final int firstUseRegister;
+        private final int secondUseRegister;
 
-        private Instruction(Opcode opcode, String subject, ResultType resultType) {
+        private Instruction(Opcode opcode, String subject, ResultType resultType,
+                            int resultRegister, int firstUseRegister, int secondUseRegister) {
             this.opcode = Objects.requireNonNull(opcode);
             this.subject = Objects.requireNonNull(subject);
             this.resultType = Objects.requireNonNull(resultType);
+            this.resultRegister = resultRegister;
+            this.firstUseRegister = firstUseRegister;
+            this.secondUseRegister = secondUseRegister;
         }
 
         public Opcode opcode() { return opcode; }
         public String subject() { return subject; }
         public ResultType resultType() { return resultType; }
+        /** Definition or -1 for a non-producing instruction. */
+        public int resultRegister() { return resultRegister; }
+        /** First consumed register or -1. */
+        public int firstUseRegister() { return firstUseRegister; }
+        /** Second consumed register or -1. */
+        public int secondUseRegister() { return secondUseRegister; }
     }
 
     /** Immutable statically resolved selector, not an actor reference. */
@@ -87,13 +100,20 @@ public final class VirtualActorPortableMirV1 {
             String field = checked.field();
             String argument = checked.parameter();
             this.instructions = List.of(
-                    new Instruction(Opcode.BEGIN_EXCLUSIVE_WRITE, field, ResultType.LOAN),
-                    new Instruction(Opcode.LOAD_STATE_I64, field, ResultType.I64),
-                    new Instruction(Opcode.LOAD_ARGUMENT_I64, argument, ResultType.I64),
-                    new Instruction(Opcode.ADD_I64_CHECKED, "state+argument", ResultType.I64),
-                    new Instruction(Opcode.STORE_STATE_I64, field, ResultType.VOID),
-                    new Instruction(Opcode.END_EXCLUSIVE_WRITE, field, ResultType.VOID),
-                    new Instruction(Opcode.RETURN_VOID, "", ResultType.VOID));
+                    new Instruction(Opcode.BEGIN_EXCLUSIVE_WRITE, field, ResultType.LOAN,
+                            0, -1, -1),
+                    new Instruction(Opcode.LOAD_STATE_I64, field, ResultType.I64,
+                            1, 0, -1),
+                    new Instruction(Opcode.LOAD_ARGUMENT_I64, argument, ResultType.I64,
+                            2, -1, -1),
+                    new Instruction(Opcode.ADD_I64_CHECKED, "state+argument", ResultType.I64,
+                            3, 1, 2),
+                    new Instruction(Opcode.STORE_STATE_I64, field, ResultType.VOID,
+                            -1, 0, 3),
+                    new Instruction(Opcode.END_EXCLUSIVE_WRITE, field, ResultType.VOID,
+                            -1, 0, -1),
+                    new Instruction(Opcode.RETURN_VOID, "", ResultType.VOID,
+                            -1, -1, -1));
         }
 
         public int slot() { return slot; }
@@ -119,14 +139,40 @@ public final class VirtualActorPortableMirV1 {
                     field, field, checked.parameter(), "state+argument",
                     field, field, ""
             };
+            int[] expectedDefinitions = { 0, 1, 2, 3, -1, -1, -1 };
+            int[] expectedFirstUses = { -1, 0, -1, 1, 0, 0, -1 };
+            int[] expectedSecondUses = { -1, -1, -1, 2, 3, -1, -1 };
             if (instructions.size() != expectedOps.length)
                 throw new IllegalStateException("unbalanced virtual state loan");
+            ResultType[] registers = new ResultType[4];
             for (int i = 0; i < expectedOps.length; i++) {
                 Instruction op = instructions.get(i);
                 if (op.opcode() != expectedOps[i] || op.resultType() != expectedTypes[i]
-                        || !op.subject().equals(expectedSubjects[i])) {
+                        || !op.subject().equals(expectedSubjects[i])
+                        || op.resultRegister() != expectedDefinitions[i]
+                        || op.firstUseRegister() != expectedFirstUses[i]
+                        || op.secondUseRegister() != expectedSecondUses[i]) {
                     throw new IllegalStateException(
                             "unverified virtual actor instruction at index " + i);
+                }
+                if (op.firstUseRegister() >= 0
+                        && registers[op.firstUseRegister()] == null)
+                    throw new IllegalStateException("use-before-definition in protected MIR");
+                if (op.secondUseRegister() >= 0
+                        && registers[op.secondUseRegister()] == null)
+                    throw new IllegalStateException("use-before-definition in protected MIR");
+                if ((i == 1 || i == 4 || i == 5)
+                        && registers[0] != ResultType.LOAN)
+                    throw new IllegalStateException("state access without exclusive loan");
+                if (i == 3 && (registers[1] != ResultType.I64
+                        || registers[2] != ResultType.I64))
+                    throw new IllegalStateException("unchecked or untyped arithmetic inputs");
+                if (i == 4 && registers[3] != ResultType.I64)
+                    throw new IllegalStateException("state store must consume checked i64");
+                if (op.resultRegister() >= 0) {
+                    if (registers[op.resultRegister()] != null)
+                        throw new IllegalStateException("multiple typed register definitions");
+                    registers[op.resultRegister()] = op.resultType();
                 }
             }
         }

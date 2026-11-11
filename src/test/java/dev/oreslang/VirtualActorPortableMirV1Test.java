@@ -63,6 +63,15 @@ final class VirtualActorPortableMirV1Test {
                 method.instructions().getFirst().resultType());
         assertEquals(VirtualActorPortableMirV1.ResultType.I64,
                 method.instructions().get(3).resultType());
+        assertEquals(0, method.instructions().getFirst().resultRegister());
+        assertEquals(0, method.instructions().get(1).firstUseRegister());
+        assertEquals(1, method.instructions().get(3).firstUseRegister());
+        assertEquals(2, method.instructions().get(3).secondUseRegister());
+        assertEquals(3, method.instructions().get(3).resultRegister());
+        assertEquals(0, method.instructions().get(4).firstUseRegister());
+        assertEquals(3, method.instructions().get(4).secondUseRegister());
+        assertEquals(0, method.instructions().get(5).firstUseRegister());
+        assertEquals(-1, method.instructions().get(6).resultRegister());
         assertThrows(UnsupportedOperationException.class,
                 () -> method.instructions().clear());
         assertThrows(UnsupportedOperationException.class,
