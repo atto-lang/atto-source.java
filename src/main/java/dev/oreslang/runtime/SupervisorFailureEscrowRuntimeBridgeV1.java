@@ -63,6 +63,64 @@ final class SupervisorFailureEscrowRuntimeBridgeV1 {
         return nodeId;
     }
 
+    boolean hasRecoveryCoordinatorFromRuntime() {
+        return recovery != null;
+    }
+
+    /**
+     * Only ActorRuntime calls this under runtimeLifecycleLock and the
+     * spawning parent's lifecycleLock. The escrow ledger holds its monitor
+     * across both CONTROL registration and runtime publication. Concurrent
+     * supervisor failure therefore observes either the entire child or no
+     * child. In particular, the coordinator's refs table is registered
+     * before releasing the ledger monitor.
+     */
+    void registerSpawnedChildFromRuntime(
+            ActorRuntime.ActorRef<?> parent,
+            ActorRuntime.ActorRef<?> child,
+            long parentNodeId,
+            long parentGeneration,
+            Runnable publish) {
+        Objects.requireNonNull(parent, "parent");
+        Objects.requireNonNull(child, "child");
+        Objects.requireNonNull(publish, "publish");
+        SupervisorEscrowSubtreeRecoveryV1 coordinator = recovery;
+        if (coordinator == null) {
+            throw new IllegalStateException(
+                    "supervised actor nested spawn requires atomic CONTROL child registration and recovery coordinator");
+        }
+        if (!Objects.equals(ids.get(parent.id()), parentNodeId)) {
+            throw new IllegalStateException("stale or foreign supervisor parent binding");
+        }
+        long childNodeId = nextId.getAndIncrement();
+        if (childNodeId < 2) {
+            throw new IllegalStateException("supervisor CONTROL identities exhausted");
+        }
+        ledger.registerChildAtomically(childNodeId, parentNodeId, child.generation(), () -> {
+            if (!ledger.mayAdmit(parentNodeId, parentGeneration)) {
+                throw new IllegalStateException("supervisor generation fenced before child publish");
+            }
+            if (ids.putIfAbsent(child.id(), childNodeId) != null) {
+                throw new IllegalStateException("duplicate runtime child CONTROL identity");
+            }
+            boolean bound = false;
+            boolean tracked = false;
+            try {
+                runtime.bindSpawnedSupervisorEscrowFromRuntime(child, this, childNodeId);
+                bound = true;
+                coordinator.registerSpawnedChildFromRuntime(childNodeId, child);
+                tracked = true;
+                publish.run();
+            } catch (RuntimeException | Error failure) {
+                if (tracked) coordinator.rollbackSpawnedChildFromRuntime(childNodeId, child);
+                if (bound) runtime.rollbackSpawnedSupervisorEscrowFromRuntime(
+                        child, this, childNodeId);
+                ids.remove(child.id(), childNodeId);
+                throw failure;
+            }
+        });
+    }
+
     /** Install one trusted, opt-in CONTROL coordinator. No actor guest may call
      * this method and no second coordinator may compete for this ledger. */
     synchronized void installRecovery(SupervisorEscrowSubtreeRecoveryV1 coordinator) {
