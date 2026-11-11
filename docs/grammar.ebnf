@@ -82,7 +82,8 @@ declared_actor_decl
    No field access or critical guest execution is implied by parsing. *)
 attached_actor_state_decl
                 = "define" "state" "on" "actor" IDENT "as"
-                  "{" { "let" "int" IDENT ":" [ "-" ] INT ";" } [ ";" ] "}" [ ";" ] ;
+                  "{" "let" "int" IDENT ":" [ "-" ] INT ";"
+                  { "let" "int" IDENT ":" [ "-" ] INT ";" } "}" [ ";" ] ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
