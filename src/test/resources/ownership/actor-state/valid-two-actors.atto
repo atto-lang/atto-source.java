@@ -1,0 +1,38 @@
+// Two actors share immutable code but cannot share their mutable state slots.
+define actor Counter as
+  state {
+    let int count;
+  }
+
+  on_start(): void {
+    self.count = 0;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    self.count = self.count + 1;
+    self.send(self.count);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val left = spawn Counter();
+  val right = spawn Counter();
+  await left.get_ready();
+  await right.get_ready();
+
+  left.send("go");
+  right.send("go");
+
+  val leftOut = (await left.outputs.next()).value.unwrap();
+  val rightOut = (await right.outputs.next()).value.unwrap();
+  stdio.stdout.write(leftOut.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(rightOut.value);
+
+  await left.get_done();
+  await right.get_done();
+  return;
+}
