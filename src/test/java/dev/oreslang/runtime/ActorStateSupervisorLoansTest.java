@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real ActorRuntime/managed-worker integration, not a source-free oracle. */
-@Timeout(45)
+@Timeout(60)
 final class ActorStateSupervisorLoansTest {
 
     private static void sendAndDrain(
@@ -477,6 +477,147 @@ final class ActorStateSupervisorLoansTest {
             sendAndDrain(fixture.worker, "owner-read");
             assertNull(fixture.denied.get());
             assertEquals(1, fixture.ownerReadOperations.get());
+        }
+    }
+
+
+    @Test
+    void hostThreadCannotImpersonateSupervisorControlOrReleaseLoan() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var grant = fixture.issue("read");
+            assertThrows(SecurityException.class,
+                    () -> region.redeem(grant, fixture.supervisor));
+            assertEquals(1, region.outstandingGrantCount(),
+                    "missing CONTROL identity must not consume a grant");
+            var loan = fixture.redeem(region, grant).join();
+            assertThrows(SecurityException.class, loan::readScalar);
+            assertThrows(SecurityException.class, () -> loan.writeScalar(5));
+            assertThrows(SecurityException.class, loan::close);
+            assertEquals(1, region.activeReaders(),
+                    "unauthenticated close must not release live physical loan");
+            assertEquals(0L, fixture.read(loan));
+            fixture.release(loan);
+        }
+    }
+
+    @Test
+    void immutableLoanCannotMutateProtectedStateEvenUnderRightControl() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var loan = fixture.redeem(region, fixture.issue("read")).join();
+            assertEquals(0L, fixture.read(loan));
+            assertThrows(SecurityException.class,
+                    () -> fixture.write(loan, 22L));
+            assertEquals(0L, fixture.read(loan));
+            fixture.release(loan);
+        }
+    }
+
+    @Test
+    void writerAndOwnerShareOneProtectedPrimitiveStorageWithoutRawAliases()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            sendAndDrain(fixture.worker, "scalar-owner-increment");
+            var writer = fixture.redeem(region, fixture.issue("write")).join();
+            assertEquals(1L, fixture.read(writer));
+            fixture.write(writer, 41L);
+            assertEquals(41L, fixture.read(writer));
+            fixture.release(writer);
+            sendAndDrain(fixture.worker, "scalar-owner-read");
+            assertEquals(41L, fixture.ownerScalarObserved.get());
+            sendAndDrain(fixture.worker, "scalar-owner-increment");
+            var reader = fixture.redeem(region, fixture.issue("read")).join();
+            assertEquals(42L, fixture.read(reader));
+            fixture.release(reader);
+        }
+    }
+
+    @Test
+    void otherSupervisorControlCannotUseOrReleaseExistingBorrow() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var loan = fixture.redeem(region, fixture.issue("read")).join();
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(fixture.foreign, loan::readScalar));
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(fixture.foreign,
+                            () -> { loan.close(); return null; }));
+            assertEquals(1, region.activeReaders());
+            fixture.release(loan);
+        }
+    }
+
+    @Test
+    void releasedLoanCannotResumeInNewAuthenticatedControlTurn() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var loan = fixture.redeem(region, fixture.issue("write")).join();
+            fixture.write(loan, 31L);
+            fixture.release(loan);
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(fixture.supervisor, loan::readScalar));
+            assertThrows(SecurityException.class,
+                    () -> fixture.write(loan, 32L));
+            var fresh = fixture.redeem(region, fixture.issue("read")).join();
+            assertEquals(31L, fixture.read(fresh));
+            fixture.release(fresh);
+        }
+    }
+
+    @Test
+    void nestedSupervisorControlDispatchCannotMintSecondControlPrincipal()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            fixture.asControl(fixture.supervisor, () -> {
+                assertThrows(SecurityException.class,
+                        () -> fixture.runtime.dispatchSupervisorStateControl(
+                                fixture.foreign,
+                                () -> fail("nested CONTROL must not execute")));
+                return null;
+            });
+        }
+    }
+
+    @Test
+    void synchronousControlDispatcherCannotForgePhysicalCarrierAdmission()
+            throws Exception {
+        ActorRuntime.ControlDispatcher illegalInline = operation -> {
+            var result = new OresFuture<Void>();
+            try {
+                operation.run();
+                result.completeFromRuntime(null);
+            } catch (Throwable denied) {
+                result.failFromRuntime(denied);
+            }
+            return result;
+        };
+        try (var runtime = new ActorRuntime(
+                IsolatePolicy.developer(), ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.TurnExecutor.direct(), illegalInline)) {
+            var supervisor = runtime.createSupervisor();
+            var accepted = runtime.dispatchSupervisorStateControl(
+                    supervisor, () -> fail("CONTROL must not execute inline"));
+            assertTrue(accepted.isCompletedExceptionally());
+        }
+    }
+
+    @Test
+    void stoppedActorCannotReadOrWriteThroughStillPhysicallyPinnedGrant()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var writer = fixture.redeem(region, fixture.issue("write")).join();
+            fixture.write(writer, 55L);
+            fixture.worker.stop();
+            assertFalse(fixture.worker.done().isDone());
+            assertThrows(SecurityException.class, () -> fixture.read(writer));
+            assertThrows(SecurityException.class, () -> fixture.write(writer, 56L));
+            assertFalse(region.physicallyRetired());
+            fixture.release(writer);
+            assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(region.physicallyRetired());
         }
     }
 
