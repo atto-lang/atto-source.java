@@ -16,14 +16,15 @@ import java.util.Set;
 final class SingletonDependencyGraph<K> {
     private static final int MAX_DEPENDENCIES_PER_INITIALIZER = 64;
     private final Map<K, Set<K>> dependencies = new HashMap<>();
-    private final ThreadLocal<ArrayDeque<K>> initializing =
-            ThreadLocal.withInitial(ArrayDeque::new);
+    // Completed lookups must not allocate/retain a ThreadLocal stack.
+    private final ThreadLocal<ArrayDeque<K>> initializing = new ThreadLocal<>();
 
     /** Called only after the caller has passed declaration schema/quota checks. */
     synchronized void dependOn(K target) {
         Objects.requireNonNull(target, "singleton dependency key");
-        K current = initializing.get().peek();
-        if (current == null) return;
+        ArrayDeque<K> stack = initializing.get();
+        if (stack == null || stack.isEmpty()) return;
+        K current = stack.peek();
         if (current.equals(target) || reaches(target, current)) {
             throw new IllegalStateException("singleton initializer cycle");
         }
@@ -38,13 +39,18 @@ final class SingletonDependencyGraph<K> {
     /** Only the thread that actually runs initialize.get() enters this stack. */
     void begin(K key) {
         Objects.requireNonNull(key, "singleton initializer key");
-        initializing.get().push(key);
+        ArrayDeque<K> stack = initializing.get();
+        if (stack == null) {
+            stack = new ArrayDeque<>();
+            initializing.set(stack);
+        }
+        stack.push(key);
     }
 
     /** Drop both outgoing and incoming edges as soon as this future is terminal. */
     synchronized void finish(K key) {
         ArrayDeque<K> stack = initializing.get();
-        if (stack.isEmpty() || !Objects.equals(stack.peek(), key)) {
+        if (stack == null || stack.isEmpty() || !Objects.equals(stack.peek(), key)) {
             throw new IllegalStateException("singleton initializer stack corrupted");
         }
         stack.pop();
