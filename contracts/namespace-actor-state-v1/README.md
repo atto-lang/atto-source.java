@@ -6,6 +6,9 @@ It is **not** executable actor state and does not grant a critical section.\n\nT
 - `actor.atto` declares nominal `foo.Foo` with `declare pub actor Foo;` and supplies an out-of-line external receiver method.
 - `state.atto` attaches a sealed private `int x: 5` schema to exactly
   that nominal actor in the same source namespace.
+- `ingress.atto` records private `external mtd init(): void` and
+  `receive(ActorMail<int>): void` hooks on `declare pub actor Foo`; no
+  mailbox or activation code is generated at this static admission stage.
 - `reject_wrong_namespace.atto` cannot attach `other.Foo` to `foo.Foo`.
 - `reject_unguarded_return.atto` illustrates forbidden direct state
   projection; the current complete guest program must fail closed at
@@ -34,6 +37,6 @@ The proposed `critical mtd` surface is not admitted by this source slice.
 No ordinary actor method may read or mutate the schema in guest execution.
 
 The focused JUnit workflow runs
-`NamespaceActorStateAdmissionTest` plus existing actor receiver suites
+`NamespaceActorStateAdmissionTest`, `NamespaceActorIngressAdmissionTest` plus existing actor receiver suites
 at the immutable PR head. JUnit suites and fixtures are AUTHORED, but
 **NOT_EXECUTED** until a nonzero-step source runner produces receipts.
