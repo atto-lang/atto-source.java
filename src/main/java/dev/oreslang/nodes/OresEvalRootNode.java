@@ -636,6 +636,7 @@ public final class OresEvalRootNode extends RootNode {
                     && method.body().stream().noneMatch(this::containsSourceLoop));
             if (!typedI64.isEmpty() && synchronous) {
                 actorContext.createManagedPrimitiveStateRegion(8, 2).ifPresent(region -> {
+                    List<String> originalOrder = List.copyOf(fields.keySet());
                     LinkedHashMap<String, ActorStateSupervisorLoans.LongField> bound =
                             new LinkedHashMap<>();
                     for (Ast.FieldDecl field : typedI64) {
@@ -645,7 +646,8 @@ public final class OresEvalRootNode extends RootNode {
                                 region.declareOwnerLongField(field.name(), primitive));
                         fields.remove(field.name());
                     }
-                    object.fields = new ActorManagedI64Fields(region, fields, bound);
+                    object.fields = new ActorManagedI64Fields(
+                            region, fields, bound, originalOrder);
                 });
             }
 
@@ -10989,15 +10991,24 @@ public final class OresEvalRootNode extends RootNode {
         private final ActorStateSupervisorLoans region;
         private final Map<String,Object> ordinary;
         private final Map<String,ActorStateSupervisorLoans.LongField> bound;
+        private final List<String> fieldOrder;
 
         ActorManagedI64Fields(
                 ActorStateSupervisorLoans region,
                 Map<String,Object> ordinary,
-                Map<String,ActorStateSupervisorLoans.LongField> bound) {
+                Map<String,ActorStateSupervisorLoans.LongField> bound,
+                List<String> fieldOrder) {
             this.region = Objects.requireNonNull(region);
             this.ordinary = Objects.requireNonNull(ordinary);
             this.bound = java.util.Collections.unmodifiableMap(
                     new LinkedHashMap<>(bound));
+            this.fieldOrder = List.copyOf(fieldOrder);
+            if (new LinkedHashSet<>(this.fieldOrder).size()
+                    != this.ordinary.size() + this.bound.size()
+                    || !this.fieldOrder.containsAll(this.ordinary.keySet())
+                    || !this.fieldOrder.containsAll(this.bound.keySet())) {
+                throw new SecurityException("managed actor field layout is incomplete or duplicated");
+            }
             if (this.bound.isEmpty()) {
                 throw new IllegalArgumentException("managed field layout must bind i64 cells");
             }
@@ -11042,11 +11053,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override public Set<Entry<String,Object>> entrySet() {
-            LinkedHashMap<String,Object> snapshot = new LinkedHashMap<>(ordinary);
-            for (Map.Entry<String,ActorStateSupervisorLoans.LongField> entry
-                    : bound.entrySet()) {
-                snapshot.put(entry.getKey(),
-                        Long.valueOf(region.readOwnerLongField(entry.getValue())));
+            // All i64 values are read under ONE region-owned physical READ
+            // loan. Even during supervisor CONTROL mutation, a multi-field
+            // snapshot cannot mix two different writer epochs.
+            Map<String,Long> typedSnapshot = region.snapshotOwnerLongFields(bound);
+            LinkedHashMap<String,Object> snapshot = new LinkedHashMap<>();
+            for (String field : fieldOrder) {
+                snapshot.put(field, bound.containsKey(field)
+                        ? typedSnapshot.get(field)
+                        : ordinary.get(field));
             }
             return java.util.Collections.unmodifiableMap(snapshot).entrySet();
         }
