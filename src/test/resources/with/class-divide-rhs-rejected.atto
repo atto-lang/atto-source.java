@@ -1,0 +1,9 @@
+define class Pair as
+    pub final int x: 1;
+end
+
+pub routine main(): void {
+    const Pair original = new Pair();
+    const Pair illegal = rt copy original with {x => 1 / 0};
+    return;
+}

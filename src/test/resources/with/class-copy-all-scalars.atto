@@ -1,0 +1,21 @@
+define class ScalarProduct as
+    pub final int count: 4;
+    pub final bool done: false;
+    pub final float fraction: 1.5;
+    pub final string label: "old";
+end
+
+pub routine main(): void {
+    const ScalarProduct original = new ScalarProduct();
+    const ScalarProduct updated = rt copy original with {
+        count => 5,
+        done => true,
+        fraction => 2.25,
+        label => "new"
+    };
+    stdio.stdout.write(original.count);
+    stdio.stdout.write(updated.count);
+    stdio.stdout.write(original.label);
+    stdio.stdout.write(updated.label);
+    return;
+}
