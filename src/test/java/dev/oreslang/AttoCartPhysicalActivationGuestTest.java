@@ -75,7 +75,7 @@ final class AttoCartPhysicalActivationGuestTest {
         assertTrue(contents.length > 0 && contents.length <= 8192,
                 "canonical Cart fixture size budget");
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
-        digest.update(("blob " + contents.length + "\\0")
+        digest.update(("blob " + contents.length + "\0")
                 .getBytes(StandardCharsets.US_ASCII));
         digest.update(contents);
         assertEquals(SOURCE_BLOBS.get(relative), HexFormat.of().formatHex(digest.digest()),
