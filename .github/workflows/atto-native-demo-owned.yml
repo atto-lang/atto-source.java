@@ -64,6 +64,18 @@ jobs:
             scripts/ci/AttoDemoSevenReceiptVerifier.java
           java -cp "$RUNNER_TEMP/atto-seven-junit-verifier" \
             AttoDemoSevenReceiptVerifier --self-test
+          # Same unprivileged/no-network JDK25 admission pattern proven on
+          # the funded source-free alternate-org runner. No private guest here.
+          sudo -n env -i PATH="$JAVA_HOME/bin:/usr/bin:/bin" JAVA_HOME="$JAVA_HOME" \
+            HOME=/nonexistent TMPDIR=/tmp LANG=C.UTF-8 \
+            /usr/bin/unshare --net -- \
+            /usr/bin/setpriv --reuid=65534 --regid=65534 \
+              --clear-groups --no-new-privs \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 15s \
+            "$JAVA_HOME/bin/java" -version > "$RUNNER_TEMP/atto-sandbox-java.stdout" \
+            2> "$RUNNER_TEMP/atto-sandbox-java.stderr"
+          grep -Fq 'version "25' "$RUNNER_TEMP/atto-sandbox-java.stderr"
+          echo 'SOURCE_FREE_GUEST_ISOLATION_ADMISSION_PASS child_uid=65534 network_namespace=true'
           echo 'SOURCE_FREE_ONLY: compiler guest NOT_EXECUTED'
 
   java-linked-guest:
