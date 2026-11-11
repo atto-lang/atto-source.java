@@ -24,13 +24,27 @@ final class AotDispatchGuestV1Test {
     @Test
     void baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified()
             throws Exception {
+        checkFixture(ExecutionProfile.serverJit());
+    }
+
+    @Test
+    void sameFixtureRunsWithGuestJitDisabledByProfile() throws Exception {
+        ExecutionProfile noGuestJit = new ExecutionProfile(
+                ExecutionProfile.Mode.AOT, ExecutionProfile.Platform.SERVER);
+        org.junit.jupiter.api.Assertions.assertFalse(noGuestJit.guestJitAllowed());
+        // This tests a JIT-disabled guest execution profile on a JVM; it does
+        // NOT claim compiled AttoLang native guest code or Native Image.
+        checkFixture(noGuestJit);
+    }
+
+    private static void checkFixture(ExecutionProfile profile) throws Exception {
         String source = Files.readString(
                 Path.of("tests/fixtures/dispatch/known_and_virtual_v1.atto"),
                 StandardCharsets.UTF_8);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (Context context = IsolatePolicy.developer()
-                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(out).build()) {
+                .restrictedContextBuilder(profile).out(out).build()) {
             context.eval(Source.newBuilder(OresLanguage.ID, source, "known_and_virtual_v1.atto")
                     .mimeType(OresLanguage.MIME_TYPE).build());
         }
