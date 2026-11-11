@@ -180,6 +180,11 @@ public final class TypeChecker {
                     if (klass.actorConcurrency().role() == Ast.ActorRole.NEURON) {
                         checkNeuronV0Contract(klass);
                         dev.oreslang.compiler.NeuronStateLayoutV0.fromActor(klass);
+                        // Proof preflight only. This rejects escaping aliases,
+                        // uninitialized reads, effectful scalar math and
+                        // malformed critical-read/write ASTs. It does NOT
+                        // authorize emitted guest state access.
+                        dev.oreslang.compiler.NeuronScalarScopeV0.preflight(klass);
                         throw new IllegalArgumentException(
                                 "NEURON_STATE_MIR_UNSUPPORTED: neuron actor '" + klass.name()
                                 + "' has protected mutable state but critical read/write "
