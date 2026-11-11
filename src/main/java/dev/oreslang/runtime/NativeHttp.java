@@ -139,10 +139,14 @@ public final class NativeHttp implements AutoCloseable {
         return !runtimeClosed && !listenerStopping;
     }
 
-    /** Source of truth for request permit retirement during transport aborts. */
+    /**
+     * Per-request permit retirement predicate, NOT listener or pooled-worker
+     * physical shutdown certification. Pooled workers own a separate carrier
+     * lifetime even after their individual request permit is released.
+     */
     static boolean canRetireRequest(boolean transportClosed, boolean dispatchInProgress,
-                                    boolean actorPhysicallyDone) {
-        return transportClosed && !dispatchInProgress && actorPhysicallyDone;
+                                    boolean freshActorExitedOrPoolTracked) {
+        return transportClosed && !dispatchInProgress && freshActorExitedOrPoolTracked;
     }
 
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
@@ -558,10 +562,13 @@ public final class NativeHttp implements AutoCloseable {
             // pools bound worker count separately and release closed exchanges;
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
-                boolean actorPhysicallyDone = poolWorker != null || actor == null
-                        || actor.done().isDone();
+                // Pool reuse releases per-exchange admission after the socket
+                // closes. It does NOT certify the pooled worker's carrier exit;
+                // a separate listener shutdown barrier is still required.
+                boolean freshActorExitedOrPoolTracked = poolWorker != null
+                        || actor == null || actor.done().isDone();
                 if (!canRetireRequest(transportClosed, dispatchInProgress,
-                        actorPhysicallyDone)) return;
+                        freshActorExitedOrPoolTracked)) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
