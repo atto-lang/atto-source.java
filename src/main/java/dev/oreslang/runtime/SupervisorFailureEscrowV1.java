@@ -97,6 +97,31 @@ final class SupervisorFailureEscrowV1 {
         nodes.put(id, new Cell(id, parentId, generation, reserve(), parent.depth + 1));
     }
 
+    /**
+     * Reserve a child's terminal CONTROL identity and publish its runtime
+     * records as one linearization point against fail()/completeNormally().
+     * The publisher must be runtime-owned, must not invoke user code, and
+     * must roll back its own partial registry mutations before throwing.
+     * No cancellation scanner can see a ledger node without a published
+     * runtime ActorRef after this monitor has been released.
+     */
+    synchronized void registerChildAtomically(
+            long id, long parentId, long generation, Runnable publisher) {
+        Objects.requireNonNull(publisher, "publisher");
+        registerChild(id, parentId, generation);
+        try {
+            publisher.run();
+        } catch (RuntimeException | Error failure) {
+            Cell removed = nodes.remove(id);
+            if (removed == null || removed.terminal != null
+                    || removed.dataInFlight != 0) {
+                throw new IllegalStateException(
+                        "unpublished CONTROL child rollback invariant violated", failure);
+            }
+            throw failure;
+        }
+    }
+
     /** In-flight descendants may themselves fail after an ancestor is fenced. */
     synchronized Notice fail(long id) {
         Cell cell = requireNode(id);
