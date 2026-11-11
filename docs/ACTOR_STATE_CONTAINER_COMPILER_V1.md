@@ -43,6 +43,11 @@ actor fields remain accepted for legacy `.ores` compatibility. New
 
 The state block disallows modifiers/annotations on the group, a second
 block, public/static actor fields, nested declarations and methods.
+**Mixing a grouped state block with ungrouped legacy actor fields is now
+rejected in either order**: when a group is present it must account for
+every actor-owned storage slot, so later borrow lowering cannot enforce
+the group and silently miss a bare field. Actors with no group retain
+legacy bare-field compatibility.
 Private `let`/`val` and existing final actor fields use the existing
 parsing/type semantics; no new dynamic reflection is required (AOT
 compatibility).
@@ -86,7 +91,7 @@ runs `Parser.parse` + `TypeChecker.check` (which invokes the
 ownership pass), and executes the accepted actor program using
 `org.graalvm.polyglot.Context` with `allowAllAccess(false)`.
 
-Eight authored tests:
+Twelve authored tests:
 
 1. State fields flatten into private actor `Ast.FieldDecl`s.
 2. Valid grouped state passes the compiler ownership/type checks.
@@ -97,10 +102,14 @@ Eight authored tests:
 6. Public state fields fail at parse time.
 7. A second state container fails at parse time.
 8. Methods and nested code inside state fail at parse time.
+9. Bare actor fields preceding a grouped state block are rejected.
+10. Bare actor fields following a grouped state block are rejected.
+11. A public/modifier-decorated state group is rejected.
+12. Legacy actors using bare fields without a state group remain valid.
 
 The exact-head `.github/workflows/actor-state-rw-ownership.yml`
 checks **27 existing RW arbiter + 32 existing supervisor CONTROL +
-8 new compiler/guest tests = 67 authored tests**. It requires
+12 new compiler/guest tests = 71 authored tests**. It requires
 nonempty real Surefire XML reports for all three test classes with
 zero failures, errors or skips. A job without assigned runner,
 nonzero executed steps and exact-head SHA/tree receipt is **NOT_EXECUTED**.
@@ -108,7 +117,7 @@ No test has been certified passing merely because it was authored.
 
 ## Remaining critical work
 
-- Run all 67 tests on an authorized Java 21 CI runner and fix any
+- Run all 71 tests on an authorized Java 21 CI runner and fix any
   real compile/runtime failures; preserve negative mutation evidence.
 - Replace any remaining free-standing raw supervisor host
   `Future<Loan>` adapter with the lexical scoped CONTROL API, then
