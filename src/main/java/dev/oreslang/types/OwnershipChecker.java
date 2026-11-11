@@ -1032,6 +1032,10 @@ public final class OwnershipChecker {
             mergeBranchState(base, exits);
             return result;
         }
+        if (expr instanceof Ast.WithExpr) {
+            throw error("with reconstruction requires field-wise move/copy proof and "
+                    + "a checked class copy contract; refusing implicit aliasing");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
