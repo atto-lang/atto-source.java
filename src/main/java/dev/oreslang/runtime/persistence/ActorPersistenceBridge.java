@@ -2,6 +2,7 @@ package dev.oreslang.runtime.persistence;
 
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresFuture;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import dev.oreslang.runtime.persistence.BatchPersistenceSidecar.*;
@@ -121,8 +122,30 @@ public final class ActorPersistenceBridge {
             commandBytes, events, resultBytes);
         ActorRuntime.ContinuationTarget target =
             activation.runtime.captureCurrentContinuationTarget();
+        // An append response is not sufficient evidence for publishing a
+        // candidate. Read the authoritative command ledger again under the
+        // current epoch fence on the provider worker. This also fails closed
+        // if a supervisor advances the epoch after COMMIT but before proof.
+        // Both operations are async: no carrier thread calls JDBC.
         OresFuture<SqliteCommandPersistence.Receipt> future =
-            OresFuture.from(provider.appendAsync(command));
+            OresFuture.from(provider.appendAsync(command).thenCompose(receipt ->
+                provider.verifyAsync(id, operationId, activation.epoch, command.commandBytes())
+                    .thenApply(proof -> {
+                        if (receipt == null || proof == null ||
+                            !receipt.operationId().equals(operationId) ||
+                            !proof.operationId().equals(operationId) ||
+                            receipt.firstVersion() != proof.firstVersion() ||
+                            receipt.lastVersion() != proof.lastVersion() ||
+                            receipt.eventCount() != proof.eventCount() ||
+                            !Arrays.equals(receipt.resultBytes(), proof.resultBytes())) {
+                            throw new SqliteCommandPersistence.CommandError("UNVERIFIABLE_COMMIT");
+                        }
+                        // Preserve append's duplicate flag; the verification
+                        // receipt is a historical duplicate even for a new
+                        // command that has just committed successfully.
+                        return receipt;
+                    })
+            ));
         activation.runtime.enqueueOnCompletion(future, target, (receipt, failure) -> {
             assertBoundTurn(activation);
             continuation.accept(receipt, failure);

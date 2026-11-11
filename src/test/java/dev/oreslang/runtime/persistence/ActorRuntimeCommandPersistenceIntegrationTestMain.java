@@ -35,6 +35,7 @@ public final class ActorRuntimeCommandPersistenceIntegrationTestMain {
         SqliteCommandPersistence.Identity key=new SqliteCommandPersistence.Identity(
             trusted.tenant(),trusted.actor(),trusted.state());
         AtomicReference<PrivateMemoryBlock> oldBlock=new AtomicReference<>();
+        AtomicReference<ActorPersistenceBridge.Activation> oldCapability=new AtomicReference<>();
         try {
             try (SqliteCommandPersistence db=new SqliteCommandPersistence(path,"tenant-a");
                  ActorRuntime runtime=new ActorRuntime()) {
@@ -46,6 +47,7 @@ public final class ActorRuntimeCommandPersistenceIntegrationTestMain {
                     block.writeLong(0,0);oldBlock.set(block);
                     ActorPersistenceBridge.Activation activation=
                         ActorPersistenceBridge.bindTrustedCurrentActor(context,trusted,1);
+                    oldCapability.set(activation);
                     return (amount,turn) -> {
                         long candidate=Math.addExact(block.readLong(0),amount);
                         ActorPersistenceBridge.onCommandCompletionInCurrentActor(
@@ -70,6 +72,15 @@ public final class ActorRuntimeCommandPersistenceIntegrationTestMain {
                 check(committed.get(15,TimeUnit.SECONDS)==100L,"first commit not published");
                 actor.done().get(15,TimeUnit.SECONDS);
                 check(oldBlock.get().closed(),"old actor arena leaked");
+                // A stale/host-held capability cannot issue an authorized
+                // persistence read outside the owning actor's current turn.
+                boolean denied=false;
+                try {
+                    ActorPersistenceBridge.onCommandProofInCurrentActor(
+                        oldCapability.get(),db,"deposit-001",bytes("deposit:100"),
+                        (proof,error)->{ throw new AssertionError("forged callback"); });
+                }catch(IllegalStateException | SecurityException expected){denied=true;}
+                check(denied,"old activation token escaped actor execution");
             }
             // New epoch + new ActorRuntime + new private arena: replay then retry the
             // SAME logical operation ID with a different expected stream version.
@@ -89,13 +100,25 @@ public final class ActorRuntimeCommandPersistenceIntegrationTestMain {
                                 turn.runtime().endCurrentActor();return;}
                             check(recovery.version()==1 && recovery.events().size()==1,
                                 "durable recovery lost committed event");
-                            block.writeLong(0,100L);
+                            long restored=0;
+                            for(SqliteCommandPersistence.Event event:recovery.events()){
+                                check(event.schemaVersion()==1 &&
+                                    "deposit-001".equals(event.operationId()),
+                                    "unexpected recovery event identity/schema");
+                                restored=Math.addExact(restored,Long.parseLong(
+                                    new String(event.payload(),
+                                        java.nio.charset.StandardCharsets.UTF_8)));
+                            }
+                            check(restored==100L,"replayed reducer balance mismatch");
+                            block.writeLong(0,restored);
                             ActorPersistenceBridge.onCommandProofInCurrentActor(
                                 activation,db,"deposit-001",bytes("deposit:100"),
                                 (proof,proofError)->{
                                     if(proofError!=null){deduplicated.completeExceptionally(proofError);
                                         turn.runtime().endCurrentActor();return;}
-                                    check(proof.lastVersion()==1,"durable proof not recovered");
+                                    check(proof!=null && proof.lastVersion()==1 &&
+                                        decode(proof.resultBytes())==block.readLong(0),
+                                        "durable proof result does not match recovered state");
                                     ActorPersistenceBridge.onCommandCompletionInCurrentActor(
                                         activation,db,"deposit-001",1,1,
                                         bytes("deposit:100"),List.of(bytes("+100")),encode(200L),
@@ -103,6 +126,8 @@ public final class ActorRuntimeCommandPersistenceIntegrationTestMain {
                                             try{
                                                 if(error!=null)throw new AssertionError(error);
                                                 check(receipt.duplicate(),"same command re-applied");
+                                                check(decode(receipt.resultBytes())==100L,
+                                                    "duplicate receipt returned tentative result");
                                                 check(block.readLong(0)==100L,
                                                     "duplicate changed recovered state");
                                                 check(block!=oldBlock.get(),"old actor heap reused");
