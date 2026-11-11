@@ -53,3 +53,21 @@ otel_guardrails_classpath_digest() {
   done
   printf '%s' "$evidence" | sha256sum | cut -d' ' -f1
 }
+
+# A zero-step GitHub job or the deprecated --no-fallback command-line flag
+# cannot prove AOT. Inspect the actual native host binary without executing it.
+otel_guardrails_native_host_digest() {
+  local executable="${1:?native executable required}" hdr dynamic hash
+  [[ -f "$executable" && -x "$executable" && ! -L "$executable" ]] || return 1
+  command -v readelf >/dev/null || return 1
+  hdr="$(readelf -h "$executable")" || return 1
+  grep -Eq 'Type:[[:space:]]+(EXEC|DYN)' <<< "$hdr" || return 1
+  dynamic="$(readelf -d "$executable")" || return 1
+  # A genuine Native Image host must not use the regular managed Java launcher.
+  if grep -Eq 'Shared library: \\[(libjvm|libjli|libjava)\\.so' <<< "$dynamic"; then
+    return 1
+  fi
+  hash="$(sha256sum "$executable" | cut -d' ' -f1)" || return 1
+  [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$hash"
+}
