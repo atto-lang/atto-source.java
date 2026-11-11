@@ -5,6 +5,9 @@ import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.TreeShaker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -16,6 +19,16 @@ import static org.junit.jupiter.api.Assertions.*;
  * This is compiler/AST evidence, not executable HTTP guest evidence.
  */
 final class TreeShakerHttpActorPolicyTest {
+    private static String fixture(String filename) {
+        try (var stream = TreeShakerHttpActorPolicyTest.class.getResourceAsStream(
+                "/http-actor-v1/" + filename)) {
+            if (stream == null) throw new IllegalStateException("missing canonical .atto fixture: " + filename);
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException readFailure) {
+            throw new UncheckedIOException(readFailure);
+        }
+    }
+
     private static Ast.ClassDecl keptPolicy(Ast.ActorConcurrency policy) {
         Ast.ClassDecl original = new Ast.ClassDecl(
                 "Endpoint", Ast.Visibility.PUBLIC, false, Ast.ActorKind.SHARED,
@@ -54,34 +67,41 @@ final class TreeShakerHttpActorPolicyTest {
     }
 
     @Test
-    void compiledSerialHttpSourceRetainsTransportAfterTypecheckingAndOptimization() {
-        TreeShaker.Result result = dev.oreslang.compiler.OresCompiler.compileForBuild("""
-                define pub serial http actor Endpoint as
-                    receive(ActorMail<int> mail): void { return; }
-                end
-                """, BuildOptions.library(Map.of()));
-        Ast.ClassDecl kept = result.program().modules().stream()
-                .flatMap(module -> module.declarations().stream())
-                .filter(Ast.ClassDecl.class::isInstance)
-                .map(Ast.ClassDecl.class::cast)
-                .filter(klass -> klass.name().equals("Endpoint"))
-                .findFirst().orElseThrow();
-        assertEquals(Ast.ActorConcurrency.serial(Ast.ActorTransport.HTTP),
-                kept.actorConcurrency(),
-                "whole compiler build must not launder serial HTTP into generic mail");
+    void canonicalSerialAndExplicitHttpFixturesPreserveTheSameOptimizedPolicy() {
+        // Compiler-backed admission of unchanged portable .atto source, not
+        // HTTP socket execution. The exact same fixture bytes are in
+        // oreslang-platform-conformance#642.
+        Ast.ClassDecl serial = null;
+        for (String fixture : List.of("serial-1x1.atto", "explicit-1x1.atto")) {
+            TreeShaker.Result result = dev.oreslang.compiler.OresCompiler.compileForBuild(
+                    fixture(fixture), BuildOptions.library(Map.of()));
+            assertTrue(result.retained("root.Endpoint")
+                            || result.retained("service.Endpoint")
+                            || result.program().modules().stream()
+                                    .flatMap(module -> module.declarations().stream())
+                                    .anyMatch(decl -> decl instanceof Ast.ClassDecl klass
+                                            && klass.name().equals("Endpoint")),
+                    "canonical Endpoint must not be optimized away");
+            Ast.ClassDecl kept = result.program().modules().stream()
+                    .flatMap(module -> module.declarations().stream())
+                    .filter(Ast.ClassDecl.class::isInstance)
+                    .map(Ast.ClassDecl.class::cast)
+                    .filter(klass -> klass.name().equals("Endpoint"))
+                    .findFirst().orElseThrow();
+            assertEquals(Ast.ActorConcurrency.serial(Ast.ActorTransport.HTTP),
+                    kept.actorConcurrency(),
+                    "whole compiler build must not launder HTTP transport into generic mail");
+            if (serial != null) assertEquals(serial, kept,
+                    "canonical serial alias and explicit 1x1 must optimize identically");
+            serial = kept;
+        }
     }
 
     @Test
-    void invalidThreeByFourSourceCannotReachOptimizedLibraryArtifact() {
-        String source = """
-                define pub http actor Endpoint as
-                    int requestConcurrency = 3;
-                    int messageConcurrency = 4;
-                end
-                """;
+    void canonicalUnsupportedThreeByFourFixtureNeverReachesOptimizedOutput() {
         IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.compiler.OresCompiler.compileForBuild(
-                        source, BuildOptions.library(Map.of())));
+                        fixture("unsupported-3x4.atto"), BuildOptions.library(Map.of())));
         assertTrue(denied.getMessage().contains("Refusing unsafe configuration"),
                 denied::getMessage);
     }
