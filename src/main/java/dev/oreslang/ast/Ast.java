@@ -62,7 +62,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, ActorStateAttachmentDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -167,6 +167,56 @@ public final class Ast {
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
             body = List.copyOf(body);
+        }
+    }
+
+    /**
+     * One namespace-scope, nominally attached actor-owned state schema.
+     * This is NOT a separate state container, a namespace value or a public
+     * capability. It remains compiler metadata until verified actor-state
+     * layout, ownership, critical-loan and activation lowering is available.
+     */
+    public record ActorStateAttachmentDecl(
+            String actorName, List<AttachedActorStateField> fields) implements Decl {
+        public ActorStateAttachmentDecl {
+            if (actorName == null || actorName.isBlank()) {
+                throw new IllegalArgumentException("attached actor state requires a nominal actor name");
+            }
+            fields = List.copyOf(fields);
+            if (fields.isEmpty() || fields.size() > 32) {
+                throw new IllegalArgumentException("attached actor state requires 1..32 fields");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (AttachedActorStateField field : fields) {
+                if (!seen.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate attached actor state field: " + field.name());
+                }
+            }
+        }
+    }
+
+    /** v1 deliberately confines source attachment to copyable scalar defaults. */
+    public record AttachedActorStateField(
+            String name, BindingKind bindingKind, TypeRef type, Expr initializer) {
+        public AttachedActorStateField {
+            if (name == null || name.isBlank() || name.length() > 1024) {
+                throw new IllegalArgumentException("invalid attached actor state field name");
+            }
+            if (bindingKind != BindingKind.LET && bindingKind != BindingKind.VAL) {
+                throw new IllegalArgumentException("attached actor state fields must be let or val");
+            }
+            java.util.Objects.requireNonNull(type, "attached state field type");
+            if (!type.arguments().isEmpty() || type.inferArguments()
+                    || (!type.name().equals("int") && !type.name().equals("bool"))) {
+                throw new IllegalArgumentException(
+                        "attached actor state v1 supports only int/bool scalar fields");
+            }
+            if (!(initializer instanceof LiteralExpr literal)
+                    || (type.name().equals("int") && !(literal.value() instanceof Long))
+                    || (type.name().equals("bool") && !(literal.value() instanceof Boolean))) {
+                throw new IllegalArgumentException(
+                        "attached actor state v1 requires type-matched literal defaults");
+            }
         }
     }
 
