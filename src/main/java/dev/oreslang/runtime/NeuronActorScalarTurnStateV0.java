@@ -28,10 +28,13 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
 
     /** May be called only during one trusted actor's admitted initialization. */
     static NeuronActorScalarTurnStateV0 createOnCurrentTurn(
-            long generation, int maxPending, int maxReaders, List<String> floatFields) {
+            int maxPending, int maxReaders, List<String> floatFields) {
         ActorRuntime.NeuronActorTurnProof proof =
                 ActorRuntime.mintNeuronActorTurnProof();
         proof.checkedHandlerIdentity();
+        // The trusted ActorRef mints the generation; a caller-provided number
+        // could accidentally bind a recycled actor to the wrong state epoch.
+        long generation = proof.actorRef().generation();
         ActorStateReadWriteLoans storage =
                 new ActorStateReadWriteLoans(generation, maxPending, maxReaders, floatFields);
         return new NeuronActorScalarTurnStateV0(proof, storage);
@@ -124,5 +127,6 @@ final class NeuronActorScalarTurnStateV0 implements AutoCloseable {
         return storage.tryClearRetiredScalarStorage();
     }
 
+    long generation() { return generation; }
     int activeLoanCount() { return storage.activeCount(); }
 }
