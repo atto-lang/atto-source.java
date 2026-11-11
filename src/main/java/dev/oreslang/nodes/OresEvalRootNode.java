@@ -2085,6 +2085,11 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (expr instanceof Ast.WithExpr update) {
+                return expressionContainsPotentialSuspension(update.source(), seen)
+                        || update.changes().stream().anyMatch(
+                                change -> expressionContainsPotentialSuspension(change.value(), seen));
+            }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("cooperate")) return true;
                 return runtime.arguments().stream()
@@ -7394,7 +7399,10 @@ public final class OresEvalRootNode extends RootNode {
                         || slot.isBorrow() || slot.inferArguments()
                         || !slot.arguments().isEmpty()
                         || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
-                        || findClass(slot.name()) != null) return false;
+                        || findClass(slot.name()) != null
+                        || program.modules().stream().flatMap(module -> module.declarations().stream())
+                                .anyMatch(declaration -> declaration instanceof Ast.TypeAliasDecl alias
+                                        && alias.name().equals(slot.name()))) return false;
             }
             return true;
         }
