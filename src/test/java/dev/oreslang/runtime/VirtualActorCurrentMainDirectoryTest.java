@@ -36,7 +36,7 @@ final class VirtualActorCurrentMainDirectoryTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var logical = directory.resolve("7:defaultCart", "42");
                 assertEquals("atto-va1.dGVuYW50LWE.NzpkZWZhdWx0Q2FydA.NDI",
                         directory.address(logical));
@@ -68,7 +68,7 @@ final class VirtualActorCurrentMainDirectoryTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var id = directory.resolve("Cart", "owner");
                 var actor = worker(group);
                 assertEquals(1L, group.reserveNextVirtualActorGeneration(id));
@@ -107,7 +107,7 @@ final class VirtualActorCurrentMainDirectoryTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var alpha = directory.resolve("Cart", "alpha");
                 var beta = directory.resolve("Cart", "beta");
                 var zeta = directory.resolve("Cart", "zeta");
@@ -153,7 +153,7 @@ final class VirtualActorCurrentMainDirectoryTest {
                  var b = new VirtualActorCurrentMainDirectory(group, TENANT)) {
                 Object session = new Object();
                 Object foreign = new Object();
-                var grant = a.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = a.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var identity = a.resolve("Cart", "42");
 
                 assertThrows(SecurityException.class,
@@ -194,8 +194,8 @@ final class VirtualActorCurrentMainDirectoryTest {
             try (var directory = new VirtualActorCurrentMainDirectory(first, TENANT);
                  var other = new VirtualActorCurrentMainDirectory(foreign, TENANT)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
-                var outsiderGrant = other.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
+                var outsiderGrant = other.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var id = directory.resolve("Cart", "private-one");
                 first.reserveVirtualActorGeneration(id, 1L);
                 assertEquals(1L, directory.inspect(grant, session, id)
@@ -216,7 +216,7 @@ final class VirtualActorCurrentMainDirectoryTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var logical = directory.resolve("Cart", "private");
                 CountDownLatch attempted = new CountDownLatch(1);
                 AtomicReference<Throwable> error = new AtomicReference<>();
@@ -261,7 +261,7 @@ final class VirtualActorCurrentMainDirectoryTest {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
                 Object session = new Object();
-                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
                 var id = directory.resolve("Cart", "held");
                 var actor = worker(group);
                 group.reserveVirtualActorGeneration(id, 1L);
@@ -314,12 +314,78 @@ final class VirtualActorCurrentMainDirectoryTest {
     }
 
     @Test
+    void terminalControlAsyncPendingAndFailureAreProjectedFromSameGenerationLedger()
+            throws Exception {
+        try (ExecutorService control = Executors.newSingleThreadExecutor();
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(), ActorRuntime.DispatcherConfig.defaults(),
+                     ActorRuntime.TurnExecutor.direct(),
+                     turn -> {
+                         var receipt = new OresFuture<Void>();
+                         control.execute(() -> {
+                             try {
+                                 turn.run();
+                                 receipt.completeFromRuntime(null);
+                             } catch (Throwable failure) {
+                                 receipt.failFromRuntime(failure);
+                             }
+                         });
+                         return receipt;
+                     })) {
+            var group = runtime.createActorGroup(runtime.createSupervisor());
+            try (var directory = new VirtualActorCurrentMainDirectory(group, TENANT)) {
+                Object session = new Object();
+                var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
+                var id = directory.resolve("Cart", "terminal-pending");
+                CompletableFuture<Void> pendingPolicy = new CompletableFuture<>();
+                CountDownLatch admitted = new CountDownLatch(1);
+                group.installVirtualActorTerminalHandler(notice -> {
+                    admitted.countDown();
+                    return pendingPolicy;
+                });
+                var physical = group.spawnWorker(
+                        ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                        factory -> (message, context) -> {
+                            throw new IllegalStateException("PRIVATE STATE NEVER EXPOSED");
+                        });
+                physical.getReady().get(5, TimeUnit.SECONDS);
+                group.reserveVirtualActorGeneration(id, 1L);
+                group.bindVirtualActorIdentity(physical, id, 1L);
+                physical.send("fail");
+                assertThrows(ExecutionException.class,
+                        () -> physical.getDone().get(5, TimeUnit.SECONDS));
+                assertTrue(admitted.await(5, TimeUnit.SECONDS));
+                var waiting = directory.inspect(grant, session, id).orElseThrow();
+                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.TERMINAL_PENDING,
+                        waiting.lifecycle());
+                assertTrue(waiting.physicalActorId().isEmpty());
+                assertFalse(waiting.toString().contains("PRIVATE STATE"));
+                assertThrows(IllegalStateException.class,
+                        () -> group.reserveNextVirtualActorGeneration(id));
+                pendingPolicy.completeExceptionally(
+                        new IllegalStateException("supervisor policy did not commit"));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (System.nanoTime() < deadline &&
+                        directory.inspect(grant, session, id).orElseThrow().lifecycle()
+                                != VirtualActorCurrentMainDirectory.Lifecycle.QUARANTINED) {
+                    Thread.sleep(10);
+                }
+                assertEquals(VirtualActorCurrentMainDirectory.Lifecycle.QUARANTINED,
+                        directory.inspect(grant, session, id).orElseThrow().lifecycle());
+                assertThrows(IllegalStateException.class,
+                        () -> group.reserveNextVirtualActorGeneration(id));
+            }
+            group.close();
+        }
+    }
+
+    @Test
     void directoryCloseRevokesFutureInspectionsWithoutClosingActors() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup(runtime.createSupervisor());
             var directory = new VirtualActorCurrentMainDirectory(group, TENANT);
             Object session = new Object();
-            var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(3));
+            var grant = directory.issueGrant(session, TimeUnit.SECONDS.toNanos(5));
             var id = directory.resolve("Cart", "stay-alive");
             directory.close();
             assertThrows(SecurityException.class, () -> directory.inspect(grant, session, id));
