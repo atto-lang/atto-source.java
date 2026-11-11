@@ -11,10 +11,11 @@
 - Source-free canary workflow on draft branch:
   `.github/workflows/atto-event-sourcing-source-free-canary.yml`
 - Pinned workflow blob SHA on that branch:
-  `e007b2ae7b8e46a83c42a5412025f2c683ddf40d`
+  `9c6e5bd613cda733034758a5fbd323ff8470d213`
 - Latest confirmed successful source-free runner execution:
-  [Actions run #42940311766, attempt 2](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42940311766)
-  (**7 executed steps; success**). This proves only that an isolated
+  [Actions run #42951516578](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951516578)
+  (**8 executed steps; success**) and [run #42951509176](https://github.com/atto-lang/atto-compilers-parity-testing/actions/runs/42951509176)
+  (**8 executed steps; success**). This proves only that an isolated
   no-checkout Node 22 SQLite canary could execute. It does **not** verify
   the cost budget or future availability of hosted runners.
 
