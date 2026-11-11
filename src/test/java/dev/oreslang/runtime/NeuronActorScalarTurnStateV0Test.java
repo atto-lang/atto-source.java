@@ -35,6 +35,10 @@ final class NeuronActorScalarTurnStateV0Test {
                 var owned = NeuronActorScalarTurnStateV0.createOnCurrentTurn(
                         4, 2, List.of("weight", "bias"));
                 stateRef.set(owned);
+                assertThrows(IllegalStateException.class,
+                        () -> NeuronActorScalarTurnStateV0.createOnCurrentTurn(
+                                4, 2, List.of("weight", "bias")),
+                        "one actor activation owns only one protected neuron state");
                 return (message, context) -> {
                     try {
                         if (message == 1) {
@@ -97,9 +101,10 @@ final class NeuronActorScalarTurnStateV0Test {
 
             var state = stateRef.get();
             assertThrows(SecurityException.class, state::tryRead);
-            state.close();
             assertTrue(state.tryClearAfterQuiescence(),
-                    "all completed turns/loans have drained before host-only zeroization");
+                    "ActorRuntime STOP must automatically retire and zeroize"
+                            + " protected state after physical loans drain");
+            state.close(); // idempotent after runtime-owned finalization
             assertEquals(0, state.activeLoanCount());
         }
     }
@@ -157,8 +162,9 @@ final class NeuronActorScalarTurnStateV0Test {
             assertTrue(second.awaitTermination(5, TimeUnit.SECONDS));
             if (failure.get() != null)
                 throw new AssertionError("cross-actor authorization failed", failure.get());
+            assertTrue(stateRef.get().tryClearAfterQuiescence(),
+                    "sibling actor STOP must not prevent owner cleanup");
             stateRef.get().close();
-            assertTrue(stateRef.get().tryClearAfterQuiescence());
         }
     }
 }
