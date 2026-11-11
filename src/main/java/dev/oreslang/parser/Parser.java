@@ -25,6 +25,9 @@ public final class Parser {
     // Only a neuron actor's own methods may parse sealed handle_state loans.
     // This is AST admission, NOT runtime authority or borrow-checked lowering.
     private boolean parsingNeuronActor;
+    // Contextual critical-loan syntax is permitted only in the two v0
+    // compiler-owned scopes, never receive/tear_down/helper callbacks.
+    private String parsingNeuronMethod;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
             new java.util.ArrayDeque<>();
@@ -1270,7 +1273,17 @@ public final class Parser {
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
-            methods.add(parseMethod(annotations, mods));
+            if (prefix.role() == Ast.ActorRole.NEURON) {
+                String previousMethod = parsingNeuronMethod;
+                parsingNeuronMethod = peek().lexeme();
+                try {
+                    methods.add(parseMethod(annotations, mods));
+                } finally {
+                    parsingNeuronMethod = previousMethod;
+                }
+            } else {
+                methods.add(parseMethod(annotations, mods));
+            }
         }
 
         consume(terminator, braceStyle
@@ -4820,6 +4833,12 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
+                if (parsingNeuronActor && isNeuronStateHandleCall(expr)
+                        && !("on_start".equals(parsingNeuronMethod)
+                            || "forward".equals(parsingNeuronMethod))) {
+                    throw error(peek(), "neuron handle_state is allowed only "
+                            + "inside on_start or forward, never receive/helper methods");
+                }
                 List<Ast.Expr> args =
                         parsingNeuronActor && isNeuronStateHandleCall(expr)
                                 ? parseNeuronStateCriticalArguments()
