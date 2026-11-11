@@ -6092,6 +6092,10 @@ public final class TypeChecker {
                         result = Primitive.VOID;
                         parameters = List.of(Primitive.STRING, Primitive.STRING);
                     }
+                    case "write_resp2_reply_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING);
+                    }
                     case "read_bytes_async" -> {
                         result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
                     }
