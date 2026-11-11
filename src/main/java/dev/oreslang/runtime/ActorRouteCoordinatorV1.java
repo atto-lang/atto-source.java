@@ -83,12 +83,24 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
                     ActorRouteCoordinatorV1<R>.PhysicalCompletion completion);
     }
 
+    /**
+     * Host-only physical cutover witness. Implementations must be issued by
+     * the owning runtime, not guest code. A plain HOST simulation need not
+     * implement this, but a protected runtime-managed route MUST implement it.
+     */
+    interface PhysicalRouteWitness {
+        boolean readyForPublication();
+        boolean sameAuthorityDomain(PhysicalRouteWitness other);
+        void retireFromLogicalRoute();
+    }
+
     final class PhysicalCompletion {
         private final Published<R> origin;
         private long sequence;
         private boolean submitted;
         private boolean acknowledged;
         private boolean released;
+        private boolean physicalAdmissionClaimed;
 
         private PhysicalCompletion(Published<R> origin) {
             this.origin = origin;
@@ -96,6 +108,24 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
 
         long originEpoch() { return origin.routeEpoch(); }
         long messageSequence() { return sequence; }
+
+        /**
+         * Consumed exactly once by the physical ActorRuntime bridge before
+         * actual mailbox enqueue. Host code cannot substitute a sequence or
+         * replay a receipt to another actor, route, or published epoch.
+         */
+        void claimPhysicalAdmission(Object physicalRoute) {
+            synchronized (lock) {
+                requireOperational();
+                if (physicalAdmissionClaimed || released || acknowledged
+                        || sequence <= 0 || physicalSubmissions <= 0
+                        || active != origin || origin.physicalRoute() != physicalRoute) {
+                    throw new SecurityException(
+                            "stale, duplicate or foreign physical route send receipt");
+                }
+                physicalAdmissionClaimed = true;
+            }
+        }
 
         void acknowledge() {
             synchronized (lock) {
@@ -188,6 +218,20 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
                 if (readyReplacement == prior.physicalRoute()) {
                     throw new IllegalArgumentException("replacement reuses old physical route");
                 }
+                if (prior.physicalRoute() instanceof PhysicalRouteWitness old) {
+                    if (!(readyReplacement instanceof PhysicalRouteWitness next)
+                            || !old.sameAuthorityDomain(next)) {
+                        throw new SecurityException(
+                                "physical actor replacement must be a runtime-minted route from the same owner");
+                    }
+                    if (!next.readyForPublication()) {
+                        throw new IllegalStateException(
+                                "physical replacement has not completed its actor initialization barrier");
+                    }
+                } else if (readyReplacement instanceof PhysicalRouteWitness) {
+                    throw new SecurityException(
+                            "cannot publish a runtime-minted physical actor over an untracked host route");
+                }
                 if (!proposed.stateSchemaSha256().equals(checkedState.schemaSha256())) {
                     throw new SecurityException("candidate checkpoint schema mismatch");
                 }
@@ -219,6 +263,11 @@ final class ActorRouteCoordinatorV1<R> implements AutoCloseable {
                         throw new IllegalStateException("Task pins appeared during cutover");
                     }
                     active = next; // THE one route/code/state publication point.
+                    // Route retirement is monotonic/non-blocking; this does
+                    // NOT free physical actor heap/code/FFI resources.
+                    if (prior.physicalRoute() instanceof PhysicalRouteWitness old) {
+                        old.retireFromLogicalRoute();
+                    }
                     pending = null;
                     finished = true;
                     return true;
