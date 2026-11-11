@@ -19,6 +19,7 @@ import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorStateSupervisorLoans;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -614,6 +615,39 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' startup did not initialize field '"
                                     + field.getKey() + "'");
                 }
+            }
+
+            // First bounded compiler-to-runtime physical field lowering:
+            // for a structured worker with non-suspending source handlers,
+            // i64 slots live exclusively in its runtime-owned RW region.
+            // The legacy object map no longer retains a second mutable copy.
+            // Free actors and unsupported async/teardown source forms use the
+            // older actor-confined layout; all projected actor borrows still
+            // fail closed in OwnershipChecker.
+            List<Ast.FieldDecl> typedI64 = classFields.stream()
+                    .filter(field -> field.type() != null
+                            && field.type().name().equals("i64")
+                            && field.type().arguments().isEmpty())
+                    .toList();
+            boolean synchronous = klass.methods().stream().allMatch(method ->
+                    !method.async() && !method.suspends()
+                    && !method.generator()
+                    && !method.name().equals("tear_down")
+                    && !methodContainsPotentialSuspension(method)
+                    && method.body().stream().noneMatch(this::containsSourceLoop));
+            if (!typedI64.isEmpty() && synchronous) {
+                actorContext.createManagedPrimitiveStateRegion(8, 2).ifPresent(region -> {
+                    LinkedHashMap<String, ActorStateSupervisorLoans.LongField> bound =
+                            new LinkedHashMap<>();
+                    for (Ast.FieldDecl field : typedI64) {
+                        Object value = fields.get(field.name());
+                        long primitive = ActorManagedI64Fields.requireExactI64(value);
+                        bound.put(field.name(),
+                                region.declareOwnerLongField(field.name(), primitive));
+                        fields.remove(field.name());
+                    }
+                    object.fields = new ActorManagedI64Fields(region, fields, bound);
+                });
             }
 
             return new SourceActorState(
@@ -10944,10 +10978,84 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
+    /**
+     * Compiler-selected primitive-backed actor object storage.
+     * All OresObject field consumers call the Map contract; for bound i64
+     * slots that contract goes through the SAME physical runtime RW region
+     * visible to authenticated supervisor CONTROL. No mirrored i64 map cell
+     * remains in the guest object after binding.
+     */
+    private static final class ActorManagedI64Fields
+            extends java.util.AbstractMap<String, Object> {
+        private final ActorStateSupervisorLoans region;
+        private final Map<String,Object> ordinary;
+        private final Map<String,ActorStateSupervisorLoans.LongField> bound;
+
+        private ActorManagedI64Fields(
+                ActorStateSupervisorLoans region,
+                Map<String,Object> ordinary,
+                Map<String,ActorStateSupervisorLoans.LongField> bound) {
+            this.region = Objects.requireNonNull(region);
+            this.ordinary = Objects.requireNonNull(ordinary);
+            this.bound = Map.copyOf(bound);
+            if (this.bound.isEmpty()) {
+                throw new IllegalArgumentException("managed field layout must bind i64 cells");
+            }
+            for (String key : this.bound.keySet()) {
+                if (ordinary.containsKey(key)) {
+                    throw new SecurityException("duplicate mutable actor field backing: " + key);
+                }
+            }
+        }
+
+        private static long requireExactI64(Object value) {
+            if (value instanceof Long raw) return raw;
+            if (value instanceof Integer raw) return raw.longValue();
+            if (value instanceof Short raw) return raw.longValue();
+            if (value instanceof Byte raw) return raw.longValue();
+            if (value instanceof java.math.BigInteger raw) return raw.longValueExact();
+            throw new IllegalArgumentException(
+                    "runtime-backed actor i64 field requires exactly representable integral value");
+        }
+
+        @Override public boolean containsKey(Object key) {
+            return bound.containsKey(key) || ordinary.containsKey(key);
+        }
+
+        @Override public Object get(Object key) {
+            ActorStateSupervisorLoans.LongField field = bound.get(key);
+            return field == null
+                    ? ordinary.get(key)
+                    : Long.valueOf(region.readOwnerLongField(field));
+        }
+
+        @Override public Object put(String name, Object value) {
+            ActorStateSupervisorLoans.LongField field = bound.get(name);
+            if (field == null) return ordinary.put(name, value);
+            long primitive = requireExactI64(value);
+            final long[] oldValue = new long[1];
+            region.updateOwnerLongField(field, current -> {
+                oldValue[0] = current;
+                return primitive;
+            });
+            return Long.valueOf(oldValue[0]);
+        }
+
+        @Override public Set<Entry<String,Object>> entrySet() {
+            LinkedHashMap<String,Object> snapshot = new LinkedHashMap<>(ordinary);
+            for (Map.Entry<String,ActorStateSupervisorLoans.LongField> entry
+                    : bound.entrySet()) {
+                snapshot.put(entry.getKey(),
+                        Long.valueOf(region.readOwnerLongField(entry.getValue())));
+            }
+            return java.util.Collections.unmodifiableMap(snapshot).entrySet();
+        }
+    }
+
     private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
-        private final Map<String,Object> fields;
+        private Map<String,Object> fields;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
