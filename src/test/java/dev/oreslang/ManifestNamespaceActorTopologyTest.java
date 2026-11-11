@@ -296,6 +296,72 @@ final class ManifestNamespaceActorTopologyTest {
     }
 
     @Test
+    void inlineAndDeclaredActorIndicesRemainSeparatedWithoutRuntimeAuthority() throws IOException {
+        var compiler = fixture();
+        write("src/foo/inline.atto", """
+                namespace foo;
+                pub define actor Inline as
+                    pub value(): int { return 42; }
+                end
+                """);
+        var topology = compiler.inspectActorTopology();
+        var inline = key("Inline");
+        assertTrue(topology.actorMethods().hasActor(inline));
+        assertTrue(topology.actorMethods().actor(inline).publicNominalWitness());
+        var value = topology.actorMethods().method(
+                new ActorMethodIndex.MethodKey(inline, "value", 0));
+        assertNotNull(value);
+        assertEquals("src/foo/inline.atto", value.declaringUnit());
+        assertFalse(value.unloweredExternal());
+        assertTrue(topology.actorMethods().hasActor(key("Counter")));
+        assertNull(topology.actorMethods().method(
+                new ActorMethodIndex.MethodKey(key("Counter"), "value", 0)));
+    }
+
+    @Test
+    void inlineActorCannotAcquireDeclaredActorAttachedState() throws IOException {
+        var compiler = packageBuild();
+        write("src/foo/inline.atto", """
+                namespace foo;
+                pub define actor Counter as end
+                """);
+        write("src/foo/state.atto", STATE);
+        var error = assertThrows(IllegalArgumentException.class, compiler::inspectActorTopology);
+        assertTrue(error.getMessage().contains("inline actor definitions cannot acquire"),
+                error.getMessage());
+    }
+
+    @Test
+    void sameNominalNameInAnotherManifestIsNeverAReceiverWitness() throws IOException {
+        var original = fixture().inspectActorTopology();
+        Path foreignRoot = root.resolve("foreign");
+        Files.createDirectories(foreignRoot.resolve("src"));
+        Files.writeString(foreignRoot.resolve(".atto.pkg.toml"), """
+                schema_version = "1"
+                [project]
+                name = "foreign-package"
+                version = "0.1.0"
+                root = "."
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(foreignRoot.resolve("src/counter.atto"), ACTOR);
+        var foreignBuild = new PackageNamespaceBuild(OresProjectConfig.load(
+                foreignRoot.resolve(".atto.pkg.toml"), Map.of()));
+        var foreign = foreignBuild.inspectActorTopology();
+        var originalKey = key("Counter");
+        var foreignKey = new ActorMethodIndex.ActorKey(
+                "foreign-package@0.1.0", "foo", "Counter");
+        assertTrue(original.actorMethods().hasActor(originalKey));
+        assertFalse(foreign.actorMethods().hasActor(originalKey));
+        assertTrue(foreign.actorMethods().hasActor(foreignKey));
+        assertFalse(foreign.attachedStates().containsKey(new ActorStateBinder.Slot(
+                "foreign-package@0.1.0", "foo", "Counter")));
+        assertNull(foreign.actorMethods().method(
+                new ActorMethodIndex.MethodKey(foreignKey, "get", 0)));
+    }
+
+    @Test
     void returnedTopologyMapsAreImmutable() throws IOException {
         var topology = fixture().inspectActorTopology();
         assertThrows(UnsupportedOperationException.class,
