@@ -9,6 +9,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -117,19 +118,36 @@ public final class ActorReceiverBinder {
             throw new IllegalArgumentException("cross-file receiver binding requires a package identity");
         }
         java.util.Objects.requireNonNull(sourceUnits, "explicit package source units");
-        Map<String, List<Ast.Decl>> grouped = new TreeMap<>();
-        // AST declaration equality must never accidentally collapse source
-        // provenance; two identical declarations in different files still
-        // represent different identities and must fail duplicate checks.
-        Map<Ast.Decl, String> origins = new IdentityHashMap<>();
-        for (Map.Entry<String, Ast.Program> unit : new TreeMap<>(sourceUnits).entrySet()) {
+        if (sourceUnits.size() > 4096) {
+            throw new IllegalArgumentException("cross-file actor binding source-set exceeds 4096 units");
+        }
+        Map<String, Ast.Program> ordered = new TreeMap<>();
+        Map<String, String> foldedSourceIds = new LinkedHashMap<>();
+        for (Map.Entry<String, Ast.Program> unit : sourceUnits.entrySet()) {
             String sourceId = unit.getKey();
-            if (sourceId == null || sourceId.isBlank() || sourceId.startsWith("/")
-                    || sourceId.contains("\\") || sourceId.contains("..")) {
+            if (!validSourceUnitId(sourceId)) {
                 throw new IllegalArgumentException("invalid package-relative source unit ID: " + sourceId);
             }
-            Ast.Program program = java.util.Objects.requireNonNull(
-                    unit.getValue(), "source program");
+            if (unit.getValue() == null) {
+                throw new IllegalArgumentException("null source program: " + sourceId);
+            }
+            String previous = foldedSourceIds.putIfAbsent(
+                    sourceId.toLowerCase(Locale.ROOT), sourceId);
+            if (previous != null && !previous.equals(sourceId)) {
+                throw new IllegalArgumentException(
+                        "case-insensitive source unit collision: " + previous + " and " + sourceId);
+            }
+            ordered.put(sourceId, unit.getValue());
+        }
+        Map<String, List<Ast.Decl>> grouped = new TreeMap<>();
+        // Record identity instead of structural equality: two identical AST
+        // values from different files remain different declarations. Reusing
+        // one AST instance under two source IDs is ambiguous and rejected.
+        Map<Ast.Decl, String> origins = new IdentityHashMap<>();
+        int declarationCount = 0;
+        for (Map.Entry<String, Ast.Program> unit : ordered.entrySet()) {
+            String sourceId = unit.getKey();
+            Ast.Program program = unit.getValue();
             String namespace = program.namespace();
             if (namespace == null || namespace.isBlank()) {
                 throw new IllegalArgumentException(
@@ -147,19 +165,29 @@ public final class ActorReceiverBinder {
                 List<Ast.Decl> declarations =
                         grouped.computeIfAbsent(namespace, ignored -> new ArrayList<>());
                 for (Ast.Decl declaration : module.declarations()) {
+                    if (++declarationCount > 65536) {
+                        throw new IllegalArgumentException(
+                                "cross-file actor binding exceeds 65536 root declarations");
+                    }
+                    if (declaration == null) {
+                        throw new IllegalArgumentException("null source declaration: " + sourceId);
+                    }
+                    String previousUnit = origins.putIfAbsent(declaration, sourceId);
+                    if (previousUnit != null && !previousUnit.equals(sourceId)) {
+                        throw new IllegalArgumentException(
+                                "ambiguous declaration provenance: one AST node appears in source units '"
+                                        + previousUnit + "' and '" + sourceId + "'");
+                    }
                     declarations.add(declaration);
-                    // IdentityHashMap preserves distinct same-content ASTs.
-                    origins.put(declaration, sourceId);
                 }
             }
         }
 
         Map<SourceSlot, SourceBinding> resolved = new LinkedHashMap<>();
         for (Map.Entry<String, List<Ast.Decl>> group : grouped.entrySet()) {
-            if (group.getValue().stream()
-                    .noneMatch(d -> d instanceof Ast.ExternalActorMethodDecl)) {
-                continue;
-            }
+            // Validate namespace-wide nominal type collisions even if there
+            // are zero external methods. Otherwise adding an mtd later could
+            // silently change the actor bound to an existing type identity.
             Ast.ModuleDecl syntheticRoot = new Ast.ModuleDecl(
                     Parser.ROOT_MODULE, List.of(), List.of(), group.getValue());
             Map<Slot, Binding> local = new LinkedHashMap<>();
@@ -188,6 +216,23 @@ public final class ActorReceiverBinder {
             }
         }
         return Collections.unmodifiableMap(new LinkedHashMap<>(resolved));
+    }
+
+    /** Only normalized, package-relative slash-delimited source IDs are valid. */
+    private static boolean validSourceUnitId(String sourceId) {
+        if (sourceId == null || sourceId.isBlank()
+                || sourceId.startsWith("/") || sourceId.indexOf('\\\\') >= 0) {
+            return false;
+        }
+        for (String segment : sourceId.split("/", -1)) {
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+                return false;
+            }
+        }
+        for (int i = 0; i < sourceId.length(); i++) {
+            if (Character.isISOControl(sourceId.charAt(i))) return false;
+        }
+        return true;
     }
 
     private static void bindModule(
