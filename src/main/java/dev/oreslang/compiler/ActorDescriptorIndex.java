@@ -191,8 +191,20 @@ public final class ActorDescriptorIndex {
                     || (m.name().equals("init") && !m.parameters().isEmpty())
                     || (m.name().equals("receive") && m.parameters().size() != 1)
                     || !m.returnType().name().equals("void")
-                    || !m.returnType().arguments().isEmpty()) {
+                    || !m.returnType().arguments().isEmpty()
+                    || m.returnType().inferArguments()) {
                 throw new IllegalArgumentException("invalid private runtime ingress ABI");
+            }
+            if (m.name().equals("receive")) {
+                var mail = m.parameters().getFirst().type();
+                if (!mail.name().equals("ActorMail")
+                        || mail.inferArguments()
+                        || mail.arguments().size() != 1
+                        || mail.arguments().getFirst().isBorrow()
+                        || mail.arguments().getFirst().isClosedAggregateType()) {
+                    throw new IllegalArgumentException(
+                            "runtime receive requires one unborrowed ActorMail<T> value");
+                }
             }
             if (actorMethods.method(new ActorMethodIndex.MethodKey(
                     actor, slot.name(), slot.arity())) != null) {
