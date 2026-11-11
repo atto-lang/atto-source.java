@@ -27,6 +27,9 @@ public final class OresEnumSymbol {
         private final String sourceUnitId;
         private final String enumName;
         private final Set<String> cases;
+        // Charged once per mailbox message, computed once per declaration.
+        // A large closed case schema must not become an unaccounted pointer graph.
+        private final long transportLogicalBytes;
 
         private Declaration(String sourceUnitId, String enumName, List<String> caseNames) {
             this.sourceUnitId = OresSymbol.normalizeAndValidate(sourceUnitId);
@@ -43,11 +46,18 @@ public final class OresEnumSymbol {
                 }
             }
             this.cases = Set.copyOf(checked);
+            long bytes = Math.addExact(
+                    96L, 2L * (this.sourceUnitId.length() + this.enumName.length()));
+            for (String caseName : checked) {
+                bytes = Math.addExact(bytes, 24L + 2L * caseName.length());
+            }
+            this.transportLogicalBytes = bytes;
         }
 
         public String sourceUnitId() { return sourceUnitId; }
         public String enumName() { return enumName; }
         public Set<String> cases() { return cases; }
+        long transportLogicalBytes() { return transportLogicalBytes; }
 
         /** Resolves a declared case; arbitrary strings cannot become enum values. */
         public OresEnumSymbol caseNamed(String caseName) {
