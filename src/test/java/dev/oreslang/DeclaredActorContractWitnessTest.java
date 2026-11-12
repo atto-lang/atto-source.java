@@ -284,7 +284,7 @@ final class DeclaredActorContractWitnessTest {
         var build = new ManifestActorContractBuild(manifest("demo"));
         Files.createDirectories(root.resolve("src"));
         var failure = assertThrows(IllegalArgumentException.class, build::build);
-        assertTrue(failure.getMessage().contains("has no source units"),
+        assertTrue(failure.getMessage().contains("has no .atto/.ores source files"),
                 failure.getMessage());
     }
 

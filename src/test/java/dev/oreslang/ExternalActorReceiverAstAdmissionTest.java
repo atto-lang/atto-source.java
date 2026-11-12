@@ -31,7 +31,7 @@ final class ExternalActorReceiverAstAdmissionTest {
     @Test
     void freeFunctionTakingAnActorRemainsJustAFunction() {
         assertInstanceOf(Ast.FunctionDecl.class,
-                declaration("define pub fnc update(Worker worker): void { return; }"));
+                declaration("pub fnc update(Worker worker): void { return; }"));
     }
 
     @Test
