@@ -6,7 +6,6 @@ import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.CheckedNamespaceActorGuestProof;
-import dev.oreslang.nodes.CheckedActorGuestRootNode;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
@@ -244,7 +243,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         CheckedNamespaceActorGuestProof actorProof =
                 consumeCheckedActorGuest(codeUnitId, text);
         if (actorProof != null) {
-            return new CheckedActorGuestRootNode(this, actorProof).getCallTarget();
+            return actorProof.guestRootTarget(this);
         }
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
