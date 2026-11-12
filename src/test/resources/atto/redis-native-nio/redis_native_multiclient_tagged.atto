@@ -137,6 +137,13 @@ pub async routine main(): void {
         const int kind = req[2];
         if kind == -1; do
           retired = retired + 1;
+          if retired == 8; do
+            // The last departing connection supplies immutable Bytes from
+            // its own parsed EOF/QUIT frame: no additional host-side factory.
+            worker.send((0, 0, 5, req[3], req[4]));
+            await worker.get_done();
+            return;
+          fi
         else
           worker.send((client_id, request_id, kind, req[3], req[4]));
           val output = (await worker.outputs.next()).value.unwrap();
@@ -182,8 +189,6 @@ pub async routine main(): void {
           fi
         fi
       }
-      worker.send((0, 0, 5, Bytes.from_list([]), Bytes.from_list([])));
-      await worker.get_done();
       return;
     };
     let Future<void> client_1 = task {
