@@ -204,6 +204,25 @@ final class ActorTypedMethodIRTest {
     }
 
     @Test
+    void provablyZeroIntegerDivisorFailsBeforeRuntimeCodegen() throws IOException {
+        var build = packageBuild();
+        expectRejectedBody(build, "return x / 0;", "ACTOR_TYPED_IR_DIVIDE_BY_ZERO");
+        expectRejectedBody(build, "return x % 0;", "ACTOR_TYPED_IR_DIVIDE_BY_ZERO");
+    }
+
+    @Test
+    void dynamicIntegerDivisorRequiresCheckedRuntimeLowering() throws IOException {
+        var build = packageBuild();
+        write("src/foo/method.atto", method("return x / x;"));
+        var binary = assertInstanceOf(ActorTypedMethodIR.CheckedIntBinary.class,
+                build.typecheckDeclaredActorMethods().method(slot()).terminator().value());
+        assertEquals("/", binary.operator());
+        var noCodegen = assertThrows(IllegalArgumentException.class, build::build);
+        assertTrue(noCodegen.getMessage().contains("DECLARED_ACTOR_CODEGEN_UNSUPPORTED"),
+                noCodegen.getMessage());
+    }
+
+    @Test
     void arithmeticRejectsImplicitBooleanToIntegerConversion() throws IOException {
         var build = packageBuild();
         expectRejectedBody(build, "return x + true;", "integer arithmetic requires exactly int");
