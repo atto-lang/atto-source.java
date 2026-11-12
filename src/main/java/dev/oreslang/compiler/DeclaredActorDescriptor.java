@@ -138,7 +138,9 @@ public final class DeclaredActorDescriptor {
                 new LinkedHashMap<>();
         var entries = new ArrayList<>(witness.actors().entrySet());
         entries.sort(Comparator.comparing(
-                e -> e.getKey().namespace() + "\u0000" + e.getKey().actor()));
+                (Map.Entry<ActorContractWitness.ActorKey, ActorContractWitness.ActorProof> e)
+                        -> e.getKey().namespace())
+                .thenComparing(e -> e.getKey().actor()));
         for (var entry : entries) {
             ActorContractWitness.ActorKey sourceKey = entry.getKey();
             ActorContractWitness.ActorProof proof = entry.getValue();
