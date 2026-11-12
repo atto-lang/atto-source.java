@@ -106,6 +106,72 @@ final class DeclaredActorNativeGuestV1Test {
     }
 
     @Test
+    void twoNativeActorsPreservePerMailboxOrderingAndIndependentCompletion()
+            throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        write("src/counter/receive.atto", NS + """
+                mtd (Counter c) receive(ActorMail<int> mail): void {
+                  if mail.value == 0; do
+                    self.end();
+                    return;
+                  fi
+                  self.send(mail.value);
+                  return;
+                }
+                """);
+        write("src/counter/main.atto", NS + """
+                pub async routine main(): void {
+                  val left = spawn Counter();
+                  val right = spawn Counter();
+                  await left.get_ready();
+                  await right.get_ready();
+                  left.send(7);
+                  right.send(9);
+                  left.send(8);
+                  right.send(6);
+                  left.send(0);
+                  right.send(0);
+
+                  val l0 = (await left.outputs.next()).value.unwrap();
+                  val l1 = (await left.outputs.next()).value.unwrap();
+                  val l2 = (await left.outputs.next()).value.unwrap();
+                  val r0 = (await right.outputs.next()).value.unwrap();
+                  val r1 = (await right.outputs.next()).value.unwrap();
+                  val r2 = (await right.outputs.next()).value.unwrap();
+                  stdio.stdout.write(l0.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(l1.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(l2.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(r0.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(r1.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(r2.value);
+                  await left.get_done();
+                  await right.get_done();
+                  return;
+                }
+                """);
+        Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String sourceText = "manifest-pinned two independent Atto actor instances";
+        String codeUnit = "declared-two-actors.atto";
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnit)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            try (var lease = OresLanguage.openPrecheckedProgram(
+                    codeUnit, sourceText, verified)) {
+                context.eval(source);
+            }
+        }
+        assertEquals("1|7|8|1|9|6", out.toString(StandardCharsets.UTF_8),
+                "each real actor must maintain its own FIFO mailbox and output order");
+    }
+
+    @Test
     void attachedStateCannotBeRecastAsLegacyActorFields() throws Exception {
         PackageNamespaceBuild packageBuild = build();
         write("src/counter/state.atto", NS
