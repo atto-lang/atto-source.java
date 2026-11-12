@@ -390,4 +390,56 @@ final class AttoRedisRecycledSessionsGuestTest {
         });
         System.out.println("ATTO_REDIS_UNREAD_LARGE_REPLY_ISOLATION=EXECUTED_PASS");
     }
+
+    @Test
+    void exactSixteenSlotRequestQueueRejectsSeventeenthThenDrains() throws Exception {
+        // This intentionally fills the PRODUCTION request channel with 16
+        // harmless internal markers before starting the broker. The first
+        // nonblocking overflow probe must fail. Once the broker drains those
+        // markers, a real client's PING/QUIT must still complete.
+        executePatched(1, 1, guest -> {
+            String queueFactory =
+                    "Channel.new<Tuple[int, int, int, int, List[int], List[int], "
+                    + "Channel<Tuple[int, int, int, List[int]]>]>(16);";
+            String retirementArm = "        if kind == -1; do";
+            assertEquals(2, guest.split(java.util.regex.Pattern.quote(queueFactory), -1).length,
+                    "actual bounded broker-request channel must appear once");
+            assertEquals(2, guest.split(java.util.regex.Pattern.quote(retirementArm), -1).length);
+            String queueProbe = """
+                  val Channel<Tuple[int, int, int, List[int]]> probe_reply =
+                      Channel.new<Tuple[int, int, int, List[int]]>(2);
+                  let int sent_probe = 0;
+                  loop {
+                    if sent_probe == 16 then break; fi
+                    let List<int> probe_key = [];
+                    let List<int> probe_value = [];
+                    writech requests, (-1, -1, -1, -2, probe_key, probe_value, probe_reply);
+                    sent_probe = sent_probe + 1;
+                  }
+                  let List<int> over_key = [];
+                  let List<int> over_value = [];
+                  const bool overflow_admitted =
+                      try writech(requests, (-1, -1, -1, -2, over_key, over_value, probe_reply));
+                  if overflow_admitted; do
+                    // An erroneously accepted 17th message must fail the
+                    // integration test before a normal TCP client can connect.
+                    await listener.close_async();
+                    return;
+                  fi
+                """;
+            return guest
+                    .replace(queueFactory, queueFactory + "\n" + queueProbe)
+                    .replace(retirementArm, """
+                            if kind == -2; do
+                              const int discarded_probe = request_id;
+                            elseif kind == -1; do""");
+        }, (guest, port) -> {
+            try (Socket socket = connect(guest, port)) {
+                socket.getOutputStream().write(command("PING"));
+                expect(socket, ascii("+PONG\r\n"));
+                quit(socket);
+            }
+        });
+        System.out.println("ATTO_REDIS_REQUEST_QUEUE_CAPACITY_16_FULL_AND_DRAIN=EXECUTED_PASS");
+    }
 }
