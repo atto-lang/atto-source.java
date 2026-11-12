@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.compiler.PackageNamespaceBuild;
+import dev.oreslang.compiler.ActorDescriptorIndex;
 import dev.oreslang.config.OresProjectConfig;
 
 import java.io.IOException;
@@ -30,9 +31,12 @@ public final class ManifestActorContractBuild {
 
     public record Receipt(
             ActorContractWitness.Result staticWitness,
+            ActorDescriptorIndex descriptors,
             Map<String, String> sourceSha256,
             String manifestSha256) {
         public Receipt {
+            java.util.Objects.requireNonNull(staticWitness, "static actor proof");
+            java.util.Objects.requireNonNull(descriptors, "static actor descriptors");
             sourceSha256 = Collections.unmodifiableMap(
                     new LinkedHashMap<>(sourceSha256));
         }
@@ -48,7 +52,7 @@ public final class ManifestActorContractBuild {
 
     public synchronized Receipt build() throws IOException {
         PackageNamespaceBuild.ActorAudit audit = delegate.auditDeclaredActors();
-        return new Receipt(audit.contractWitness(),
+        return new Receipt(audit.contractWitness(), audit.descriptors(),
                 audit.sourceSha256(), audit.manifestSha256());
     }
 }
