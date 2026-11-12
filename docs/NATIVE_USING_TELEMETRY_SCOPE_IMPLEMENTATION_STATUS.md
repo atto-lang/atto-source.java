@@ -38,14 +38,18 @@ Other unrecognized resource factories still parse-reject.
 
 ## Candidate executable tests
 
-`src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java` adds
-7 JUnit tests:
+`src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java` currently defines
+21 JUnit test methods (source-defined, **NOT EXECUTED on Java/Graal CI**):
 
 - lexer/parser lowering shape and exact single synthetic cleanup site
 - sync guest fallthrough, return and nested scope cleanup
 - type checker rejection if `close_scope` does not exist
 - preservation of `request.borrow()` transport-loan rejection
 - malformed alias rejection and unchanged expression calls named `using`
+- extra conditional taken/not-taken guest cleanup assertions, manual-close rejection
+- exactly one nonempty literal operation (1..256 UTF-8 bytes) matching LLVM's current narrow subset
+- fail-closed parser denial for `await`, `yield`, `select`, `task scope`, and `task {}` inside telemetry scopes
+- explicit parser denial for typed `throw`, `raise`, and `panic` (these are **NOT** unwind execution receipts)
 
 Test guest code defines a small native Atto `telemetry.span` provider in the
 same source for **compiler-execution proof only**; it is not a real trace
@@ -53,9 +57,14 @@ collector/exporter and does not claim disabled fast-path allocation bounds.
 
 ## Explicit unresolved gates before promotion
 
-1. **Run** `mvn -q -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest test`
-   with the current Java/Graal/JDK25 toolchain and exact branch HEAD.
-   Host-only parsing or successful source submission is not evidence.
+1. **Run** `mvn -B -ntp -DfailIfNoTests=true -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest clean test`
+   with GraalVM/JDK25 against the exact branch HEAD. The guarded workflow now
+   requires at least 22 executed cases (21 scoped tests plus the borrow regression),
+   zero skipped/failing/error cases and both Surefire suite receipts.
+   Source Actions still fail with **zero job steps** (most recently workflow
+   `atto-telemetry-using-exact-head` run `43329579902` at Java head
+   `10cda295778311e27025c55b5c106d0069d93449` before subsequent doc edits).
+   **No real Java guest JUnit execution receipt exists.**
 2. Add a dedicated `UsingScopeStmt` or equivalent source-provenance
    metadata if the formatter/source mapper needs to preserve original
    `using` syntax. Current AST desugaring does **not** guarantee
@@ -89,3 +98,23 @@ failure with `steps=[]`: treat as **NOT EXECUTED** rather than compilation
 failure or passing tests. Do not weaken assertions, install unsafe
 fallbacks, or copy private source into a new organization without
 approved source-side authorization/security review and exact-blob proofs.
+
+
+## Latest native LLVM evidence and Java authorization boundary
+
+LLVM [PR #1716](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1716)
+has an **executed restricted AOT** acceptance receipt at source commit
+`3466e3702094eaeb413382c16cdadd9a7a56161f`:
+[approved private run #43325381462](https://github.com/streempilot-test/browser-studio-e2e/actions/runs/43325381462).
+That run attested 48 exact source blobs, five positive and five negative real
+guest cases at Clang O0/O2, and a same-process trusted-host off/on/off/on
+probe toggle producing two spans with unchanged guest result 51. This is
+**dormant AOT probe activation**, not JIT insertion.
+
+The Java source allowlist file
+`.github/private-ci-approved-repositories.txt` specifies an external private
+carrier candidate but requires an independent @ORESoftware approval and
+protected-main/V3 attestation **before** any private source transfer.
+No Java-source carrier has been authorized by the changes in this PR.
+Do not substitute a synthetic local fixture, off-branch run, or zero-step
+source-org workflow for exact-head execution.
