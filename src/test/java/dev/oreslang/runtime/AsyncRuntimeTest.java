@@ -105,14 +105,21 @@ final class AsyncRuntimeTest {
             }
         })) {
             OresFuture<Integer> task = runtime.submit(() -> 7);
-            assertEquals(7, task.get(2, TimeUnit.SECONDS));
             assertTrue(turnLeaving.await(2, TimeUnit.SECONDS));
-
+            assertFalse(task.isDone(),
+                    "successful task completion is not published before context-exit");
             OresFuture<Void> exit = runtime.taskExitReceipt(task);
             assertFalse(exit.isDone(),
                     "physical-exit receipt settled while TurnExecutor still owned the guest turn");
             assertFalse(exit.cancel(true),
                     "physical-exit receipt must be an irrevocable runtime observation");
+            // Cancellation may settle the exposed Future before the context
+            // adapter has left its physical turn. The uncancellable exit
+            // receipt must remain pending through that gap.
+            assertTrue(task.cancel(true));
+            assertTrue(task.isCancelled());
+            assertFalse(exit.isDone(),
+                    "logical cancellation must not fake physical guest exit");
 
             allowPhysicalExit.countDown();
             assertNull(exit.get(2, TimeUnit.SECONDS));
