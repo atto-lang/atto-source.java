@@ -5,6 +5,8 @@ import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.CheckedNamespaceActorGuestProof;
+import dev.oreslang.nodes.CheckedActorGuestRootNode;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
@@ -39,6 +41,68 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     private static final ThreadLocal<PrecheckedProgramLease> PRECHECKED_PROGRAM =
             new ThreadLocal<>();
+
+    private static final ThreadLocal<CheckedActorGuestLease> CHECKED_ACTOR_GUEST =
+            new ThreadLocal<>();
+
+    private static final class CheckedActorGuestLease {
+        final CheckedNamespaceActorGuestProof proof;
+        final Thread owner = Thread.currentThread();
+        boolean consumed;
+        CheckedActorGuestLease(CheckedNamespaceActorGuestProof proof) {
+            this.proof = java.util.Objects.requireNonNull(proof);
+        }
+    }
+
+    /**
+     * Trusted-host, single-parse capability for a compiler-verified actor IR.
+     * This is NOT available to guest code and does not relax normal
+     * TypeChecker admission for unleased namespace actor source.
+     */
+    static CheckedActorGuestScope openCheckedActorGuest(
+            CheckedNamespaceActorGuestProof proof) {
+        if (CHECKED_ACTOR_GUEST.get() != null || PRECHECKED_PROGRAM.get() != null) {
+            throw new IllegalStateException("nested checked-source lease denied");
+        }
+        CheckedActorGuestLease lease = new CheckedActorGuestLease(proof);
+        CHECKED_ACTOR_GUEST.set(lease);
+        return new CheckedActorGuestScope(lease);
+    }
+
+    static final class CheckedActorGuestScope implements AutoCloseable {
+        private final CheckedActorGuestLease lease;
+        private boolean closed;
+        private CheckedActorGuestScope(CheckedActorGuestLease lease) {
+            this.lease = lease;
+        }
+        @Override public void close() {
+            if (closed) return;
+            if (Thread.currentThread() != lease.owner
+                    || CHECKED_ACTOR_GUEST.get() != lease) {
+                throw new IllegalStateException(
+                        "checked actor lease must close on its owning thread");
+            }
+            CHECKED_ACTOR_GUEST.remove();
+            closed = true;
+        }
+    }
+
+    private static CheckedNamespaceActorGuestProof consumeCheckedActorGuest(
+            String codeUnitId, String sourceText) {
+        CheckedActorGuestLease lease = CHECKED_ACTOR_GUEST.get();
+        if (lease == null) return null;
+        if (lease.consumed) throw new IllegalStateException(
+                "checked actor guest lease is single-use");
+        // Wrong source or file identity consumes the lease permanently.
+        lease.consumed = true;
+        if (!lease.proof.codeUnitId().equals(codeUnitId)
+                || !lease.proof.sourceText().equals(sourceText)) {
+            throw new SecurityException(
+                    "checked actor guest lease source identity/content mismatch");
+        }
+        return lease.proof;
+    }
+
 
     private static final class PrecheckedProgramLease {
         private final String codeUnitId;
@@ -176,6 +240,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
 
+        CheckedNamespaceActorGuestProof actorProof =
+                consumeCheckedActorGuest(codeUnitId, text);
+        if (actorProof != null) {
+            return new CheckedActorGuestRootNode(this, actorProof).getCallTarget();
+        }
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
