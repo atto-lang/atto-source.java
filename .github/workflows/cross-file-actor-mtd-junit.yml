@@ -12,7 +12,13 @@ on:
       - 'src/test/java/dev/oreslang/AttoCriticalActorStaticAdmissionTest.java'
       - 'src/test/java/dev/oreslang/AttoCriticalActorMethodIdentityTest.java'
       - 'src/main/java/dev/oreslang/compiler/NamespaceActorScalarTurnCompiler.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java'
+      - 'src/main/java/dev/oreslang/runtime/ExecutionContext.java'
+      - 'src/main/java/dev/oreslang/runtime/NamespaceActorScalarRegion.java'
       - 'src/test/java/dev/oreslang/compiler/NamespaceActorScalarTurnCompilerTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateRwLoansCarrierMatrixTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NamespaceActorScalarRegionTest.java'
       - 'src/test/java/dev/oreslang/NamespaceActorIngressAdmissionTest.java'
       - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/NamespaceActorHeaderAdmissionTest.java'
@@ -73,7 +79,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest,NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest,AttoCriticalActorStaticAdmissionTest,AttoCriticalActorMethodIdentityTest,NamespaceActorScalarTurnCompilerTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest,NamespaceActorHeaderAdmissionTest,CrossFileActorReceiverBindingTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest,AttoCriticalActorStaticAdmissionTest,AttoCriticalActorMethodIdentityTest,NamespaceActorScalarTurnCompilerTest,ActorStateRwLoansTest,ActorStateRwLoansCarrierMatrixTest,NamespaceActorScalarRegionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -88,8 +94,17 @@ jobs:
               ExternalActorReceiverAstAdmissionTest \
               AttoCriticalActorStaticAdmissionTest \
               AttoCriticalActorMethodIdentityTest \
-              NamespaceActorScalarTurnCompilerTest; do
-            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+              NamespaceActorScalarTurnCompilerTest \
+              ActorStateRwLoansTest \
+              ActorStateRwLoansCarrierMatrixTest \
+              NamespaceActorScalarRegionTest; do
+            suite_package="dev.oreslang"
+            case "$suite" in
+              NamespaceActorScalarTurnCompilerTest) suite_package="dev.oreslang.compiler" ;;
+              ActorStateRwLoansTest|ActorStateRwLoansCarrierMatrixTest|NamespaceActorScalarRegionTest)
+                suite_package="dev.oreslang.runtime" ;;
+            esac
+            report="target/surefire-reports/TEST-${suite_package}.${suite}.xml"
             test -s "$report"
             grep -q '<testcase ' "$report"
             grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
@@ -100,3 +115,4 @@ jobs:
             printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
           done
           echo 'RECEIPT actor_mtd_junit=EXECUTED'
+          echo 'RECEIPT namespace_scalar_physical_rw_loans=EXECUTED'
