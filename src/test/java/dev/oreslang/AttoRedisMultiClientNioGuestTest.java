@@ -139,8 +139,20 @@ final class AttoRedisMultiClientNioGuestTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
         java.util.concurrent.atomic.AtomicReference<Context> activeContext =
                 new java.util.concurrent.atomic.AtomicReference<>();
-        try (ExecutorService guestExecutor = Executors.newSingleThreadExecutor();
-             ExecutorService clientsExecutor = Executors.newFixedThreadPool(CLIENTS)) {
+        // Test executors must never hang the JUnit worker on close() after a
+        // failed guest: blocking ExecutorService.close() can wait indefinitely.
+        // Daemon threads are test-only; no server actor or NIO thread is changed.
+        ExecutorService guestExecutor = Executors.newSingleThreadExecutor(job -> {
+            Thread thread = new Thread(job, "atto-redis-e2e-guest");
+            thread.setDaemon(true);
+            return thread;
+        });
+        ExecutorService clientsExecutor = Executors.newFixedThreadPool(CLIENTS, job -> {
+            Thread thread = new Thread(job, "atto-redis-e2e-client");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
             Future<?> guest = guestExecutor.submit(() -> {
                 try (Context context = Context.newBuilder(OresLanguage.ID)
                         .allowAllAccess(false)
@@ -180,13 +192,18 @@ final class AttoRedisMultiClientNioGuestTest {
                 }
             });
             assertTrue(idleConnected.await(15, TimeUnit.SECONDS));
+            java.util.concurrent.atomic.AtomicInteger completedFast =
+                    new java.util.concurrent.atomic.AtomicInteger();
             List<Future<?>> fast = new ArrayList<>();
             for (int i = 0; i < CLIENTS - 1; i++) {
                 final int index = i;
                 fast.add(clientsExecutor.submit(() -> {
                     try {
                         checkedClient(guest, port, index);
+                        completedFast.incrementAndGet();
                     } catch (Exception error) {
+                        System.err.println("ATTO_MULTI_CLIENT_FAIL index=" + index
+                                + " cause=" + error.getClass().getSimpleName());
                         throw new RuntimeException(error);
                     }
                 }));
@@ -200,17 +217,26 @@ final class AttoRedisMultiClientNioGuestTest {
             guest.get(45, TimeUnit.SECONDS);
             } finally {
                 letIdleQuit.countDown();
-                // Failed-oracle cleanup must never hang in the ExecutorService
-                // close() waiting for an indefinitely suspended guest main.
+                System.out.println("ATTO_MULTI_CLIENT_PROGRESS completed_fast="
+                        + completedFast.get() + " target=" + (CLIENTS - 1));
+                // This context close is emergency TEST teardown only.
+                // Never wait on it from JUnit if the guest is uncooperative.
                 if (!guest.isDone()) {
                     Context active = activeContext.get();
                     if (active != null) {
-                        try { active.close(true); }
-                        catch (RuntimeException alreadyClosing) { }
+                        Thread emergency = new Thread(() -> {
+                            try { active.close(true); }
+                            catch (RuntimeException alreadyClosing) { }
+                        }, "atto-guest-emergency-close");
+                        emergency.setDaemon(true);
+                        emergency.start();
                     }
                     guest.cancel(true);
                 }
             }
+        } finally {
+            clientsExecutor.shutdownNow();
+            guestExecutor.shutdownNow();
         }
         System.out.println("ATTO_REDIS_REAL_TCP_CLIENTS_ONE_ATTO_MAP=" + CLIENTS
                 + "_EXECUTED_PASS");
