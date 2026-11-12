@@ -786,10 +786,11 @@ def authorize_write(
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
-    branch = legacy.gh_api(f"repos/{repository}/branches/main")
-    if (branch.get("name") != "main"
-            or branch.get("commit", {}).get("sha") != contract["base_sha"]):
-        raise Denied("carrier main changed during source-bearing write")
+    # Protection and CODEOWNER enforcement can change without moving main SHA.
+    # Re-attest the complete receiver governance for EVERY persistent write,
+    # including blobs, trees, commits, payload refs and authorization refs.
+    if checked_carrier_main(repository, contract) != contract["base_sha"]:
+        raise Denied("carrier main protection or identity changed during source-bearing write")
     if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
