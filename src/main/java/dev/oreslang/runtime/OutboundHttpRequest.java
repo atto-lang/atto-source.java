@@ -734,7 +734,7 @@ public final class OutboundHttpRequest {
         return List.copyOf(result);
     }
 
-    private static byte[] requestBodyBytes(Object value) {
+    static byte[] requestBodyBytes(Object value) {
         if (value == null) return new byte[0];
         final int max = PinnedHttpTransport.MAX_REQUEST_BODY_BYTES;
         if (value instanceof String text) {
