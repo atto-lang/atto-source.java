@@ -135,8 +135,15 @@ final class NamespaceActorUnleasedSpawnV0Test {
                         .allowAllAccess(false).build()) {
                     RuntimeException error = assertThrows(RuntimeException.class,
                             () -> nested.eval(guest(checked, "nested-actor-context.atto")));
-                    assertTrue(error.getMessage().contains(
-                            "cannot park an actor or Mailman carrier"), error.getMessage());
+                    // Context setup itself can fail earlier on the runtime's
+                    // trusted I/O-retirement gate. Both specific denials prove
+                    // the nested actor caller cannot reach host-bound waits.
+                    String denial = error.getMessage();
+                    assertTrue(denial.contains(
+                            "cannot park an actor or Mailman carrier")
+                            || denial.contains(
+                            "actor code cannot install native I/O retirement gate"),
+                            denial);
                 }
             });
             parent.ready().get(3, TimeUnit.SECONDS);
