@@ -47,9 +47,7 @@ final class OutboundHttpRequestBodyAdmissionTest {
         for (Object invalid : List.of(
                 List.of(-1), List.of(256), List.of(1.5), List.of("1"),
                 List.of(true), List.of(1, "2"),
-                List.of(1L, null))) {
-            // List.of(null) would fail before reaching validation, so the
-            // last vector is built separately below if needed.
+                List.of(1L, new Object()))) {
             assertThrows(IllegalArgumentException.class,
                     () -> OutboundHttpRequest.requestBodyBytes(invalid));
         }
