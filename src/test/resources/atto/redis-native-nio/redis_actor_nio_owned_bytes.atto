@@ -10,7 +10,7 @@ define actor OwnedBytesNioKvActor as
     return;
   }
 
-  receive(ActorMail<Tuple<int, Bytes, Bytes>> mail): void {
+  receive(ActorMail<Tuple[int, Bytes, Bytes]> mail): void {
     const tuple = mail.value;
     const int kind = tuple[0];
     const Bytes key = tuple[1];
