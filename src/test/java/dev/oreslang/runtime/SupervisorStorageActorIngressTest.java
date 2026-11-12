@@ -96,6 +96,12 @@ final class SupervisorStorageActorIngressTest {
             var actor = owner.<String>spawnStorageBoundActorHost(gate, first,
                     IsolatePolicy.developer(), context -> (mail, self) -> { });
             try {
+                // The exclusive binding must be claimed BEFORE the actor's
+                // first scheduled turn, not after ready() or mailbox dispatch.
+                assertThrows(SecurityException.class, () ->
+                        owner.<String>spawnStorageBoundActorHost(gate, first,
+                                IsolatePolicy.developer(), context -> (mail, self) -> { }),
+                        "duplicate actor owner must be rejected before first ready turn");
                 actor.ready().get(5, TimeUnit.SECONDS);
                 assertThrows(SecurityException.class, () ->
                         owner.<String>spawnStorageBoundActorHost(gate, first,
@@ -147,6 +153,32 @@ final class SupervisorStorageActorIngressTest {
                     "failed physical cleanup must retain exclusive partition claim");
             assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
                     gate::activate, "replacement on an incompletely retired partition is unsafe");
+        }
+    }
+
+    @Test void revokedActivationCannotCreateOrRunAnotherActorFactory() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var owner = runtime.createSupervisor();
+            var gate = owner.registerStoragePartition("kafka-m6/stale-bootstrap", new Store());
+            var stale = gate.activate();
+            var current = gate.activate();
+            var factoriesStarted = new AtomicInteger();
+            assertThrows(SecurityException.class, () ->
+                    owner.<String>spawnStorageBoundActorHost(gate, stale,
+                            IsolatePolicy.developer(), context -> {
+                                factoriesStarted.incrementAndGet();
+                                return (mail, self) -> { };
+                            }), "retired generation must fail before ActorCell registration");
+            assertEquals(0, factoriesStarted.get(),
+                    "rejected activation must not execute a guest/host behavior factory");
+            assertTrue(gate.physicallyQuiescent(),
+                    "failed stale bootstrap must not leak a lifetime claim");
+            var actor = owner.<String>spawnStorageBoundActorHost(gate, current,
+                    IsolatePolicy.developer(), context -> (mail, self) -> { });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.cancel();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(gate.physicallyQuiescent());
         }
     }
 
