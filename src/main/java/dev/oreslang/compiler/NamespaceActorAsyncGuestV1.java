@@ -230,6 +230,15 @@ public final class NamespaceActorAsyncGuestV1 {
             if (args.length != 0) {
                 throw new SecurityException("native Atto async main takes no host arguments");
             }
+            // runRootMain may synchronously wait ONLY on the embedding host.
+            // Never re-enter this bridge from an actor, Mailman or a nested
+            // root scheduler turn even though all inner awaits are nonparking.
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.inActorGroupMailmanExecution()
+                    || context.vm().isRootSchedulerCurrent()) {
+                throw new SecurityException(
+                        "native async actor main cannot re-enter a guest carrier");
+            }
             if (context.isolatePolicy().adversarial()) {
                 throw new SecurityException("native async actors unavailable in adversarial contexts");
             }
