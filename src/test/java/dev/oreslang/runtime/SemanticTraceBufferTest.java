@@ -133,6 +133,44 @@ final class SemanticTraceBufferTest {
     }
 
     @Test
+    void rejectUntrustedParentIdsBeforeCreatingAnySpanOrPublishing() {
+        AutoTraceRecorder gate = gate();
+        assertTrue(gate.reconfigureCalls(true));
+        SemanticTraceBuffer buffer = new SemanticTraceBuffer(gate, 16);
+        TraceParent root = TraceParent.newRoot(true);
+        String child = root.spanId();
+        for (String invalid : java.util.List.of(
+                "0".repeat(16),
+                child,
+                "12345",
+                "1".repeat(17),
+                "F".repeat(16),
+                "1".repeat(15) + "\n",
+                "\\\"".repeat(8))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> buffer.begin(root, invalid,
+                            SemanticTraceBuffer.HTTP_SERVER,
+                            SemanticTraceBuffer.Kind.SERVER),
+                    "invalid W3C parent must fail closed");
+            assertThrows(IllegalArgumentException.class,
+                    () -> new SemanticTraceBuffer.Completed(
+                            root, invalid, SemanticTraceBuffer.HTTP_SERVER,
+                            SemanticTraceBuffer.Kind.SERVER, 100, 200, 200, false));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> new SemanticTraceBuffer.Completed(
+                        root, "", SemanticTraceBuffer.HTTP_SERVER,
+                        SemanticTraceBuffer.Kind.SERVER, 100, 200, 99, false),
+                "HTTP status 1..99 is not a real response status");
+        assertEquals(0, buffer.recordedCount());
+        assertEquals(0, buffer.droppedCount());
+        var server = buffer.begin(root, "", SemanticTraceBuffer.HTTP_SERVER,
+                SemanticTraceBuffer.Kind.SERVER);
+        SemanticTraceBuffer.finish(server, 200, false);
+        assertEquals(1, buffer.recordedCount());
+    }
+
+    @Test
     void invalidScopeIsRejectedWithoutCorruptingStoredRecords() {
         AutoTraceRecorder gate = gate();
         assertTrue(gate.reconfigureCalls(true));
