@@ -28,7 +28,28 @@ source with nested `task { }` / `await` under shared/private actors and rejects
 unsafe captures of mailbox `self` / `ActorMail`. Those authored tests still
 require executed receipts before any PASS claim.
 
+## Nested task ownership and physical lifetime
+
+A `task { ... }` started from another **tracked** actor Task inherits the
+currently authenticated `TaskCancellation` token. The parent therefore
+cancels descendants with the same reason, and its physical `getDone()`
+barrier remains pending until descendants physically retire, even when the
+parent's result Future is already terminal. The parent token is not
+exposed to guest code; ownership is authenticated against the logical
+`OresScheduler.currentTaskDomain()` on every admission.
+
+A new actor task started from an ordinary (untracked) actor receive is
+instead an actor-owned root: it remains subject to the actor STOP admission
+seal and physical actor cleanup. This does **not** enable an actor
+`task scope { }` or transfer `self` into detached tasks.
+
 ## Verification
+
+`ActorNestedTaskLifetimeTest` specifically tests parent-result vs
+nested-child physical retirement, parent cancellation cascading to a
+suspended child, actor STOP sealing admission before reporting DONE,
+and late foreign Future completions not resurrecting guest turns.
+No test performs a blocking join on an actor carrier.
 
 `ActorSourceTaskPoolIsolationTest` exercises PRIVATE/SHARED/UNTRUSTED
 actor-code callbacks, initial execution, foreign-producer `await` completion,
@@ -44,7 +65,7 @@ coverage, not evidence of execution before a real runner produces a receipt.
 Run from the Java repo, with the required JDK/Graal/Maven native prerequisites:
 
 ```sh
-mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorTrackedTaskCancellationTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
+mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorTrackedTaskCancellationTest,ActorNestedTaskLifetimeTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
 ```
 
 Release gate: exact-head executed JUnit results, explicit job steps and XML
