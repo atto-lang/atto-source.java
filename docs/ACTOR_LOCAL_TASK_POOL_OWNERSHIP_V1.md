@@ -36,10 +36,15 @@ nested task creation, scheduler identity, host producer isolation, and a
 CONTROL dispatcher configured to reject any task dispatch. It additionally
 verifies actor stop and absence of actor failure.
 
+`ActorTrackedTaskCancellationTest` exercises the tracked-task admission bridge,
+its physical `getDone()` cancellation barrier, late foreign Future completion
+without guest reentry, and external-thread admission denial. It is test
+coverage, not evidence of execution before a real runner produces a receipt.
+
 Run from the Java repo, with the required JDK/Graal/Maven native prerequisites:
 
 ```sh
-mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,SourceActorTaskExecutionTest test
+mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorTrackedTaskCancellationTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
 ```
 
 Release gate: exact-head executed JUnit results, explicit job steps and XML
