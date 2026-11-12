@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * This is an ephemeral, finite-acceptance correctness gate, not a benchmark.
  */
 final class AttoRedisMultiClientNioGuestTest {
-    private static final int CLIENTS = 100;
+    private static final int CLIENTS = Integer.getInteger("atto.redis.clients", 100);
     private static final String RESOURCE =
             "/atto/redis-native-nio/redis_actor_nio_multiclient_tagged.atto";
 
@@ -70,8 +70,12 @@ final class AttoRedisMultiClientNioGuestTest {
         String pinned = "network.listen_async(\"127.0.0.1\", 16399)";
         assertEquals(1, source.split(java.util.regex.Pattern.quote(pinned), -1).length - 1);
         assertTrue(source.contains("serve_resp2_async(listener, 100, 100)"));
+        String accept = "serve_resp2_async(listener, 100, 100)";
+        assertEquals(1, source.split(java.util.regex.Pattern.quote(accept), -1).length - 1);
         return source.replace(pinned,
-                "network.listen_async(\"127.0.0.1\", " + port + ")");
+                "network.listen_async(\"127.0.0.1\", " + port + ")")
+                .replace(accept, "serve_resp2_async(listener, "
+                        + CLIENTS + ", " + CLIENTS + ")");
     }
 
     private static Socket connect(Future<?> guest, int port) throws Exception {
@@ -130,7 +134,11 @@ final class AttoRedisMultiClientNioGuestTest {
             throws Exception {
         int port = freePort();
         String program = boundGuest(port);
+        assertTrue(CLIENTS >= 2 && CLIENTS <= 100,
+                "concurrent Atto regression test accepts 2..100 clients");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        java.util.concurrent.atomic.AtomicReference<Context> activeContext =
+                new java.util.concurrent.atomic.AtomicReference<>();
         try (ExecutorService guestExecutor = Executors.newSingleThreadExecutor();
              ExecutorService clientsExecutor = Executors.newFixedThreadPool(CLIENTS)) {
             Future<?> guest = guestExecutor.submit(() -> {
@@ -139,15 +147,21 @@ final class AttoRedisMultiClientNioGuestTest {
                         .arguments(OresLanguage.ID,
                                 new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
                         .build()) {
-                    context.eval(Source.newBuilder(OresLanguage.ID, program,
+                    activeContext.set(context);
+                    try {
+                        context.eval(Source.newBuilder(OresLanguage.ID, program,
                                     "redis_actor_nio_multiclient_tagged.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
+                    } finally {
+                        activeContext.compareAndSet(context, null);
+                    }
                 } catch (Exception failure) {
                     throw new RuntimeException(failure);
                 }
             });
 
-            // Client #99 connects first and remains idle: it must not block
+            try {
+            // One peer connects first and remains idle: it must not block
             // the other 99 clients from the same Atto-owned Map.
             CountDownLatch idleConnected = new CountDownLatch(1);
             CountDownLatch letIdleQuit = new CountDownLatch(1);
@@ -184,8 +198,22 @@ final class AttoRedisMultiClientNioGuestTest {
             }
             idle.get(25, TimeUnit.SECONDS);
             guest.get(45, TimeUnit.SECONDS);
+            } finally {
+                letIdleQuit.countDown();
+                // Failed-oracle cleanup must never hang in the ExecutorService
+                // close() waiting for an indefinitely suspended guest main.
+                if (!guest.isDone()) {
+                    Context active = activeContext.get();
+                    if (active != null) {
+                        try { active.close(true); }
+                        catch (RuntimeException alreadyClosing) { }
+                    }
+                    guest.cancel(true);
+                }
+            }
         }
-        System.out.println("ATTO_REDIS_100_REAL_TCP_CLIENTS_ONE_ATTO_MAP=EXECUTED_PASS");
+        System.out.println("ATTO_REDIS_REAL_TCP_CLIENTS_ONE_ATTO_MAP=" + CLIENTS
+                + "_EXECUTED_PASS");
     }
 
     @Test void gatewayRefusesActorWithoutTaggedBinaryStreamOperator() {
