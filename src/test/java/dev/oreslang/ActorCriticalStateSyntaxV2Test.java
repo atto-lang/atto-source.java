@@ -106,8 +106,7 @@ final class ActorCriticalStateSyntaxV2Test {
                 "ACTOR_CRITICAL_STATE_MIR_UNSUPPORTED"), exception.getMessage());
     }
 
-    @Test
-    void physicalMultiFileStatefulActorIsManifestBoundButNotExecutable() throws Exception {
+    private PackageNamespaceBuild physicalBuild() throws Exception {
         Path fixture = Path.of("contracts", "declared-actor-stateful-counter-v2");
         for (String path : new String[] {
                 ".atto.pkg.toml", "src/counter/contract.atto",
@@ -118,14 +117,104 @@ final class ActorCriticalStateSyntaxV2Test {
             Files.createDirectories(to.getParent());
             Files.writeString(to, Files.readString(fixture.resolve(path)));
         }
-        var project = OresProjectConfig.load(root.resolve(".atto.pkg.toml"), Map.of());
-        var build = new PackageNamespaceBuild(project);
+        return new PackageNamespaceBuild(
+                OresProjectConfig.load(root.resolve(".atto.pkg.toml"), Map.of()));
+    }
+
+    @Test
+    void physicalMultiFileStatefulActorIsManifestBoundButNotExecutable() throws Exception {
+        var build = physicalBuild();
         var audit = build.auditDeclaredActors();
         assertEquals(1, audit.contractWitness().actors().size());
         assertNotNull(audit.contractWitness().actors().values().iterator().next().stateUnit());
+        assertEquals(2, audit.criticalOperations().size());
+        assertEquals(Ast.CriticalStateMode.WRITE, audit.criticalOperations().getFirst().mode());
+        assertEquals(Ast.CriticalStateMode.READ, audit.criticalOperations().get(1).mode());
+        assertEquals("total", audit.criticalOperations().getFirst().field());
+        assertEquals("src/counter/receive.atto",
+                audit.criticalOperations().getFirst().sourceUnit());
         var blocked = assertThrows(IllegalArgumentException.class,
                 build::compileStatelessActorGuestV1);
         assertTrue(blocked.getMessage().contains("sealed state/critical loans"),
                 blocked.getMessage());
+    }
+
+    @Test
+    void directStateFieldAccessOutsideLoanFailsManifestPreflight() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        Files.writeString(path, Files.readString(path).replace(
+                "if mail.value == 4; do", "self.total = 99; if mail.value == 4; do"));
+        var failure = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(failure.getMessage().contains("direct actor state member access"),
+                failure.getMessage());
+    }
+
+    @Test
+    void aStateViewCannotEscapeThroughOrdinaryMessageSend() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        Files.writeString(path, Files.readString(path).replace(
+                "if mail.value == 4; do", "self.send(s); if mail.value == 4; do"));
+        var failure = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(failure.getMessage().contains("view escaped"), failure.getMessage());
+    }
+
+    @Test
+    void aCriticalReaderCannotMutateState() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        Files.writeString(path, Files.readString(path).replace(
+                "self.send(s.total);", "s.total = 99;"));
+        var failure = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(failure.getMessage().contains("critical-read permits only"),
+                failure.getMessage());
+    }
+
+    @Test
+    void immutableOrUndeclaredStateCannotBeWritten() throws Exception {
+        var build = physicalBuild();
+        Path schema = root.resolve("src/counter/state.atto");
+        Files.writeString(schema, Files.readString(schema).replace(
+                "let int total", "val int total"));
+        var immutable = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(immutable.getMessage().contains("immutable val state"),
+                immutable.getMessage());
+
+        Files.writeString(schema, Files.readString(schema).replace(
+                "val int total", "let int total"));
+        Path method = root.resolve("src/counter/receive.atto");
+        Files.writeString(method, Files.readString(method).replace(
+                "s.total = s.total + mail.value;", "s.foreign = s.foreign + mail.value;"));
+        var foreign = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(foreign.getMessage().contains("undeclared state field"),
+                foreign.getMessage());
+    }
+
+    @Test
+    void stateScopeRejectsEscapingReturnAndNestedCriticalLoan() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        String original = Files.readString(path);
+        Files.writeString(path, original.replace(
+                "s.total = s.total + mail.value;",
+                "return s.total;"));
+        var escaping = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(escaping.getMessage().contains("exactly one scalar operation"),
+                escaping.getMessage());
+
+        Files.writeString(path, original.replace(
+                "s.total = s.total + mail.value;",
+                "self.handle_state(critical-read |n| -> { self.send(n.total); });"));
+        var nested = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(nested.getMessage().contains("exactly one scalar operation"),
+                nested.getMessage());
     }
 }
