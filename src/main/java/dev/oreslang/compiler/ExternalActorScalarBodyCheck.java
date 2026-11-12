@@ -47,14 +47,15 @@ public final class ExternalActorScalarBodyCheck {
             ActorContractWitness.Result witness,
             ActorMethodIndex index) {
         Map<ActorMethodIndex.MethodKey, VerifiedBody> verified = new LinkedHashMap<>();
-        var actors = new TreeMap<String, ActorContractWitness.ActorProof>();
+        var actors = new TreeMap<String,
+                Map.Entry<ActorContractWitness.ActorKey, ActorContractWitness.ActorProof>>();
         for (var actor : witness.actors().entrySet()) {
             String key = actor.getKey().namespace() + "\u0000" + actor.getKey().actor();
-            if (actors.putIfAbsent(key, actor.getValue()) != null) {
+            if (actors.putIfAbsent(key, actor) != null) {
                 throw new IllegalArgumentException("duplicate verified actor body identity");
             }
         }
-        for (var actor : witness.actors().entrySet()) {
+        for (var actor : actors.values()) {
             // Identity and origin are bound by the witness, not inferred from
             // the spelling of the external receiver in another source file.
             var actorKey = new ActorMethodIndex.ActorKey(
