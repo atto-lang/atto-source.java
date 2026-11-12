@@ -46,6 +46,16 @@ public final class GeneratorRuntime {
     }
 
     public static <T> AsyncGenerator<T> asyncGenerator(AsyncRuntime runtime, Producer<T> producer) {
+        // The generic AsyncRuntime owns process/root virtual carriers. It
+        // does not carry an actor-incarnation execution lease or guarantee
+        // that await/yield/cleanup resumes on that actor's kind-specific pool.
+        // Reject construction during an actor turn rather than let a captured
+        // actor-private producer execute outside its owner's scheduler.
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "ACTOR_GENERATOR_UNSUPPORTED: async gen* requires actor-owned "
+                    + "continuation/pool admission; generic AsyncRuntime cannot retain actor authority");
+        }
         return new AsyncGenerator<>(runtime, new Engine<>(runtime, producer));
     }
 
@@ -143,6 +153,14 @@ public final class GeneratorRuntime {
          * engine step has exited (cancellation can settle first).
          */
         public OresFuture<Step<T>> nextStep() {
+            // A root-owned activation can be passed to actor code. Even an
+            // otherwise Sendable value may not grant that actor a generic
+            // root-task execution capability. Preserve the Future return ABI.
+            if (ActorRuntime.inActorExecution()) {
+                return OresFuture.failed(new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: actor pull requires "
+                        + "actor-owned continuation/pool admission"));
+            }
             PullAdmission<T> ticket = new PullAdmission<>();
             for (;;) {
                 PullAdmission<T> previous = activePull.get();
