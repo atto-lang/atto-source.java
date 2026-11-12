@@ -79,9 +79,13 @@ final class NativeTelemetryScopeGuestTest {
                         "0123456789abcdef0123456789abcdef",
                         "2222222222222222", "1111111111111111",
                         501, 1, 1010, 1090, 0, false);
+                      val third = telemetry.completed_span(
+                        "0123456789abcdef0123456789abcdef",
+                        "3333333333333333", "2222222222222222",
+                        200, 3, 1020, 1080, 200, false);
                       stdio.println(batch.offer(first));
                       stdio.println(batch.offer(second));
-                      stdio.println(batch.offer(first));
+                      stdio.println(batch.offer(third));
                       stdio.println(batch.count());
                       stdio.println(batch.dropped_count());
                       stdio.println(batch.at(1).parent_span_id);
