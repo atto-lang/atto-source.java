@@ -1,0 +1,36 @@
+// Native Atto telemetry scope bootstrap.
+// This module deliberately ships a NO-OP span provider when telemetry is off.
+// No exporter, host interop, reflection, clock reads, globals or network I/O.
+// A future trusted per-actor provider can supply recording spans through a
+// capability-checked runtime boundary without changing the using syntax.
+define module telemetry as
+  pub define class Span as
+    pub val String name;
+    let bool ended = false;
+
+    pub constructor(String name) {
+      self.name = name;
+    }
+
+    // The default provider is non-recording: it does not construct events or
+    // sample the monotonic clock and has no cross-actor state.
+    pub fnc is_recording(): bool {
+      return false;
+    }
+
+    pub fnc end(mut self)(): bool {
+      if self.ended; do
+        return false;
+      fi
+      self.ended = true;
+      return true;
+    }
+  end
+
+  // This is an explicit manual span, not an automatic compiler probe. A
+  // tracing-disabled application calling this method still pays for a Span
+  // value; compiler-inserted probes MUST bypass guest APIs when disabled.
+  pub fnc span(String name): Span {
+    return new Span(name);
+  }
+end
