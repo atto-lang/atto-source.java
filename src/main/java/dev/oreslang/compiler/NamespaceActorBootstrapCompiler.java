@@ -132,7 +132,7 @@ final class NamespaceActorBootstrapCompiler {
             if (!(state instanceof Owned owned)
                     || !owned.owner().equals(context.self().id())
                     || !mail.recipient().equals(context.self().id())
-                    || context.currentMail().orElse(null) != mail
+                    || !mail.equals(context.currentMail().orElse(null))
                     || !(mail.value() instanceof Long)) {
                 throw new SecurityException(
                         "actor mail requires current owner, physical turn and typed ActorMail<int>");
@@ -147,7 +147,7 @@ final class NamespaceActorBootstrapCompiler {
                     || context.codeImage().orElse(null) != codeImage
                     || context.kind() != ActorRuntime.ActorKind.SHARED
                     || ActorRuntime.currentActorRuntime() != context.runtime()
-                    || ActorRuntime.currentActorId().orElse(null) != context.self().id()) {
+                    || !context.self().id().equals(ActorRuntime.currentActorId().orElse(null))) {
                 throw new SecurityException(
                         "namespace actor runtime ingress requires a matching live actor turn");
             }
