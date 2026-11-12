@@ -4544,6 +4544,25 @@ public final class OwnershipChecker {
                     payloadSend, false, false);
         }
 
+        // Source-written Tuple<A,B,...> is a named generic TypeRef, unlike
+        // the compiler's synthetic $tuple$ form. Both require the same
+        // recursive Send proof before a synchronized Channel<T> handle may
+        // be captured by independently scheduled tasks.
+        if (name.equals("Tuple") && declaredClass == null) {
+            if (type.arguments().isEmpty()) return none;
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef element : type.arguments()) {
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(element, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            return new AutoTraitRules.Capabilities(send, sync, share);
+        }
+
         if (name.equals("Channel")) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities payload =
