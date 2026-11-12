@@ -4268,7 +4268,11 @@ public final class TypeChecker {
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
                     && member.member().equals("read_line")) {
-                return new Function(List.of(), Primitive.STRING);
+                // StdinFacade.readLine returns Some(line) or None at EOF.
+                // An implicit Option<T> -> T conversion would hide EOF and
+                // break the guest's explicit Option.is_none()/unwrap() guard.
+                return new Function(
+                        List.of(), new Named("Option", List.of(Primitive.STRING)));
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process")
