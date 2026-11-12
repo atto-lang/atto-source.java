@@ -275,6 +275,12 @@ final class AttoRedisNioThroughputTest {
     }
 
     @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void ownedBytesNioActorPreservesBinaryEmptyNilAndPipelining() throws Exception {
+        verifyFramedNioGuest("redis_actor_nio_owned_bytes.atto");
+    }
+
+    @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_PERF_ENABLED")),
@@ -283,14 +289,15 @@ final class AttoRedisNioThroughputTest {
         double optimized = runGuest("redis_binary_resp2.atto", "atto_nio_fingerprint");
         double framed = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed");
         double singleReply = runGuest("redis_actor_nio_single_reply.atto", "atto_nio_single_reply");
+        double ownedBytes = runGuest("redis_actor_nio_owned_bytes.atto", "atto_nio_owned_bytes");
         double redis;
         try (Socket client = new Socket("127.0.0.1", REDIS_PORT)) {
             redis = runTrials(client, "official_redis_no_persistence");
         }
         System.out.printf("ATTO_NATIVE_NIO_COMPARISON baseline=%.1f optimized=%.1f "
-                + "framed=%.1f single_reply=%.1f redis=%.1f optimized_over_baseline=%.4f "
-                + "framed_over_optimized=%.4f single_over_framed=%.4f single_over_redis=%.4f%n",
-                baseline, optimized, framed, singleReply, redis, optimized / baseline,
-                framed / optimized, singleReply / framed, singleReply / redis);
+                + "framed=%.1f single_reply=%.1f owned_bytes=%.1f redis=%.1f optimized_over_baseline=%.4f "
+                + "framed_over_optimized=%.4f single_over_framed=%.4f bytes_over_single=%.4f bytes_over_redis=%.4f%n",
+                baseline, optimized, framed, singleReply, ownedBytes, redis, optimized / baseline,
+                framed / optimized, singleReply / framed, ownedBytes / singleReply, ownedBytes / redis);
     }
 }
