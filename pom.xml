@@ -77,6 +77,13 @@
       </resource>
     </resources>
     <plugins>
+      <!-- Pin plugin defaulted by Maven 4; 3.5.0 is not published to Central.
+           Explicit version keeps exact-head source CI reproducible. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
