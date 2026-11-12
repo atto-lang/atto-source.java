@@ -160,11 +160,11 @@ final class AttoRedisMultiClientNioGuestTest {
                 }
             });
 
+            CountDownLatch letIdleQuit = new CountDownLatch(1);
             try {
             // One peer connects first and remains idle: it must not block
             // the other 99 clients from the same Atto-owned Map.
             CountDownLatch idleConnected = new CountDownLatch(1);
-            CountDownLatch letIdleQuit = new CountDownLatch(1);
             Future<?> idle = clientsExecutor.submit(() -> {
                 try (Socket socket = connect(guest, port)) {
                     idleConnected.countDown();
