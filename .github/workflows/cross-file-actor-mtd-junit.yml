@@ -81,7 +81,6 @@ jobs:
         with:
           java-version: '25'
           distribution: graalvm
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
       - name: Run exact-head parser and actor binding JUnit suites
