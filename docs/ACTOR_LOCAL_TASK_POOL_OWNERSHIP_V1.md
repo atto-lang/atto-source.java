@@ -61,6 +61,29 @@ instead an actor-owned root: it remains subject to the actor STOP admission
 seal and physical actor cleanup. This does **not** enable an actor
 `task scope { }` or transfer `self` into detached tasks.
 
+## STOP/admission linearization
+
+The actor runtime now checks STOP/finalization and registers each Task with
+the actor-owned `OresScheduler` while holding the same ActorCell lifecycle
+monitor that STOP holds when it seals `sealActorStopAdmission()`. This closes
+the time-of-check/time-of-use window in which a previously initialized
+`sourceScheduler()` could remain reachable during STOP's cleanup lane.
+Untrusted quota-slot reservations are provisional until the same atomic
+scheduler-registration gate succeeds; failure unwinds those reservations.
+
+A cancellation cleanup continuation is allowed to execute its *existing*
+saved defer/finally state under the authenticated actor carrier, but neither
+tracked nor untracked actor tasks can start fresh after STOP, even when the
+old sourceScheduler object still exists. Cleanup never gains supervisor CONTROL
+execution authority.
+
+`ActorTaskStopCleanupAdmissionTest` exercises real source-code actor runtime
+dispatch in PRIVATE, SHARED and UNTRUSTED kinds. It verifies one suspended
+cleanup-aware task, STOP, the authenticated cancellation cleanup turn, failure
+of BOTH task-admission paths in that turn, physical actor DONE, and late
+external Future completion without guest reentry. All waits are on the host
+test thread, never inside actor guest turns.
+
 ## Verification
 
 `ActorNestedTaskLifetimeTest` specifically tests parent-result vs
@@ -84,7 +107,7 @@ coverage, not evidence of execution before a real runner produces a receipt.
 Run from the Java repo, with the required JDK/Graal/Maven native prerequisites:
 
 ```sh
-mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorForeignSchedulerAdmissionTest,ActorTrackedTaskCancellationTest,ActorNestedTaskLifetimeTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
+mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorForeignSchedulerAdmissionTest,ActorTrackedTaskCancellationTest,ActorNestedTaskLifetimeTest,ActorTaskStopCleanupAdmissionTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
 ```
 
 Release gate: exact-head executed JUnit results, explicit job steps and XML
