@@ -246,4 +246,32 @@ final class DeclaredActorCompilerManifestGateTest {
         var checked = TypeChecker.check(Parser.parse(source));
         assertNotNull(checked);
     }
+
+    @Test
+    void manifestBuildRejectsForeignActorMethodBeforeCodegen() throws IOException {
+        var config = setup();
+        write("src/bar/worker2.atto",
+                "use namespace bar; declare pub actor Worker2;");
+        write("src/bar/wrong.atto",
+                "use namespace bar; pub mtd (Foo self) big_ly(): void { return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> new PackageNamespaceBuild(config).build());
+        assertTrue(error.getMessage().contains("EXTERNAL_RECEIVER_NAMESPACE_MISMATCH"),
+                error.getMessage());
+        assertFalse(error.getMessage().contains("CODEGEN_UNSUPPORTED"),
+                error.getMessage());
+    }
+
+    @Test
+    void manifestBuildRejectsForeignClassMethodBeforeCodegen() throws IOException {
+        var config = setup();
+        write("src/foo/widget.atto", "use namespace foo; pub define class Widget as end");
+        write("src/bar/wrong-class.atto",
+                "use namespace bar; pub mtd (Widget self) big_ly(): void { return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> new PackageNamespaceBuild(config).build());
+        assertTrue(error.getMessage().contains("EXTERNAL_RECEIVER_NAMESPACE_MISMATCH"),
+                error.getMessage());
+        assertTrue(error.getMessage().contains("'Widget'"), error.getMessage());
+    }
 }
