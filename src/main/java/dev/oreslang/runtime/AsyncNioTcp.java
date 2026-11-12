@@ -239,7 +239,11 @@ public final class AsyncNioTcp {
                 return OresFuture.failed(new IllegalStateException(
                         "closed socket or concurrent write"));
             }
-            ByteBuffer buffer = bytes.nioReadOnlyView().asReadOnlyBuffer();
+            // Async NIO is allowed to retain this buffer after the guest
+            // caller returns. Use writable private backing until an explicit
+            // runtime invariant proves the frozen read-only view is supported
+            // end-to-end by every supported NIO provider.
+            ByteBuffer buffer = ByteBuffer.wrap(bytes.toArrayCopy());
             return OresFuture.fromCallback(callback -> {
                 CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
                     @Override public void completed(Integer count, Void ignored) {
