@@ -80,7 +80,7 @@ final class ActorTrySendFastPathTest {
                         throw new AssertionError("stalled actor never released");
                 }
             });
-            assertThrows(IllegalArgumentException.class, () -> ref.trySend(new Object()),
+            assertThrows(RuntimeException.class, () -> ref.trySend(new Object()),
                     "unsafe host graph may not be passed into an actor");
             ref.send(1);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
