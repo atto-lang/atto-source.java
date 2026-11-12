@@ -65,9 +65,18 @@ public final class TelemetrySpanScope implements AutoCloseable {
         private static final SecureRandom RANDOM = new SecureRandom();
     }
 
+    private static void requireHostControl() {
+        if (OresScheduler.currentTaskDomain() != null
+                || ActorRuntime.inActorExecution()) {
+            throw new SecurityException(
+                    "telemetry instrumentation configuration requires a trusted host control turn");
+        }
+    }
+
     /** Trusted host operation only. There is intentionally no guest-facing toggle. */
     public static void enableExistingSites(int samplePercent, long durationMillis,
                                            String spanNamePrefix) {
+        requireHostControl();
         if (samplePercent < 0 || samplePercent > 100) {
             throw new IllegalArgumentException("sample percent must be 0..100");
         }
@@ -79,11 +88,19 @@ public final class TelemetrySpanScope implements AutoCloseable {
             throw new IllegalArgumentException("span prefix too long");
         }
         long nanos = Math.multiplyExact(durationMillis, 1_000_000L);
+        if (samplePercent > 0) {
+            // Initialize the random provider on a trusted host control turn,
+            // not the first actor carrier entering a newly enabled span.
+            byte[] warm = new byte[16];
+            RandomId.RANDOM.nextBytes(warm);
+            java.util.Arrays.fill(warm, (byte) 0);
+        }
         POLICY.set(new Policy(true, samplePercent, System.nanoTime() + nanos,
                 spanNamePrefix));
     }
 
     public static void disableExistingSites() {
+        requireHostControl();
         POLICY.set(new Policy(false, 0, 0L, ""));
     }
 
@@ -104,9 +121,15 @@ public final class TelemetrySpanScope implements AutoCloseable {
                     && java.util.concurrent.ThreadLocalRandom.current().nextInt(100)
                             < policy.samplePercent());
         if (!sample) return new TelemetrySpanScope(name, parent, parent, false);
-        TraceContext next = parent == null
-                ? TraceContext.root(randomId(16), randomId(8), true)
-                : parent.child(randomId(8));
+        TraceContext next;
+        if (parent == null) {
+            next = TraceContext.root(randomId(16), randomId(8), true);
+        } else {
+            String childId;
+            do { childId = randomId(8); }
+            while (childId.equals(parent.spanId()));
+            next = parent.child(childId);
+        }
         TraceContext.install(next);
         STARTED.incrementAndGet();
         return new TelemetrySpanScope(name, parent, next, true);
