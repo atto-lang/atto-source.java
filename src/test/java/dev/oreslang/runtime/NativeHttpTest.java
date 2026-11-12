@@ -391,8 +391,8 @@ class NativeHttpTest {
         }
     }
 
-    @Test
-    @org.junit.jupiter.api.Timeout(30)
+    @org.junit.jupiter.api.RepeatedTest(4)
+    @org.junit.jupiter.api.Timeout(45)
     void twoListenersSharingOnePoolReplaceSealedWorkerAfterFirstShutdown() throws Exception {
         // Real Atto guest + loopback HTTP. Listener A's shutdown seals the
         // shared worker incarnation. Listener B must allocate a distinct
@@ -426,7 +426,7 @@ class NativeHttpTest {
                 end
                 pub async routine main(): void {
                   val first = http.listen("127.0.0.1", 0, 1, 1024, 5000);
-                  val second = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val second = http.listen("127.0.0.1", 0, 48, 1024, 5000);
                   val handler = http.handler("Worker").pooled(1);
                   stdio.println(first.port);
                   stdio.println(second.port);
@@ -436,11 +436,11 @@ class NativeHttpTest {
                   await firstCompleted;
                   await first.shutdown(0);
                   stdio.println("first-shutdown-completed");
-                  val secondRequest = await second.accept();
-                  val secondCompleted = secondRequest.completion;
-                  handler.dispatch(rt mut borrow secondRequest);
-                  await secondCompleted;
-                  await second.shutdown(0);
+                  for (let int i = 0; i < 32; i = i + 1) {
+                    val secondRequest = await second.accept();
+                    handler.dispatch(rt mut borrow secondRequest);
+                  }
+                  await second.shutdown(3000);
                   stdio.println(handler.created);
                   stdio.println(handler.reused);
                   return;
@@ -458,7 +458,19 @@ class NativeHttpTest {
                     assertNotEquals(a, b, "listeners must be separately bound");
                     assertEquals(200, request(a, "GET", "/", "").statusCode());
                     firstDrain.get(15, TimeUnit.SECONDS);
-                    assertEquals(200, request(b, "GET", "/", "").statusCode());
+                    try (HttpClient httpClient = HttpClient.newHttpClient()) {
+                        var pending = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                        for (int i = 0; i < 32; ++i) {
+                            pending.add(httpClient.sendAsync(
+                                    HttpRequest.newBuilder(URI.create(
+                                            "http://127.0.0.1:" + b + "/"))
+                                            .timeout(Duration.ofSeconds(12)).build(),
+                                    HttpResponse.BodyHandlers.ofString()));
+                        }
+                        for (var response : pending) {
+                            assertEquals(200, response.get(15, TimeUnit.SECONDS).statusCode());
+                        }
+                    }
                 } catch (Exception failure) {
                     throw new CompletionException(failure);
                 }
@@ -466,14 +478,15 @@ class NativeHttpTest {
             try {
                 context.eval(Source.newBuilder(OresLanguage.ID, source,
                         "native-http-shared-pool-shutdown.atto").build());
-                client.get(15, TimeUnit.SECONDS);
+                client.get(30, TimeUnit.SECONDS);
             } finally {
                 client.cancel(true);
             }
         }
         assertTrue(firstDrain.isDone(), "first listener never completed carrier drain");
-        assertTrue(output.toString(StandardCharsets.UTF_8).endsWith("2\n0\n"),
-                "sealed worker must be replaced, not reused: " + output.toString(StandardCharsets.UTF_8));
+        assertTrue(output.toString(StandardCharsets.UTF_8).endsWith("2\n31\n"),
+                "sealed worker must be replaced before the next listener's 32-request burst: "
+                        + output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
