@@ -167,6 +167,9 @@ final class SealedActorStateRegionTest {
                 """);
         var actorSchema = (dev.oreslang.ast.Ast.ClassDecl)
                 parsed.modules().getFirst().declarations().getFirst();
+        assertThrows(SecurityException.class,
+                () -> SealedActorStateRegion.allocateFromSealedDeclaration(actorSchema),
+                "host code cannot allocate a sealed actor region outside a source turn");
         try (var store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime()) {
             var code = store.publish("nats-sealed-region-test", parsed);
@@ -183,6 +186,20 @@ final class SealedActorStateRegionTest {
                     assertEquals("AcceptanceCounter", typeName);
                     assertEquals(context.self().id(),
                             ActorRuntime.currentActorId().orElseThrow());
+                    // Identical user-visible syntax is not an authorized
+                    // declaration: only the actual AST object in the code
+                    // image admitted for this actor may allocate state.
+                    var forged = Parser.parse("""
+                            define actor AcceptanceCounter as
+                              state { let int count = 0; }
+                            end
+                            """);
+                    var forgedSchema = (dev.oreslang.ast.Ast.ClassDecl)
+                            forged.modules().getFirst().declarations().getFirst();
+                    assertThrows(SecurityException.class,
+                            () -> SealedActorStateRegion.allocateFromSealedDeclaration(
+                                    forgedSchema),
+                            "a separately parsed actor AST must never mint region authority");
                     var region = SealedActorStateRegion.allocateFromSealedDeclaration(
                             actorSchema);
                     retained.set(region);
