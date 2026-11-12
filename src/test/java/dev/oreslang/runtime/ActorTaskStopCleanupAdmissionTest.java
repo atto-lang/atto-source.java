@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.parser.Parser;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,50 +27,72 @@ final class ActorTaskStopCleanupAdmissionTest {
             AtomicInteger cleanupTurns = new AtomicInteger();
             AtomicReference<Throwable> assertionFailure = new AtomicReference<>();
 
-            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
-                var actor = runtime.<String>spawn(
-                        kind, IsolatePolicy.developer(),
-                        () -> (message, context) -> {
-                            if ("marker".equals(message)) {
-                                // Actor source Task continuations have priority
-                                // over ordinary user mail. This receipt means
-                                // its initial turn has already suspended.
-                                afterSuspension.countDown();
-                                return;
-                            }
-                            assertEquals("start", message);
-                            context.runtime().startActorTask(
-                                    new OresScheduler.CleanupAwareTask<Integer>() {
-                                        @Override
-                                        public OresScheduler.Step<Integer> resume(
-                                                OresScheduler.Resume resume) {
-                                            if (resume.initial()) {
-                                                initialTurns.incrementAndGet();
-                                                return OresScheduler.await(unresolved);
-                                            }
-                                            try {
-                                                assertTrue(
-                                                        OresScheduler.cancellationCleanupTurn(),
-                                                        "this must be an authenticated cleanup turn");
-                                                assertNotNull(resume.failure(),
-                                                        "STOP must deliver cancellation");
-                                                assertTrue(ActorRuntime.inActorExecution());
-                                                assertTrue(runtime.currentThreadOwnsActorExecutionLease());
-                                                assertThrows(RuntimeException.class,
-                                                        () -> runtime.startActorTask(
-                                                                r -> OresScheduler.done(99)));
-                                                assertThrows(RuntimeException.class,
-                                                        () -> runtime.startTrackedActorTask(
-                                                                r -> OresScheduler.done(99)));
-                                                cleanupTurns.incrementAndGet();
-                                            } catch (Throwable failure) {
-                                                assertionFailure.compareAndSet(null, failure);
-                                                throw failure;
-                                            }
-                                            return OresScheduler.done(7);
+            try (SharedCodeImageStore store = new SharedCodeImageStore();
+                 ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+                var image = store.publish("actor-task-cleanup.ores",
+                        Parser.parse("pub routine main(): void { return; }"));
+                ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                    @Override
+                    public SharedCodeImageStore.CodeImage codeImage() {
+                        return image;
+                    }
+
+                    @Override
+                    public ActorRuntime.ActorOwnedGuestState initializeActor(
+                            String type, ActorRuntime.ActorContext<Object> context) {
+                        assertEquals("Worker", type);
+                        return context.self()::id;
+                    }
+
+                    @Override
+                    public void receiveActor(
+                            String type, ActorRuntime.ActorOwnedGuestState state,
+                            ActorRuntime.ActorInboxMail<Object> mail,
+                            ActorRuntime.ActorContext<Object> context) {
+                        assertEquals("Worker", type);
+                        assertEquals(context.self().id(), state.ownerActorId());
+                        if ("marker".equals(mail.value())) {
+                            // Source task turns take priority over user mail.
+                            // This receipt proves the initial turn suspended.
+                            afterSuspension.countDown();
+                            return;
+                        }
+                        assertEquals("start", mail.value());
+                        context.runtime().startActorTask(
+                                new OresScheduler.CleanupAwareTask<Integer>() {
+                                    @Override
+                                    public OresScheduler.Step<Integer> resume(
+                                            OresScheduler.Resume resume) {
+                                        if (resume.initial()) {
+                                            initialTurns.incrementAndGet();
+                                            return OresScheduler.await(unresolved);
                                         }
-                                    });
-                        });
+                                        try {
+                                            assertTrue(
+                                                    OresScheduler.cancellationCleanupTurn(),
+                                                    "this must be an authenticated cleanup turn");
+                                            assertNotNull(resume.failure(),
+                                                    "STOP must deliver cancellation");
+                                            assertTrue(ActorRuntime.inActorExecution());
+                                            assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                                            assertThrows(RuntimeException.class,
+                                                    () -> runtime.startActorTask(
+                                                            r -> OresScheduler.done(99)));
+                                            assertThrows(RuntimeException.class,
+                                                    () -> runtime.startTrackedActorTask(
+                                                            r -> OresScheduler.done(99)));
+                                            cleanupTurns.incrementAndGet();
+                                        } catch (RuntimeException | Error failure) {
+                                            assertionFailure.compareAndSet(null, failure);
+                                            throw failure;
+                                        }
+                                        return OresScheduler.done(7);
+                                    }
+                                });
+                    }
+                };
+                ActorRuntime.ActorRef<Object> actor =
+                        runtime.spawnCodeActor(kind, executor, "Worker");
                 try {
                     actor.ready().get(5, TimeUnit.SECONDS);
                     actor.send("start");
