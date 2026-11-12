@@ -99,6 +99,18 @@ final class ToStringContractTest {
     }
 
     @Test
+    void templateToStringEvaluatesEachArgumentExactlyOnceInSourceOrder() {
+        assertEquals("12a:42 b:false", run("""
+                fnc first(): int { stdio.stdout.write("1"); return 42; }
+                fnc second(): bool { stdio.stdout.write("2"); return false; }
+                pub fnc main(): void {
+                  stdio.stdout.write(`a:${to_string(first())} b:${second().to_string()}`);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void rejectsInvalidArityAndUnsupportedImplicitConversions() {
         for (String expr : new String[] {
                 "to_string()", "to_string(1, 2)", "to_string(1.5)",
