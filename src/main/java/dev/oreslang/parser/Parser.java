@@ -2576,9 +2576,29 @@ public final class Parser {
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
                 throw error(name, "using scoped resource needs a named, usable view binding");
             }
+            int scopeBodyTokenStart = current;
             List<Ast.Stmt> body = parseBlock();
             if (transportBorrow) {
                 return new Ast.UsingBorrowStmt(resource, name.lexeme(), body);
+            }
+            // The LLVM AOT subset cannot carry thread-local scope tokens
+            // across suspension/carrier migration. Match that safe subset:
+            // don't present lexical try/finally as a proven async scope.
+            // This is a conservative syntactic denial, NOT transitive
+            // no-suspend/effect certification for arbitrary callable bodies.
+            for (int i = scopeBodyTokenStart; i < current; i++) {
+                Token scopedToken = tokens.get(i);
+                boolean taskScope = scopedToken.type() == IDENT
+                        && scopedToken.lexeme().equals("task")
+                        && i + 1 < current
+                        && tokens.get(i + 1).type() == IDENT
+                        && tokens.get(i + 1).lexeme().equals("scope");
+                if (scopedToken.type() == AWAIT || scopedToken.type() == YIELD
+                        || scopedToken.type() == SELECT || taskScope) {
+                    throw error(scopedToken, "using telemetry.span currently requires a "
+                            + "non-suspending body; await, yield, select and task scope "
+                            + "require continuation-owned span frames");
+                }
             }
             // Canonical checked lowering into existing lexical bindings and
             // try/finally. The type checker validates the span factory and
