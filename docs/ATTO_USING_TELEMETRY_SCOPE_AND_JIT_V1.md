@@ -217,9 +217,11 @@ OTLP/HTTP protobuf-JSON encoder (`CompletedSpan.to_otlp_span_json`,
 hex W3C IDs, numeric span kinds and **quoted decimal** nanosecond times per
 the [current OTLP JSON specification](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding).
 It fixes low-cardinality operation names and carries no free-form attributes,
-URLs, request bodies or credentials into spans. A trusted bridge must still
-enforce exact W3C ID dimensions and receive samples from the bounded
-runtime staging queue.
+URLs, request bodies or credentials into spans. The native Atto constructor
+now checks lowercase hex, exact 32/16-character W3C widths and nonzero IDs
+using a source-level literal-split character counter. The future trusted
+runtime bridge must independently validate the same properties and
+receive samples from the bounded runtime staging queue.
 
 `NativeTelemetryActorOtlpGuestTest` uses a real .atto one-shot
 `TelemetryCollector` actor fixture, with actor mailbox delivery, pure
