@@ -13,7 +13,7 @@ This applies to both ordinary classes and actors; it does **not** turn actor met
 ## Precedence and boundaries
 
 1. Local callable/noncallable bindings and parameters take precedence. Noncallable shadowing produces an error; it must not silently select the method.
-2. An instance method family on the lexical receiver is next. Inherited methods participate, with ordinary virtual dispatch and visibility checking.
+2. An instance method family on the **lexical declaring class**, not the runtime receiver's dynamic subclass, is next. Inherited methods participate; only after the lexical method family and overload have been selected does ordinary virtual dispatch choose the implementation. A subclass-only method must never hijack a base method's intended root-function call.
 3. Existing explicitly imported / qualified / module / file callables follow their ordinary rules. Actor dependency isolation does **not** become weaker; actors must still import external dependencies explicitly. The separate draft for `pkg::` / `imports::` qualification is **not** implied by this implementation.
 4. Actor lifecycle entry points `on_start` and `receive`, constructors, private/protected members from unauthorized scopes and unsafe method values remain forbidden exactly as for explicit self.
 5. The syntactic call must have `CallOrigin.DIRECT`; piped call rewriting must not invent `self`.
