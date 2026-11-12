@@ -184,4 +184,58 @@ final class AttoCriticalTruffleActorExecutionTest {
                     () -> compiled.initializeActor(forged));
         }
     }
+
+    @Test
+    void overflowingActorFailsAloneAndHealthySiblingKeepsItsOwnArena()
+            throws Exception {
+        Ast.Program ast = Parser.parse(SOURCE);
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("src/counter.atto", ast);
+            var compiled = CriticalActorTruffleV1.compile(
+                    image, "counter@1", "CounterActor", "add");
+            var executor = new BootstrapExecutor(image, compiled);
+            var overflow = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    executor, "CounterActor");
+            var sibling = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    executor, "CounterActor");
+            overflow.ready().get(10, TimeUnit.SECONDS);
+            sibling.ready().get(10, TimeUnit.SECONDS);
+            overflow.sendAsync(Long.MAX_VALUE).get(10, TimeUnit.SECONDS);
+            overflow.sendAsync(1L).get(10, TimeUnit.SECONDS);
+            assertTrue(overflow.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(overflow.failure().isPresent(),
+                    "checked i64 overflow must fail-stop only the owner actor");
+            assertTrue(sibling.isAlive(), "sibling must survive another actor's exception");
+
+            for (int i = 0; i < 12; i++)
+                sibling.sendAsync(1L).get(10, TimeUnit.SECONDS);
+            sibling.sendAsync(0L).get(10, TimeUnit.SECONDS);
+            assertEquals(12L, sibling.outputs().next().get(10, TimeUnit.SECONDS)
+                    .value().value());
+            assertTrue(sibling.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(sibling.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void runtimeRefusesUnownedSharedActorStateRatherThanFallback()
+            throws Exception {
+        Ast.Program ast = Parser.parse(SOURCE);
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("src/counter.atto", ast);
+            var compiled = CriticalActorTruffleV1.compile(
+                    image, "counter@1", "CounterActor", "add");
+            var shared = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    new BootstrapExecutor(image, compiled), "CounterActor");
+            assertThrows(Exception.class, () -> shared.ready().get(10, TimeUnit.SECONDS),
+                    "shared actor without owned private region must fail closed");
+            assertTrue(shared.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(shared.failure().isPresent());
+        }
+    }
 }
