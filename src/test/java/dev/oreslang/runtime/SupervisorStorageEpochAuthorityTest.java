@@ -79,7 +79,15 @@ final class SupervisorStorageEpochAuthorityTest {
             }
             // No new actor work is allowed after activation revocation:
             // actor is retired by the runtime on its next scheduler admission.
-            assertTrue(gate.physicallyQuiescent() || actor.isAlive());
+            // Latch release only allows the actor callback to finish; the
+            // scheduler still has to leave the physical carrier and retire
+            // its generation lease. Do not race the activation with that exit.
+            long drainedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!gate.physicallyQuiescent() && System.nanoTime() < drainedBy) {
+                Thread.sleep(2);
+            }
+            assertTrue(gate.physicallyQuiescent(),
+                    "physical ActorCell turn must drain before next generation");
             var next = gate.activate();
             assertEquals(2L, next.generation());
             actor.send(42);
