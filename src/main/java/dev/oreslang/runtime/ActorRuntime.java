@@ -2932,6 +2932,22 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Immediate mailbox try-admission. No Future object or producer waiter
+         * is retained on a full USER queue. The underlying send still proves
+         * ownership, freezes/copies transport and atomically publishes the
+         * envelope when admitted. Only mailbox-full is converted to false:
+         * sealed, invalid, cross-runtime or unsafe sends remain errors.
+         */
+        public boolean trySend(M message) {
+            try {
+                ActorRuntime.this.send(this, message);
+                return true;
+            } catch (ActorMailboxFullException full) {
+                return false;
+            }
+        }
+
+        /**
          * Await mailbox admission without parking an actor carrier. Completion
          * means the immutable message envelope owns a mailbox slot; it is not a
          * handler-processing acknowledgement. Cancellation before admission
