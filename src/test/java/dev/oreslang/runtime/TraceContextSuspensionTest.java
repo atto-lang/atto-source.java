@@ -25,6 +25,7 @@ final class TraceContextSuspensionTest {
             CountDownLatch suspended = new CountDownLatch(1);
             AtomicInteger pc = new AtomicInteger();
             AtomicReference<Thread> producerThread = new AtomicReference<>();
+            AtomicReference<Throwable> producerFailure = new AtomicReference<>();
             TraceContext prior = TraceContext.install(ROOT);
             OresFuture<Integer> task;
             try {
@@ -51,14 +52,19 @@ final class TraceContextSuspensionTest {
             assertNull(scheduler.start(r -> OresScheduler.done(
                     TraceContext.current())).get(5, TimeUnit.SECONDS));
             Thread producer = Thread.ofPlatform().start(() -> {
-                producerThread.set(Thread.currentThread());
-                assertNull(TraceContext.current(),
-                        "Future producer callback must not run with the awaiter's span");
-                gate.completeFromRuntime(41);
-                assertNull(TraceContext.current());
+                try {
+                    producerThread.set(Thread.currentThread());
+                    assertNull(TraceContext.current(),
+                            "Future producer callback must not run with the awaiter's span");
+                    gate.completeFromRuntime(41);
+                    assertNull(TraceContext.current());
+                } catch (Throwable failure) {
+                    producerFailure.set(failure);
+                }
             });
             producer.join(5_000);
             assertFalse(producer.isAlive());
+            assertNull(producerFailure.get(), () -> "producer failed: " + producerFailure.get());
             assertEquals(42, task.get(5, TimeUnit.SECONDS));
             assertEquals(2, pc.get());
             assertNull(scheduler.start(r -> OresScheduler.done(
@@ -161,6 +167,7 @@ final class TraceContextSuspensionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TraceContext.root("A".repeat(32), "2222222222222222", true));
         assertThrows(IllegalArgumentException.class, () -> ROOT.child("short"));
+        assertThrows(IllegalArgumentException.class, () -> ROOT.child(ROOT.spanId()));
         assertFalse(TraceContext.root("1".repeat(32), "2".repeat(16), false).sampled());
         assertEquals(ROOT.traceId(), CHILD.traceId());
         assertNotEquals(ROOT.spanId(), CHILD.spanId());
