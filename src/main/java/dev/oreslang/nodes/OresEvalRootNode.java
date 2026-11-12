@@ -7920,12 +7920,14 @@ public final class OresEvalRootNode extends RootNode {
                         case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
                         case "string", "String" -> OresKeyedMap.ValueDomain.STRING;
                         case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                        case "Bytes" -> OresKeyedMap.ValueDomain.BYTES;
                         default -> throw new IllegalArgumentException(
                                 "unverified Map<K,V> value domain " + value);
                     };
                     return switch (key.name()) {
                         case "string", "String" -> OresKeyedMap.stringKeys(valueDomain);
                         case "Symbol" -> OresKeyedMap.symbolKeys(valueDomain);
+                        case "Bytes" -> OresKeyedMap.bytesKeys(valueDomain);
                         default -> throw new IllegalArgumentException(
                                 "unverified Map<K,V> key domain " + key);
                     };
