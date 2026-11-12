@@ -68,4 +68,39 @@ final class NativeTelemetryOtlpCodecGuestTest {
             Files.deleteIfExists(guest);
         }
     }
+    @Test
+    void nativeAttoRejectsMalformedWrongWidthAndAllZeroIds() throws Exception {
+        Path guest = Files.createTempFile("atto-otlp-id-guard-", ".atto");
+        try {
+            Files.writeString(guest, """
+                    import module telemetry from "ores.std/telemetry";
+                    pub routine main(): void {
+                      stdio.println(telemetry.is_exact_lower_hex(
+                        "0123456789abcdef0123456789abcdef", 32));
+                      stdio.println(telemetry.is_exact_lower_hex(
+                        "abcdef0123456789", 16));
+                      stdio.println(telemetry.is_exact_lower_hex(
+                        "abcdef012345678", 16));
+                      stdio.println(telemetry.is_exact_lower_hex(
+                        "0000000000000000", 16));
+                      stdio.println(telemetry.is_exact_lower_hex(
+                        "ABCDEF0123456789", 16));
+                      stdio.println(telemetry.is_exact_lower_hex(
+                        "abcdef\"malicious", 16));
+                      stdio.println(telemetry.is_exact_lower_hex("", 16));
+                      return;
+                    }
+                    """);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ByteArrayOutputStream err = new ByteArrayOutputStream();
+            LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(), out, err);
+            assertEquals("true\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse",
+                    out.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                    () -> err.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(guest);
+        }
+    }
+
 }
