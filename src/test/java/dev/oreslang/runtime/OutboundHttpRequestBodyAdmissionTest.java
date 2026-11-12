@@ -47,13 +47,17 @@ final class OutboundHttpRequestBodyAdmissionTest {
     @Test
     void malformedUtf16MustNotBeSilentlyReplacedOnTheWire() {
         assertThrows(IllegalArgumentException.class,
-                () -> OutboundHttpRequest.requestBodyBytes("\\uD800"));
+                () -> OutboundHttpRequest.requestBodyBytes(
+                        new String(new char[]{(char) 0xD800})));
         assertThrows(IllegalArgumentException.class,
-                () -> OutboundHttpRequest.requestBodyBytes("\\uDC00"));
+                () -> OutboundHttpRequest.requestBodyBytes(
+                        new String(new char[]{(char) 0xDC00})));
         assertThrows(IllegalArgumentException.class,
-                () -> OutboundHttpRequest.requestBodyBytes("\\uD800text"));
+                () -> OutboundHttpRequest.requestBodyBytes(
+                        new String(new char[]{(char) 0xD800, 't'})));
         assertThrows(IllegalArgumentException.class,
-                () -> OutboundHttpRequest.requestBodyBytes("text\\uDC00"));
+                () -> OutboundHttpRequest.requestBodyBytes(
+                        new String(new char[]{'t', (char) 0xDC00})));
     }
 
     @Test
