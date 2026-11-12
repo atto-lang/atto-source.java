@@ -182,7 +182,7 @@ pub async routine main(): void {
           fi
         fi
       }
-      worker.send((0, 0, 5, Bytes.empty(), Bytes.empty()));
+      worker.send((0, 0, 5, Bytes.from_list([]), Bytes.from_list([])));
       await worker.get_done();
       return;
     };
