@@ -7108,10 +7108,16 @@ public final class OresEvalRootNode extends RootNode {
                     || !(call.callee() instanceof Ast.NameExpr name)
                     || isBooleanIntrinsicName(name.name())
                     || env.lookup(name.name()) != Env.MISSING) return null;
+            // Lookup uses the *declaring lexical class*, not the dynamic
+            // receiver's subclass. The selected explicit call still performs
+            // ordinary virtual dispatch; subclass-only names must never
+            // hijack a root/function call checked in a base method.
+            Ast.ClassDecl lexicalOwner = env.accessClass();
+            if (lexicalOwner == null) return null;
             Object receiver = env.lookup("self");
             if (!(receiver instanceof OresObject object)
                     || !object.owner.hasInstanceMethodNamed(
-                            object.klass, name.name(), classVisitSet())) return null;
+                            lexicalOwner, name.name(), classVisitSet())) return null;
             return call.rewrite(
                     new Ast.MemberExpr(new Ast.NameExpr("self"), name.name()),
                     call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
