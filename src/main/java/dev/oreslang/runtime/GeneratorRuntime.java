@@ -309,6 +309,18 @@ public final class GeneratorRuntime {
                             publish(new DoneEvent<>());
                         } catch (CancellationException cancelled) {
                             if (!closed.get()) publish(new FailedEvent<>(cancelled));
+                        } catch (InterruptedException interrupted) {
+                            // Closing an active generator interrupts its producer.
+                            // That is a requested shutdown, not a failed finally
+                            // block. Preserve an unsolicited interruption as a
+                            // sticky terminal error when close was NOT requested.
+                            // Genuine cleanup failures still reach the Throwable
+                            // branch below and remain visible on close receipts.
+                            try {
+                                if (!closed.get()) publish(new FailedEvent<>(interrupted));
+                            } finally {
+                                Thread.currentThread().interrupt();
+                            }
                         } catch (Throwable failure) {
                             if (!closed.get()) publish(new FailedEvent<>(failure));
                             else closeFailure.compareAndSet(null, failure);
