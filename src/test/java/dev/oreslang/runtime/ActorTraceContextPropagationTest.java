@@ -115,6 +115,37 @@ final class ActorTraceContextPropagationTest {
     }
 
     @Test
+    void asyncSendSnapshotsTraceBeforeDeferredMailboxAdmission() throws Exception {
+        AtomicReference<TraceParent> received = new AtomicReference<>();
+        CountDownLatch delivered = new CountDownLatch(1);
+        TraceParent parent = TraceParent.newRoot(true);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.configureTracePropagation(true);
+            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                received.set(TaskContext.traceParent());
+                delivered.countDown();
+            });
+
+            // The sender unwinds before mailbox credit or handler completion.
+            // A delayed async admission must retain the immutable snapshot,
+            // not use whichever TaskContext is on the completion carrier.
+            TaskContext previous = TaskContext.pushTraceParent(parent);
+            OresFuture<Void> admitted;
+            try {
+                admitted = actor.sendAsync("async");
+            } finally {
+                TaskContext.install(previous);
+            }
+            assertNull(TaskContext.traceParent());
+            admitted.get(10, TimeUnit.SECONDS); // host-only wait; never actor carrier
+            assertTrue(delivered.await(12, TimeUnit.SECONDS));
+            assertEquals(parent, received.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void activeActorContextIsRestoredOnThrowingHandler() throws Exception {
         CountDownLatch seen = new CountDownLatch(1);
         TraceParent parent = TraceParent.newRoot(true);
