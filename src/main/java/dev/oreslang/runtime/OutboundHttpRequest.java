@@ -490,7 +490,7 @@ public final class OutboundHttpRequest {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
-        List<Map.Entry<String, String>> headers = requestHeaders(rawHeaders);
+        List<Map.Entry<String, String>> providedHeaders = requestHeaders(rawHeaders);
         URI target;
         try {
             target = URI.create(url);
@@ -503,6 +503,13 @@ public final class OutboundHttpRequest {
         String endpoint = "127.0.0.1:" + target.getPort();
         context.requirePermission(
                 RuntimePermissions.Permission.NET, endpoint, "http.request");
+
+        // Read the immutable context on the *guest admission* carrier, not
+        // the later physical-I/O worker. No userland tracing call is required.
+        // The same immutable header list is then carried through async I/O.
+        final List<Map.Entry<String, String>> headers =
+                withTraceparent(providedHeaders,
+                        context.autoTrace().enabled() ? TaskContext.traceParent() : null);
 
         Owner owner = Owner.capture(context);
         Revocation revocation = new Revocation(context);
@@ -626,6 +633,42 @@ public final class OutboundHttpRequest {
         } finally {
             revocation.clearTransport(transport);
         }
+    }
+
+    /**
+     * Trusted HTTP CLIENT boundary: inject a new W3C child parent-id from
+     * immutable logical task context. No sender-controlled traceparent can
+     * override the runtime-owned identity while tracing is enabled.
+     *
+     * This first slice does NOT create an OTLP CLIENT span, or copy tracestate.
+     * It is a standalone wire-propagation primitive with explicit budgets.
+     */
+    static List<Map.Entry<String, String>> withTraceparent(
+            List<Map.Entry<String, String>> provided,
+            TraceParent parent) {
+        Objects.requireNonNull(provided, "provided");
+        if (parent == null) return provided;
+
+        long bytes = 0L;
+        for (Map.Entry<String, String> header : provided) {
+            String key = header.getKey();
+            if (key.equalsIgnoreCase("traceparent") || key.equalsIgnoreCase("tracestate")) {
+                throw new IllegalArgumentException(
+                        "traceparent/tracestate are runtime-owned while auto tracing is enabled");
+            }
+            bytes += (long) key.length() + header.getValue().length() + 4L;
+        }
+        // "traceparent" (11) + ": " (2) + 55-byte W3C v00 value + CRLF (2)
+        if (provided.size() >= 100 || bytes > 32_768L - 70L) {
+            throw new IllegalArgumentException(
+                    "http.request trace propagation exceeds header budgets");
+        }
+        TraceParent outgoing = parent.newChild();
+        ArrayList<Map.Entry<String, String>> result =
+                new ArrayList<>(provided.size() + 1);
+        result.addAll(provided);
+        result.add(Map.entry("traceparent", outgoing.toHeader()));
+        return List.copyOf(result);
     }
 
     private static List<Map.Entry<String, String>> requestHeaders(List<?> raw) {
