@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class TraceParentTest {
     private static final String TRACE = "0123456789abcdef0123456789abcdef";
-    private static final String SPAN = "1111111111111111";
+    private static final String SPAN = "abcdef0123456789";
     private static final String VALID = "00-" + TRACE + "-" + SPAN + "-01";
 
     @Test
