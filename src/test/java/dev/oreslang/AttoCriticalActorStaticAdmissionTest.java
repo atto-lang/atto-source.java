@@ -89,4 +89,14 @@ final class AttoCriticalActorStaticAdmissionTest {
                         Map.of("src/critical.atto", p)));
         assertTrue(error.getMessage().contains("no nominal actor"), error.getMessage());
     }
+    @Test
+    void duplicateCriticalNameAndArityInOneActorIsRejected() {
+        var p = Parser.parse(HEADER + CRITICAL + CRITICAL);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateBinder.bindSourceSet("atto-rmq@critical",
+                        Map.of("src/channel.atto", p)));
+        assertTrue(error.getMessage().contains("duplicate private critical actor method slot"),
+                error.getMessage());
+    }
+
 }
