@@ -42,6 +42,14 @@ public final class GeneratorRuntime {
     }
 
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
+        // Even synchronous generator construction retains a lazy Producer
+        // closure that could be pulled outside this turn. Actor-private
+        // values cannot escape through a root-owned activation.
+        if (ActorRuntime.inActorExecution()) {
+            throw new IllegalStateException(
+                    "ACTOR_GENERATOR_UNSUPPORTED: sync gen* requires actor-owned "
+                    + "activation/receiver lifetime; generic AsyncRuntime cannot retain actor authority");
+        }
         return new Generator<>(new Engine<>(runtime, producer));
     }
 
