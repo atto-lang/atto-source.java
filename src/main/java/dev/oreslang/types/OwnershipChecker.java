@@ -1611,11 +1611,11 @@ public final class OwnershipChecker {
                 boolean primitiveKey = !key.inferArguments()
                         && key.arguments().isEmpty()
                         && (key.name().equals("string") || key.name().equals("String")
-                                || key.name().equals("Symbol"));
+                                || key.name().equals("Symbol") || key.name().equals("Bytes"));
                 boolean primitiveValue = !value.inferArguments()
                         && value.arguments().isEmpty()
                         && java.util.Set.of(
-                                "int", "bool", "Bool", "string", "String", "Symbol")
+                                "int", "bool", "Bool", "string", "String", "Symbol", "Bytes")
                                 .contains(value.name());
                 if (!primitiveKey || !primitiveValue) {
                     throw error("unproved typed empty Map key/value domain " + witness);
