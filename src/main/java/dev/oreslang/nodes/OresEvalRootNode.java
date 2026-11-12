@@ -5974,6 +5974,10 @@ public final class OresEvalRootNode extends RootNode {
                         "async task argument count differs from its formal parameters");
             }
             ArrayList<Object> detached = new ArrayList<>(args.size());
+            // Connection is an affine socket capability, not a deep-copyable
+            // async value. Reject duplicate aliases in one invocation.
+            IdentityHashMap<dev.oreslang.runtime.AsyncNioTcp.Connection, Boolean>
+                    transferredConnections = new IdentityHashMap<>();
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
                 if (arg instanceof ChannelRuntime.Channel<?> channel) {
@@ -5994,6 +5998,24 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection connection) {
+                    // A completed NIO accept returns a uniquely owned socket.
+                    // Compiler-checked affine MOVE transfers ownership to the
+                    // asynchronous callee; never clone the native handle and
+                    // never admit it through an untyped/borrowed formal.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow() || formal.inferArguments()
+                            || !"NioConnection".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async socket argument " + (i + 1)
+                                        + " requires an owned NioConnection parameter");
+                    }
+                    if (transferredConnections.put(connection, Boolean.TRUE) != null) {
+                        throw new IllegalArgumentException(
+                                "same NioConnection cannot be transferred twice in one async call");
+                    }
+                    detached.add(connection);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }
