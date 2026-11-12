@@ -169,6 +169,22 @@ final class TemplateLiteralContractTest {
         assertDoesNotThrow(() -> new Lexer(opaque).scan());
     }
 
+    @Test
+    void nestedTemplateSubstitutionsShareOneScannerBudget() {
+        String first = "`" + "${\"x\"}".repeat(600) + "`";
+        String accepted = "`outer ${" + first + "} and ${" +
+                ("`" + "${\"y\"}".repeat(422) + "`") + "}`";
+        assertDoesNotThrow(() -> new Lexer(accepted).scan(),
+                "1024 nested substitutions including outer frames must be accepted");
+
+        String over = "`outer ${" + first + "} and ${" +
+                ("`" + "${\"y\"}".repeat(423) + "`") + "}`";
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new Lexer(over).scan());
+        assertTrue(failure.getMessage().contains("interpolation count limit exceeded"),
+                failure::getMessage);
+    }
+
     private static String run(String program) throws Exception {
         TypeChecker.check(Parser.parse(program));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
