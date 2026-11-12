@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Executed JVM actor-turn tests for the physical region substrate only.
+ * JVM actor-turn tests for the physical region substrate only.
  * These do not compile `state {}` or execute a source-language guest.
  */
 final class SealedActorStateRegionTest {
@@ -50,15 +50,19 @@ final class SealedActorStateRegionTest {
                             assertThrows(IllegalStateException.class,
                                     () -> escaped.get().readInt("count"),
                                     "callback-scoped state view must not survive a turn");
-                            assertEquals(1, region.read(view -> view.readInt("count")));
+                            assertEquals(1L, region.read(view -> view.readInt("count")).longValue());
                             assertTrue(region.read(view -> view.readBool("ready")));
                             assertThrows(SecurityException.class,
                                     () -> region.read(view -> {
                                         view.writeInt("count", 4);
                                         return null;
                                     }));
-                            region.close();
-                            assertTrue(region.isReclaimed());
+                            // STOP revokes capability now, but a behavior
+                            // callback cannot certify global task quiescence
+                            // or reclaim the region on its own.
+                            region.sealOnStop();
+                            assertFalse(region.isReclaimed(),
+                                    "STOP cannot reclaim before physical quiescence");
                             assertThrows(IllegalStateException.class,
                                     () -> region.read(view -> view.readInt("count")));
                             context.self().stop();
@@ -97,6 +101,11 @@ final class SealedActorStateRegionTest {
             assertTrue(completed.await(5, TimeUnit.SECONDS));
             assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
             assertNull(failure.get(), "owner state read/teardown failed");
+            assertFalse(state.get().isReclaimed(),
+                    "the test region was not registered as compiler codeActorState");
+            state.get().close();
+            assertTrue(state.get().isReclaimed(),
+                    "after actor quiescence, region storage must be reclaimed");
         }
     }
 
