@@ -165,6 +165,44 @@ class NativeHttpTest {
                 "listener reported drained while its accepted receive was still running: " + output);
     }
 
+    @org.junit.jupiter.api.RepeatedTest(8)
+    @org.junit.jupiter.api.Timeout(25)
+    void unpooledShutdownRequiresReceiveTerminationAndPhysicalExit() throws Exception {
+        // A fresh actor cannot retire its HTTP permit solely because DONE
+        // notified its subscribers. The host physical exit observation must
+        // follow the actor's last response and completed receive turn.
+        String output = run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "ok");
+                    stdio.println("unpooled-last-receive");
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  stdio.println(server.port);
+                  val request = await server.accept();
+                  val completed = request.completion;
+                  http.handler("Worker").dispatch(rt mut borrow request);
+                  await completed;
+                  await server.shutdown(0);
+                  stdio.println("unpooled-drain-complete");
+                  stdio.println(server.active);
+                  return;
+                }
+                """, port -> assertEquals(200,
+                        request(port, "GET", "/", "").statusCode()));
+        assertTrue(output.contains("unpooled-last-receive"), output);
+        assertTrue(output.contains("unpooled-drain-complete"), output);
+        assertTrue(output.indexOf("unpooled-last-receive")
+                        < output.indexOf("unpooled-drain-complete"),
+                "listener drained before last unpooled receive: " + output);
+        assertTrue(output.endsWith("0\n"), output);
+    }
+
     @org.junit.jupiter.api.RepeatedTest(16)
     @org.junit.jupiter.api.Timeout(12)
     void repeatedConcurrentForcedCloseClaimsExactlyOneOwner() throws Exception {
