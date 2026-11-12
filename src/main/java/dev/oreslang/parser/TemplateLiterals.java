@@ -18,11 +18,17 @@ final class TemplateLiterals {
 
     private TemplateLiterals() { }
 
-    static int closingBacktick(String source, int from) {
-        return closingBacktick(source, from, 0);
+    // One bounded budget shared by every nested backtick/interpolation frame.
+    // Lowering each nested token independently must not reset the lexer cap.
+    private static final class ScanBudget {
+        int substitutions;
     }
 
-    private static int closingBacktick(String source, int from, int nesting) {
+    static int closingBacktick(String source, int from) {
+        return closingBacktick(source, from, 0, new ScanBudget());
+    }
+
+    private static int closingBacktick(String source, int from, int nesting, ScanBudget budget) {
         requireDepth(nesting);
         int at = from;
         while (at < source.length()) {
@@ -31,7 +37,10 @@ final class TemplateLiterals {
                 if (at + 1 >= source.length()) throw syntax("unterminated template escape");
                 at += 2;
             } else if (c == '$' && at + 1 < source.length() && source.charAt(at + 1) == '{') {
-                at = interpolationEnd(source, at + 2, nesting + 1) + 1;
+                if (++budget.substitutions > MAX_INTERPOLATIONS) {
+                    throw syntax("template interpolation count limit exceeded (1024)");
+                }
+                at = interpolationEnd(source, at + 2, nesting + 1, budget) + 1;
             } else if (c == 0x60) {
                 return at;
             } else {
@@ -42,6 +51,10 @@ final class TemplateLiterals {
     }
 
     private static int interpolationEnd(String source, int from, int nesting) {
+        return interpolationEnd(source, from, nesting, new ScanBudget());
+    }
+
+    private static int interpolationEnd(String source, int from, int nesting, ScanBudget budget) {
         requireDepth(nesting);
         int braces = 1;
         int at = from;
@@ -50,7 +63,7 @@ final class TemplateLiterals {
             if (c == '"' || c == '\'') {
                 at = skipQuoted(source, at + 1, c);
             } else if (c == 0x60) {
-                at = closingBacktick(source, at + 1, nesting + 1) + 1;
+                at = closingBacktick(source, at + 1, nesting + 1, budget) + 1;
             } else if (c == '/' && at + 1 < source.length() && source.charAt(at + 1) == '/') {
                 at += 2;
                 while (at < source.length() && source.charAt(at) != '\n') at++;
