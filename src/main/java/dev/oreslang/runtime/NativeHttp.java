@@ -412,7 +412,8 @@ public final class NativeHttp implements AutoCloseable {
                     // lifecycle monitor. Schedule the release off that stack
                     // so HTTP completion callbacks cannot reenter the actor.
                     spawned.done().whenCompleteRuntime((ignored, failure) ->
-                            HttpResponseCleanupDispatcher.dispatch(io, state::release));
+                            HttpResponseCleanupDispatcher.dispatch(io,
+                                    () -> state.observeUnpooledCarrierExit(spawned)));
                     spawned.ready().whenCompleteRuntime((ignored, failure) -> {
                         long spawn;
                         long ready;
@@ -841,6 +842,10 @@ public final class NativeHttp implements AutoCloseable {
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
+        // A terminal actor Future can publish before the TurnExecutor has
+        // finished its last carrier exit and ThreadLocal cleanup. Only a
+        // host-side physical observation may set this receipt.
+        boolean unpooledPhysicalExitObserved;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
@@ -898,6 +903,43 @@ public final class NativeHttp implements AutoCloseable {
             }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
+        void observeUnpooledCarrierExit(ActorRuntime.ActorRef<?> destination) {
+            // Actor DONE notifications may run while ActorRuntime still holds
+            // its finalization lock. Never call this from the DONE subscriber
+            // or sample the runtime while holding State's ownership lock.
+            synchronized (this) {
+                if (poolWorker != null || actor != destination) return;
+                if (unpooledPhysicalExitObserved) {
+                    release();
+                    return;
+                }
+            }
+            final boolean exited;
+            try {
+                exited = destination.done().isDone()
+                        && context.actors().httpCarrierQuiescent(destination);
+            } catch (RuntimeException observationFailure) {
+                server.failDrain(observationFailure);
+                return;
+            }
+            if (!exited) {
+                try {
+                    timers.schedule(() -> observeUnpooledCarrierExit(destination),
+                            10L, TimeUnit.MILLISECONDS);
+                } catch (RejectedExecutionException unavailable) {
+                    // Never convert an unknown physical exit into successful
+                    // request retirement merely because the timer closed.
+                    server.failDrain(unavailable);
+                }
+                return;
+            }
+            synchronized (this) {
+                if (poolWorker != null || actor != destination) return;
+                unpooledPhysicalExitObserved = true;
+            }
+            release();
+        }
+
         void release() {
             // Fresh handlers hold admission through actor finalization. Explicit
             // pools bound worker count separately and release closed exchanges;
@@ -907,7 +949,7 @@ public final class NativeHttp implements AutoCloseable {
                 // closes. It does NOT certify the pooled worker's carrier exit;
                 // a separate listener shutdown barrier is still required.
                 boolean freshActorExitedOrPoolTracked = poolWorker != null
-                        || actor == null || actor.done().isDone();
+                        || actor == null || unpooledPhysicalExitObserved;
                 if (!canRetireRequest(transportClosed, dispatchInProgress,
                         freshActorExitedOrPoolTracked)) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
@@ -965,7 +1007,8 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) ->
+                        HttpResponseCleanupDispatcher.dispatch(io, () -> state.abort(500)));
                 return token;
             }
         }
