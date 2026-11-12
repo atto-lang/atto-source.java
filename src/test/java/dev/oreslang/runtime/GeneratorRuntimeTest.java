@@ -631,29 +631,42 @@ final class GeneratorRuntimeTest {
     void asyncCloseFutureWaitsForPhysicalProducerExit() throws Exception {
         CountDownLatch leaving = new CountDownLatch(1);
         CountDownLatch allowExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
         try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
             try { turn.run(); }
             finally {
-                leaving.countDown();
-                boolean interrupted = false;
-                for (;;) {
-                    try { allowExit.await(); break; }
-                    catch (InterruptedException ignored) { interrupted = true; }
+                // An async pull uses this context adapter too. Holding every
+                // turn's exit would block the *first* nextStep().get() before
+                // the test reaches closeAsync() or the latch release.
+                // Hold only the physical producer exit we are proving.
+                if (Thread.currentThread() == producerThread.get()) {
+                    leaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { allowExit.await(); break; }
+                        catch (InterruptedException ignored) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
                 }
-                if (interrupted) Thread.currentThread().interrupt();
             }
-        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1))) {
-            assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
-            OresFuture<Void> closing = generator.closeAsync();
+        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> {
+            producerThread.set(Thread.currentThread());
+            emitter.emit(1);
+        })) {
             try {
+                assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
+                OresFuture<Void> closing = generator.closeAsync();
                 assertTrue(leaving.await(2, TimeUnit.SECONDS));
                 assertFalse(closing.isDone(),
                         "AsyncIterator.close completed before physical producer exit");
+                allowExit.countDown();
+                closing.get(2, TimeUnit.SECONDS);
+                assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
             } finally {
+                // Never strand a task when an assertion fails before the
+                // intended release; try-with-resources closes afterwards.
                 allowExit.countDown();
             }
-            closing.get(2, TimeUnit.SECONDS);
-            assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         }
     }
 
