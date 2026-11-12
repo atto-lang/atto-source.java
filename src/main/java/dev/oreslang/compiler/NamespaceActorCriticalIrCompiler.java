@@ -267,12 +267,22 @@ final class NamespaceActorCriticalIrCompiler {
 
         List<CriticalPlan> calls = new ArrayList<>();
         List<Ast.Stmt> statements = receive.body();
-        if (statements.size() < 2 || statements.size() > 9
+        if (statements.size() < 2 || statements.size() > 10
                 || !(statements.getLast() instanceof Ast.ReturnStmt end)
                 || end.value() != null) {
-            throw reject("receive must call 1..8 own critical methods, then return");
+            throw reject("receive requires 1..8 critical calls, optional actor output, then return");
         }
-        for (int i = 0; i < statements.size() - 1; i++) {
+        // Only the exact source-owned `p.send(mail.value)` statement may
+        // emit a checked, immutable scalar output. It must follow all critical
+        // writes, so no actor state loan remains live while publishing.
+        int criticalEnd = statements.size() - 1;
+        boolean emitReceivedValue = criticalEnd > 1 && isCheckedOutput(
+                statements.get(criticalEnd - 1), receive.receiverName(), mail.name());
+        if (emitReceivedValue) criticalEnd--;
+        if (criticalEnd < 1 || criticalEnd > 8) {
+            throw reject("receive must call 1..8 checked critical methods before output");
+        }
+        for (int i = 0; i < criticalEnd; i++) {
             if (!(statements.get(i) instanceof Ast.ExprStmt exprStmt)
                     || !(exprStmt.expression() instanceof Ast.CallExpr call)
                     || call.origin() != Ast.CallOrigin.DIRECT
@@ -297,8 +307,27 @@ final class NamespaceActorCriticalIrCompiler {
                 image, program.namespace(), actor.name(),
                 slots, methods.keySet());
         return new Executable(image, actor.name(), initial,
-                Map.copyOf(slots), List.copyOf(calls), new ConcurrentHashMap<>(),
-                descriptor);
+                Map.copyOf(slots), List.copyOf(calls), emitReceivedValue,
+                new ConcurrentHashMap<>(), descriptor);
+    }
+
+    /** Exact native Atto actor output syntax, never a general method call. */
+    private static boolean isCheckedOutput(Ast.Stmt statement,
+            String receiver, String mailName) {
+        if (!(statement instanceof Ast.ExprStmt expression)
+                || !(expression.expression() instanceof Ast.CallExpr call)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
+                || call.arguments().size() != 1
+                || !(call.callee() instanceof Ast.MemberExpr target)
+                || !target.member().equals("send")
+                || !isName(target.receiver(), receiver)
+                || !(call.arguments().getFirst() instanceof Ast.MemberExpr message)
+                || !message.member().equals("value")
+                || !isName(message.receiver(), mailName)) {
+            return false;
+        }
+        return true;
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -411,7 +440,7 @@ final class NamespaceActorCriticalIrCompiler {
 
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
             String actorName, long[] initial, Map<String, Integer> slots,
-            List<CriticalPlan> calls,
+            List<CriticalPlan> calls, boolean emitReceivedValue,
             ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts,
             VerifiedActorDescriptor descriptor)
             implements ActorRuntime.ActorCodeExecutor {
@@ -471,6 +500,11 @@ final class NamespaceActorCriticalIrCompiler {
                 throw new SecurityException("mail must be a current owned ActorMail<int>");
             }
             for (CriticalPlan plan : calls) owned.apply(plan, input, context);
+            // This uses ActorRuntime's bounded, data-only, runtime-minted
+            // output channel. On full/closed output the actor turn fails
+            // rather than blocking its carrier or fabricating success.
+            // No mutable state reference or guest-held sender crosses out.
+            if (emitReceivedValue) context.runtime().emitCurrentActorOutput(input);
             StateReceipt previous = receipts.get(owned.actor.id());
             if (previous == null
                     || previous.generation() != owned.actor.generation()) {
