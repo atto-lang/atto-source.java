@@ -9279,9 +9279,21 @@ public final class ActorRuntime implements AutoCloseable {
                 physicalRetirementComplete = false;
                 recordFinalizationFailure(failure);
             }
-            // Every physical actor heap/shard/registry retirement above must
-            // complete before another generation can claim this partition.
-            // Incomplete/fatal cleanup never silently releases authority.
+            // Parent registry retirement is part of physical cleanup. A
+            // failure here must retain the unique storage-actor lifetime
+            // claim; otherwise a replacement can overlap incomplete cleanup.
+            if (parent != null) {
+                try { parent.childFinalized(this); }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) {
+                    physicalRetirementComplete = false;
+                    recordFinalizationFailure(failure);
+                }
+            }
+            // Release the unforgeable binding ONLY after every relevant
+            // physical cleanup and parent-registry operation has succeeded.
+            // If any step failed, preserve the old generation's claim so
+            // activate() refuses an unsafe successor indefinitely.
             if (storageBinding != null) {
                 if (physicalRetirementComplete) {
                     storageBinding.lifetime().close();
@@ -9290,14 +9302,6 @@ public final class ActorRuntime implements AutoCloseable {
                     recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
                             "supervised actor physical retirement incomplete; partition quarantined"));
                 }
-            }
-            if (parent != null) {
-                try { parent.childFinalized(this); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) {
-                physicalRetirementComplete = false;
-                recordFinalizationFailure(failure);
-            }
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
