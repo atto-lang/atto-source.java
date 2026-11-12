@@ -249,6 +249,18 @@ final class ActorTypedMethodIRTest {
     }
 
     @Test
+    void unloweredPrivateLifecycleHookCannotDisappearFromTypedActorPlan()
+            throws IOException {
+        var build = packageBuild();
+        write("src/foo/hook.atto", NS
+                + "mtd (Foo f) on_start(): void { return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                build::typecheckDeclaredActorMethods);
+        assertTrue(error.getMessage().contains("ACTOR_TYPED_IR_CONTROL_UNSUPPORTED"),
+                error.getMessage());
+    }
+
+    @Test
     void invalidPrehirBodyRejectsBeforeCodegenGate() throws IOException {
         var build = packageBuild();
         write("src/foo/method.atto", method("return raw_global;"));
