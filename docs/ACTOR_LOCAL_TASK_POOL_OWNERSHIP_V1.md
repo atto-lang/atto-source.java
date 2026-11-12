@@ -34,7 +34,9 @@ A `task { ... }` started from another **tracked** actor Task inherits the
 currently authenticated `TaskCancellation` token. The parent therefore
 cancels descendants with the same reason, and its physical `getDone()`
 barrier remains pending until descendants physically retire, even when the
-parent's result Future is already terminal. The parent token is not
+parent's result Future is already terminal. A parent with a settled result
+can still request cancellation of physically live descendants; the original
+terminal result and the eventual parent success/failure outcome remain immutable. The parent token is not
 exposed to guest code; ownership is authenticated against the logical
 `OresScheduler.currentTaskDomain()` on every admission.
 
@@ -47,7 +49,8 @@ seal and physical actor cleanup. This does **not** enable an actor
 
 `ActorNestedTaskLifetimeTest` specifically tests parent-result vs
 nested-child physical retirement, parent cancellation cascading to a
-suspended child, actor STOP sealing admission before reporting DONE,
+suspended child, post-result cancellation of still-live child tasks without
+rewriting parent results, actor STOP sealing admission before reporting DONE,
 and late foreign Future completions not resurrecting guest turns.
 No test performs a blocking join on an actor carrier.
 
@@ -75,3 +78,19 @@ to claim guest-source support or five-backend parity. This Java change does not 
 scope { }` remains deliberately rejected pending a separately proved
 structured-lifetime contract; actor-local `task { }` is supported only for
 compiler-checked detached, Send-safe captures.
+
+## Private-source CI destination policy
+
+The repository policy in `docs/security/CI_PRIVATE_SOURCE_MIRRORING.md`
+is fail-closed: a target must be **private**, independently approved in
+`.github/private-ci-approved-repositories.txt`, pinned in
+`.github/private-ci-carrier-contracts.json` with its exact executable
+workflow and test plan, and the protected source-main governance must pass.
+An arbitrary funded GitHub organization is **not** sufficient approval.
+A public destination is prohibited even for dangling, unreferenced Git blobs.
+
+The current carrier contracts pin historical PRs #1482 and #616 only; neither
+authorizes PR #2999. Do not copy this private source tree into an unapproved
+destination. GitHub jobs with `steps=null` are NOT_EXECUTED, not a passing
+compiler or guest receipt. The actor task PR remains draft until a valid
+executed exact-head source test and independent approval exist.
