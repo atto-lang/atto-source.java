@@ -9905,13 +9905,13 @@ public final class ActorRuntime implements AutoCloseable {
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
-            // Fencing a sealed region prevents new critical loans and makes
-            // existing views unusable immediately at STOP. The active loan
-            // remains physically pinned until its callback finally releases,
-            // and the source scheduler must quiesce before final retirement.
+            // STOP fences new critical loans and existing views, but cannot
+            // free backing scalars yet, even if zero loans are currently
+            // active. The source scheduler must physically quiesce first.
+            // Finalization calls close() after cleanup and loan release.
             // Never take the region/loan monitor under lifecycleLock.
             if (sealedRegionToFence != null) {
-                try { sealedRegionToFence.close(); }
+                try { sealedRegionToFence.sealOnStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
