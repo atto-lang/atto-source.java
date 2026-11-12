@@ -9221,47 +9221,83 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             finalized = true;
+            // A failed physical cleanup or registry retirement must quarantine
+            // partition authority. Neither STOP nor logical finalization alone
+            // proves it is safe to admit a replacement incarnation.
+            boolean physicalRetirementComplete = true;
             sourceScheduler = null;
             sourceTaskMailbox.close();
             try { drainMailboxReservations(); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             staticSelectCursors.clear();
             codeActorState = null;
             try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             for (ActorShardLease lease : List.copyOf(shardLeases)) {
                 try { lease.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             shardLeases.clear();
             for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
                 try { snapshot.revokeFromActorStop(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             shardSnapshotLeases.clear();
             if (memorySlice != null) {
                 try { memorySlice.close(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             try { actorExitHook.accept(executionDomain); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             try { unregisterActor(this); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) { recordFinalizationFailure(failure); }
+            catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             // Every physical actor heap/shard/registry retirement above must
             // complete before another generation can claim this partition.
             // Incomplete/fatal cleanup never silently releases authority.
-            if (storageBinding != null) storageBinding.lifetime().close();
+            if (storageBinding != null) {
+                if (physicalRetirementComplete) {
+                    storageBinding.lifetime().close();
+                } else {
+                    sourceStopCleanupAborted = true;
+                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                            "supervised actor physical retirement incomplete; partition quarantined"));
+                }
+            }
             if (parent != null) {
                 try { parent.childFinalized(this); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
+                catch (Throwable failure) {
+                physicalRetirementComplete = false;
+                recordFinalizationFailure(failure);
+            }
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
