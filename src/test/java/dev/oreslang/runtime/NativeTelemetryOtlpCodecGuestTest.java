@@ -86,7 +86,7 @@ final class NativeTelemetryOtlpCodecGuestTest {
                       stdio.println(telemetry.is_exact_lower_hex(
                         "ABCDEF0123456789", 16));
                       stdio.println(telemetry.is_exact_lower_hex(
-                        "abcdef\"malicious", 16));
+                        "abcdefXmalicious", 16));
                       stdio.println(telemetry.is_exact_lower_hex("", 16));
                       return;
                     }
