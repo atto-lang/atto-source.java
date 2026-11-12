@@ -23,6 +23,7 @@ import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.OresKeyedMap;
+import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.TaskScope;
@@ -8870,18 +8871,33 @@ public final class OresEvalRootNode extends RootNode {
                                 (OresKeyedMap<Object, Object>) guestMap;
                         // Runtime checks key/value domain, quota, and nested
                         // mutation before changing the canonical map.
-                        typed.put(args.get(0), args.get(1));
+                        long started = CorePerf.start();
+                        try {
+                            typed.put(args.get(0), args.get(1));
+                        } finally {
+                            CorePerf.end(CorePerf.MAP_SET, started);
+                        }
                         return null;
                     };
                     case "delete" -> (Invokable) args -> {
                         requireOne(args, "Map.delete");
-                        return guestMap.take(args.getFirst()).present();
+                        long started = CorePerf.start();
+                        try {
+                            return guestMap.take(args.getFirst()).present();
+                        } finally {
+                            CorePerf.end(CorePerf.MAP_DELETE, started);
+                        }
                     };
                     case "get_optional" -> (Invokable) args -> {
                         requireOne(args, "Map.get_optional");
                         // Atomic lookup: no contains/get interleaving on shared maps.
-                        OresKeyedMap.Lookup<?> found = guestMap.lookup(args.getFirst());
-                        return new OptionValue(found.present(), found.value());
+                        long started = CorePerf.start();
+                        try {
+                            OresKeyedMap.Lookup<?> found = guestMap.lookup(args.getFirst());
+                            return new OptionValue(found.present(), found.value());
+                        } finally {
+                            CorePerf.end(CorePerf.MAP_GET_OPTIONAL, started);
+                        }
                     };
                     default -> throw new IllegalArgumentException(
                             "guest Map member '" + name
