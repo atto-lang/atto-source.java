@@ -138,7 +138,7 @@ final class ActorOutputReplyDispatcherTest {
                 var pending = dispatcher.tryBegin(session).orElseThrow();
                 actor.send(1);
                 assertThrows(java.util.concurrent.CompletionException.class,
-                        () -> pending.response().get(5, TimeUnit.SECONDS).toString());
+                        pending.response()::join);
                 assertTrue(dispatcher.isClosed());
                 assertTrue(dispatcher.failure().isPresent());
                 assertEquals(0, dispatcher.pendingCount());
