@@ -121,8 +121,8 @@ final class NativeTraceStdlibTest {
             ByteArrayOutputStream stderr = new ByteArrayOutputStream();
             LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), stdout, stderr);
-            assertEquals("false\\n0\\ntrue\\ntrue\\nfalse\\n2\\n1\\n201\\n302\\nfalse\\n1",
-                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+            assertEquals("false\n0\ntrue\ntrue\nfalse\n2\n1\n201\n302\nfalse\n1",
+                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> stderr.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);
