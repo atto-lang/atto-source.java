@@ -513,6 +513,16 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // A critical out-of-line actor method is distinct from runtime-only
+        // external ingress. The AST retains the critical modifier so the
+        // compiler cannot infer mutable authority from method spelling.
+        if (isContextualIdentifier("critical")) {
+            advance();
+            if (!isExternalActorMethodHead()) {
+                throw error(peek(), "critical must be followed by 'mtd (Actor receiver) name(...)'");
+            }
+            return parseExternalActorMethod(annotations, modifiers, false, true);
+        }
         // Runtime-only actor hooks use an explicit contextual ingress marker.
         // This marker is separate from public method visibility and does not
         // grant a guest callable or executable actor permission.
@@ -719,6 +729,12 @@ public final class Parser {
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
             List<Ast.Annotation> annotations, Modifiers modifiers, boolean runtimeIngress) {
+        return parseExternalActorMethod(annotations, modifiers, runtimeIngress, false);
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers,
+            boolean runtimeIngress, boolean criticalMethod) {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
@@ -760,7 +776,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body, runtimeIngress);
+                modifiers.visibility, parameters, returns, body, runtimeIngress, criticalMethod);
     }
 
     private Ast.ClassDecl parseClass(
