@@ -51,39 +51,33 @@ public final class GeneratorRuntime {
 
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
         private final Engine<T> engine;
+        // Both the direct nextStep() API and the Iterator view consume ONE
+        // activation. A hasNext() prefetch must never be skipped by a direct
+        // pull, or an item can be reordered/lost across public read paths.
+        // The CAS gate covers both buffer access and the engine's blocking
+        // turn; overlapping calls fail rather than parking another consumer.
         private final AtomicBoolean pullInFlight = new AtomicBoolean();
+        private Step<T> buffered;
         private final Iterator<T> iteratorView;
 
         private Generator(Engine<T> engine) {
             this.engine = engine;
             this.iteratorView = new Iterator<>() {
-                private Step<T> buffered;
-
                 @Override
                 public synchronized boolean hasNext() {
-                    if (Generator.this.engine.isClosed()) {
-                        buffered = null;
-                        return false;
-                    }
-                    if (buffered == null) buffered = nextStep();
-                    if (Generator.this.engine.isClosed()) {
-                        buffered = null;
-                        return false;
-                    }
-                    return !buffered.done();
+                    return !readStep(true).done();
                 }
 
                 @Override
                 public synchronized T next() {
-                    if (!hasNext()) throw new NoSuchElementException();
-                    T value = buffered.value();
-                    buffered = null;
-                    return value;
+                    Step<T> step = readStep(false);
+                    if (step.done()) throw new NoSuchElementException();
+                    return step.value();
                 }
             };
         }
 
-        public Step<T> nextStep() {
+        private Step<T> readStep(boolean peek) {
             if (ActorRuntime.inActorExecution()) {
                 throw new IllegalStateException(
                         "synchronous generator iteration cannot park an actor carrier; "
@@ -94,10 +88,27 @@ public final class GeneratorRuntime {
                         "concurrent Iterator.next() is not permitted; finish the outstanding pull first");
             }
             try {
-                return engine.next();
+                if (engine.isClosed()) {
+                    buffered = null;
+                    return Step.doneStep();
+                }
+                if (buffered == null) buffered = engine.next();
+                // Close can invalidate a prefetched item while another thread
+                // is holding this read gate. Never deliver it after shutdown.
+                if (engine.isClosed()) {
+                    buffered = null;
+                    return Step.doneStep();
+                }
+                Step<T> result = buffered;
+                if (!peek) buffered = null;
+                return result;
             } finally {
                 pullInFlight.set(false);
             }
+        }
+
+        public Step<T> nextStep() {
+            return readStep(false);
         }
 
         @Override
