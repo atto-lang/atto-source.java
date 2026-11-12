@@ -88,4 +88,44 @@ final class NativeTraceStdlibTest {
             Files.deleteIfExists(entry);
         }
     }
+
+    @Test
+    void portableSpanBoundariesAreBoundedAndDisabledIsInertInRealGuest() throws Exception {
+        Path entry = Files.createTempFile("atto-span-instrumentation-", ".atto");
+        try {
+            Files.writeString(entry, """
+                    import module Trace from "ores.std/trace";
+                    pub routine main(): void {
+                      val buffer = Trace.buffer(2);
+                      val int off = Trace.begin_span(false);
+                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_function_call(), off));
+                      stdio.println(buffer.count());
+
+                      val int first = Trace.begin_span(true);
+                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_http_server(), first));
+                      val int second = Trace.begin_span(true);
+                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_tcp_write(), second));
+                      val int third = Trace.begin_span(true);
+                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_actor_send(), third));
+
+                      stdio.println(buffer.count());
+                      stdio.println(buffer.dropped_count());
+                      stdio.println(buffer.at(0).phase_id);
+                      stdio.println(buffer.at(1).phase_id);
+                      stdio.println(Trace.finish_span(buffer, -1, 0, third));
+                      stdio.println(buffer.dropped_count());
+                      return;
+                    }
+                    """);
+            ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+            ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+            LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(), stdout, stderr);
+            assertEquals("false\\n0\\ntrue\\ntrue\\nfalse\\n2\\n1\\n201\\n302\\nfalse\\n1",
+                    stdout.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+                    () -> stderr.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
 }
