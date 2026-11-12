@@ -10,6 +10,37 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CorePerfTest {
+    @Test void actorFutureAndMapTracePhasesExportOnlyFixedNamesAndDurations() {
+        int[] phases = {
+                CorePerf.ACTOR_USER_MAIL_QUEUE,
+                CorePerf.ACTOR_USER_MAIL_DISPATCH,
+                CorePerf.SCHEDULER_TURN_QUEUE,
+                CorePerf.FUTURE_WAITER_NOTIFY,
+                CorePerf.MAP_SET,
+                CorePerf.MAP_GET_OPTIONAL,
+                CorePerf.MAP_DELETE
+        };
+        var recorder = new CorePerf.Recorder(phases.length);
+        long baseline = System.nanoTime();
+        for (int i = 0; i < phases.length; i++) {
+            assertTrue(CorePerf.knownPhase(phases[i]));
+            recorder.record(phases[i], baseline + i, baseline + i + 11);
+        }
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String json = bytes.toString(StandardCharsets.UTF_8);
+        for (String name : new String[]{
+                "actor.user_mail.queue", "actor.user_mail.dispatch",
+                "scheduler.turn.queue", "future.waiter.notify",
+                "map.set", "map.get_optional", "map.delete"}) {
+            assertTrue(json.contains("\"phase\":\"" + name + "\""), name);
+        }
+        assertFalse(json.contains("redis_key"));
+        assertFalse(json.contains("payload"));
+        assertEquals(phases.length, json.lines()
+                .filter(line -> line.contains("\"kind\":\"phase\"")).count());
+    }
+
     @Test void boundedRecorderRetainsColdEventsAndExportsNoPayloads() {
         var recorder = new CorePerf.Recorder(2);
         long first = System.nanoTime();
