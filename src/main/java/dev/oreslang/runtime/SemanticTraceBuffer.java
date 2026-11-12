@@ -44,10 +44,30 @@ public final class SemanticTraceBuffer {
             Objects.requireNonNull(kind, "kind");
             if (operationId <= 0 || startUnixNanos <= 0
                     || endUnixNanos < startUnixNanos
-                    || httpStatus < 0 || httpStatus > 599) {
+                    || httpStatus < 0 || (httpStatus != 0 && httpStatus < 100)
+                    || httpStatus > 599
+                    || !validParent(parentSpanId, context.spanId())) {
                 throw new IllegalArgumentException("invalid semantic span");
             }
         }
+    }
+
+    /** Enforce the same nonzero 64-bit lowercase W3C span-ID discipline
+     * at the compiler/runtime staging boundary as at the wire boundary.
+     * Only the empty string denotes a genuine root; it is NOT an all-zero ID.
+     */
+    private static boolean validParent(String parent, String currentSpanId) {
+        if (parent.isEmpty()) return true;
+        if (parent.length() != 16 || parent.equals(currentSpanId)) return false;
+        boolean nonzero = false;
+        for (int i = 0; i < parent.length(); i++) {
+            char ch = parent.charAt(i);
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+                return false;
+            }
+            if (ch != '0') nonzero = true;
+        }
+        return nonzero;
     }
 
     public static final class Scope {
@@ -113,7 +133,8 @@ public final class SemanticTraceBuffer {
     public Scope begin(TraceParent current, String parentSpanId,
                        int operationId, Kind kind) {
         if (!gate.enabled() || current == null || !current.sampled()) return null;
-        if (operationId <= 0 || kind == null || parentSpanId == null) {
+        if (operationId <= 0 || kind == null || parentSpanId == null
+                || !validParent(parentSpanId, current.spanId())) {
             throw new IllegalArgumentException("invalid semantic span admission");
         }
         return new Scope(this, current, parentSpanId, operationId, kind);
