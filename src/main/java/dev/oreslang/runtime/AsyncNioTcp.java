@@ -144,6 +144,138 @@ public final class AsyncNioTcp {
             this.channel = channel;
         }
 
+        /**
+         * Binary NIO read directly into a bounded byte array, exposing exactly
+         * one owning, immutable Bytes handle. Clean EOF returns empty Bytes;
+         * zero-byte kernel completions rearm until nonzero bytes or EOF.
+         */
+        public OresFuture<OresBytes> readOwnedBytesAsync(int maxBytes) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.read_owned_bytes_async");
+            if (!readerMode.compareAndSet(0, 1) && readerMode.get() != 1) {
+                throw new IllegalStateException("cannot mix framed RESP2 and raw reads");
+            }
+            if (maxBytes < 1 || maxBytes > MAX_BYTES) {
+                throw new IllegalArgumentException("read owned bytes must be 1..1048576");
+            }
+            if (closed.get() || !reading.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException("closed socket or concurrent owned read"));
+            }
+            byte[] owned = new byte[maxBytes];
+            ByteBuffer buffer = ByteBuffer.wrap(owned);
+            return OresFuture.fromCallback(callback -> {
+                CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
+                    @Override public void completed(Integer count, Void ignored) {
+                        if (closed.get()) {
+                            reading.set(false);
+                            callback.reject(new IOException("socket retired during owned read"));
+                            return;
+                        }
+                        if (count == null || count < 0) {
+                            reading.set(false);
+                            callback.resolve(OresBytes.fromDetached(new byte[0]));
+                            return;
+                        }
+                        if (count == 0) {
+                            try {
+                                channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, this);
+                            } catch (RuntimeException failure) {
+                                reading.set(false);
+                                callback.reject(failure);
+                            }
+                            return;
+                        }
+                        reading.set(false);
+                        // Avoid a second payload copy for full-capacity completions.
+                        byte[] result = count == owned.length
+                                ? owned : java.util.Arrays.copyOf(owned, count);
+                        OresBytes value = OresBytes.fromDetached(result);
+                        if (callback.isDone()) value.close();
+                        else callback.resolve(value);
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        reading.set(false);
+                        callback.reject(failure);
+                    }
+                };
+                try {
+                    channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
+                } catch (RuntimeException failure) {
+                    reading.set(false);
+                    callback.reject(failure);
+                }
+            }, this::closeQuietly);
+        }
+
+        /**
+         * One read lease pins the immutable backing array during an async
+         * kernel write. Source Bytes may be taken/retired meanwhile; release
+         * happens exactly once on completion, failure or Future cancellation.
+         */
+        public OresFuture<Void> writeOwnedBytesAsync(OresBytes owned) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_owned_bytes_async");
+            Objects.requireNonNull(owned, "owned Bytes");
+            if (closed.get() || !writing.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException("closed socket or concurrent owned write"));
+            }
+            OresBytes.ReadLease lease;
+            try {
+                lease = owned.readLease();
+            } catch (RuntimeException failure) {
+                writing.set(false);
+                return OresFuture.failed(failure);
+            }
+            ByteBuffer buffer = lease.buffer();
+            return OresFuture.fromCallback(callback -> {
+                CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
+                    @Override public void completed(Integer count, Void ignored) {
+                        if (closed.get() || count == null || count < 0) {
+                            writing.set(false);
+                            lease.close();
+                            callback.reject(new IOException("socket retired during owned write"));
+                            return;
+                        }
+                        if (buffer.hasRemaining()) {
+                            try {
+                                channel.write(buffer, IO_TIMEOUT_SECONDS,
+                                        TimeUnit.SECONDS, null, this);
+                            } catch (RuntimeException failure) {
+                                writing.set(false);
+                                lease.close();
+                                callback.reject(failure);
+                            }
+                        } else {
+                            writing.set(false);
+                            lease.close();
+                            callback.resolve(null);
+                        }
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        writing.set(false);
+                        lease.close();
+                        callback.reject(failure);
+                    }
+                };
+                try {
+                    if (!buffer.hasRemaining()) {
+                        writing.set(false);
+                        lease.close();
+                        callback.resolve(null);
+                    } else {
+                        channel.write(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
+                    }
+                } catch (RuntimeException failure) {
+                    writing.set(false);
+                    lease.close();
+                    callback.reject(failure);
+                }
+            }, () -> {
+                lease.close();
+                closeQuietly();
+            });
+        }
+
         public OresFuture<List<Integer>> readBytesAsync(int maxBytes) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "socket.read_bytes_async");
