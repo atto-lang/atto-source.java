@@ -132,9 +132,10 @@ public final class ActorTaggedReplyDispatcher implements AutoCloseable {
                     next = null;
                 }
                 if (next != null) {
-                    inFlightRead.set(next);
-                    next.whenCompleteRuntime((step, error) -> {
-                        inFlightRead.compareAndSet(next, null);
+                    final var activeRead = next;
+                    inFlightRead.set(activeRead);
+                    activeRead.whenCompleteRuntime((step, error) -> {
+                        inFlightRead.compareAndSet(activeRead, null);
                         waiting.set(false);
                         if (!closed.get()) {
                             if (error != null) {
