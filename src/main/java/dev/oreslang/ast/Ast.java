@@ -734,7 +734,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, TaskScopeStmt, UsingBorrowStmt, UsingTelemetrySpanStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
 
     /** Compile-time declaration within a lexical callable/block scope.
@@ -870,6 +870,28 @@ public final class Ast {
         public UsingBorrowStmt {
             if (resource == null || binding == null || binding.isBlank() || body == null) {
                 throw new IllegalArgumentException("using borrowed scope needs resource, alias and body");
+            }
+            body = List.copyOf(body);
+        }
+    }
+    /**
+     * Compiler-recognized lexical telemetry span scope:
+     * using telemetry.span(...) as span { ... }
+     *
+     * This is NOT a transport/state loan. A tracing span may remain logically
+     * alive across suspension, but the eventual runtime must bind it to the
+     * owning actor execution and continuation, not to a carrier thread.
+     *
+     * Parsing alone never grants execution authority. Type checking must
+     * continue to reject the form until safe compiler-owned cleanup and
+     * continuation lowering are implemented.
+     */
+    public record UsingTelemetrySpanStmt(Expr resource, String binding, List<Stmt> body)
+            implements Stmt {
+        public UsingTelemetrySpanStmt {
+            if (resource == null || binding == null || binding.isBlank() || "_".equals(binding)
+                    || body == null) {
+                throw new IllegalArgumentException("using telemetry span needs a resource, alias and body");
             }
             body = List.copyOf(body);
         }
@@ -1222,6 +1244,9 @@ public final class Ast {
         }
         if (statement instanceof UsingBorrowStmt loan) {
             return loan.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof UsingTelemetrySpanStmt span) {
+            return span.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
         }
         if (statement instanceof IfStmt conditional) {
             return conditional.branches().stream()
