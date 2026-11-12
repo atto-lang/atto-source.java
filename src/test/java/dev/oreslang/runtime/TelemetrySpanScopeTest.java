@@ -110,6 +110,97 @@ final class TelemetrySpanScopeTest {
     }
 
     @Test
+    void rejectsHostileNumbersAndNonfiniteMetricsWithoutInvokingToString() {
+        TelemetrySpanScope.enableExistingSites(100, 10_000, "harden.");
+        TraceContext previous = TraceContext.install(null);
+        try {
+            java.util.concurrent.atomic.AtomicInteger maliciousToString =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            Number hostile = new Number() {
+                @Override public int intValue() { return 7; }
+                @Override public long longValue() { return 7L; }
+                @Override public float floatValue() { return 7.0f; }
+                @Override public double doubleValue() { return 7.0; }
+                @Override public String toString() {
+                    maliciousToString.incrementAndGet();
+                    throw new AssertionError("untrusted toString executed on actor carrier");
+                }
+            };
+            try (TelemetrySpanScope scope = TelemetrySpanScope.open("harden.checkout")) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> scope.attribute("value", hostile));
+                assertEquals(0, maliciousToString.get());
+                assertThrows(IllegalArgumentException.class,
+                        () -> scope.attribute("value", Double.NaN));
+                assertThrows(IllegalArgumentException.class,
+                        () -> scope.attribute("value", Float.POSITIVE_INFINITY));
+                assertThrows(SecurityException.class,
+                        () -> scope.attribute("request.api_key", "sensitive"));
+                assertThrows(SecurityException.class,
+                        () -> scope.attribute("http.headers", "sensitive"));
+                scope.attribute("attempt", 1L);
+                assertEquals("1", scope.attributesSnapshot().get("attempt"));
+            }
+        } finally {
+            TraceContext.install(previous);
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
+    void diagnosticsAreOwnedAndClosedDurationsStopIncreasing() throws Exception {
+        TelemetrySpanScope.enableExistingSites(100, 10_000, "harden.");
+        TraceContext previous = TraceContext.install(null);
+        try {
+            TelemetrySpanScope scope = TelemetrySpanScope.open("harden.duration");
+            try {
+                scope.attribute("attempt", 1);
+                java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                Thread foreign = Thread.ofPlatform().start(() -> {
+                    try {
+                        assertThrows(IllegalStateException.class, scope::attributesSnapshot);
+                        assertThrows(IllegalStateException.class, scope::elapsedNanos);
+                    } catch (Throwable t) {
+                        failure.set(t);
+                    }
+                });
+                foreign.join(5_000);
+                assertFalse(foreign.isAlive(), "foreign inspection thread must terminate");
+                assertNull(failure.get(), "foreign task must not inspect a live scope");
+            } finally {
+                scope.close();
+            }
+            long frozen = scope.elapsedNanos();
+            Thread.sleep(5);
+            assertEquals(frozen, scope.elapsedNanos(),
+                    "duration must freeze at lexical span close");
+            assertEquals("1", scope.attributesSnapshot().get("attempt"));
+        } finally {
+            TraceContext.install(previous);
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
+    void rejectsUnsafeSpanNamesEvenWhenDisabled() {
+        TelemetrySpanScope.disableExistingSites();
+        assertThrows(IllegalArgumentException.class,
+                () -> TelemetrySpanScope.open("checkout\\nforged"));
+        assertThrows(IllegalArgumentException.class,
+                () -> TelemetrySpanScope.open("checkout\\u202eforged"));
+        assertThrows(IllegalArgumentException.class,
+                () -> TelemetrySpanScope.open("checkout\\ud800"));
+        assertThrows(IllegalArgumentException.class,
+                () -> TelemetrySpanScope.enableExistingSites(100, 1000, "unsafe\\n"));
+        try (TelemetrySpanScope scope = TelemetrySpanScope.open("safe.checkout")) {
+            assertFalse(scope.recording());
+        } finally {
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
     void inheritedContextNeverGrantsChildTaskParentSpanAuthority() throws Exception {
         TelemetrySpanScope.enableExistingSites(100, 10_000, "test.");
         try (OresScheduler scheduler = new OresScheduler(1)) {
