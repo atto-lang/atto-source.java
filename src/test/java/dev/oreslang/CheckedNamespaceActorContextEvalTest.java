@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.CheckedNamespaceActorGuestProof;
+import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -42,6 +43,35 @@ final class CheckedNamespaceActorContextEvalTest {
                 assertEquals(1000L,
                         context.eval(guestSource(program, "guest-critical-ir.atto")).asLong());
             }
+        }
+    }
+
+    @Test
+    void previouslyAdmittedActorSourceCannotBeReexecutedWithoutLease() throws Exception {
+        String program = source();
+        Source guest = guestSource(program, "one-shot-critical-ir.atto");
+        try (var proof = CheckedNamespaceActorGuestProof.compile(
+                     "one-shot-critical-ir.atto", program);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).build()) {
+            try (var lease = OresLanguage.openCheckedActorGuest(proof)) {
+                assertEquals(1000L, context.eval(guest).asLong());
+            }
+            assertThrows(RuntimeException.class, () -> context.eval(guest),
+                    "one previously approved Context.eval cannot mint another actor run");
+        }
+    }
+
+    @Test
+    void legacyPrecheckedScopeCannotBeNestedInsideActorGuestScope() throws Exception {
+        String program = source();
+        try (var proof = CheckedNamespaceActorGuestProof.compile(
+                "mixed-lease-critical-ir.atto", program);
+             var lease = OresLanguage.openCheckedActorGuest(proof)) {
+            String harmless = "pub routine main(): void { return; }";
+            assertThrows(IllegalStateException.class,
+                    () -> OresLanguage.openPrecheckedProgram(
+                            "mixed-lease-legacy.atto", harmless, Parser.parse(harmless)));
         }
     }
 
