@@ -19,6 +19,7 @@ final class ActorGeneratorPoolAdmissionTest {
         assertTimeoutPreemptively(Duration.ofSeconds(15), () -> {
             AtomicInteger rootProducerRuns = new AtomicInteger();
             AtomicInteger actorProducerRuns = new AtomicInteger();
+            AtomicInteger actorSyncProducerRuns = new AtomicInteger();
             AtomicReference<Throwable> actorFailure = new AtomicReference<>();
 
             try (AsyncRuntime root = new AsyncRuntime();
@@ -40,6 +41,15 @@ final class ActorGeneratorPoolAdmissionTest {
                                                         emitter.emit(99);
                                                     }));
                                     assertTrue(denied.getMessage()
+                                            .contains("ACTOR_GENERATOR_UNSUPPORTED"));
+
+                                    var syncDenied = assertThrows(IllegalStateException.class,
+                                            () -> GeneratorRuntime.<Integer>generator(
+                                                    root, emitter -> {
+                                                        actorSyncProducerRuns.incrementAndGet();
+                                                        emitter.emit(98);
+                                                    }));
+                                    assertTrue(syncDenied.getMessage()
                                             .contains("ACTOR_GENERATOR_UNSUPPORTED"));
 
                                     // A preconstructed root iterator cannot
@@ -68,6 +78,7 @@ final class ActorGeneratorPoolAdmissionTest {
                             "actor-root async generator escape must reject: "
                                     + actorFailure.get());
                     assertEquals(0, actorProducerRuns.get());
+                    assertEquals(0, actorSyncProducerRuns.get());
                     assertEquals(0, rootProducerRuns.get(),
                             "actor pull must not have started process/root producer");
 
