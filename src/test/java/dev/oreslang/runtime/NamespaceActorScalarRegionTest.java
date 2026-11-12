@@ -63,7 +63,7 @@ final class NamespaceActorScalarRegionTest {
                 ActorRuntime.ActorContext<Object> context) {
             if (!"Counter".equals(actorName)
                     || !(state instanceof Owned owned)
-                    || context.currentMail().orElse(null) != mail
+                    || !mail.equals(context.currentMail().orElse(null))
                     || !mail.recipient().equals(context.self().id())) {
                 throw new SecurityException("forged actor mail or owner");
             }
@@ -122,8 +122,8 @@ final class NamespaceActorScalarRegionTest {
             b.send(-1L);
             b.drain().get(3, TimeUnit.SECONDS);
 
-            assertEquals(2L, executor.observations.get(a.id()));
-            assertEquals(1L, executor.observations.get(b.id()));
+            assertEquals(Long.valueOf(2L), executor.observations.get(a.id()));
+            assertEquals(Long.valueOf(1L), executor.observations.get(b.id()));
             assertEquals(1, executor.rejectedCrossActorReads.get());
             assertTrue(a.failure().isEmpty());
             assertTrue(b.failure().isEmpty());
@@ -157,7 +157,7 @@ final class NamespaceActorScalarRegionTest {
 
             b.send(1L);
             b.drain().get(3, TimeUnit.SECONDS);
-            assertEquals(1L, executor.observations.get(b.id()));
+            assertEquals(Long.valueOf(1L), executor.observations.get(b.id()));
             assertTrue(b.failure().isEmpty());
             b.stop();
             assertNull(b.done().get(3, TimeUnit.SECONDS));
