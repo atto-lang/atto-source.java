@@ -2075,6 +2075,39 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "using SpanScope requires exactly one close_scope() method");
         }
+        // Phase-one affine safety: until a full ScopedResource borrow
+        // checker exists, allow only direct, known non-transfer observer calls
+        // on the scope alias. All other references (return, capture, send,
+        // assignment, callback, nested expression) fail closed. Using the
+        // existing free-name visitor also covers nested task and lambda
+        // bodies rather than checking only top-level return statements.
+        for (Ast.Stmt bodyStmt : protectedBody.body()) {
+            if (bodyStmt instanceof Ast.ExprStmt callStmt
+                    && callStmt.expression() instanceof Ast.CallExpr observer
+                    && observer.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr receiver
+                    && receiver.name().equals(acquired.name())
+                    && Set.of("set_attribute", "add_event", "record_error",
+                            "set_status").contains(member.member())) {
+                boolean aliasesInArguments = observer.arguments().stream()
+                        .anyMatch(argument -> dev.oreslang.ast.TaskCaptureNames
+                                .referencedIn(List.of(new Ast.ExprStmt(argument)))
+                                .contains(acquired.name()));
+                if (!aliasesInArguments) continue;
+            }
+            try {
+                if (dev.oreslang.ast.TaskCaptureNames.referencedIn(List.of(bodyStmt))
+                        .contains(acquired.name())) {
+                    throw new IllegalArgumentException(
+                            "using SpanScope handle cannot escape, be captured,"
+                                    + " or be used outside admitted observer calls");
+                }
+            } catch (IllegalStateException unsupported) {
+                throw new IllegalArgumentException(
+                        "using SpanScope body contains a statement whose handle"
+                                + " lifetime cannot yet be proven", unsupported);
+            }
+        }
         Ast.MethodDecl close = closing.getFirst();
         if (close.isStatic() || close.isAbstract() || close.async() || close.suspends()
                 || !close.parameters().isEmpty() || !close.genericParameters().isEmpty()
