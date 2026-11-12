@@ -63,18 +63,43 @@ public final class ExecutionContext {
         }
     }
 
+    /**
+     * Generation-fenced scheduler handle for runtime capabilities that need
+     * ABA protection across slot reuse. Unbound contexts remain valid for
+     * execution that never exports region-backed authority.
+     */
+    public record ExecutionHandle(long slot, long generation) {
+        public ExecutionHandle {
+            if ((slot == 0) != (generation == 0) || slot < 0 || generation < 0) {
+                throw new IllegalArgumentException(
+                        "execution handle is either all-zero or fully positive");
+            }
+        }
+
+        public static ExecutionHandle none() {
+            return new ExecutionHandle(0, 0);
+        }
+
+        public boolean isBound() {
+            return slot != 0;
+        }
+    }
+
     private final ExecutionId id;
     private final AllocationDomain allocationDomain;
+    private final ExecutionHandle executionHandle;
     private final long parentExecution;
     private final long continuation;
 
     private ExecutionContext(
             ExecutionId id,
             AllocationDomain allocationDomain,
+            ExecutionHandle executionHandle,
             long parentExecution,
             long continuation) {
         this.id = Objects.requireNonNull(id, "id");
         this.allocationDomain = Objects.requireNonNull(allocationDomain, "allocationDomain");
+        this.executionHandle = Objects.requireNonNull(executionHandle, "executionHandle");
         if (parentExecution < 0 || continuation < 0) {
             throw new IllegalArgumentException("logical ancestry handles cannot be negative");
         }
@@ -86,6 +111,7 @@ public final class ExecutionContext {
         return new ExecutionContext(
                 new ExecutionId(runtimeDomain, execution),
                 AllocationDomain.none(),
+                ExecutionHandle.none(),
                 0,
                 0);
     }
@@ -105,6 +131,29 @@ public final class ExecutionContext {
                         actorDomain,
                         actorOwner,
                         actorGeneration),
+                ExecutionHandle.none(),
+                parentExecution,
+                continuation);
+    }
+
+    static ExecutionContext actorBound(
+            long runtimeDomain,
+            long execution,
+            long executionSlot,
+            long executionGeneration,
+            long actorDomain,
+            long actorOwner,
+            long actorGeneration,
+            long parentExecution,
+            long continuation) {
+        return new ExecutionContext(
+                new ExecutionId(runtimeDomain, execution),
+                new AllocationDomain(
+                        AllocationKind.ACTOR,
+                        actorDomain,
+                        actorOwner,
+                        actorGeneration),
+                new ExecutionHandle(executionSlot, executionGeneration),
                 parentExecution,
                 continuation);
     }
@@ -113,8 +162,24 @@ public final class ExecutionContext {
         return id;
     }
 
+    /** Runtime-only state-loan view; preserves the caller's logical identity. */
+    ExecutionContext actorStateView(long actorDomain, long actorOwner, long generation) {
+        AllocationDomain actor = new AllocationDomain(
+                AllocationKind.ACTOR, actorDomain, actorOwner, generation);
+        if (allocationDomain.isBound() && !allocationDomain.equals(actor)) {
+            throw new SecurityException("execution is bound to a different allocation domain");
+        }
+        ExecutionHandle handle = executionHandle.isBound()
+                ? executionHandle : new ExecutionHandle(id.execution(), 1);
+        return new ExecutionContext(id, actor, handle, parentExecution, continuation);
+    }
+
     public AllocationDomain allocationDomain() {
         return allocationDomain;
+    }
+
+    public ExecutionHandle executionHandle() {
+        return executionHandle;
     }
 
     /** Zero until compiler-lowered causal ancestry is attached. */
