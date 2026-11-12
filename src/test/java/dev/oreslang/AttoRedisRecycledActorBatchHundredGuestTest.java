@@ -173,11 +173,11 @@ final class AttoRedisRecycledActorBatchHundredGuestTest {
                         recycled[i] = connect(guest, port);
                     }
                     for (int i = 0; i < recycled.length; i++) {
-                        roundTrip(recycled[i], resp(ascii("GET"), sharedKey), ascii("$-1\\r\\n"));
-                        roundTrip(recycled[i], resp(ascii("PING")), ascii("+PONG\\r\\n"));
+                        roundTrip(recycled[i], resp(ascii("GET"), sharedKey), ascii("$-1\r\n"));
+                        roundTrip(recycled[i], resp(ascii("PING")), ascii("+PONG\r\n"));
                     }
                     for (Socket session : recycled) {
-                        roundTrip(session, resp(ascii("QUIT")), ascii("+OK\\r\\n"));
+                        roundTrip(session, resp(ascii("QUIT")), ascii("+OK\r\n"));
                         assertEquals(-1, session.getInputStream().read());
                     }
                 } finally {
