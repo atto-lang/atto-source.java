@@ -227,8 +227,16 @@ final class SealedActorStateRegion
         LoanView view = new LoanView(ticket, segment, currentGeneration, mutable);
         try {
             T result = block.apply(view);
-            if (result instanceof OresFuture<?>) {
-                throw new IllegalStateException("critical state loan cannot return an async future");
+            // A runtime Future is not the only way to smuggle a
+            // completion continuation out of critical scope. Host adapters
+            // may return java.util.concurrent Future/CompletionStage too.
+            // Lowered Atto critical methods must reject all such effects at
+            // compile time; this is the independent runtime fail-closed gate.
+            if (result instanceof OresFuture<?>
+                    || result instanceof java.util.concurrent.Future<?>
+                    || result instanceof java.util.concurrent.CompletionStage<?>) {
+                throw new IllegalStateException(
+                        "critical state loan cannot return an async future");
             }
             return result;
         } finally {
