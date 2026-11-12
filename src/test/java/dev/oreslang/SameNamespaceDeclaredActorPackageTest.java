@@ -193,6 +193,9 @@ final class SameNamespaceDeclaredActorPackageTest {
         assertEquals(2, result.descriptors().size());
         assertTrue(result.descriptors().containsKey(key("foo", "Counter")));
         assertTrue(result.descriptors().containsKey(key("foo", "Logger")));
+        assertEquals(List.of(key("foo", "Counter"), key("foo", "Logger")),
+                new ArrayList<>(result.actorMethods().actors().keySet()),
+                "same-namespace actor enumeration must be deterministic");
         assertEquals(GET_COUNT_PATH, result.actorMethods().method(
                 new ActorMethodIndex.MethodKey(key("foo", "Counter"), "get_count", 0))
                 .declaringUnit());
@@ -263,6 +266,40 @@ final class SameNamespaceDeclaredActorPackageTest {
                 .declaringUnit());
         assertEquals(3, audit.descriptors().get(key("foo", "Counter"))
                 .requiredMethods().size());
+    }
+
+    @Test
+    void actorIndexMethodOrderAndProofOrderAreRepeatableAcrossAudits()
+            throws IOException {
+        baseSources();
+        var build = manifestBuild();
+        var first = build.auditDeclaredActors();
+        var second = build.auditDeclaredActors();
+        assertEquals(new ArrayList<>(first.actorMethods().methods().keySet()),
+                new ArrayList<>(second.actorMethods().methods().keySet()));
+        assertEquals(new ArrayList<>(first.actorMethods().actors().keySet()),
+                new ArrayList<>(second.actorMethods().actors().keySet()));
+        assertEquals(new ArrayList<>(first.descriptors().keySet()),
+                new ArrayList<>(second.descriptors().keySet()));
+        assertEquals(first.descriptors().get(key("foo", "Counter")).descriptorSha256(),
+                second.descriptors().get(key("foo", "Counter")).descriptorSha256());
+    }
+
+    @Test
+    void actorMethodIndexCannotBeMutatedAcrossFiles()
+            throws IOException {
+        baseSources();
+        var index = audit().actorMethods();
+        assertThrows(UnsupportedOperationException.class,
+                () -> index.actors().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> index.methods().clear());
+        var signature = index.method(
+                new ActorMethodIndex.MethodKey(key("foo", "Counter"), "increment", 1));
+        assertThrows(UnsupportedOperationException.class,
+                () -> signature.argumentTypes().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> signature.mutableArguments().clear());
     }
 
     @Test
