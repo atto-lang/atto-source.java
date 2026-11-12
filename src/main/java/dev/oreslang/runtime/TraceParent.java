@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.security.SecureRandom;
-import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -53,7 +52,13 @@ public record TraceParent(String traceId, String spanId, int flags) {
 
     /** Retains distributed trace ID; creates a distinct outbound child ID. */
     public TraceParent newChild() {
-        return new TraceParent(traceId, randomHex(8), flags);
+        // Never emit a child with the same span ID as its parent, even in
+        // the astronomically unlikely random collision case.
+        for (int attempt = 0; attempt < 16; attempt++) {
+            String nextId = randomHex(8);
+            if (!nextId.equals(spanId)) return new TraceParent(traceId, nextId, flags);
+        }
+        throw new IllegalStateException("unable to mint distinct child span ID");
     }
 
     public boolean sampled() {
