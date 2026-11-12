@@ -140,6 +140,22 @@ final class NamespaceActorCriticalIrCompiler {
     }
 
     static ActorRuntime.ActorCodeExecutor compile(SharedCodeImageStore.CodeImage image) {
+        return compileInternal(image, false);
+    }
+
+    /**
+     * Source-level spawn v0: allow exactly one main function to accompany
+     * the fully verified namespace actor declaration. The caller MUST check
+     * every main statement using a separate closed-world typed admission.
+     * The ordinary compiler remains fail closed for all other programs.
+     */
+    static ActorRuntime.ActorCodeExecutor compileForVerifiedMain(
+            SharedCodeImageStore.CodeImage image) {
+        return compileInternal(image, true);
+    }
+
+    private static ActorRuntime.ActorCodeExecutor compileInternal(
+            SharedCodeImageStore.CodeImage image, boolean admitMain) {
         Objects.requireNonNull(image, "immutable source image");
         Ast.Program program = image.program();
         if (program.namespace() == null || program.namespace().isBlank()
@@ -153,6 +169,7 @@ final class NamespaceActorCriticalIrCompiler {
         Ast.ExternalActorMethodDecl init = null;
         Ast.ExternalActorMethodDecl receive = null;
         List<Ast.ExternalActorMethodDecl> critical = new ArrayList<>();
+        boolean sawEntry = false;
         for (Ast.Decl declaration : program.modules().getFirst().declarations()) {
             if (declaration instanceof Ast.StandaloneActorDecl a) {
                 if (actor != null) throw reject("duplicate actor");
@@ -160,6 +177,11 @@ final class NamespaceActorCriticalIrCompiler {
             } else if (declaration instanceof Ast.ActorStateDecl s) {
                 if (state != null) throw reject("duplicate state");
                 state = s;
+            } else if (admitMain && declaration instanceof Ast.FunctionDecl fn
+                    && fn.name().equals("main") && !sawEntry) {
+                // Only the closed-world source-spawn compiler validates the
+                // main body. Nothing in this routine executes its AST.
+                sawEntry = true;
             } else if (declaration instanceof Ast.ExternalActorMethodDecl m) {
                 if (m.name().equals("init")) {
                     if (init != null) throw reject("duplicate init");
@@ -176,6 +198,7 @@ final class NamespaceActorCriticalIrCompiler {
                 throw reject("unsupported namespace declaration");
             }
         }
+        if (admitMain && !sawEntry) throw reject("source spawn requires checked main");
         if (actor == null || state == null || init == null || receive == null
                 || critical.isEmpty() || critical.size() > 8
                 || actor.actorKind() != Ast.ActorKind.SHARED
