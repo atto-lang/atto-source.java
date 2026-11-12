@@ -127,9 +127,12 @@ final class NamespaceActorScalarTurnCompilerTest {
         try (SharedCodeImageStore store = new SharedCodeImageStore()) {
             for (int i = 0; i < bad.length; i++) {
                 String mutated = bad[i];
+                final int index = i;
+                assertNotEquals(SOURCE, mutated, "scalar mutation must change source");
                 assertThrows(IllegalArgumentException.class,
                         () -> NamespaceActorScalarTurnCompiler.compile(
-                                image(store, mutated)), "scalar type mutation " + i);
+                                store.publish("tests/bad-scalar-" + index + ".atto",
+                                        Parser.parse(mutated))), "scalar type mutation " + i);
             }
         }
     }
