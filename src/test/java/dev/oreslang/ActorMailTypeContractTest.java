@@ -240,9 +240,10 @@ final class ActorMailTypeContractTest {
                           }
                         end
                         """)));
-        assertTrue(failure.getMessage().contains("mutable projected alias")
-                        || failure.getMessage().contains("actor-boundary")
-                        || failure.getMessage().contains("sendable"),
+        // This must fail specifically at the ownership projection gate.
+        // Accepting an unrelated sendability/parser rejection would falsely
+        // certify that a mutable reference cannot be laundered from ActorMail.
+        assertTrue(failure.getMessage().contains("mutable projected alias"),
                 failure.getMessage());
     }
 
