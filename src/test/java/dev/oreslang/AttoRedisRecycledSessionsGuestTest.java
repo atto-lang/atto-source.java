@@ -107,11 +107,11 @@ final class AttoRedisRecycledSessionsGuestTest {
                     "the exact guest declaration must occur once: " + marker);
         }
         int port = freePort();
-        String guestSource = fixture.replace(portMarker,
+        String substituted = fixture.replace(portMarker,
                 "network.listen_async(\"127.0.0.1\", " + port + ")")
                 .replace(activeMarker, "const int max_active_clients = " + active + ";")
                 .replace(totalMarker, "const int max_total_sessions = " + total + ";");
-        guestSource = patch.apply(guestSource);
+        final String guestSource = patch.apply(substituted);
         assertNotNull(guestSource, "the exact guest source transform must return code");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(guestSource));
         try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
