@@ -82,6 +82,59 @@ final class NamespaceActorScalarTurnCompilerTest {
     }
 
     @Test
+    void twoRealActorsExecuteTypedBoolWriteWithoutIntegerCoercion()
+            throws Exception {
+        String source = SOURCE
+                .replace("let int count : 9223372036854775806;",
+                        "let bool closed : false;")
+                .replace("s.count = s.count + 1;", "s.closed = true;");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var executable = NamespaceActorScalarTurnCompiler.compile(image(store, source));
+            var a = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Counter");
+            var b = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Counter");
+            a.ready().get(3, TimeUnit.SECONDS);
+            b.ready().get(3, TimeUnit.SECONDS);
+            assertNotEquals(a.id(), b.id());
+            a.send(1L);
+            b.send(2L);
+            a.drain().get(3, TimeUnit.SECONDS);
+            b.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(a.failure().isEmpty());
+            assertTrue(b.failure().isEmpty());
+            a.stop();
+            b.stop();
+            assertNull(a.done().get(3, TimeUnit.SECONDS));
+            assertNull(b.done().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void mismatchedScalarTypesCannotEnterCriticalLowering()
+            throws Exception {
+        String boolSource = SOURCE
+                .replace("let int count : 9223372036854775806;",
+                        "let bool closed : false;")
+                .replace("s.count = s.count + 1;", "s.closed = true;");
+        String[] bad = {
+                SOURCE.replace("s.count = s.count + 1;", "s.count = true;"),
+                SOURCE.replace("let int count : 9223372036854775806;",
+                        "let bool count : 9223372036854775806;"),
+                boolSource.replace("s.closed = true;", "s.closed = s.closed + 1;"),
+                boolSource.replace("s.closed = true;", "s.closed = 1;"),
+                boolSource.replace("s.closed = true;", "s.closed = false;")
+        };
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            for (int i = 0; i < bad.length; i++) {
+                String mutated = bad[i];
+                assertThrows(IllegalArgumentException.class,
+                        () -> NamespaceActorScalarTurnCompiler.compile(
+                                image(store, mutated)), "scalar type mutation " + i);
+            }
+        }
+    }
+
+    @Test
     void forgedOrUntypedMailboxCannotInvokePrivateCriticalMethod()
             throws Exception {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
