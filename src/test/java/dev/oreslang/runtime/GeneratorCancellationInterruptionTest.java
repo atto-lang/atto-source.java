@@ -88,4 +88,111 @@ public class GeneratorCancellationInterruptionTest {
                     "terminal pulls retain the same underlying producer failure");
         }
     }
+
+    @Test
+    void cancellingAdmittedAsyncPullRevokesProducerAndFencesPhysicalCleanup() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch allowCleanupExit = new CountDownLatch(1);
+        AsyncRuntime runtime = new AsyncRuntime();
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            entered.countDown();
+            try {
+                new CountDownLatch(1).await();
+            } finally {
+                cleanupStarted.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        allowCleanupExit.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        });
+        try {
+            OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(pull.cancel(true));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> pull.get(3, TimeUnit.SECONDS));
+            assertTrue(cleanupStarted.await(3, TimeUnit.SECONDS));
+
+            OresFuture<Void> close = generator.closeAsync();
+            assertSame(close, generator.closeAsync());
+            assertFalse(close.isDone(),
+                    "logical pull cancellation must not fake physical cleanup");
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> close.get(100, TimeUnit.MILLISECONDS));
+            allowCleanupExit.countDown();
+            assertNull(close.get(3, TimeUnit.SECONDS));
+            assertNull(runtime.taskExitReceipt(pull).get(3, TimeUnit.SECONDS));
+            assertTrue(generator.nextStep().get(3, TimeUnit.SECONDS).done(),
+                    "cancelled admitted pull must not leave an orphan activation");
+        } finally {
+            allowCleanupExit.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
+
+    @Test
+    void lateCancellationAfterYieldButBeforeFutureSettlementRevokesProducer() throws Exception {
+        CountDownLatch pullTurnReturned = new CountDownLatch(1);
+        CountDownLatch releasePullTurn = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Thread> pullCarrier =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean resumedGuestBody =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            Thread current = Thread.currentThread();
+            pullCarrier.compareAndSet(null, current);
+            try {
+                turn.run();
+            } finally {
+                if (current == pullCarrier.get()) {
+                    pullTurnReturned.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try {
+                            releasePullTurn.await();
+                            break;
+                        } catch (InterruptedException ignored) {
+                            interrupted = true;
+                        }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            }
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            emitter.emit(1);
+            resumedGuestBody.set(true);
+        });
+        try {
+            OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
+            assertTrue(pullTurnReturned.await(3, TimeUnit.SECONDS),
+                    "pull turn must finish engine.next before cancellation");
+            assertFalse(pull.isDone(),
+                    "backing turn is held after yield and before Future settlement");
+            assertTrue(pull.cancel(true));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> pull.get(3, TimeUnit.SECONDS));
+
+            OresFuture<Void> close = generator.closeAsync();
+            assertNull(close.get(3, TimeUnit.SECONDS));
+            assertFalse(resumedGuestBody.get(),
+                    "a cancelled, unobserved yield must not resume guest execution");
+            releasePullTurn.countDown();
+            assertNull(runtime.taskExitReceipt(pull).get(3, TimeUnit.SECONDS));
+            assertTrue(generator.nextStep().get(3, TimeUnit.SECONDS).done());
+        } finally {
+            releasePullTurn.countDown();
+            generator.close();
+            runtime.close();
+        }
+    }
 }
