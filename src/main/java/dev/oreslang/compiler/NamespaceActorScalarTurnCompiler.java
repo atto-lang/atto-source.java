@@ -76,12 +76,18 @@ final class NamespaceActorScalarTurnCompiler {
             throw unsupported("requires exactly one attached private scalar field");
         }
         Ast.ProtectedStateField field = schema.fields().getFirst();
-        if (!"int".equals(field.type().name())
-                || !field.type().arguments().isEmpty()
-                || field.type().isBorrow()
-                || !(field.initializer() instanceof Ast.LiteralExpr literal)
-                || !(literal.value() instanceof Long initial)) {
-            throw unsupported("only literal signed-int64 state can execute");
+        if (!field.type().arguments().isEmpty() || field.type().isBorrow()
+                || field.type().inferArguments()
+                || !(field.initializer() instanceof Ast.LiteralExpr)) {
+            throw unsupported("only typed scalar literal state can execute");
+        }
+        Object initialValue = ((Ast.LiteralExpr) field.initializer()).value();
+        boolean integerField = "int".equals(field.type().name())
+                && initialValue instanceof Long;
+        boolean booleanField = "bool".equals(field.type().name())
+                && initialValue instanceof Boolean;
+        if (!integerField && !booleanField) {
+            throw unsupported("int/bool initializers require exactly matching literal types");
         }
         if (!validReturnOnly(actor.name(), init) || !init.parameters().isEmpty()
                 || !validRuntimeReceive(actor.name(), receive, critical)) {
@@ -101,8 +107,12 @@ final class NamespaceActorScalarTurnCompiler {
                         .anyMatch(k -> k == null || k.isBlank() || "UNVERIFIED".equals(k))) {
             throw unsupported("critical source lacks trusted lexical provenance");
         }
-        long amount = closedIncrement(critical, field.name());
-        return new Plan(image, actor.name(), initial, amount);
+        if (integerField) closedIncrement(critical, field.name());
+        else closedBoolWrite(critical, field.name());
+        return new Plan(image, actor.name(),
+                integerField ? (Long) initialValue : 0L,
+                booleanField && (Boolean) initialValue,
+                booleanField);
     }
 
     private static boolean validReturnOnly(
@@ -140,7 +150,7 @@ final class NamespaceActorScalarTurnCompiler {
         return receive.body().get(1) instanceof Ast.ReturnStmt ret && ret.value() == null;
     }
 
-    private static long closedIncrement(
+    private static void closedIncrement(
             Ast.CriticalActorMethodDecl method, String field) {
         // Lexeme identity is backed by original lexer types. The only admitted
         // write is s.field = s.field + 1 under an immediate critical state loan.
@@ -153,7 +163,17 @@ final class NamespaceActorScalarTurnCompiler {
         if (!method.bodyTokens().equals(exact)) {
             throw unsupported("critical body requires a single checked state increment");
         }
-        return 1L;
+    }
+
+    private static void closedBoolWrite(
+            Ast.CriticalActorMethodDecl method, String field) {
+        List<String> exact = List.of(
+                "using", "state", ".", "write", "(", "critical",
+                "|", "s", "|", "->", "{", "s", ".", field,
+                "=", "true", ";", "}", ")", ";", "return", ";");
+        if (!method.bodyTokens().equals(exact)) {
+            throw unsupported("critical bool body requires one checked state assignment");
+        }
     }
 
     private static IllegalArgumentException unsupported(String reason) {
@@ -164,10 +184,12 @@ final class NamespaceActorScalarTurnCompiler {
     /** One private scalar allocation per runtime actor, never shared in CodeImage. */
     private static final class Owned implements ActorRuntime.ActorOwnedGuestState {
         private final ActorRuntime.ActorId owner;
-        private long value;
-        private Owned(ActorRuntime.ActorId owner, long initial) {
+        private long integerValue;
+        private boolean booleanValue;
+        private Owned(ActorRuntime.ActorId owner, long initialInt, boolean initialBool) {
             this.owner = owner;
-            this.value = initial;
+            this.integerValue = initialInt;
+            this.booleanValue = initialBool;
         }
         @Override public ActorRuntime.ActorId ownerActorId() { return owner; }
     }
@@ -175,8 +197,9 @@ final class NamespaceActorScalarTurnCompiler {
     private record Plan(
             SharedCodeImageStore.CodeImage codeImage,
             String actorName,
-            long initial,
-            long amount) implements ActorRuntime.ActorCodeExecutor {
+            long initialInt,
+            boolean initialBool,
+            boolean booleanField) implements ActorRuntime.ActorCodeExecutor {
         @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String requestedActor, ActorRuntime.ActorContext<Object> context) {
@@ -184,7 +207,7 @@ final class NamespaceActorScalarTurnCompiler {
             if (context.currentMail().isPresent()) {
                 throw new SecurityException("init must run on activation only");
             }
-            return new Owned(context.self().id(), initial);
+            return new Owned(context.self().id(), initialInt, initialBool);
         }
 
         @Override
@@ -205,7 +228,8 @@ final class NamespaceActorScalarTurnCompiler {
             // compiler admitted one nonescaping critical write above.
             // Checked overflow never wraps, and another actor's Owned
             // allocation is never reachable through this execution.
-            owned.value = Math.addExact(owned.value, amount);
+            if (booleanField) owned.booleanValue = true;
+            else owned.integerValue = Math.addExact(owned.integerValue, 1L);
         }
 
         @Override
@@ -218,7 +242,8 @@ final class NamespaceActorScalarTurnCompiler {
                     || !owned.owner.equals(context.self().id())) {
                 throw new SecurityException("cross-actor scalar teardown");
             }
-            owned.value = 0; // actor-affine reclamation, not guest-exposed memory
+            owned.integerValue = 0;
+            owned.booleanValue = false; // actor-affine cleanup, not guest-exposed memory
         }
 
         private void requireTurn(
