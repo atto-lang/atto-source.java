@@ -18,6 +18,8 @@ final class OutboundHttpRequestBodyAdmissionTest {
         assertArrayEquals(new byte[0], OutboundHttpRequest.requestBodyBytes(""));
         assertArrayEquals("héllø".getBytes(StandardCharsets.UTF_8),
                 OutboundHttpRequest.requestBodyBytes("héllø"));
+        assertArrayEquals("emoji😀".getBytes(StandardCharsets.UTF_8),
+                OutboundHttpRequest.requestBodyBytes("emoji😀"));
         ArrayList<Integer> source = new ArrayList<>(List.of(0, 1, 127, 255));
         byte[] snapshot = OutboundHttpRequest.requestBodyBytes(source);
         source.set(0, 42);
@@ -40,6 +42,18 @@ final class OutboundHttpRequestBodyAdmissionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> OutboundHttpRequest.requestBodyBytes(
                         java.util.Collections.nCopies(max + 1, 0)));
+    }
+
+    @Test
+    void malformedUtf16MustNotBeSilentlyReplacedOnTheWire() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OutboundHttpRequest.requestBodyBytes("\\uD800"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OutboundHttpRequest.requestBodyBytes("\\uDC00"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OutboundHttpRequest.requestBodyBytes("\\uD800text"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OutboundHttpRequest.requestBodyBytes("text\\uDC00"));
     }
 
     @Test
