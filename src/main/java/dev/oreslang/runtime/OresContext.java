@@ -89,6 +89,10 @@ public final class OresContext implements AutoCloseable {
     // Compiler/runtime-only numeric probe recorder; never a userland OTel SDK.
     private final AutoTraceRecorder autoTrace = new AutoTraceRecorder(
             AutoTraceRecorder.DEFAULT_CAPACITY, false);
+    // Bounded semantic span staging; separate from core numeric diagnostics
+    // and not an OTLP exporter. Off path allocates no per-request span.
+    private final SemanticTraceBuffer semanticTrace =
+            new SemanticTraceBuffer(autoTrace, 4096);
     private final boolean autoTraceReceipt;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
@@ -243,6 +247,8 @@ public final class OresContext implements AutoCloseable {
     public ExecutionProfile executionProfile() { return executionProfile; }
     /** Internal compiler-generated probe entry; no source guest export. */
     public AutoTraceRecorder autoTrace() { return autoTrace; }
+    /** Internal trusted span-lifecycle hook; not guest-accessible telemetry. */
+    public SemanticTraceBuffer semanticTrace() { return semanticTrace; }
 
     public Object lookupHostSymbol(String className) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
