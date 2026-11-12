@@ -32,6 +32,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private static final AtomicLong ENDED = new AtomicLong();
 
     private final String name;
+    /** Stable logical task/actor execution identity, not physical carrier. */
+    private final Object ownerDomain;
     private final TraceContext parent;
     private final TraceContext active;
     private final boolean recording;
@@ -52,6 +54,7 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private TelemetrySpanScope(String name, TraceContext parent,
                                TraceContext active, boolean recording) {
         this.name = name;
+        this.ownerDomain = currentOwnerDomain();
         this.parent = parent;
         this.active = active;
         this.recording = recording;
@@ -125,8 +128,23 @@ public final class TelemetrySpanScope implements AutoCloseable {
         } while (true);
     }
 
+    private static Object currentOwnerDomain() {
+        Object task = OresScheduler.currentTaskDomain();
+        if (task != null) return task;
+        Object actor = ActorRuntime.currentActorExecutionDomain();
+        return actor != null ? actor : Thread.currentThread();
+    }
+
+    private void requireOwner() {
+        if (currentOwnerDomain() != ownerDomain) {
+            throw new IllegalStateException(
+                    "telemetry span handle belongs to a different logical execution");
+        }
+    }
+
     /** Bounded safe scalar attributes; neither the guest body nor exporter runs here. */
     public void attribute(String key, Object value) {
+        requireOwner();
         if (ended.get()) {
             throw new IllegalStateException("telemetry span is closed");
         }
@@ -159,15 +177,17 @@ public final class TelemetrySpanScope implements AutoCloseable {
         attributes.put(key, safe);
     }
 
-    public String name() { return name; }
-    public boolean recording() { return recording; }
+    public String name() { requireOwner(); return name; }
+    public boolean recording() { requireOwner(); return recording; }
 
     /** Read-only trace identifiers for propagation and diagnostic fixtures. */
     public String traceId() {
+        requireOwner();
         return active == null ? "" : active.traceId();
     }
 
     public String spanId() {
+        requireOwner();
         return active == null ? "" : active.spanId();
     }
 
@@ -186,6 +206,7 @@ public final class TelemetrySpanScope implements AutoCloseable {
     @Override
     public void close() {
         if (ended.get()) return;
+        requireOwner();
         if (recording && TraceContext.current() != active) {
             throw new IllegalStateException("span ended outside its owning logical task");
         }
