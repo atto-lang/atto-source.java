@@ -88,11 +88,40 @@ Bodyless define actor Foo; is rejected in favor of declare.
 - Do not mirror private source to other orgs without separately approved
   security and exact-blob verification.
 
+## Physical same-namespace multi-file conformance
+
+A single manifest package may declare `namespace foo;` independently at the
+top of multiple `.atto` and `.ores` source files. The explicit namespace is
+the compilation identity, not the directory path or a filename. These files
+are discovered from the canonical manifest's source roots and their root-level
+actor contracts, nominal declarations, external `mtd` declarations, and
+sealed state attachments are linked using the same (package, namespace,
+actor) identity.
+
+The `SameNamespaceDeclaredActorPackageTest` suite constructs **seven real
+physical source files** with three duplicate basenames in separate folders:
+one actor declaration, two actor contracts, three external methods and one
+sealed-state attachment. It checks the cross-file descriptor and method
+origins, plus a mixed `.atto`/`.ores` package; shuffled source enumeration;
+multiple actors with identical selectors in one namespace; identical actor
+names in separate namespaces; independent state; both supported `mtd`
+receiver spellings; fingerprint invalidation after adding another source;
+and strict rejection of duplicate nominal actors/contracts, method slots,
+state schemas, foreign/missing namespace, missing files, mismatched signature,
+private contract implementation and source outside the manifest roots.
+
+This is **static manifest/linker conformance only**. The package's
+`build()` still fails with `DECLARED_ACTOR_CODEGEN_UNSUPPORTED`; no claim is
+made that external method bodies run as actor code or that any backend has
+passed end-to-end guest execution. The focused CI must execute the new suite
+and produce exact-head, unskipped Surefire receipts.
+
 ## Test inventory
 
 PackageNamespaceBuildTest: 21 previously authored cases.
 DeclaredActorContractWitnessTest: 27 authored cases.
 DeclaredActorCompilerManifestGateTest: 17 authored cases.
+SameNamespaceDeclaredActorPackageTest: 19 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
