@@ -27,19 +27,20 @@ critical mtd (Counter c) bump(): void {
 The package-private `NamespaceActorScalarTurnCompiler.compile(CodeImage)`:
 - consumes **exactly one trusted, immutable source code image** with one
   explicit namespace, no imports, one declared shared actor, one state field
-  initialized by a typed signed-int64 literal, and one init/receive/critical
+  initialized by a typed signed-int64 or bool literal, and one init/receive/critical
   declaration each; rejects all extra declarations or bodies;
 - reuses the existing nominal actor receiver and sealed-state binders;
 - validates the complete receive AST as exactly one self-call to its private
   zero-argument critical method followed by `return;`;
 - validates the *entire* token-preserving critical body against a single
-  lexical, nonescaping `state.write` region assigning `s.count + 1`;
+  lexical, nonescaping `state.write` region: either an int `s.count + 1`
+  with checked overflow, or a bool `s.closed = true`; no implicit coercion;
 - emits an immutable shared execution plan and allocates a **new private
   scalar state instance** inside each real `ActorRuntime` initialization turn;
 - validates the current runtime, actor identity, CodeImage, mailbox recipient,
   typed `ActorMail<int>`, and physical receive envelope on every turn;
-- evaluates the typed increment using checked signed-int64 arithmetic, where
-  overflow terminates only the owning actor rather than silently wrapping;
+- executes typed integer increments with checked signed-int64 arithmetic,
+  where overflow terminates only the owning actor, or exact typed bool writes;
 - does not offer any source-accessible method reference, state pointer,
   callback, host broker implementation, or public invocation escape.
 
@@ -72,3 +73,20 @@ A source-free host oracle, parser-only test or runner failure with
 `steps=[]` is **not** guest evidence. Do not merge or enable on
 AttoRMQ until the runtime state-loan integration, complete guest
 semantics, cancellation/STOP, AOT proof and independent review are ready.
+
+### Closed bool example
+
+```atto
+use namespace rmq_test;
+declare actor Counter;
+define state on actor Counter as { let bool closed : false; }
+external mtd (Counter c) init(): void { return; }
+external mtd (Counter c) receive(ActorMail<int> mail): void { c.close(); return; }
+critical mtd (Counter c) close(): void {
+    using state.write(critical |s| -> { s.closed = true; });
+    return;
+}
+```
+
+No int→bool, bool→int, bool arithmetic, arbitrary bool expression, or
+unrecognized critical body is admitted by the compiler-internal bridge.
