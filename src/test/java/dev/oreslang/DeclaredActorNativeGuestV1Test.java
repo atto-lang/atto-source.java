@@ -181,8 +181,10 @@ final class DeclaredActorNativeGuestV1Test {
             String contents = Files.readString(source);
             assertTrue(contents.startsWith("namespace counter;")
                     || contents.startsWith("use namespace counter;"), file);
-            Files.writeString(source,
-                    contents.replace("namespace counter;", "use namespace counter;"));
+            if (!contents.startsWith("use namespace counter;")) {
+                Files.writeString(source, "use namespace counter;"
+                        + contents.substring("namespace counter;".length()));
+            }
         }
         Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
