@@ -211,7 +211,7 @@ final class TelemetryUsingSpanLanguageTest {
         for (String statement : forbidden) {
             RuntimeException rejected = assertThrows(RuntimeException.class, () -> {
                 Ast.Program program = TypeChecker.check(
-                        Parser.parse(prefix + statement + "\\n" + suffix));
+                        Parser.parse(prefix + statement + System.lineSeparator() + suffix));
                 OwnershipChecker.check(program);
             }, "must reject borrowed lexical span handle through: " + statement);
             assertTrue(rejected.getMessage().contains("telemetry span"),
