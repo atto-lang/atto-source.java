@@ -6086,6 +6086,18 @@ public final class TypeChecker {
             }
             case "NioConnection" -> {
                 switch (name) {
+                    case "read_resp2_binary_async" -> {
+                        Type bytes = new Named("$builtin$Bytes", List.of());
+                        result = new Tuple(
+                                List.of(Primitive.INT, Primitive.STRING, bytes, bytes),
+                                TupleKind.TUPLE);
+                        parameters = List.of();
+                    }
+                    case "write_resp2_binary_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING,
+                                new Named("$builtin$Bytes", List.of()));
+                    }
                     case "read_resp2_hex_async" -> {
                         result = new ListType(Primitive.STRING); parameters = List.of();
                     }
