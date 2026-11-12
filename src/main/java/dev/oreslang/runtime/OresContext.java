@@ -86,6 +86,10 @@ public final class OresContext implements AutoCloseable {
     private final RuntimePermissions runtimePermissions;
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
+    // Compiler/runtime-only numeric probe recorder; never a userland OTel SDK.
+    private final AutoTraceRecorder autoTrace = new AutoTraceRecorder(
+            AutoTraceRecorder.DEFAULT_CAPACITY, false);
+    private final boolean autoTraceReceipt;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
@@ -129,6 +133,39 @@ public final class OresContext implements AutoCloseable {
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
                 env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        // Host-provisioned application args only. Unknown/malformed tracing
+        // controls fail closed; no guest instruction or OTel environment
+        // variable grants exporter or logging permissions.
+        boolean calls = false;
+        boolean receipt = false;
+        for (String arg : env.getApplicationArguments()) {
+            if (arg.startsWith("--ores-telemetry=")) {
+                String mode = arg.substring("--ores-telemetry=".length());
+                if (!mode.equals("off") && !mode.equals("calls")) {
+                    throw new IllegalArgumentException("unsupported telemetry mode: " + mode);
+                }
+                calls = mode.equals("calls");
+            } else if (arg.startsWith("--ores-telemetry-receipt=")) {
+                String value = arg.substring("--ores-telemetry-receipt=".length());
+                if (!value.equals("stderr") && !value.equals("none")) {
+                    throw new IllegalArgumentException("unsupported telemetry receipt: " + value);
+                }
+                receipt = value.equals("stderr");
+            }
+        }
+        if ((calls || receipt) && (isolatePolicy.adversarial()
+                || !isolatePolicy.capabilities().contains(IsolatePolicy.Capability.STDOUT))) {
+            throw new SecurityException(
+                    "automatic call diagnostics require trusted stdout-enabled isolate");
+        }
+        if (receipt && !calls) {
+            throw new IllegalArgumentException(
+                    "telemetry receipt requires --ores-telemetry=calls");
+        }
+        if (calls && !autoTrace.reconfigureCalls(true)) {
+            throw new IllegalStateException("compiled call telemetry sites unavailable");
+        }
+        this.autoTraceReceipt = receipt;
         // UNTRUSTED contexts admit one guest thread and the isolate's JNI
         // scope belongs to the calling thread. Root task turns retain that
         // admission while runtime CONTROL carriers remain prestarted.
@@ -201,6 +238,8 @@ public final class OresContext implements AutoCloseable {
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
     public PermissionCheckMode permissionCheckMode() { return permissionCheckMode; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    /** Internal compiler-generated probe entry; no source guest export. */
+    public AutoTraceRecorder autoTrace() { return autoTrace; }
 
     public Object lookupHostSymbol(String className) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
@@ -576,6 +615,13 @@ public final class OresContext implements AutoCloseable {
         }
         garbageCollector.close();
         output.flush();
+        // Cold-only, explicit operator diagnostic receipt; no synchronous
+        // exporter, no guest hot-path I/O, and never enabled by default.
+        if (autoTraceReceipt) {
+            java.io.PrintWriter diagnostics = new java.io.PrintWriter(
+                    new OutputStreamWriter(env.err(), StandardCharsets.UTF_8), true);
+            autoTrace.dumpNumericReceipt(diagnostics);
+        }
         QUARANTINED_CONTEXTS.remove(this);
     }
 }
