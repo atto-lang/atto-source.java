@@ -81,4 +81,95 @@ final class ChannelTransferOwnershipAdmissionTest {
         assertTrue(inbox.tryRead().isEmpty(),
                 "successful rendezvous must not leave a second buffered copy");
     }
+    @Test
+    void ownedImmediateRejectionReturnsExactPayloadWithoutEnqueue() {
+        ChannelRuntime.Channel<Payload> inbox = new ChannelRuntime.Channel<>(1);
+        Payload first = new Payload(10);
+        Payload second = new Payload(11);
+        assertTrue(inbox.tryWriteOwned(first).committed());
+
+        ChannelRuntime.OwnedTryWriteResult<Payload> rejected =
+                inbox.tryWriteOwned(second);
+        assertEquals(ChannelRuntime.OwnedWriteOutcome.BACKPRESSURE,
+                rejected.outcome());
+        assertFalse(rejected.committed());
+        assertSame(second, rejected.returnedPayload());
+        assertSame(first, inbox.tryRead().orElseThrow());
+        assertTrue(inbox.tryRead().isEmpty());
+
+        ChannelRuntime.OwnedTryWriteResult<Payload> retry =
+                inbox.tryWriteOwned(rejected.returnedPayload());
+        assertEquals(ChannelRuntime.OwnedWriteOutcome.COMMITTED,
+                retry.outcome());
+        assertTrue(retry.committed());
+        assertNull(retry.returnedPayload(), "committed send cannot retain payload");
+        assertSame(second, inbox.tryRead().orElseThrow());
+        assertTrue(inbox.tryRead().isEmpty());
+    }
+
+    @Test
+    void ownedImmediateClosedRejectionReturnsExactPayload() {
+        ChannelRuntime.Channel<Payload> inbox = new ChannelRuntime.Channel<>(1);
+        Payload original = new Payload(12);
+        inbox.close();
+
+        ChannelRuntime.OwnedTryWriteResult<Payload> rejected =
+                inbox.tryWriteOwned(original);
+        assertEquals(ChannelRuntime.OwnedWriteOutcome.CLOSED, rejected.outcome());
+        assertFalse(rejected.committed());
+        assertSame(original, rejected.returnedPayload());
+    }
+
+    @Test
+    void ownedImmediateRendezvousReturnsOnlyCommitReceipt() {
+        ChannelRuntime.Channel<Payload> inbox = new ChannelRuntime.Channel<>(0);
+        Payload original = new Payload(13);
+
+        ChannelRuntime.OwnedTryWriteResult<Payload> pending =
+                inbox.tryWriteOwned(original);
+        assertEquals(ChannelRuntime.OwnedWriteOutcome.BACKPRESSURE,
+                pending.outcome());
+        assertSame(original, pending.returnedPayload());
+
+        OresFuture<Payload> reader = inbox.readAsync();
+        ChannelRuntime.OwnedTryWriteResult<Payload> committed =
+                inbox.tryWriteOwned(pending.returnedPayload());
+        assertEquals(ChannelRuntime.OwnedWriteOutcome.COMMITTED,
+                committed.outcome());
+        assertNull(committed.returnedPayload());
+        assertSame(original, reader.join());
+        assertTrue(inbox.tryRead().isEmpty());
+    }
+
+    @Test
+    void directionalWriterExposesSameRecoverableImmediateContract() {
+        ChannelRuntime.Channel<Payload> inbox = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.WriteChannel<Payload> writer = inbox.input();
+        Payload first = new Payload(14);
+        Payload second = new Payload(15);
+
+        assertTrue(writer.tryWriteOwned(first).committed());
+        assertSame(second, writer.tryWriteOwned(second).returnedPayload());
+        assertSame(first, inbox.tryRead().orElseThrow());
+        inbox.close();
+        ChannelRuntime.OwnedTryWriteResult<Payload> rejected =
+                writer.tryWriteOwned(second);
+        assertEquals(ChannelRuntime.OwnedWriteOutcome.CLOSED, rejected.outcome());
+        assertSame(second, rejected.returnedPayload());
+    }
+
+    @Test
+    void ownedResultRejectsForgedDuplicateOrMissingPayloadAuthority() {
+        Payload payload = new Payload(16);
+        assertThrows(IllegalArgumentException.class,
+                () -> new ChannelRuntime.OwnedTryWriteResult<>(
+                        ChannelRuntime.OwnedWriteOutcome.COMMITTED, payload));
+        assertThrows(NullPointerException.class,
+                () -> new ChannelRuntime.OwnedTryWriteResult<Payload>(
+                        ChannelRuntime.OwnedWriteOutcome.BACKPRESSURE, null));
+        assertThrows(NullPointerException.class,
+                () -> new ChannelRuntime.OwnedTryWriteResult<Payload>(
+                        null, payload));
+    }
+
 }
