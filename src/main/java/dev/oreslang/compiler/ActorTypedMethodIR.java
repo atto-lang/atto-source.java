@@ -239,6 +239,16 @@ public final class ActorTypedMethodIR {
                 var byName = new LinkedHashMap<String, ParameterRead>();
                 for (int i = 0; i < method.parameters().size(); i++) {
                     Ast.Param p = method.parameters().get(i);
+                    // Parser-normal names are expected, but the pre-HIR
+                    // boundary is also exercised with compiler-synthesized
+                    // ASTs. Reject malformed names deterministically rather
+                    // than triggering an unchecked null dereference.
+                    if (p.name() == null || p.name().isBlank()
+                            || p.name().length() > 1024) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_TYPED_IR_PARAMETER_NAME_INVALID: " + key
+                                        + " parameter " + i);
+                    }
                     if (p.name().equals(method.receiverName())
                             || p.type().isBorrow() || p.type().inferArguments()
                             || !p.type().arguments().isEmpty()
