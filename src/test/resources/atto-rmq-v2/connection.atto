@@ -1,0 +1,76 @@
+use namespace rmq_transport;
+
+// PROPOSED NAMESPACE ACTOR CONTRACT — NOT YET COMPILED BY THE JAVA/LLVM
+// BACKENDS. This source deliberately uses the agreed AttoLang actor grammar.
+// Do not treat text/source tests as native guest execution evidence.
+
+
+declare actor ConnectionActor;
+
+// ConnectionActor owns the one TCP capability lease, not raw socket pointers.
+// Network I/O is performed by a bounded host capability and awaited off-carrier.
+// Its child ChannelActors are referenced using generation-fenced ActorRef ids.
+define state on actor ConnectionActor as {
+    let int connection_id : 0;
+    let int generation : 0;
+    let int channel_count : 0;
+    let int in_flight_bytes : 0;
+    let int frame_max : 131072;
+    // Only an unforgeable runtime AuthGrant may eventually set this true.
+    let bool authenticated : false;
+    let bool closing : false;
+}
+
+// Runtime ingress, private zero-argument void activation only.
+external mtd (ConnectionActor c) init(): void {
+    return;
+}
+
+// Runtime mailbox ingress; a direct invocation is a compile-time error.
+external mtd (ConnectionActor c) receive(ActorMail<ConnectionMail> mail): void {
+    // FAIL CLOSED until nonforgeable AuthGrant and runtime-only external dispatch
+    // are compiler-lowered. Never accept guest-authored bool/enum as auth authority.
+    // Check mailbox generation and byte credit before dispatch to ChannelActor.
+    // ConnectionMail is a sealed ADT; the guest receives copied immutable frame
+    // metadata, or explicitly loaned frozen payload handles, never the socket.
+    return;
+}
+
+// Fail closed before an authenticated runtime grant, even if a future compiler
+// accidentally admits guest-facing messages during early activation.
+// Bounded actor-owned accounting. No socket, await or host callback inside
+// this nonescaping critical state loan. Actual frame dispatch stays disabled
+// until authenticated runtime-only external ingress is lowered.
+critical mtd (ConnectionActor c) reserve_frame_credit(int bytes): bool {
+    let bool admitted = false;
+    using state.write(critical |s| -> {
+        if s.authenticated and !s.closing and bytes > 0 and bytes <= s.frame_max and
+           s.in_flight_bytes >= 0 and s.in_flight_bytes <= 4194304 - bytes then
+            s.in_flight_bytes = s.in_flight_bytes + bytes;
+            admitted = true;
+        fi
+    });
+    return admitted;
+}
+
+// Async completion must be bound to the SAME actor generation, even if the
+// socket read is cancelled or its carrier has migrated. Never underflow.
+critical mtd (ConnectionActor c) finish_frame_credit(int bytes, int expected_generation): bool {
+    let bool returned = false;
+    using state.write(critical |s| -> {
+        if expected_generation == s.generation and
+           bytes > 0 and bytes <= s.in_flight_bytes then
+            s.in_flight_bytes = s.in_flight_bytes - bytes;
+            returned = true;
+        fi
+    });
+    return returned;
+}
+
+// Only a critical method may modify actor state. No state loan crosses await.
+critical mtd (ConnectionActor c) set_closing(): void {
+    using state.write(critical |s| -> {
+        s.closing = true;
+    });
+    return;
+}
