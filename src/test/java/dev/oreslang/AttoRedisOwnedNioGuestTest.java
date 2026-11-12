@@ -119,7 +119,17 @@ final class AttoRedisOwnedNioGuestTest {
                 }
             });
             try (Socket client = connect(guest, port)) {
-                scenario.verify(client);
+                try {
+                    scenario.verify(client);
+                } catch (Exception failure) {
+                    // A dead guest can make the socket look like an ordinary EOF.
+                    // Preserve the actual compiler/runtime exception as the
+                    // primary evidence before reporting a wire mismatch.
+                    if (guest.isDone()) {
+                        guest.get(2, TimeUnit.SECONDS);
+                    }
+                    throw failure;
+                }
             }
             guest.get(15, TimeUnit.SECONDS);
         }
@@ -283,7 +293,7 @@ final class AttoRedisOwnedNioGuestTest {
         assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(typeBreak),
                 "ActorMail<Tuple<int,List<int>,List<int>>> must reject string messages");
-        String ioBreak = code.replace("socket.read_bytes_async(1024)",
+        String ioBreak = code.replace("socket.read_owned_bytes_async(1024)",
                 "socket.read_line()");
         assertNotEquals(code, ioBreak);
         assertThrows(RuntimeException.class,
