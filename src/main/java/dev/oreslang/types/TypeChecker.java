@@ -2032,6 +2032,20 @@ public final class TypeChecker {
                     "using request.borrow() as view requires verified transport-loan "
                             + "lifetime checking and evaluator lowering; feature is not enabled");
         }
+        if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+            // A compiler intrinsic, not a guest-callable global namespace.
+            if (env.lookup("telemetry") != null) {
+                throw new IllegalArgumentException(
+                        "telemetry.span scope cannot be shadowed by a guest binding");
+            }
+            requireAssignable(typeOf(scope.name(), env, generics, self),
+                    Primitive.STRING, "telemetry.span name");
+            Env spanEnv = new Env(env);
+            spanEnv.define(scope.binding(), new Named("$TelemetrySpan", List.of()),
+                    Ast.BindingKind.CONST);
+            checkBlock(scope.body(), spanEnv, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
@@ -2071,6 +2085,10 @@ public final class TypeChecker {
                 actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
             } finally {
                 permittedPartialStructInitializer = previousPartial;
+            }
+            if (actual instanceof Named named && named.name().equals("$TelemetrySpan")) {
+                throw new IllegalArgumentException(
+                        "lexical telemetry span cannot be rebound or captured as a value");
             }
             if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
                 throw new IllegalArgumentException(
@@ -2217,6 +2235,9 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (actual instanceof Named named && named.name().equals("$TelemetrySpan")) {
+                throw new IllegalArgumentException("lexical telemetry span cannot escape via return");
+            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -4086,6 +4107,14 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
+                if (member.member().equals("attribute")) {
+                    return new Function(List.of(Primitive.STRING, Unknown.INSTANCE),
+                            Primitive.VOID);
+                }
+                throw new IllegalArgumentException(
+                        "telemetry span supports only attribute(key, scalar) inside using scope");
+            }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
