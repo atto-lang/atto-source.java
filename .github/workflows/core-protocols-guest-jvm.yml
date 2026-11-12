@@ -7,6 +7,8 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/main/java/dev/oreslang/compiler/ImportGraph.java'
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/compiler/ImportGraphTraitKindTest.java'
       - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
