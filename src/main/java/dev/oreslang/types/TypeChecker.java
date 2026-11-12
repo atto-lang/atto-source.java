@@ -2025,6 +2025,17 @@ public final class TypeChecker {
      */
     private void verifyTelemetryScopeContract(
             Ast.BlockStmt scope, Env env, Set<String> generics, Type self) {
+        // A lexical try/finally is not a continuation-owned trace frame.
+        // Until task/actor migration and cancellation unwind are proved,
+        // reject these callables even if the immediate scope body does not
+        // spell 'await'. Otherwise a nested call can suspend implicitly.
+        if (currentMaySuspend || currentAsyncCallable || currentGenerator
+                || currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "using telemetry.span requires a synchronous non-actor "
+                            + "callable until continuation-owned span frames "
+                            + "and actor carrier migration are verified");
+        }
         if (scope.body().size() != 2
                 || !(scope.body().get(0) instanceof Ast.BindingStmt acquired)
                 || !(scope.body().get(1) instanceof Ast.TryStmt protectedBody)
