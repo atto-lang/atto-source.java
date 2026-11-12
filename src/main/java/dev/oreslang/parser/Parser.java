@@ -2563,6 +2563,8 @@ public final class Parser {
             boolean telemetrySpan = resource instanceof Ast.CallExpr spanCall
                     && spanCall.callee() instanceof Ast.MemberExpr spanMember
                     && spanMember.member().equals("span")
+                    && spanMember.receiver() instanceof Ast.NameExpr spanNamespace
+                    && spanNamespace.name().equals("telemetry")
                     && !spanCall.typeArgumentsPresent();
             if (!transportBorrow && !telemetrySpan) {
                 throw error(previous(),
@@ -2592,7 +2594,7 @@ public final class Parser {
                     new Ast.BindingStmt(Ast.BindingKind.VAL, null,
                             name.lexeme(), resource),
                     new Ast.TryStmt(body, null, List.of(),
-                            List.of(new Ast.ExprStmt(closeScope)))));
+                            List.of(new Ast.ExprStmt(closeScope)))), true);
 
         }
         // Keep these distinct from ordinary calls/identifiers. Exception
