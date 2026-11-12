@@ -3235,6 +3235,53 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Spawn and bind a supervised actor to a durable generation before
+         * publishing its ActorRef. If the runtime has already executed the
+         * worker's first turn, reject rather than installing a late fence.
+         * The group must be managed directly by THIS supervisor.
+         */
+        public <M> ActorRef<M> startStorageChildHost(
+                ActorGroup group, ActorKind kind, IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory,
+                SupervisorStorageEpochAuthority authority,
+                SupervisorStorageEpochAuthority.Activation activation) {
+            requireStorageEpochHostContext(this);
+            Objects.requireNonNull(group);
+            Objects.requireNonNull(authority);
+            Objects.requireNonNull(activation);
+            if (group.supervisor != this || actorGroups.get(group.id()) != group
+                    || !authority.supervisorId().equals(id))
+                throw new SecurityException("storage actor must belong to the issuing supervisor");
+            if (!authority.isCurrentActorActivation(activation))
+                throw new SecurityException("stale storage actor activation before spawn");
+            // group authority makes newly returned workers inaccessible to
+            // outsiders during binding; constructor/factory execution before
+            // binding is still rejected using everTurnExecuted.
+            synchronized (group.authorityLock) {
+                ActorRef<M> actor = group.spawnWorker(kind, policy, behaviorFactory);
+                try {
+                    ActorCell<?> cell = actors.get(actor.id());
+                    if (cell == null || cell.ref != actor
+                            || cell.managedByGroup.get() != group.id())
+                        throw new SecurityException("storage worker lost supervisor ownership");
+                    synchronized (cell.lifecycleLock) {
+                        if (cell.everTurnExecuted || cell.activeTurns != 0
+                                || cell.stopped.get() || cell.finalized
+                                || cell.storageActorActivation != null
+                                || !authority.isCurrentActorActivation(activation))
+                            throw new SecurityException("storage actor late or stale activation binding");
+                        cell.storageActorAuthority = authority;
+                        cell.storageActorActivation = activation;
+                    }
+                    return actor;
+                } catch (RuntimeException | Error failure) {
+                    actor.cancel();
+                    throw failure;
+                }
+            }
+        }
+
+        /**
          * Register one durable partition under this actual runtime supervisor.
          * No other supervisor in the same runtime can claim the same partition.
          * Called only by a trusted host during bootstrap; activation itself
@@ -8432,6 +8479,11 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** Optional supervisor-bound authority, fixed before first guest turn. */
+        private volatile SupervisorStorageEpochAuthority storageActorAuthority;
+        private volatile SupervisorStorageEpochAuthority.Activation storageActorActivation;
+        private SupervisorStorageEpochAuthority.ActorTurnLease storageActorTurnLease;
+        private boolean everTurnExecuted;
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -8966,7 +9018,15 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor single-writer execution lease violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
                 }
+                SupervisorStorageEpochAuthority authority = storageActorAuthority;
+                if (authority != null) {
+                    // A pending stale mailbox or resumed continuation cannot
+                    // start a physical turn after activation revocation.
+                    storageActorTurnLease =
+                            authority.enterActorTurn(storageActorActivation);
+                }
                 activeTurns = 1;
+                everTurnExecuted = true;
                 return true;
             }
         }
@@ -9052,6 +9112,12 @@ public final class ActorRuntime implements AutoCloseable {
                                     + ": activeTurns=" + activeTurns);
                 }
                 activeTurns = 0;
+                SupervisorStorageEpochAuthority.ActorTurnLease generationLease =
+                        storageActorTurnLease;
+                storageActorTurnLease = null;
+                // Drop the generation lease after last physical actor user
+                // turn, before admitting a new supervisor generation.
+                if (generationLease != null) generationLease.close();
                 if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
