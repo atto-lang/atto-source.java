@@ -76,6 +76,16 @@ public final class ImportRules {
         if (imported.path().length() > 4096 || imported.path().chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("import path contains invalid control characters or is too long");
         }
+        // The parser may recognize the canonical "use std.telemetry" syntax,
+        // but no runtime authority exists until a trusted compiler builtin
+        // module resolver and scoped using cleanup have been implemented.
+        // A handwritten "import ... from \"std.telemetry\"" must not bypass
+        // that boundary either. Do NOT expose this as a generic file import.
+        if ("std.telemetry".equals(imported.path())) {
+            throw new IllegalArgumentException(
+                    "use std.telemetry requires a trusted compiler builtin resolver "
+                            + "and scoped-span lifetime lowering; feature is not enabled");
+        }
 
         if (!isJavaPath(imported.path()) && isExplicitSelfPath(imported.path())) {
             throw new IllegalArgumentException(
