@@ -340,6 +340,96 @@ final class AttoRedisNioThroughputTest {
         System.out.println("ATTO_CORRELATED_REAL_ACTOR_256_PIPELINE=PASS");
     }
 
+    /**
+     * Real compiled Atto actor owns one Map<Bytes,Bytes> across two independent
+     * TCP sessions. The network layer owns only NIO2 framing/routing metadata.
+     */
+    @Test
+    @Timeout(value = 120, unit = TimeUnit.SECONDS)
+    void realAttoRedisTwoClientsShareStorageAndRouteBinaryReplies() throws Exception {
+        String fixture = "redis_actor_nio_multiclient_bytes.atto";
+        String code = resource(fixture);
+        int port = freePort();
+        String bind = "network.listen_async(\"127.0.0.1\", 16399)";
+        assertTrue(code.contains(bind));
+        code = code.replace(bind, "network.listen_async(\"127.0.0.1\", " + port + ")");
+        OresCompiler.parseAndTypeCheck(code);
+        final String guestCode = code;
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> guest = executor.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID,
+                                new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
+                        .build()) {
+                    context.eval(Source.newBuilder(OresLanguage.ID, guestCode, fixture)
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
+                }
+            });
+            try (Socket first = awaitGuest(guest, port);
+                    Socket second = awaitGuest(guest, port)) {
+                first.setSoTimeout(30000);
+                second.setSoTimeout(30000);
+                first.setTcpNoDelay(true);
+                second.setTcpNoDelay(true);
+                byte[] key = {(byte) 255, 0, 13, 10};
+                byte[] original = {(byte) 254, 0, 13, 10, 42};
+                byte[] replacement = {(byte) 255, 0, 0, 10, 13};
+                check(first, frame(ascii("SET"), key, original), OK, "multi_first_set", 0, 0);
+                check(second, frame(ascii("GET"), key), bulk(original), "multi_second_get", 0, 1);
+                check(second, frame(ascii("SET"), key, replacement), OK, "multi_second_set", 0, 2);
+                check(first, frame(ascii("GET"), key), bulk(replacement), "multi_first_get", 0, 3);
+
+                // Both sockets send pipeline bursts before either starts reading.
+                // Disjoint keys avoid assuming a cross-client arrival order,
+                // while the shared key checks above prove global visibility.
+                ByteArrayOutputStream commands1 = new ByteArrayOutputStream();
+                ByteArrayOutputStream commands2 = new ByteArrayOutputStream();
+                ByteArrayOutputStream expected1 = new ByteArrayOutputStream();
+                ByteArrayOutputStream expected2 = new ByteArrayOutputStream();
+                for (int i = 0; i < 32; i++) {
+                    byte[] key1 = {(byte) i, 1, 0};
+                    byte[] key2 = {(byte) i, 2, (byte) 255};
+                    byte[] value1 = {0, (byte) i, 13, 10};
+                    byte[] value2 = {(byte) 255, (byte) i, 0, 10};
+                    commands1.write(frame(ascii("SET"), key1, value1));
+                    commands2.write(frame(ascii("SET"), key2, value2));
+                    expected1.write(OK);
+                    expected2.write(OK);
+                }
+                for (int i = 0; i < 32; i++) {
+                    byte[] key1 = {(byte) i, 1, 0};
+                    byte[] key2 = {(byte) i, 2, (byte) 255};
+                    byte[] value1 = {0, (byte) i, 13, 10};
+                    byte[] value2 = {(byte) 255, (byte) i, 0, 10};
+                    commands1.write(frame(ascii("GET"), key1));
+                    commands2.write(frame(ascii("GET"), key2));
+                    expected1.write(bulk(value1));
+                    expected2.write(bulk(value2));
+                }
+                first.getOutputStream().write(commands1.toByteArray());
+                second.getOutputStream().write(commands2.toByteArray());
+                assertArrayEquals(expected1.toByteArray(),
+                        first.getInputStream().readNBytes(expected1.size()),
+                        "client one must not receive client two replies");
+                assertArrayEquals(expected2.toByteArray(),
+                        second.getInputStream().readNBytes(expected2.size()),
+                        "client two must not receive client one replies");
+                check(first, frame(ascii("QUIT")), OK, "multi_quit_first", 0, 64);
+                assertEquals(-1, first.getInputStream().read());
+                // Client one's QUIT MUST NOT stop the shared storage actor.
+                check(second, frame(ascii("GET"), key), bulk(replacement),
+                        "multi_after_first_quit", 0, 65);
+                check(second, frame(ascii("QUIT")), OK, "multi_quit_second", 0, 66);
+                assertEquals(-1, second.getInputStream().read());
+            }
+            guest.get(30, TimeUnit.SECONDS);
+        }
+        System.out.println("ATTO_REDIS_REAL_MULTI_CLIENT_BINARY=PASS");
+    }
+
     @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
