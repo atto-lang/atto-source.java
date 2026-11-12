@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feat/sealed-actor-state-forward-port-20261029
+      - feat/bare-handle-state-checked-alias-20261112
   pull_request:
   workflow_dispatch:
 permissions:
@@ -32,8 +33,10 @@ jobs:
             src/main/java/dev/oreslang/ast/Ast.java \
             src/main/java/dev/oreslang/parser/Parser.java \
             src/main/java/dev/oreslang/types/TypeChecker.java \
+            src/main/java/dev/oreslang/types/OwnershipChecker.java \
             src/main/java/dev/oreslang/nodes/OresEvalRootNode.java \
-            src/test/java/dev/oreslang/ActorCriticalStateModeTest.java; do
+            src/test/java/dev/oreslang/ActorCriticalStateModeTest.java \
+            src/test/java/dev/oreslang/ActorBareHandleStateCallTest.java; do
             git ls-files --error-unmatch -- "$file" >/dev/null
             test "$(git ls-files -s -- "$file" | cut -d ' ' -f 1)" = 100644
             echo "GUEST_SOURCE_BLOB $file $(git hash-object "$file")"
@@ -52,12 +55,13 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorStateLoanTest,ActorSingleStateSchemaTest test
+          mvn -B -ntp -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorStateLoanTest,ActorSingleStateSchemaTest,ActorBareHandleStateCallTest test
           for spec in \
             ActorCriticalStateModeTest:12 \
             ActorCriticalModeConformanceTest:9 \
             ActorStateLoanTest:9 \
-            ActorSingleStateSchemaTest:7; do
+            ActorSingleStateSchemaTest:7 \
+            ActorBareHandleStateCallTest:10; do
             class="${spec%%:*}"
             expected="${spec##*:}"
             report="target/surefire-reports/TEST-dev.oreslang.${class}.xml"
@@ -68,4 +72,4 @@ jobs:
             done
             echo "GUEST_SUITE_PASS ${class} tests=${expected}"
           done
-          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=37'
+          echo 'GRAAL_JVM_CRITICAL_MODES_AND_BARE_LOOKUP_PASS tests=47'
