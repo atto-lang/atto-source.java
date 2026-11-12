@@ -8203,6 +8203,15 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "socket.read_resp2_binary_async");
                         return socket.readResp2BinaryAsync();
                     };
+                    case "read_resp2_binary_batch_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_resp2_binary_batch_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)
+                                || n.longValue() < 1 || n.longValue() > 64) {
+                            throw new IllegalArgumentException(
+                                    "binary RESP2 batch size must be integer 1..64");
+                        }
+                        return socket.readResp2BinaryBatchAsync(n.intValue());
+                    };
                     case "write_resp2_binary_async" -> (Invokable) args -> {
                         requireTwo(args, "socket.write_resp2_binary_async");
                         String status = requireString(args.get(0), "binary RESP2 reply kind");
