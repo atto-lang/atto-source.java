@@ -15,6 +15,58 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
+
+    @Test
+    void closeReleasesPendingWriterWithoutPublishingRejectedPayload() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1, 2);
+        assertTrue(channel.tryWrite(11));
+        OresFuture<Void> pending = channel.writeAsync(22);
+        assertFalse(pending.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        channel.close();
+        assertThrows(RuntimeException.class, pending::join);
+        assertEquals(0, channel.pendingRegistrations(),
+                "shutdown must release the pending write registration");
+        assertEquals(11, channel.tryRead().orElseThrow(),
+                "the previously admitted payload must remain ordered");
+        assertTrue(channel.tryRead().isEmpty(),
+                "the rejected write must never appear after close");
+        assertFalse(channel.tryWrite(33));
+        channel.close(); // repeated close does not republish the rejected payload
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void pendingReaderCancellationRestoresFullRegistrationBudget() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1, 1);
+        OresFuture<Integer> first = channel.readAsync();
+        assertFalse(first.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(first.cancel(false));
+        assertEquals(0, channel.pendingRegistrations(),
+                "a cancelled reader may not hold its registration quota");
+        OresFuture<Integer> next = channel.readAsync();
+        assertFalse(next.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(channel.tryWrite(42));
+        assertEquals(42, next.join());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void failedRendezvousSendDoesNotQueueOrBlock() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0, 1);
+        assertFalse(channel.tryWrite(7),
+                "zero-capacity channel must reject an unmatched immediate send");
+        assertEquals(0, channel.pendingRegistrations());
+        OresFuture<Integer> waiting = channel.readAsync();
+        assertFalse(waiting.isDone());
+        assertTrue(channel.tryWrite(8),
+                "a matched immediate send must rendezvous without parking");
+        assertEquals(8, waiting.join());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
     @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
