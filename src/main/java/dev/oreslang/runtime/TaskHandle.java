@@ -411,7 +411,25 @@ public final class TaskHandle<T> {
             OresScheduler scheduler, OresScheduler.Task<T> task,
             TaskCancellation parent) {
         Objects.requireNonNull(scheduler, "scheduler");
+        return startVia(task, parent, scheduler::start);
+    }
+
+    @FunctionalInterface
+    interface TaskStarter<T> {
+        OresFuture<T> start(OresScheduler.Task<T> task, Runnable onQuiescent);
+    }
+
+    /**
+     * Admission adapter: actor tasks use ActorRuntime's quota-enforcing,
+     * mailbox-routed starter; ordinary tasks use their scheduler directly.
+     * Cancellation and physical-quiescence receipts remain identical.
+     */
+    static <T> TaskHandle<T> startVia(
+            OresScheduler.Task<T> task,
+            TaskCancellation parent,
+            TaskStarter<T> starter) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(starter, "starter");
         TaskHandle<T> handle = new TaskHandle<>(parent);
         OresFuture<T> source;
         try {
@@ -426,7 +444,7 @@ public final class TaskHandle<T> {
                                 }
                             }
                             : resume -> handle.resumeAtCancellationBoundary(resume, task);
-            source = scheduler.start(bounded, handle::onQuiescent);
+            source = starter.start(bounded, handle::onQuiescent);
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");
