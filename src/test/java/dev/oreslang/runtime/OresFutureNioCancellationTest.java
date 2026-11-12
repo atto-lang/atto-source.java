@@ -43,4 +43,32 @@ final class OresFutureNioCancellationTest {
         assertEquals(0, retirements.get(),
                 "ordinary producer failure is not consumer cancellation");
     }
+    @Test void cancelledOwnedReadResultCannotEscapeAndMayBeZeroized() {
+        AtomicInteger retirements = new AtomicInteger();
+        AtomicReference<OresFuture.Callback<OresBytes>> callback = new AtomicReference<>();
+        OresFuture<OresBytes> pending = OresFuture.fromCallback(
+                callback::set, retirements::incrementAndGet);
+        assertTrue(pending.cancel(false));
+        byte[] backing = {(byte) 255, 2, 3};
+        OresBytes rejected = OresBytes.fromDetached(backing);
+        assertFalse(callback.get().tryResolve(rejected),
+                "NIO consumer cancellation must win over a late resource callback");
+        rejected.close();
+        assertArrayEquals(new byte[] {0, 0, 0}, backing,
+                "late, unpublished owned NIO payload must be erased");
+        assertEquals(1, retirements.get());
+    }
+
+    @Test void acceptedOwnedReadCanBeRetiredByReceiver() {
+        AtomicReference<OresFuture.Callback<OresBytes>> callback = new AtomicReference<>();
+        OresFuture<OresBytes> pending = OresFuture.fromCallback(callback::set);
+        byte[] backing = {9, 8, 7};
+        OresBytes value = OresBytes.fromDetached(backing);
+        assertTrue(callback.get().tryResolve(value));
+        assertFalse(pending.cancel(false));
+        assertEquals(3, value.size());
+        value.close();
+        assertArrayEquals(new byte[] {0, 0, 0}, backing);
+    }
+
 }
