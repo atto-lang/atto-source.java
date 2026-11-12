@@ -242,3 +242,42 @@ test('publisher final receipt requires authorization after both ref readbacks', 
     && rollback > finalGuard,
     'revoked authorization must be rejected before successful handoff return');
 });
+
+test('carrier main cannot fall back to review-only authority', () => {
+  const publisher = readFileSync(path.join(ROOT,
+    'scripts/publish-private-ci-source-v3.py'), 'utf8');
+  assert.doesNotMatch(publisher, /def review_attested_carrier_main\(/u);
+  assert.doesNotMatch(publisher, /def latest_carrier_review\(/u);
+  assert.doesNotMatch(publisher, /"review_pr"/u,
+    'an unprotected carrier PR must not be a contract authority mode');
+  const start = publisher.indexOf('def checked_carrier_main(');
+  const end = publisher.indexOf('\n\ndef checked_destination(', start);
+  assert.ok(start >= 0 && end > start, 'carrier admission function missing');
+  const body = publisher.slice(start, end);
+  assert.match(body, /if branch\.get\("protected"\) is not True:\n\s+raise Denied\("carrier main is not protected; review-only fallback denied"\)/u);
+  assert.match(body, /legacy\._require_strict_source_protection\(protection\)/u,
+    'destination protection must be as strict as origin protection');
+  assert.match(body, /require_carrier_security_codeowners\(codeowners\)/u);
+});
+
+test('weakening carrier protected-main check fails regression', () => {
+  const publisher = readFileSync(path.join(ROOT,
+    'scripts/publish-private-ci-source-v3.py'), 'utf8');
+  const start = publisher.indexOf('def checked_carrier_main(');
+  const end = publisher.indexOf('\n\ndef checked_destination(', start);
+  assert.ok(start >= 0 && end > start);
+  const original = publisher.slice(start, end);
+  const guard = 'if branch.get("protected") is not True:\n'
+    + '        raise Denied("carrier main is not protected; review-only fallback denied")';
+  const assertCarrierGate = (body) => {
+    assert.ok(body.includes(guard), 'unprotected main must be rejected before any further lookup');
+    assert.ok(body.includes('legacy._require_strict_source_protection(protection)'));
+  };
+  assertCarrierGate(original);
+  for (const broken of [
+    original.replace(guard, 'if False:\n        pass'),
+    original.replace('legacy._require_strict_source_protection(protection)', 'pass'),
+    original.replace('raise Denied("carrier main is not protected; review-only fallback denied")',
+      'return contract["base_sha"]'),
+  ]) assert.throws(() => assertCarrierGate(broken));
+});
