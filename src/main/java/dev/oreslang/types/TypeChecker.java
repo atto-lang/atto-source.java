@@ -209,6 +209,21 @@ public final class TypeChecker {
     }
 
     /**
+     * A parsed user method named handle_state is rejected by Parser, but
+     * macros, linked ASTs and direct compiler API users can inject ClassDecl
+     * objects without passing through Parser. Never allow such a forged
+     * method to masquerade as the future compiler-owned state-loan intrinsic.
+     */
+    private static void rejectForgedActorStateIntrinsic(Ast.ClassDecl actor) {
+        if (actor.actorKind() != Ast.ActorKind.NONE
+                && actor.methods().stream().anyMatch(m -> m.name().equals("handle_state"))) {
+            throw new IllegalArgumentException(
+                    "ACTOR_STATE_INTRINSIC_FORGED: actor '" + actor.name()
+                            + "' cannot define compiler-owned handle_state");
+        }
+    }
+
+    /**
      * All checked entrypoints MUST reject unlowered sealed state before any
      * macro/annotation expansion can project or rebuild an actor ClassDecl
      * with legacy 11-parameter constructors. This is not runtime lowering.
@@ -216,12 +231,14 @@ public final class TypeChecker {
     private static void rejectUnloweredSealedActorState(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.ClassDecl actor
-                        && !actor.sealedStateFields().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
-                                    + actor.name() + "' requires compiler-sealed state ownership "
-                                    + "and handle_state lowering; not yet enabled");
+                if (declaration instanceof Ast.ClassDecl actor) {
+                    rejectForgedActorStateIntrinsic(actor);
+                    if (!actor.sealedStateFields().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
+                                        + actor.name() + "' requires compiler-sealed state ownership "
+                                        + "and handle_state lowering; not yet enabled");
+                    }
                 }
             }
         }
@@ -278,6 +295,7 @@ public final class TypeChecker {
         rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
+            rejectForgedActorStateIntrinsic(linked);
             if (!linked.sealedStateFields().isEmpty())
                 throw new IllegalArgumentException(
                         "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: linked actor '"

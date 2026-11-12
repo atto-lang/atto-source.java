@@ -1249,6 +1249,13 @@ public final class Parser {
                 throw error(peek(), "actor handle_state is compiler-owned; "
                         + "user-defined state-loan authority is forbidden");
             }
+            // critical is a protected-state effect, not an ordinary actor
+            // method named "critical". Do not silently drop the effect
+            // while compiler checked-loan lowering is unavailable.
+            if (isContextualIdentifier("critical")) {
+                throw error(peek(), "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: "
+                        + "critical methods require checked state loans and non-suspending effects");
+            }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
                         + "panic goes directly to the supervisor CONTROL lane");

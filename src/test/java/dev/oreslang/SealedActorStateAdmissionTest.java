@@ -136,6 +136,65 @@ final class SealedActorStateAdmissionTest {
                 """, "actor handle_state is compiler-owned");
     }
 
+    @Test void criticalActorMethodCannotBecomeOrdinaryActorMethod() {
+        rejected("""
+                define actor Ledger as
+                  critical increment(): void { return; }
+                end
+                """, "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED");
+        rejected("""
+                define actor Ledger as
+                  state { let int count = 0; }
+                  critical increment(): void { return; }
+                end
+                """, "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED");
+    }
+
+    @Test void directAstCannotForgeCompilerOwnedHandleStateIntrinsic() {
+        // Parser's reserved-name check is not enough: AST expansion and
+        // linked compiler APIs can construct methods without re-parsing.
+        var program = Parser.parse("""
+                define actor Ledger as
+                  safe_name(): void { return; }
+                end
+                """);
+        var module = program.modules().getFirst();
+        var actor = (dev.oreslang.ast.Ast.ClassDecl) module.declarations().getFirst();
+        var method = actor.methods().getFirst();
+        var forged = new dev.oreslang.ast.Ast.MethodDecl(
+                "handle_state", method.visibility(), method.isStatic(),
+                method.isAbstract(), method.async(), method.suspends(),
+                method.structural(), method.explicitReceiverType(),
+                method.genericParameters(), method.parameters(), method.returnType(),
+                method.annotations(), method.body(), method.effects());
+        var injected = new dev.oreslang.ast.Ast.ClassDecl(
+                actor.name(), actor.visibility(), actor.isAbstract(), actor.actorKind(),
+                actor.genericParameters(), actor.parents(), actor.interfaces(),
+                actor.fields(), actor.constructor(), java.util.List.of(forged),
+                actor.actorConcurrency(), actor.sealedStateFields());
+        var forgedProgram = new dev.oreslang.ast.Ast.Program(
+                program.namespace(), program.imports(), java.util.List.of(
+                        new dev.oreslang.ast.Ast.ModuleDecl(
+                                module.name(), module.annotations(), module.contracts(),
+                                java.util.List.of(injected))));
+
+        var direct = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithDiagnostics(forgedProgram));
+        assertTrue(direct.getMessage().contains("ACTOR_STATE_INTRINSIC_FORGED"));
+        var linked = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        forgedProgram, java.util.Map.of(), java.util.Map.of(), java.util.Map.of()));
+        assertTrue(linked.getMessage().contains("ACTOR_STATE_INTRINSIC_FORGED"));
+        var analyze = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.analyze(forgedProgram));
+        assertTrue(analyze.getMessage().contains("ACTOR_STATE_INTRINSIC_FORGED"));
+        var linkedActor = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, java.util.Map.of("Ledger", injected),
+                        java.util.Map.of(), java.util.Map.of()));
+        assertTrue(linkedActor.getMessage().contains("ACTOR_STATE_INTRINSIC_FORGED"));
+    }
+
     @Test void ordinaryActorMethodsAndLegacySpellingRemainAsBefore() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define actor Ledger as

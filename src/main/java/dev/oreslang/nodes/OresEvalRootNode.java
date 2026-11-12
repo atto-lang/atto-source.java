@@ -343,6 +343,16 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalStateException(
                                     "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: "
                                     + "sealed actor state cannot run as ordinary fields");
+                        // Raw AST evaluation is not required to pass TypeChecker.
+                        // A forged user method must never shadow the future
+                        // compiler-owned state loan intrinsic in this path.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && klass.methods().stream().anyMatch(
+                                        m -> m.name().equals("handle_state"))) {
+                            throw new IllegalStateException(
+                                    "ACTOR_STATE_INTRINSIC_FORGED: actor '"
+                                            + klass.name() + "' defines handle_state");
+                        }
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
