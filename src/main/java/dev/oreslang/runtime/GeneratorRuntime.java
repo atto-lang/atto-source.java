@@ -240,16 +240,24 @@ public final class GeneratorRuntime {
          * needed, so runtime shutdown cannot cancel the only cleanup waiter.
          */
         public synchronized OresFuture<Void> closeAsync() {
+            // A root-owned generator is not an actor capability. Even a
+            // non-parking close would cancel its producer from a foreign
+            // actor turn and could execute finalizers outside the owner pool.
+            if (ActorRuntime.inActorExecution()) {
+                return OresFuture.failed(new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: async generator close "
+                        + "requires its owning execution domain"));
+            }
             if (closeFuture == null) closeFuture = engine.closeAsyncReceipt();
             return closeFuture;
         }
 
         @Override
         public void close() {
-            if (ActorRuntime.inActorExecution() && !engine.isTerminalReady()) {
+            if (ActorRuntime.inActorExecution()) {
                 throw new IllegalStateException(
-                        "synchronous AsyncIterator.close() would park an actor carrier; "
-                                + "use/await the asynchronous close operation");
+                        "ACTOR_GENERATOR_UNSUPPORTED: synchronous async generator "
+                        + "close requires its owning execution domain");
             }
             engine.close();
         }
