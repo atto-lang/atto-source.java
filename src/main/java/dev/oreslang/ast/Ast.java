@@ -599,17 +599,34 @@ public final class Ast {
         }
     }
 
+    /**
+     * Nominal callable contract. Trait identity is retained beyond parsing so
+     * cross-file import/link admission cannot treat an interface or module
+     * contract with a matching name as an imported trait.
+     */
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            boolean trait) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+            if (moduleContract && trait) {
+                throw new IllegalArgumentException(
+                        "one declaration cannot be both module contract and trait");
+            }
+        }
+        // Preserve the existing six-argument AST API for ordinary interfaces
+        // and module contracts; only explicit parsed traits set trait=true.
+        public InterfaceDecl(String name, Visibility visibility,
+                             List<String> genericParameters, List<TypeRef> parents,
+                             List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members, moduleContract, false);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
             this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
