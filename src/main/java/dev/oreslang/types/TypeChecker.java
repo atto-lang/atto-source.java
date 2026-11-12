@@ -3404,6 +3404,46 @@ public final class TypeChecker {
                     return checkedFunction.result();
                 }
 
+                // The Redis NIO2 bridge may only target a statically verified
+                // Atto actor with the exact binary request/reply contract.
+                // Never allow unknown/structural ActorRef or host KV fallback.
+                if (receiver instanceof Named nioListener
+                        && nioListener.name().equals("NioListener")
+                        && member.member().equals("serve_redis_actor_async")) {
+                    if (call.typeArgumentsPresent() || call.arguments().size() != 2) {
+                        throw new IllegalArgumentException(
+                                "listener.serve_redis_actor_async requires (typed KV ActorRef, max_sessions)");
+                    }
+                    Type target = typeOf(call.arguments().getFirst(), env, generics, self);
+                    if (!(target instanceof Named actorRef)
+                            || !actorRef.name().equals("ActorRef")) {
+                        throw new IllegalArgumentException(
+                                "bounded Redis NIO2 requires a concrete typed ActorRef");
+                    }
+                    Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+                    StreamPorts ports = streamPortsForClass(
+                            actorClass, actorRef.arguments().getFirst());
+                    Type bytes = new Named("$builtin$Bytes", List.of());
+                    Type input = new Tuple(
+                            List.of(Primitive.INT, Primitive.INT, bytes, bytes),
+                            TupleKind.TUPLE);
+                    Type output = new Tuple(
+                            List.of(Primitive.INT, Primitive.STRING, bytes),
+                            TupleKind.TUPLE);
+                    if (ports == null) {
+                        throw new IllegalArgumentException(
+                                "bounded Redis NIO2 requires explicit StreamOperator<I,O>");
+                    }
+                    requireAssignable(ports.input(), input, "Redis actor input ABI");
+                    requireAssignable(input, ports.input(), "Redis actor input ABI");
+                    requireAssignable(ports.output(), output, "Redis actor output ABI");
+                    requireAssignable(output, ports.output(), "Redis actor output ABI");
+                    requireAssignable(
+                            typeOf(call.arguments().get(1), env, generics, self),
+                            Primitive.INT, "bounded Redis total client sessions");
+                    return Primitive.VOID;
+                }
+
                 // P0: Future callback combinators are direct-call typed operations.
                 // Returning Future<U> from map produces Future<Future<U>>; only
                 // explicitly invoked compose/flatMap removes that inner layer.
