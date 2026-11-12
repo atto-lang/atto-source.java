@@ -7120,6 +7120,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            if (call.callee() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("to_string")
+                    && env.lookup("to_string") == Env.MISSING) {
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(
+                        values -> {
+                            requireOne(values, "to_string");
+                            return guestPrimitiveToString(values.getFirst());
+                        }, args);
+            }
+
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
@@ -7979,7 +7990,30 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        // Checked scalar conversion only. Do not expose Java host toString(),
+        // class internals, identity strings, or implicit interpolation coercion.
+        private static String guestPrimitiveToString(Object value) {
+            if (value instanceof String text) return text;
+            if (value instanceof Boolean flag) return flag ? "true" : "false";
+            if (value instanceof Long number) return Long.toString(number);
+            if (value instanceof Integer number) return Integer.toString(number);
+            if (value instanceof Short number) return Short.toString(number);
+            if (value instanceof Byte number) return Byte.toString(number);
+            throw new IllegalArgumentException(
+                    "to_string requires int, bool or String; invoke an explicit class method for objects");
+        }
+
         private Object member(Object receiver, String name, Env env) {
+            if (name.equals("to_string") && (receiver instanceof String
+                    || receiver instanceof Boolean || receiver instanceof Long
+                    || receiver instanceof Integer || receiver instanceof Short
+                    || receiver instanceof Byte)) {
+                return (Invokable) args -> {
+                    requireZero(args, "to_string");
+                    return guestPrimitiveToString(receiver);
+                };
+            }
+
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
