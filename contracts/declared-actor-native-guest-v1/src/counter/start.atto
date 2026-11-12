@@ -1,0 +1,5 @@
+namespace counter;
+mtd (Counter c) on_start(): void {
+  self.send(1);
+  return;
+}

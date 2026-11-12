@@ -1,0 +1,6 @@
+namespace counter;
+mtd (Counter c) receive(ActorMail<int> mail): void {
+  self.send(mail.value);
+  self.end();
+  return;
+}

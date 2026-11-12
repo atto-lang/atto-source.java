@@ -195,6 +195,25 @@ public final class PackageNamespaceBuild {
         return auditSnapshot(snapshot());
     }
 
+    /**
+     * Experimental native guest entrypoint for one STATELESS declared actor.
+     *
+     * The canonical source set and static witness are derived from the same
+     * manifest snapshot. Only this trusted package builder may promote the
+     * witness into checked inline actor execution. Direct compile(Map) remains
+     * fail closed; ordinary build() still rejects general declared actors.
+     *
+     * This is NOT sealed-state lowering, arbitrary receiver-alias lowering,
+     * supervisor CONTROL, or five-backend parity.
+     */
+    public synchronized Ast.Program compileStatelessActorGuestV1()
+            throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return VerifiedStatelessActorGuestV1.lower(
+                packageIdentity, source.parsed(), audit);
+    }
+
     public synchronized Result build() throws IOException {
         SourceSnapshot source = snapshot();
         if (hasDeclaredActors(source.parsed())) {

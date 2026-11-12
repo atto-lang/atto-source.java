@@ -10,6 +10,9 @@ on:
       - 'src/main/java/dev/oreslang/types/ActorContractWitness.java'
       - 'src/main/java/dev/oreslang/types/ManifestActorContractBuild.java'
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
+      - 'src/main/java/dev/oreslang/compiler/VerifiedStatelessActorGuestV1.java'
+      - 'src/test/java/dev/oreslang/DeclaredActorNativeGuestV1Test.java'
+      - 'contracts/declared-actor-native-guest-v1/**'
       - 'src/main/java/dev/oreslang/compiler/ActorMethodIndex.java'
       - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
       - 'src/main/java/dev/oreslang/compiler/ExportInterfaceCollector.java'
@@ -84,7 +87,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,DeclaredActorNativeGuestV1Test,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -96,6 +99,7 @@ jobs:
               NamespaceActorStateAttachmentTest \
               DeclaredActorContractWitnessTest \
               DeclaredActorCompilerManifestGateTest \
+              DeclaredActorNativeGuestV1Test \
               ActorContractTargetCompilerIntegrationTest \
               PackageNamespaceBuildTest \
               ActorReceiverBinderTest \
