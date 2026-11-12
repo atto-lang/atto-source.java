@@ -19,10 +19,12 @@ The trusted Java host then opens a one-shot
 `Context.eval`**. `OresLanguage.parse` consumes the lease before its
 ordinary TypeChecker path and requires *exact* source text and code-unit
 identity. Wrong bytes, wrong file ID, nested leases, replay or legacy
-prechecked-source overlaps fail closed. Without this scope,
+prechecked-source overlaps fail closed. The root and dispatch method live
+inside the compiler-issued checked descriptor; no separately public
+root-token accessor exists. Without this scope,
 `Context.eval` still rejects namespace actor source normally.
 
-The dedicated `CheckedActorGuestRootNode` is a genuine Truffle
+The private nested `CheckedNamespaceActorGuestProof.CheckedRoot` is a genuine Truffle
 `RootCallTarget`, entered by the Graal Polyglot `Context.eval` boundary.
 It uses the context's `ActorRuntime` and the compiled, immutable checked
 IR to instantiate two actors, process 1,000 typed mail turns on the first
