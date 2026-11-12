@@ -331,12 +331,7 @@ pub async fnc serve_redis_session(
           value = copy_bytes(rt borrow selected_value);
         fi
         writech requests, (client_id, kind, key, value);
-        val Option<Tuple[int, List[int]]> maybe_reply = await (nb readch replies);
-        if maybe_reply.is_none(); do
-          await socket.close_async();
-          return;
-        fi
-        const Tuple[int, List[int]] reply = maybe_reply.unwrap();
+        const Tuple[int, List[int]] reply = await (nb readch replies);
         await socket.write_buffer_async(Bytes.from_list(encode_reply(reply)));
         reset_resp2(rt mut borrow reader);
       fi
@@ -366,10 +361,8 @@ pub async routine main(): void {
       let int retired = 0;
       loop {
         if retired == 2 then break; fi
-        val Option<Tuple[int, int, List[int], List[int]]> maybe =
+        const Tuple[int, int, List[int], List[int]] request =
             await (nb readch requests);
-        if maybe.is_none() then break; fi
-        const Tuple[int, int, List[int], List[int]] request = maybe.unwrap();
         const int client_id = request[0];
         const int kind = request[1];
         if kind == -1; do
