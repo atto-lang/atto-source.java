@@ -144,6 +144,23 @@ final class TelemetrySpanScopeTest {
     }
 
     @Test
+    void guestSchedulerTurnsCannotChangeInstrumentationPolicy() throws Exception {
+        TelemetrySpanScope.disableExistingSites();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Boolean> guest = scheduler.start(resume -> {
+                assertThrows(SecurityException.class,
+                        () -> TelemetrySpanScope.enableExistingSites(100, 1000, ""));
+                assertThrows(SecurityException.class,
+                        TelemetrySpanScope::disableExistingSites);
+                return OresScheduler.done(true);
+            });
+            assertTrue(guest.get(5, TimeUnit.SECONDS));
+        } finally {
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
     void invalidOperatorRequestsDoNotEnableTracing() {
         TelemetrySpanScope.disableExistingSites();
         assertThrows(IllegalArgumentException.class,
