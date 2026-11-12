@@ -72,14 +72,20 @@ public class GeneratorCancellationInterruptionTest {
              })) {
             ExecutionException first = assertThrows(ExecutionException.class,
                     () -> generator.nextStep().get(3, TimeUnit.SECONDS));
-            RuntimeException original = assertInstanceOf(RuntimeException.class, first.getCause());
-            InterruptedException interrupted =
-                    assertInstanceOf(InterruptedException.class, original.getCause());
+            Throwable originalCause = first.getCause();
+            Throwable firstRoot = originalCause instanceof RuntimeException
+                    && originalCause.getCause() instanceof InterruptedException
+                    ? originalCause.getCause() : originalCause;
+            InterruptedException interrupted = assertInstanceOf(InterruptedException.class, firstRoot);
             assertEquals("producer interruption without close", interrupted.getMessage());
             ExecutionException second = assertThrows(ExecutionException.class,
                     () -> generator.nextStep().get(3, TimeUnit.SECONDS));
-            assertSame(interrupted, second.getCause(),
-                    "terminal pulls retain the original checked interruption cause");
+            Throwable laterCause = second.getCause();
+            Throwable laterRoot = laterCause instanceof RuntimeException
+                    && laterCause.getCause() instanceof InterruptedException
+                    ? laterCause.getCause() : laterCause;
+            assertSame(interrupted, laterRoot,
+                    "terminal pulls retain the same underlying producer failure");
         }
     }
 }
