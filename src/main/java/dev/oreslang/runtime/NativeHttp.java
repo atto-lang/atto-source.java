@@ -907,12 +907,16 @@ public final class NativeHttp implements AutoCloseable {
             // Actor DONE notifications may run while ActorRuntime still holds
             // its finalization lock. Never call this from the DONE subscriber
             // or sample the runtime while holding State's ownership lock.
+            final boolean alreadyObserved;
             synchronized (this) {
                 if (poolWorker != null || actor != destination) return;
-                if (unpooledPhysicalExitObserved) {
-                    release();
-                    return;
-                }
+                alreadyObserved = unpooledPhysicalExitObserved;
+            }
+            if (alreadyObserved) {
+                // HTTP completion can synchronously notify guest waiters.
+                // Do not call release while holding the State monitor.
+                release();
+                return;
             }
             final boolean exited;
             try {
