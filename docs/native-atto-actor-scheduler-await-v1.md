@@ -47,6 +47,18 @@ The exact syntax is an interim strict source subset. In particular:
   require separate compiler/runtime lowering and conformance.
 - A selected-blob mirror is not a complete original Git-tree proof; this
   branch must pass source-head full compiler CI and independent security review.
+- Abrupt **root-task cancellation/context shutdown while an await is pending**
+  still needs runtime-owned detached cleanup that stops children and observes
+  their physical DONE before closing the code image. The current state machine
+  handles normal completion and awaited future failures, not arbitrary
+  externally revoked root continuations. Until proven, this route is
+  experimental and must not be promoted to a general, cancellable actor API.
+- Source-org and private CI admission failures with `steps=null` are
+  NOT_EXECUTED. New private source mirrors require explicit destination,
+  immutable source and test-plan authorization under the repository's
+  `.github/private-ci-approved-repositories.txt` and
+  `.github/private-ci-carrier-contracts.json`; do not silently choose an
+  unrelated organization when runner capacity is exhausted.
 
 ## Next generalization
 
