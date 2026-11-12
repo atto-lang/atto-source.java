@@ -61,6 +61,30 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         @Override public void close() { gate.releasePhysicalIo(this); }
     }
 
+    /**
+     * A real ActorCell turn, rather than a bridge callback, pins its activation
+     * until the physical carrier has left user code and resumed continuations.
+     * Runtime internal only: guest source cannot construct or close another
+     * actor's lease.
+     */
+    static final class ActorTurnLease implements AutoCloseable {
+        private final SupervisorStorageEpochAuthority gate;
+        private boolean released;
+        private ActorTurnLease(SupervisorStorageEpochAuthority gate) {
+            this.gate = gate;
+        }
+        @Override public void close() {
+            synchronized (gate.lock) {
+                if (released) return;
+                if (gate.executingActorTurns <= 0)
+                    throw new IllegalStateException("actor-turn generation lease underflow");
+                --gate.executingActorTurns;
+                released = true;
+                gate.lock.notifyAll();
+            }
+        }
+    }
+
     /** Takeover revokes the old ticket but cannot activate until I/O drains. */
     public static final class QuiescencePendingException extends IllegalStateException {
         public QuiescencePendingException(int physicalIo, int executingCommits) {
@@ -82,6 +106,7 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     // Guarded by lock; these are physical operation receipts, NOT guest state.
     private int physicalIoInFlight;
     private int executingCommits;
+    private int executingActorTurns;
 
     SupervisorStorageEpochAuthority(ActorRuntime runtime,
             ActorRuntime.ActorSupervisor supervisor, String partition,
@@ -118,8 +143,9 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
             // Revocation linearizes before quiescence check. A retry after
             // all physical loans drain may safely reserve the next epoch.
             active = null;
-            if (physicalIoInFlight != 0 || executingCommits != 0)
-                throw new QuiescencePendingException(physicalIoInFlight, executingCommits);
+            if (physicalIoInFlight != 0 || executingCommits != 0 || executingActorTurns != 0)
+                throw new QuiescencePendingException(physicalIoInFlight,
+                        executingCommits + executingActorTurns);
             long expected = generation;
             if (expected == Long.MAX_VALUE - 1) {
                 poisoned = true;
@@ -158,6 +184,30 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
                 throw new IllegalStateException("supervisor physical I/O receipt limit");
             ++physicalIoInFlight;
             return new PendingIo(this, ticket);
+        }
+    }
+
+    /** Internal runtime check, never accepts a client-supplied generation. */
+    boolean isCurrentActorActivation(Activation ticket) {
+        synchronized (lock) { return currentLocked(ticket); }
+    }
+
+    /**
+     * Enter the physical actor scheduler turn. This is called only by a
+     * runtime-bound ActorCell after carrier admission, never by guest code.
+     * With this lease held, activate() cannot admit a replacement epoch.
+     */
+    ActorTurnLease enterActorTurn(Activation ticket) {
+        if (ActorRuntime.currentActorRuntime() != runtime
+                || ActorRuntime.currentActorId().isEmpty())
+            throw new SecurityException("actor turn requires actual runtime carrier");
+        synchronized (lock) {
+            if (!currentLocked(ticket))
+                throw new SecurityException("stale actor activation at mailbox/continuation dispatch");
+            if (executingActorTurns == Integer.MAX_VALUE)
+                throw new IllegalStateException("actor turn generation lease exhausted");
+            ++executingActorTurns;
+            return new ActorTurnLease(this);
         }
     }
 
@@ -245,7 +295,8 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     /** Only covers operations and callbacks registered at THIS gate. */
     public boolean physicallyQuiescent() {
         synchronized (lock) {
-            return physicalIoInFlight == 0 && executingCommits == 0;
+            return physicalIoInFlight == 0 && executingCommits == 0
+                    && executingActorTurns == 0;
         }
     }
 
