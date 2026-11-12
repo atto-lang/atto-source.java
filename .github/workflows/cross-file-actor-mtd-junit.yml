@@ -12,6 +12,7 @@ on:
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
       - 'src/main/java/dev/oreslang/compiler/VerifiedStatelessActorGuestV1.java'
       - 'src/test/java/dev/oreslang/DeclaredActorNativeGuestV1Test.java'
+      - 'src/test/java/dev/oreslang/OptionalActorReceiverBindingTest.java'
       - 'src/test/java/dev/oreslang/NamespaceHeaderAliasGuestTest.java'
       - 'src/test/java/dev/oreslang/NativeAttoCounterNamespaceGuestTest.java'
       - 'contracts/native-actor-counter-v1/**'
@@ -90,13 +91,14 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,DeclaredActorNativeGuestV1Test,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest,NamespaceHeaderAliasGuestTest,NativeAttoCounterNamespaceGuestTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=OptionalActorReceiverBindingTest,CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,DeclaredActorNativeGuestV1Test,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest,NamespaceHeaderAliasGuestTest,NativeAttoCounterNamespaceGuestTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
         run: |
           set -euo pipefail
           for suite in \
+              OptionalActorReceiverBindingTest \
               CrossFileActorReceiverBindingTest \
               NamespaceActorReceiverSecurityTest \
               NamespaceActorStateAttachmentTest \
