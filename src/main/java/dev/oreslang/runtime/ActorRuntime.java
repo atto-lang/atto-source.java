@@ -2360,13 +2360,34 @@ public final class ActorRuntime implements AutoCloseable {
      * identity or carrier pool.
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
+        return startActorTask(task, () -> { });
+    }
+
+    /**
+     * Compiler-only actor task block entry: retain source cancel/get_done
+     * authority while dispatching each task turn on the actor mailbox pool.
+     * No independent scheduler or supervisor control authority is created.
+     */
+    public <T> TaskHandle<T> startTrackedActorTask(OresScheduler.Task<T> task) {
+        if (currentActor.get() == null || !currentThreadOwnsActorExecutionLease()) {
+            throw new IllegalStateException(
+                    "tracked actor task requires an admitted actor carrier");
+        }
+        return TaskHandle.startVia(task, null, this::startActorTask);
+    }
+
+    private <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task, Runnable onQuiescent) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onQuiescent, "onQuiescent");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            return cell.sourceScheduler().start(task, onQuiescent);
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -2487,7 +2508,15 @@ public final class ActorRuntime implements AutoCloseable {
         OresFuture<T> future;
         try {
             future = cell.sourceScheduler().startWithWallDeadline(
-                    quotaChecked, retireOnce, quota.remainingWallNanos(),
+                    quotaChecked,
+                    () -> {
+                        try {
+                            retireOnce.run();
+                        } finally {
+                            onQuiescent.run();
+                        }
+                    },
+                    quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
