@@ -169,22 +169,32 @@ public final class GeneratorRuntime {
                     try {
                         return engine.next();
                     } finally {
+                        // Engine return is not Future settlement. A yield
+                        // may still be unobserved until the backing task's
+                        // context-exit fence and Future completion run.
                         pullState.set(2);
-                        pullInFlight.set(false);
                     }
                 });
                 pull.whenCompleteRuntime((value, failure) -> {
-                    // Completion before task entry (or cancellation before
-                    // entry) has no producer turn to revoke and must release
-                    // the admission gate. CAS handles the entry/cancel race.
+                    // Completion/cancellation before entry cannot have
+                    // consumed a yield and releases admission immediately.
                     if (pullState.compareAndSet(0, 3)) {
                         pullInFlight.set(false);
                     } else if (pull.isCancelled()) {
-                        // No caller remains to observe an item from this pull.
-                        // Signal close without parking this callback/actor on
-                        // the producer's physical exit. closeAsync() supplies
-                        // an irrevocable receipt for that exit if required.
+                        // An admitted pull has no remaining observer. Revoke
+                        // producer authority without parking the callback,
+                        // then retain single-flight ownership until the
+                        // consumer's *physical* task exit. Logical Future
+                        // cancellation alone is not an exit receipt.
                         engine.requestClose();
+                        runtime.taskExitReceipt(pull).whenCompleteRuntime(
+                                (ignored, exitFailure) -> pullInFlight.set(false));
+                    } else {
+                        // Successful/failed Future settlement means the
+                        // uncancelled backing turn has finished engine.next().
+                        // Prevent a second pull from observing an unclaimed
+                        // yield between engine return and Future settlement.
+                        pullInFlight.set(false);
                     }
                 });
                 return pull;
