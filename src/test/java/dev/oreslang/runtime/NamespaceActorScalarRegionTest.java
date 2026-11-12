@@ -36,6 +36,9 @@ final class NamespaceActorScalarRegionTest {
                 new AtomicReference<>();
         final AtomicInteger rejectedCrossActorReads = new AtomicInteger();
         final AtomicInteger retiredRegions = new AtomicInteger();
+        final AtomicInteger forgedLiveContextsRejected = new AtomicInteger();
+        final AtomicReference<ExecutionContext> firstIssuedTurn = new AtomicReference<>();
+        final AtomicReference<ExecutionContext> latestIssuedTurn = new AtomicReference<>();
 
         private Executor(SharedCodeImageStore.CodeImage image) {
             this.image = image;
@@ -68,9 +71,25 @@ final class NamespaceActorScalarRegionTest {
                 throw new SecurityException("forged actor mail or owner");
             }
             var region = owned.region();
+            // The runtime, not this executor or the region, issues the
+            // unique slot. Reacquiring in this callback preserves identity.
+            var turn = ActorRuntime.sourceStateExecution(context, image, 1L);
+            var sameTurn = ActorRuntime.sourceStateExecution(context, image, 1L);
+            assertEquals(turn.id(), sameTurn.id());
+            assertEquals(turn.executionHandle(), sameTurn.executionHandle());
+            firstIssuedTurn.compareAndSet(null, turn);
+            latestIssuedTurn.set(turn);
             if (!(mail.value() instanceof Long value)) {
                 region.retire(context);
                 throw new SecurityException("wrongly typed ActorMail<int>");
+            }
+            if (value == -2L) {
+                var impostor = copyContext(context);
+                // Even with the correct actor, code image and mailbox, the
+                // counterfeit ActorContext has no runtime-issued turn permit.
+                assertThrows(SecurityException.class,
+                        () -> region.increment(impostor));
+                forgedLiveContextsRejected.incrementAndGet();
             }
             if (value == -1L) {
                 var foreign = firstRegion.get();
@@ -95,6 +114,25 @@ final class NamespaceActorScalarRegionTest {
             owned.region().retire(context);
             retiredRegions.incrementAndGet();
         }
+    }
+
+    private static ActorRuntime.ActorContext<Object> copyContext(
+            ActorRuntime.ActorContext<Object> real) {
+        return new ActorRuntime.ActorContext<>() {
+            @Override public ActorRuntime.ActorRef<Object> self() { return real.self(); }
+            @Override public ActorRuntime runtime() { return real.runtime(); }
+            @Override public ActorRuntime.ActorKind kind() { return real.kind(); }
+            @Override public IsolatePolicy policy() { return real.policy(); }
+            @Override public Optional<ActorRuntime.ActorMemorySlice> privateMemory() {
+                return real.privateMemory();
+            }
+            @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
+                return real.codeImage();
+            }
+            @Override public Optional<ActorRuntime.ActorInboxMail<Object>> currentMail() {
+                return real.currentMail();
+            }
+        };
     }
 
     private static SharedCodeImageStore.CodeImage image(SharedCodeImageStore store) {
@@ -161,6 +199,64 @@ final class NamespaceActorScalarRegionTest {
             assertTrue(b.failure().isEmpty());
             b.stop();
             assertNull(b.done().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void liveActorCannotBorrowAgainstForgedContextWithIdenticalVisibleFields()
+            throws Exception {
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var executor = new Executor(image(store));
+            var actor = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Counter");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send(-2L);
+            actor.drain().get(3, TimeUnit.SECONDS);
+            assertEquals(1, executor.forgedLiveContextsRejected.get());
+            assertEquals(Long.valueOf(1L), executor.observations.get(actor.id()));
+            assertTrue(actor.failure().isEmpty());
+            actor.stop();
+            assertNull(actor.done().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void sourceExecutionSlotRotatesOnEachReceiveAndCannotReplayAfterRestart()
+            throws Exception {
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var executor = new Executor(image(store));
+            var old = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Counter");
+            old.ready().get(3, TimeUnit.SECONDS);
+            old.send(1L);
+            old.drain().get(3, TimeUnit.SECONDS);
+            var oldTurn = executor.latestIssuedTurn.get();
+            assertNotNull(oldTurn);
+            old.send(2L);
+            old.drain().get(3, TimeUnit.SECONDS);
+            var nextTurn = executor.latestIssuedTurn.get();
+            assertNotNull(nextTurn);
+            assertNotEquals(oldTurn.id(), nextTurn.id());
+            assertNotEquals(oldTurn.executionHandle(), nextTurn.executionHandle());
+            old.stop();
+            old.done().get(3, TimeUnit.SECONDS);
+
+            var successor = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Counter");
+            successor.ready().get(3, TimeUnit.SECONDS);
+            assertNotEquals(old.id(), successor.id());
+            assertThrows(RuntimeException.class, () -> old.send(3L));
+            successor.send(4L);
+            successor.drain().get(3, TimeUnit.SECONDS);
+            var successorTurn = executor.latestIssuedTurn.get();
+            assertNotEquals(nextTurn.id(), successorTurn.id());
+            assertNotEquals(nextTurn.executionHandle(), successorTurn.executionHandle());
+            assertEquals(Long.valueOf(1L), executor.observations.get(successor.id()));
+            assertTrue(successor.failure().isEmpty());
+            successor.stop();
+            assertNull(successor.done().get(3, TimeUnit.SECONDS));
         }
     }
 
