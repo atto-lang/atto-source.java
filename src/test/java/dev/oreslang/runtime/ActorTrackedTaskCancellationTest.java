@@ -76,15 +76,22 @@ final class ActorTrackedTaskCancellationTest {
                         task.getDone().get(4, TimeUnit.SECONDS),
                         "getDone must wait for the actor-owned scheduler to retire the task");
 
+                AtomicReference<Throwable> producerFailure = new AtomicReference<>();
                 Thread producer = new Thread(() -> {
-                    assertFalse(ActorRuntime.inActorExecution());
-                    assertNull(OresScheduler.current());
-                    assertTrue(foreignFuture.completeFromRuntime(42));
-                    assertFalse(ActorRuntime.inActorExecution());
+                    try {
+                        assertFalse(ActorRuntime.inActorExecution());
+                        assertNull(OresScheduler.current());
+                        assertTrue(foreignFuture.completeFromRuntime(42));
+                        assertFalse(ActorRuntime.inActorExecution());
+                    } catch (Throwable failure) {
+                        producerFailure.compareAndSet(null, failure);
+                    }
                 }, "late-foreign-future-completion");
                 producer.start();
                 producer.join(4000);
                 assertFalse(producer.isAlive());
+                assertNull(producerFailure.get(),
+                        () -> "late Future producer failed: " + producerFailure.get());
                 assertEquals(1, guestTurns.get(),
                         "late Future completion must not reenter a retired actor task");
                 assertEquals(0, controlCalls.get(),
