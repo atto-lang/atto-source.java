@@ -17,8 +17,8 @@ final class AttoTaskChannelTupleCaptureTest {
     void independentTasksCanShareChannelOfSendTuplePayload() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
-                  val Channel<Tuple<int, List<int>>> queue =
-                      Channel.new<Tuple<int, List<int>>>(4);
+                  val Channel<Tuple[int, List[int]]> queue =
+                      Channel.new<Tuple[int, List[int]]>(4);
                   task scope {
                     let Future<void> writer = task {
                       let List<int> value = [1, 2, 3];
@@ -26,7 +26,7 @@ final class AttoTaskChannelTupleCaptureTest {
                       return;
                     };
                     let Future<void> reader = task {
-                      const Tuple<int, List<int>> received =
+                      const Tuple[int, List[int]] received =
                           await (nb readch queue);
                       return;
                     };
@@ -42,11 +42,11 @@ final class AttoTaskChannelTupleCaptureTest {
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                         pub async fnc main(): void {
-                          val Channel<Tuple<int, Rc<int>>> queue =
-                              Channel.new<Tuple<int, Rc<int>>>(1);
+                          val Channel<Tuple[int, Rc<int>]> queue =
+                              Channel.new<Tuple[int, Rc<int>]>(1);
                           task scope {
                             let Future<void> reader = task {
-                              const Tuple<int, Rc<int>> received =
+                              const Tuple[int, Rc<int>] received =
                                   await (nb readch queue);
                               return;
                             };
