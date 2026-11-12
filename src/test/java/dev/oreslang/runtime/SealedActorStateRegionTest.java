@@ -299,8 +299,14 @@ final class SealedActorStateRegionTest {
             assertNotNull(region.get());
             Thread stopping = Thread.ofPlatform().start(actor::stop);
             try {
-                // STOP might be waiting on physical completion; sealing is
-                // checked by actual view access after both threads rendezvous.
+                // Wait until actual ActorRuntime STOP has sealed the region.
+                // Merely starting a host thread does NOT establish ordering.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!region.get().isSealed() && System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
+                assertTrue(region.get().isSealed(),
+                        "ActorRuntime STOP did not seal in-flight state");
                 assertEquals(1, region.get().activeLoanCount());
                 assertFalse(region.get().isReclaimed());
             } finally {
