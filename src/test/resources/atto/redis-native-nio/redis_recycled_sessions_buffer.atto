@@ -293,7 +293,14 @@ pub async fnc serve_redis_session(
   let int request_id = 0;
   try {
   loop {
-    const Bytes chunk = await socket.read_buffer_async(1024);
+    // A transport reset is a normal session-retirement event. Catch only
+    // the NIO2 read completion, not actor replies or broker execution errors.
+    let Bytes chunk = Bytes.from_list([]);
+    try {
+      chunk = await socket.read_buffer_async(1024);
+    } catch (read_error) {
+      return;
+    }
     if chunk.size == 0; do
       await socket.close_async();
       return;
