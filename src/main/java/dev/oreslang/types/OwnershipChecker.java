@@ -2694,6 +2694,22 @@ public final class OwnershipChecker {
                                 genericBindings(target.owner().genericParameters(),
                                         target.ownerType().arguments()));
                     }
+                } else if (type.name().equals("IteratorResult")
+                        && type.arguments().size() == 1
+                        && !hasLocalTypeAliasNamed("IteratorResult")) {
+                    // IteratorResult<T> is a sealed runtime-owned protocol
+                    // record, not a user ClassDecl. Match TypeChecker's
+                    // exact public fields while preserving the owning root
+                    // for formatting/borrowing and never allowing a dynamic
+                    // or borrowed element to bypass ownership checks.
+                    Ast.TypeRef element = type.arguments().getFirst();
+                    if (member.member().equals("done")) {
+                        fieldType = Ast.TypeRef.simple("bool");
+                    } else if (member.member().equals("value")
+                            && !element.name().equals("$infer$")
+                            && !element.isBorrow()) {
+                        fieldType = new Ast.TypeRef("Option", List.of(element), false);
+                    }
                 }
             }
             if (fieldType == null || fieldType.name().equals("$infer$") || fieldType.isBorrow()) {
