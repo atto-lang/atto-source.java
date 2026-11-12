@@ -7,6 +7,9 @@ on:
       - "src/main/java/dev/oreslang/types/TypeChecker.java"
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
       - "src/test/java/dev/oreslang/SealedActorStateAdmissionTest.java"
+      - "src/main/java/dev/oreslang/runtime/SealedActorStateRegion.java"
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/test/java/dev/oreslang/runtime/SealedActorStateRegionTest.java"
       - ".github/workflows/atto-nats-sealed-state-exact-head.yml"
   push:
     branches:
@@ -45,16 +48,20 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp '-P!native-thread-unix' \
-            '-Dtest=SealedActorStateAdmissionTest,ActorStateLoansTest' \
+            '-Dtest=SealedActorStateAdmissionTest,ActorStateLoansTest,SealedActorStateRegionTest' \
             -Dsurefire.failIfNoSpecifiedTests=true test
           test -f target/surefire-reports/TEST-dev.oreslang.SealedActorStateAdmissionTest.xml
           test -f target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml
+          test -f target/surefire-reports/TEST-dev.oreslang.runtime.SealedActorStateRegionTest.xml
           grep -Fq 'tests="6"' target/surefire-reports/TEST-dev.oreslang.SealedActorStateAdmissionTest.xml
           grep -Fq 'tests="7"' target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml
+          grep -Fq 'tests="4"' target/surefire-reports/TEST-dev.oreslang.runtime.SealedActorStateRegionTest.xml
           ! grep -Eq '(failures|errors|skipped)="[1-9]' \
             target/surefire-reports/TEST-dev.oreslang.SealedActorStateAdmissionTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.SealedActorStateRegionTest.xml
           echo "SEALED_ACTOR_AST_TESTS=6_EXECUTED_PASS"
           echo "ACTOR_STATE_LOAN_RUNTIME_TESTS=7_EXECUTED_PASS"
+          echo "ACTOR_SEALED_REGION_TURN_TESTS=4_EXECUTED_PASS"
           echo "ATTO_SEALED_STATE_GUEST_EXECUTED=false"
           echo "ATTO_NATS_REAL_BROKER_EXECUTED=false"
