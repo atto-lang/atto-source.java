@@ -5687,6 +5687,23 @@ public final class TypeChecker {
         }
     }
 
+    private Type resolveExpectedLambdaParameter(
+            Ast.Param param, Type expected, Set<String> generics, Type self) {
+        if (param.type().name().equals("$infer$")) return expected;
+        if (param.type().isBorrow()
+                && param.type().borrowedTarget().name().equals("$infer$")) {
+            if (!(expected instanceof Borrow borrow)
+                    || borrow.mutable() != param.type().mutableBorrow()) {
+                throw new IllegalArgumentException(
+                        "lambda parameter '" + param.name()
+                                + "' requires an explicit matching borrowed callable parameter type");
+            }
+            // Context determines the referent type, not a forged Unknown loan.
+            return expected;
+        }
+        return resolveParam(param, generics, self);
+    }
+
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
@@ -5702,7 +5719,7 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
             }
-            Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
+            Type declared = resolveExpectedLambdaParameter(param, expectedParam, generics, self);
             lambdaArgumentTypes.add(declared);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
@@ -8954,6 +8971,11 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
+        if (param.type().isBorrow() && param.mutable()) {
+            throw new IllegalArgumentException(
+                    "borrowed parameter '" + param.name() + "' has a fixed binding; "
+                            + "'borrow mut T name' grants exclusive mutation, not rebinding");
+        }
         if (!param.structural()) return resolve(param.type(), generics, self);
         if (param.mutable()) {
             throw new IllegalArgumentException(
