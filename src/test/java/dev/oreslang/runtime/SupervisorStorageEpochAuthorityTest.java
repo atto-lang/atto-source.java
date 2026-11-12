@@ -19,7 +19,9 @@ final class SupervisorStorageEpochAuthorityTest {
         private int fsyncReservations;
 
         @Override public synchronized long currentGeneration() { return epoch; }
-        @Override public synchronized long reserveAndSyncNext(long expected) {
+        @Override public synchronized long reserveAndSyncNext(long expected, String token) {
+            if (token == null || !token.matches("[0-9a-f]{32}"))
+                throw new SecurityException("runtime-issued activation token required");
             if (fail) throw new IllegalStateException("injected ambiguous fsync");
             if (expected != epoch) throw new SecurityException("stale durable epoch compare");
             if (wrongGeneration) return epoch;
