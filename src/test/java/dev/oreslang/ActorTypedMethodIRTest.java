@@ -115,6 +115,52 @@ final class ActorTypedMethodIRTest {
     }
 
     @Test
+    void voidMethodHasExplicitVoidTerminatorAndNoReceiverAccess() throws IOException {
+        var build = packageBuild();
+        write("src/foo/contract.atto", NS
+                + "define pub contract ActorApi for actor as mtd ping(): void; end");
+        write("src/foo/method.atto", NS
+                + "pub mtd (Foo f) ping(): void { return; }");
+        var key = new ActorMethodIndex.MethodKey(
+                new ActorMethodIndex.ActorKey("typed-demo@0.1.0", "foo", "Foo"),
+                "ping", 0);
+        var typed = build.typecheckDeclaredActorMethods().method(key);
+        assertNotNull(typed);
+        assertEquals("void", typed.terminator().returnType());
+        assertNull(typed.terminator().value());
+    }
+
+    @Test
+    void booleanMethodReturnsOnlyBooleanParameter() throws IOException {
+        var build = packageBuild();
+        write("src/foo/contract.atto", NS
+                + "define pub contract ActorApi for actor as mtd flag(bool value): bool; end");
+        write("src/foo/method.atto", NS
+                + "pub mtd (Foo f) flag(bool value): bool { return value; }");
+        var key = new ActorMethodIndex.MethodKey(
+                new ActorMethodIndex.ActorKey("typed-demo@0.1.0", "foo", "Foo"),
+                "flag", 1);
+        var typed = build.typecheckDeclaredActorMethods().method(key);
+        assertNotNull(typed);
+        assertEquals("bool", typed.terminator().value().typeName());
+    }
+
+    @Test
+    void stringMethodCannotBeMisrepresentedAsActorReference() throws IOException {
+        var build = packageBuild();
+        write("src/foo/contract.atto", NS
+                + "define pub contract ActorApi for actor as mtd echo(string value): string; end");
+        write("src/foo/method.atto", NS
+                + "pub mtd (Foo f) echo(string value): string { return value; }");
+        var key = new ActorMethodIndex.MethodKey(
+                new ActorMethodIndex.ActorKey("typed-demo@0.1.0", "foo", "Foo"),
+                "echo", 1);
+        var typed = build.typecheckDeclaredActorMethods().method(key);
+        assertNotNull(typed);
+        assertEquals("string", typed.terminator().value().typeName());
+    }
+
+    @Test
     void arithmeticIsMarkedCheckedNotExecutedOrConstantFolded() throws IOException {
         var build = packageBuild();
         write("src/foo/method.atto", method("return x + 1;"));
