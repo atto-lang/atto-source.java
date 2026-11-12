@@ -71,21 +71,21 @@ pub async fnc serve_recycled_batch_session(
     NioConnection socket,
     int slot_id,
     int generation,
-    Channel<Tuple<int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple<int, int, List<Tuple[string, Bytes]>>>>> requests,
-    Channel<Tuple<int, int, List<Tuple[string, Bytes]>>> replies,
-    Channel<Tuple[int, int>> available_slots
+    Channel<Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>]> requests,
+    Channel<Tuple[int, int, List<Tuple[string, Bytes]>]> replies,
+    Channel<Tuple[int, int]> available_slots
 ): void {
   let int next_batch_id = 0;
   try {
     loop {
-      let mut List<Tuple[int, string, Bytes, Bytes>> frames = [];
+      let mut List<Tuple[int, string, Bytes, Bytes]> frames = [];
       try {
         frames = await socket.read_resp2_binary_batch_async(16);
       } catch (read_error) {
         return;
       }
       if frames.size == 0 then return; fi
-      let mut List<Tuple<int, Bytes, Bytes>> commands = [];
+      let mut List<Tuple[int, Bytes, Bytes]> commands = [];
       let int terminate = 0;
       let int i = 0;
       loop {
@@ -109,7 +109,7 @@ pub async fnc serve_recycled_batch_session(
         // The finite, owned payload crosses one typed task channel. The
         // eventual KV actor receives ONE mail for this whole batch.
         writech requests, (slot_id, generation, next_batch_id, commands, replies);
-        const Tuple<int, int, List<Tuple[string, Bytes]>> answer = await (nb readch replies);
+        const Tuple[int, int, List<Tuple[string, Bytes]>] answer = await (nb readch replies);
         if answer[0] != generation || answer[1] != next_batch_id || answer[2].size != expected; do
           return;
         fi
@@ -130,7 +130,7 @@ pub async fnc serve_recycled_batch_session(
     } catch (close_error) {
       // A second close failure must not strand its slot lease.
     }
-    let mut List<Tuple<int, Bytes, Bytes>> retirement = [];
+    let mut List<Tuple[int, Bytes, Bytes]> retirement = [];
     writech requests, (slot_id, generation, -1, retirement, replies);
     // Request channel is FIFO: this retirement enters ahead of reuse.
     writech available_slots, (slot_id, generation + 1);
@@ -146,16 +146,16 @@ pub async routine main(): void {
   val listener = await network.listen_async("127.0.0.1", 16399);
   const int max_active_clients = 100;
   const int max_total_sessions = 0;
-  val Channel<Tuple<int, int>> available_slots =
-      Channel.new<Tuple<int, int>>(max_active_clients);
+  val Channel<Tuple[int, int]> available_slots =
+      Channel.new<Tuple[int, int]>(max_active_clients);
   let int slot = 0;
   loop {
     if slot == max_active_clients then break; fi
     writech available_slots, (slot, 0);
     slot = slot + 1;
   }
-  val Channel<Tuple<int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple<int, int, List<Tuple[string, Bytes]>>>>> requests =
-      Channel.new<Tuple<int, int, int, List<Tuple<int, Bytes, Bytes>>, Channel<Tuple<int, int, List<Tuple[string, Bytes]>>>>>(32);
+  val Channel<Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>]> requests =
+      Channel.new<Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>]>(32);
   task scope {
     // This is the *only* consumer of worker.outputs.next(); no session
     // task can steal an unrelated client's batch reply.
@@ -163,17 +163,17 @@ pub async routine main(): void {
       let int retired = 0;
       loop {
         if max_total_sessions != 0 && retired == max_total_sessions; do
-          let mut List<Tuple<int, Bytes, Bytes>> shutdown_batch = [];
+          let mut List<Tuple[int, Bytes, Bytes]> shutdown_batch = [];
           worker.send((0, 0, shutdown_batch));
           val final_output = (await worker.outputs.next()).value.unwrap();
-          const Tuple<int, int, List<Tuple[string, Bytes]>> final_reply = final_output.value;
+          const Tuple[int, int, List<Tuple[string, Bytes]>] final_reply = final_output.value;
           if final_reply[0] != 0 || final_reply[1] != 0; do
             return;
           fi
           await worker.get_done();
           return;
         fi
-        const Tuple<int, int, int, List<Tuple<int, Bytes, Bytes>>, Channel<Tuple<int, int, List<Tuple[string, Bytes]>>>> request =
+        const Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>] request =
             await (nb readch requests);
         const int slot_id = request[0];
         const int generation = request[1];
@@ -185,8 +185,8 @@ pub async routine main(): void {
           // in one actor turn; bounded request channel provides backpressure.
           worker.send((slot_id + 1, batch_id, request[3]));
           val output = (await worker.outputs.next()).value.unwrap();
-          const Tuple<int, int, List<Tuple[string, Bytes]>> result = output.value;
-          const Channel<Tuple<int, int, List<Tuple[string, Bytes]>>> response_port = request[4];
+          const Tuple[int, int, List<Tuple[string, Bytes]>] result = output.value;
+          const Channel<Tuple[int, int, List<Tuple[string, Bytes]>]> response_port = request[4];
           if result[0] != slot_id + 1 || result[1] != batch_id; do
             let mut List<Tuple[string, Bytes]> error_replies = [];
             writech response_port, (-1, -1, error_replies);
@@ -200,13 +200,13 @@ pub async routine main(): void {
     loop {
       if max_total_sessions != 0 && accepted == max_total_sessions then break; fi
       // Reserve a live lease *before* accept; 100 is a hard upper bound.
-      const Tuple<int, int> lease = await (nb readch available_slots);
+      const Tuple[int, int] lease = await (nb readch available_slots);
       const int slot_id = lease[0];
       const int generation = lease[1];
       val socket = await listener.accept_async();
       accepted = accepted + 1;
-      val Channel<Tuple<int, int, List<Tuple[string, Bytes]>>> replies =
-          Channel.new<Tuple<int, int, List<Tuple[string, Bytes]>>>(1);
+      val Channel<Tuple[int, int, List<Tuple[string, Bytes]>]> replies =
+          Channel.new<Tuple[int, int, List<Tuple[string, Bytes]>]>(1);
       let Future<void> session = task {
         await serve_recycled_batch_session(
           socket, slot_id, generation, requests, replies, available_slots);
