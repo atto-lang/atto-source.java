@@ -117,6 +117,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorContext<Object> context,
             SourceStatePhase phase,
             long executionSlot,
+            AtomicBoolean allocationIssued,
             Thread carrier) implements AutoCloseable {
         @Override public void close() {
             if (CURRENT_SOURCE_STATE_TURN.get() != this
@@ -153,7 +154,7 @@ public final class ActorRuntime implements AutoCloseable {
         long slot = nextSourceIdentity(NEXT_SOURCE_STATE_TURN, "source state turn");
         SourceStateTurn issued = new SourceStateTurn(
                 actual.runtime(), actual.actorId(), image, context, phase,
-                slot, Thread.currentThread());
+                slot, new AtomicBoolean(false), Thread.currentThread());
         CURRENT_SOURCE_STATE_TURN.set(issued);
         return issued;
     }
@@ -178,6 +179,11 @@ public final class ActorRuntime implements AutoCloseable {
             ActorContext<Object> context,
             SharedCodeImageStore.CodeImage image) {
         requireSourceStateTurn(context, image, SourceStatePhase.INIT);
+        SourceStateTurn actual = CURRENT_SOURCE_STATE_TURN.get();
+        if (!actual.allocationIssued().compareAndSet(false, true)) {
+            throw new SecurityException(
+                    "source actor init may mint at most one sealed state region");
+        }
         return nextSourceIdentity(
                 NEXT_SOURCE_STATE_ALLOCATION, "source state allocation");
     }
