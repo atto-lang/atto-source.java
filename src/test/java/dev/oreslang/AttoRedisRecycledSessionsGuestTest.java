@@ -442,4 +442,47 @@ final class AttoRedisRecycledSessionsGuestTest {
         });
         System.out.println("ATTO_REDIS_REQUEST_QUEUE_CAPACITY_16_FULL_AND_DRAIN=EXECUTED_PASS");
     }
+
+    @Test
+    void hundredLiveClientsReceiveEightWavesOfDistinctBinaryReplies() throws Exception {
+        // The 100 distinct (key, value) pairs prevent a cross-client broker
+        // misroute from looking correct merely because every reply was equal.
+        final byte[][] keys = new byte[100][];
+        final byte[][] values = new byte[100][];
+        for (int i = 0; i < 100; i++) {
+            keys[i] = new byte[]{0, (byte)i, (byte)(255 - i), 13};
+            values[i] = new byte[]{(byte)i, 0, (byte)(255 - i), 10};
+        }
+        execute(100, 100, (guest, port) -> {
+            List<Socket> sockets = new ArrayList<>();
+            try {
+                Socket first = connect(guest, port);
+                sockets.add(first);
+                // Populate all 100 binary keys through the same native actor,
+                // before the remaining TCP sessions have even connected.
+                for (int i = 0; i < 100; i++) {
+                    first.getOutputStream().write(command("SET", keys[i], values[i]));
+                    expect(first, ascii("+OK\r\n"));
+                }
+                for (int i = 1; i < 100; i++) sockets.add(connect(guest, port));
+                for (int round = 0; round < 8; round++) {
+                    for (int i = 0; i < 100; i++) {
+                        sockets.get(i).getOutputStream().write(command("GET", keys[i]));
+                    }
+                    for (int i = 0; i < 100; i++) {
+                        expect(sockets.get(i), bulk(values[i]));
+                    }
+                }
+                for (Socket socket : sockets) socket.getOutputStream().write(command("QUIT"));
+                for (Socket socket : sockets) {
+                    expect(socket, ascii("+OK\r\n"));
+                    assertEquals(-1, socket.getInputStream().read(),
+                            "every session must retire at end of its eight-wave run");
+                }
+            } finally {
+                for (Socket socket : sockets) socket.close();
+            }
+        });
+        System.out.println("ATTO_REDIS_100_CLIENTS_8_DISTINCT_REPLY_WAVES=EXECUTED_PASS");
+    }
 }
