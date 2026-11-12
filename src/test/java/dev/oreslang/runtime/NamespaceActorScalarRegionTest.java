@@ -55,6 +55,9 @@ final class NamespaceActorScalarRegionTest {
                 throw new SecurityException("namespace init requires image-bound activation");
             }
             var region = NamespaceActorScalarRegion.initialize(context, 0L, false, false);
+            assertThrows(SecurityException.class,
+                    () -> NamespaceActorScalarRegion.initialize(context, 0L, false, false),
+                    "one source init may allocate at most one private state region");
             assertThrows(SecurityException.class, () -> region.increment(context),
                     "init must never grant mailbox write authority");
             rejectedWrongPhase.incrementAndGet();
