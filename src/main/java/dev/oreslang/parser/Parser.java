@@ -2593,11 +2593,15 @@ public final class Parser {
                         && i + 1 < current
                         && tokens.get(i + 1).type() == IDENT
                         && tokens.get(i + 1).lexeme().equals("scope");
+                boolean taskExpr = scopedToken.type() == IDENT
+                        && scopedToken.lexeme().equals("task")
+                        && i + 1 < current
+                        && tokens.get(i + 1).type() == LBRACE;
                 if (scopedToken.type() == AWAIT || scopedToken.type() == YIELD
-                        || scopedToken.type() == SELECT || taskScope) {
+                        || scopedToken.type() == SELECT || taskScope || taskExpr) {
                     throw error(scopedToken, "using telemetry.span currently requires a "
-                            + "non-suspending body; await, yield, select and task scope "
-                            + "require continuation-owned span frames");
+                            + "non-suspending body; await, yield, select and task "
+                            + "boundaries require continuation-owned span frames");
                 }
             }
             // Canonical checked lowering into existing lexical bindings and
