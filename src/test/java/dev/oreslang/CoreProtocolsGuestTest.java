@@ -232,6 +232,69 @@ final class CoreProtocolsGuestTest {
     }
 
 
+
+    @Test
+    void parsedProtocolKindSurvivesTheAstAndRejectsForgedContractKind() {
+        var program = Parser.parse("""
+                define pub trait Signed as
+                    fnc verify(int value): bool;
+                end
+                define pub interface Shape as
+                    fnc area(): int;
+                end
+                """);
+        var declarations = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(dev.oreslang.ast.Ast.InterfaceDecl.class::isInstance)
+                .map(dev.oreslang.ast.Ast.InterfaceDecl.class::cast)
+                .toList();
+        assertEquals(2, declarations.size());
+        assertEquals(dev.oreslang.ast.Ast.InterfaceKind.TRAIT,
+                declarations.get(0).declarationKind());
+        assertEquals(dev.oreslang.ast.Ast.InterfaceKind.INTERFACE,
+                declarations.get(1).declarationKind());
+        assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.ast.Ast.InterfaceDecl(
+                        "Forged", dev.oreslang.ast.Ast.Visibility.PUBLIC,
+                        java.util.List.of(), java.util.List.of(),
+                        java.util.List.of(), true,
+                        dev.oreslang.ast.Ast.InterfaceKind.TRAIT));
+    }
+
+    @Test
+    void traitImportCannotMasqueradeAsInterfaceAndViceVersa() throws Exception {
+        Path definitions = temp.resolve("protocol-kinds.atto");
+        Files.writeString(definitions, """
+                define pub trait Signed as
+                    fnc verify(int value): bool;
+                end
+                define pub interface Shape as
+                    fnc area(): int;
+                end
+                """);
+        for (String invalid : new String[] {
+                "import trait Shape from './protocol-kinds.atto';",
+                "import interface Signed from './protocol-kinds.atto';",
+                "import interface Eq from 'ores.core/protocols';"
+        }) {
+            Path client = temp.resolve("mismatch.atto");
+            Files.writeString(client, invalid
+                    + "\npub fnc main(): void { return; }\n");
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(client, Map.of()), invalid);
+            assertTrue(rejected.getMessage().contains(
+                    "does not match an exported declaration"), rejected.toString());
+        }
+        Path accepted = temp.resolve("matched.atto");
+        Files.writeString(accepted, """
+                import trait Signed from './protocol-kinds.atto';
+                import interface Shape from './protocol-kinds.atto';
+                pub fnc main(): void { return; }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(accepted, Map.of()));
+    }
+
     @Test
     void allNineteenCoreTraitsRejectMissingNominalWitnesses() throws Exception {
         // Pure compiler negatives: no host I/O provider or actor privilege.
