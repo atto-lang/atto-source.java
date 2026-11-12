@@ -172,4 +172,66 @@ final class ChannelTransferOwnershipAdmissionTest {
                         null, payload));
     }
 
+    @Test
+    void concurrentCloseVersusOwnedImmediateSendHasExactlyOneOutcome()
+            throws InterruptedException {
+        for (int iteration = 0; iteration < 64; iteration++) {
+            ChannelRuntime.Channel<Payload> inbox = new ChannelRuntime.Channel<>(1);
+            Payload original = new Payload(1000 + iteration);
+            java.util.concurrent.CountDownLatch ready =
+                    new java.util.concurrent.CountDownLatch(2);
+            java.util.concurrent.CountDownLatch start =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<
+                    ChannelRuntime.OwnedTryWriteResult<Payload>> result =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> fault =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            Thread sender = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    result.set(inbox.tryWriteOwned(original));
+                } catch (Throwable failure) {
+                    fault.compareAndSet(null, failure);
+                }
+            });
+            Thread closer = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    inbox.close();
+                } catch (Throwable failure) {
+                    fault.compareAndSet(null, failure);
+                }
+            });
+            ready.await();
+            start.countDown();
+            sender.join();
+            closer.join();
+
+            assertNull(fault.get(), "no completion may fail unexpectedly");
+            ChannelRuntime.OwnedTryWriteResult<Payload> outcome = result.get();
+            assertNotNull(outcome);
+            java.util.List<Payload> drained = new java.util.ArrayList<>();
+            boolean wasCommitted = inbox.drainOne(drained::add);
+            assertFalse(inbox.drainOne(drained::add), "at-most-once delivery");
+            if (outcome.committed()) {
+                assertEquals(ChannelRuntime.OwnedWriteOutcome.COMMITTED,
+                        outcome.outcome());
+                assertNull(outcome.returnedPayload());
+                assertTrue(wasCommitted, "committed writer must own one buffered value");
+                assertEquals(1, drained.size());
+                assertSame(original, drained.getFirst());
+            } else {
+                assertEquals(ChannelRuntime.OwnedWriteOutcome.CLOSED,
+                        outcome.outcome(), "empty-capacity-one has no backpressure");
+                assertSame(original, outcome.returnedPayload());
+                assertFalse(wasCommitted, "rejected send cannot have published");
+                assertTrue(drained.isEmpty());
+            }
+        }
+    }
+
 }
