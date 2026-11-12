@@ -217,6 +217,89 @@ final class DeclaredActorCompilerManifestGateTest {
     }
 
     @Test
+    void manifestAuditEmitsTypedNonExecutableActorDescriptor() throws IOException {
+        var audit = new PackageNamespaceBuild(setup()).auditDeclaredActors();
+        var key = new ActorMethodIndex.ActorKey("demo@0.1.0", "foo", "Foo");
+        var descriptor = audit.descriptors().get(key);
+        assertNotNull(descriptor);
+        assertEquals(key, descriptor.identity());
+        assertEquals("src/foo/actor.atto", descriptor.actorUnit());
+        assertEquals(Ast.ActorKind.SHARED, descriptor.actorKind());
+        assertEquals(Ast.Visibility.PUBLIC, descriptor.visibility());
+        assertEquals(1, descriptor.sealedFields().size());
+        var field = descriptor.sealedFields().getFirst();
+        assertEquals("x", field.name());
+        assertEquals("LET", field.binding());
+        assertEquals("int", field.type());
+        assertEquals("5", field.initialValue());
+        assertEquals(1, descriptor.requiredMethods().size());
+        var method = descriptor.requiredMethods().getFirst();
+        assertEquals("ActorXYZ", method.contractName());
+        assertEquals("src/foo/contract.atto", method.contractUnit());
+        assertEquals("src/foo/method.atto", method.methodUnit());
+        assertEquals("bar", method.name());
+        assertEquals(1, method.arity());
+        assertEquals(java.util.List.of("int"), method.argumentTypes());
+        assertEquals(java.util.List.of(false), method.mutableArguments());
+        assertEquals("int", method.returnType());
+        assertEquals(64, descriptor.descriptorSha256().length());
+        assertEquals(64, descriptor.sourceSetSha256().length());
+        assertEquals(audit.manifestSha256(), descriptor.manifestSha256());
+    }
+
+    @Test
+    void actorDescriptorAndNestedSignatureMetadataAreImmutable() throws IOException {
+        var audit = new PackageNamespaceBuild(setup()).auditDeclaredActors();
+        var descriptor = audit.descriptors().values().iterator().next();
+        assertThrows(UnsupportedOperationException.class, audit.descriptors()::clear);
+        assertThrows(UnsupportedOperationException.class, descriptor.sealedFields()::clear);
+        assertThrows(UnsupportedOperationException.class,
+                descriptor.requiredMethods()::clear);
+        assertThrows(UnsupportedOperationException.class,
+                descriptor.requiredMethods().getFirst().argumentTypes()::clear);
+        assertThrows(UnsupportedOperationException.class,
+                descriptor.requiredMethods().getFirst().mutableArguments()::clear);
+    }
+
+    @Test
+    void descriptorFingerprintIsStableButChangesOnStateAndMethodEdits()
+            throws IOException {
+        var build = new PackageNamespaceBuild(setup());
+        var key = new ActorMethodIndex.ActorKey("demo@0.1.0", "foo", "Foo");
+        var first = build.auditDeclaredActors().descriptors().get(key);
+        var repeated = build.auditDeclaredActors().descriptors().get(key);
+        assertEquals(first.descriptorSha256(), repeated.descriptorSha256());
+        assertEquals(first.sourceSetSha256(), repeated.sourceSetSha256());
+
+        write("src/foo/state.atto",
+                NS + "define state on actor Foo as { let int x : 6; }");
+        var changedState = build.auditDeclaredActors().descriptors().get(key);
+        assertNotEquals(first.descriptorSha256(), changedState.descriptorSha256());
+        assertNotEquals(first.sourceSetSha256(), changedState.sourceSetSha256());
+        assertEquals("6", changedState.sealedFields().getFirst().initialValue());
+
+        write("src/foo/method.atto",
+                NS + "pub mtd (Foo f) bar(int other): int { return other; }");
+        var changedBody = build.auditDeclaredActors().descriptors().get(key);
+        assertNotEquals(changedState.descriptorSha256(), changedBody.descriptorSha256());
+        assertEquals(first.requiredMethods(), changedBody.requiredMethods());
+        // Source-set fingerprints detect a change even when contract ABI stays
+        // stable; this does not prove correctness of an mtd method body.
+    }
+
+    @Test
+    void actorWithoutAttachedStateGetsAnExplicitEmptySealedLayout()
+            throws IOException {
+        setup();
+        Files.delete(root.resolve("src/foo/state.atto"));
+        var audit = new PackageNamespaceBuild(
+                OresProjectConfig.load(root.resolve(".atto.pkg.toml"), Map.of()))
+                .auditDeclaredActors();
+        assertEquals(1, audit.descriptors().size());
+        assertTrue(audit.descriptors().values().iterator().next().sealedFields().isEmpty());
+    }
+
+    @Test
     void fullInlineActorRemainsLegalUnderItsOwnContract() {
         var source = NS +
                 "define pub contract ActorXYZ for actor as mtd bar(int x): int; end\n"
