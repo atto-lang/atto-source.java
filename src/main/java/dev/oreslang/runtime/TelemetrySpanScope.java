@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Compiler-owned lexical telemetry scope for `using telemetry.span(...) as span`.
@@ -27,6 +28,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private static final String HEX = "0123456789abcdef";
     private static final AtomicReference<Policy> POLICY =
             new AtomicReference<>(new Policy(false, 0, 0L, ""));
+    private static final AtomicLong STARTED = new AtomicLong();
+    private static final AtomicLong ENDED = new AtomicLong();
 
     private final String name;
     private final TraceContext parent;
@@ -102,6 +105,7 @@ public final class TelemetrySpanScope implements AutoCloseable {
                 ? TraceContext.root(randomId(16), randomId(8), true)
                 : parent.child(randomId(8));
         TraceContext.install(next);
+        STARTED.incrementAndGet();
         return new TelemetrySpanScope(name, parent, next, true);
     }
 
@@ -186,8 +190,15 @@ public final class TelemetrySpanScope implements AutoCloseable {
             throw new IllegalStateException("span ended outside its owning logical task");
         }
         if (!ended.compareAndSet(false, true)) return;
-        if (recording) TraceContext.install(parent);
+        if (recording) {
+            TraceContext.install(parent);
+            ENDED.incrementAndGet();
+        }
     }
+
+    /** Host-only, aggregate diagnostics. Does not export event content. */
+    public static long startedCount() { return STARTED.get(); }
+    public static long endedCount() { return ENDED.get(); }
 
     public boolean ended() { return ended.get(); }
 }
