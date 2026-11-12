@@ -29,9 +29,10 @@ final class ChannelRuntimeTest {
                 "shutdown must release the pending write registration");
         assertEquals(11, channel.tryRead().orElseThrow(),
                 "the previously admitted payload must remain ordered");
-        assertTrue(channel.tryRead().isEmpty(),
+        assertEquals(0, channel.size(),
                 "the rejected write must never appear after close");
-        assertFalse(channel.tryWrite(33));
+        assertThrows(RuntimeException.class, () -> channel.tryWrite(33),
+                "closed channels fail immediately; they do not queue new writes");
         channel.close(); // repeated close does not republish the rejected payload
         assertEquals(0, channel.pendingRegistrations());
     }
