@@ -64,6 +64,23 @@ final class CheckedNamespaceActorContextEvalTest {
     }
 
     @Test
+    void graalActorTypeAndNamespaceComeFromCheckedSourceDescriptor() throws Exception {
+        String renamed = source()
+                .replace("use namespace foo;", "use namespace metrics;")
+                .replace("Probe", "Ledger");
+        try (var proof = CheckedNamespaceActorGuestProof.compile(
+                     "named-ledger.atto", renamed);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).build()) {
+            try (var lease = OresLanguage.openCheckedActorGuest(proof)) {
+                assertEquals(1000L,
+                        context.eval(guestSource(renamed, "named-ledger.atto")).asLong(),
+                        "declared actor type must be source-derived, not hardcoded Probe");
+            }
+        }
+    }
+
+    @Test
     void checkedSourceWithWrongCriticalBudgetResultFailsStateProof() throws Exception {
         String altered = source().replace(
                 "p.state.budget = p.state.budget - delta;",
