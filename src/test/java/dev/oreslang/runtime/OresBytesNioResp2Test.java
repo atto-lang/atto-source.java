@@ -26,6 +26,18 @@ final class OresBytesNioResp2Test {
     }
 
     @Test
+    void matchingOptimizingTruffleCanBeRequiredByPerfGate() {
+        // A no-warning check alone is too weak: verify provider capability.
+        if ("1".equals(System.getenv("ATTO_REQUIRE_OPTIMIZING_TRUFFLE"))) {
+            try (org.graalvm.polyglot.Engine engine =
+                    org.graalvm.polyglot.Engine.create()) {
+                assertTrue(engine.supportsCompilation(),
+                        "the real Atto benchmark must use a compiling Truffle runtime");
+            }
+        }
+    }
+
+    @Test
     void immutableBinaryValueHasDeterministicContentIdentityWithoutBackingLeak() {
         byte[] source = {0, (byte) 255, 13, 10};
         OresBytes value = OresBytes.copyOf(source);
