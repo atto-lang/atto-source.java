@@ -246,8 +246,9 @@ deprecated_if_do
 condition_head  = condition
                 | logic_or "as" "let" IDENT "when" condition
                 | "(" logic_or "as" "let" IDENT "when" condition ")" ;
-condition       = condition_and { "|" condition_and } ;
-condition_and   = equality { "," equality } ;
+(* Boolean condition heads share the canonical expression grammar. The
+   historical condition-only comma/pipe aliases are no longer logical operators. *)
+condition       = logic_or ;
 
 match_stmt      = [ "do" ] "match" [ "first" ] expression
                   ( "over"
