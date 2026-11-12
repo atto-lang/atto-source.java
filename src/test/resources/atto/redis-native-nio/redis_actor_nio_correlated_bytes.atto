@@ -75,7 +75,11 @@ pub async routine main(): void {
       await socket.write_resp2_binary_async("PONG", frame[3]);
     else
       request_id = request_id + 1;
-      worker.send((request_id, kind, frame[2], frame[3]));
+      // No Future allocation when the bounded USER mailbox admits now.
+      // A full mailbox suspends only this source task, never the actor carrier.
+      if worker.try_send((request_id, kind, frame[2], frame[3])) == false; do
+        await worker.send_async((request_id, kind, frame[2], frame[3]));
+      fi
       val output = (await worker.outputs.next()).value.unwrap();
       val reply = output.value;
       if reply[0] == request_id; do
