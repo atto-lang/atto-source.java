@@ -118,6 +118,39 @@ final class ToStringContractTest {
     }
 
     @Test
+    void stringIdentityPreservesEmbeddedNulAndDecimalFormattingIsExact() {
+        String source = """
+                pub fnc main(): void {
+                  const text = "A\\u0000B";
+                  stdio.stdout.write(to_string(text));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(text.to_string());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(to_string(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(to_string(9223372036854775807));
+                  return;
+                }
+                """;
+        String nul = String.valueOf((char) 0);
+        assertEquals("A" + nul + "B|A" + nul + "B|0|9223372036854775807", run(source));
+    }
+
+    @Test
+    void aUserMethodReturningIntCannotBeInterpolatedAsString() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Bad as
+                  pub to_string(): int { return 42; }
+                end
+                pub fnc main(): void {
+                  const bad = new Bad();
+                  stdio.stdout.write(`nope:${bad.to_string()}`);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void doesNotExposeConversionAsUnboundedFirstClassFunction() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
