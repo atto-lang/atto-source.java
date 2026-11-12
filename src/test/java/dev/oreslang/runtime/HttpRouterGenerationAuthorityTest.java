@@ -109,6 +109,46 @@ final class HttpRouterGenerationAuthorityTest {
         auth.transportQuiescent(successor, newSnapshot, fresh);
     }
 
+    @Test void supervisorUpgradeBetweenClaimAndHeadersRejectsStaleCommit() {
+        var root = owner();
+        var replacement = owner();
+        var auth = gate(root, 2, 2, 2);
+        var oldSnapshot = auth.activeSnapshot(root);
+        var started = auth.admit(root, oldSnapshot);
+        assertFalse(auth.commitHeaders(root, oldSnapshot, started),
+                "headers cannot precede the response claim");
+        assertTrue(auth.claimResponse(root, oldSnapshot, started));
+        var upgrade = auth.prepare(root, replacement, NEXT);
+        auth.publish(upgrade);
+        assertTrue(auth.cancelled(root, oldSnapshot, started));
+        assertFalse(auth.commitHeaders(root, oldSnapshot, started),
+                "old incarnation cannot commit success headers after replacement");
+        var current = auth.activeSnapshot(replacement);
+        var fresh = auth.admit(replacement, current);
+        assertTrue(auth.claimResponse(replacement, current, fresh));
+        assertTrue(auth.commitHeaders(replacement, current, fresh));
+        assertFalse(auth.commitHeaders(replacement, current, fresh));
+        auth.handlerQuiescent(root, oldSnapshot, started);
+        auth.transportQuiescent(root, oldSnapshot, started);
+        auth.handlerQuiescent(replacement, current, fresh);
+        auth.transportQuiescent(replacement, current, fresh);
+        assertEquals(0, auth.retainedGenerations());
+    }
+
+    @Test void sameOwnerRetainedGenerationCanCommitClaimedInFlightResponse() {
+        var root = owner();
+        var auth = gate(root, 2, 2, 2);
+        var oldSnapshot = auth.activeSnapshot(root);
+        var inflight = auth.admit(root, oldSnapshot);
+        assertTrue(auth.claimResponse(root, oldSnapshot, inflight));
+        auth.publish(auth.prepare(root, root, NEXT));
+        assertTrue(auth.commitHeaders(root, oldSnapshot, inflight));
+        assertFalse(auth.commitHeaders(root, oldSnapshot, inflight));
+        auth.handlerQuiescent(root, oldSnapshot, inflight);
+        auth.transportQuiescent(root, oldSnapshot, inflight);
+        assertEquals(0, auth.retainedGenerations());
+    }
+
     @Test void cancellationBeforeResponseClaimIsFailClosedAndRetainsPhysicalLease() {
         var root = owner();
         var auth = gate(root, 1, 2, 2);
