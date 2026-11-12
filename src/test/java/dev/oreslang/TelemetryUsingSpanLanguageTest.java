@@ -97,8 +97,8 @@ final class TelemetryUsingSpanLanguageTest {
                       let Future<void> child = task {
                         using telemetry.span("cancel.child") as span {
                           block {
-                            val guard = flag.lock();
-                            guard.value = 1;
+                            val g = flag.lock();
+                            g.value = 1;
                           }
                           loop {
                             rt cooperate;
@@ -110,8 +110,8 @@ final class TelemetryUsingSpanLanguageTest {
                       while seen == 0 {
                         rt cooperate;
                         block {
-                          val guard = flag.lock();
-                          seen = guard.value;
+                          val g = flag.lock();
+                          seen = g.value;
                         }
                       }
                       child.cancel();
