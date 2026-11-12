@@ -1,0 +1,91 @@
+use namespace rmq_transport;
+
+// PROPOSED NAMESPACE ACTOR CONTRACT, not a passing native compile fixture.
+
+
+declare actor ChannelActor;
+
+
+// Closed nominal actor-mail ADT. Tags and confirms remain actor-owned and
+// inactive until the runtime issues a generation-bound activation grant.
+define enum ChannelMail as
+    DeliveryTagRequested;
+    PublisherSequenceRequested;
+    CloseRequested;
+end
+
+
+// Delivery tags and confirms are scoped to ONE logical AMQP 0-9-1 channel.
+// A channel may route to many queues; it never owns mutable queue storage.
+define state on actor ChannelActor as {
+    let int channel_id : 0;
+    let int connection_generation : 0;
+    let int next_delivery_tag : 0;
+    let int next_publish_seq : 0;
+    let int outstanding_count : 0;
+    let int prefetch_count : 0;
+    // Runtime activation/generation witness, never supplied by guest mail.
+    let bool activated : false;
+    let bool closing : false;
+}
+
+external mtd (ChannelActor c) init(): void {
+    return;
+}
+
+external mtd (ChannelActor c) receive(ActorMail<ChannelMail> mail): void {
+    // Runtime-only dispatch. These variants carry no ChannelActivationGrant.
+    // Both sequence operations remain zero until activated=true is issued
+    // by the trusted runtime for the current actor generation.
+    match mail.value over
+        on ChannelMail.DeliveryTagRequested as () -> {
+            c.send(c.reserve_delivery_tag());
+        }
+        on ChannelMail.PublisherSequenceRequested as () -> {
+            c.send(c.reserve_publish_seq());
+        }
+        on ChannelMail.CloseRequested as () -> {
+            c.close_channel();
+        }
+    end
+    return;
+}
+
+// Activation stays false until runtime-issued actor context and generation
+// fencing are lowered. Counter reservation is not a publish/ACK capability.
+// Tags are actor-owned monotonic counters. A reserved tag is NOT a completed
+// queue delivery or a valid ACK. Settlement requires a separate, authenticated
+// generation-fenced queue receipt map, which is not yet compiler-lowered.
+critical mtd (ChannelActor c) reserve_delivery_tag(): int {
+    let int issued = 0;
+    using state.write(critical |s| -> {
+        if s.activated and !s.closing and s.next_delivery_tag >= 0 and
+           s.next_delivery_tag < 9223372036854775807 then
+            s.next_delivery_tag = s.next_delivery_tag + 1;
+            issued = s.next_delivery_tag;
+        fi
+    });
+    return issued;
+}
+
+// Publisher confirms have a separate sequence number space from deliveries.
+critical mtd (ChannelActor c) reserve_publish_seq(): int {
+    let int issued = 0;
+    using state.write(critical |s| -> {
+        if s.activated and !s.closing and s.next_publish_seq >= 0 and
+           s.next_publish_seq < 9223372036854775807 then
+            s.next_publish_seq = s.next_publish_seq + 1;
+            issued = s.next_publish_seq;
+        fi
+    });
+    return issued;
+}
+
+// Closing a channel permanently fences its old incarnation/ActorRef;
+// supervisor cleanup must await quiescent loans and outstanding reservations.
+critical mtd (ChannelActor c) close_channel(): void {
+    using state.write(critical |s| -> {
+        s.closing = true;
+    });
+    return;
+}
