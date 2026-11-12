@@ -99,35 +99,7 @@ final class OresBytesBinaryCodecTest {
             assertArrayEquals(new byte[] {0, (byte) 255, '\n'}, key.toArrayCopy());
             assertArrayEquals(new byte[] {(byte) 128, (byte) 254}, value.toArrayCopy());
             assertArrayEquals(
-                    new byte[] {'
-            assertEquals(AsyncNioResp2.encode("VALUE", "80fe").length,
-                    AsyncNioResp2.encodeBinary("VALUE", value).length);
-        }
-        assertThrows(IllegalStateException.class,
-                () -> AsyncNioResp2.encodeBinary("VALUE", decoded.bulk().get(0)));
-    }
-
-    @Test void fragmentedBinaryAndMalformedHeadersStayFailClosed() throws Exception {
-        byte[] frame = ascii("*2\r\n$3\r\nGET\r\n$1\r\nx\r\n");
-        for (int n = 0; n < frame.length; n++) {
-            assertNull(AsyncNioResp2.parseBinary(ByteBuffer.wrap(frame, 0, n)));
-        }
-        assertThrows(IOException.class,
-                () -> AsyncNioResp2.parseBinary(ByteBuffer.wrap(ascii("*9\r\n"))));
-        assertThrows(IOException.class,
-                () -> AsyncNioResp2.parseBinary(ByteBuffer.wrap(ascii(
-                        "*2\r\n$3\r\nGET\r\n$4097\r\n"))));
-    }
-
-    @Test void binaryEncoderKeepsMissingEmptyAndValueDistinct() throws Exception {
-        try (OresBytes empty = OresBytes.copyOf(new byte[0])) {
-            assertArrayEquals(ascii("$-1\r\n"), AsyncNioResp2.encodeBinary("NIL", null));
-            assertArrayEquals(ascii("$0\r\n\r\n"), AsyncNioResp2.encodeBinary("VALUE", empty));
-        }
-        assertThrows(IOException.class, () -> AsyncNioResp2.encodeBinary("VALUE", null));
-    }
-}
-, '2', '\r', '\n', (byte) 128, (byte) 254, '\r', '\n'},
+                    new byte[] {36, 50, 13, 10, (byte) 128, (byte) 254, 13, 10},
                     AsyncNioResp2.encodeBinary("VALUE", value));
             assertEquals(AsyncNioResp2.encode("VALUE", "80fe").length,
                     AsyncNioResp2.encodeBinary("VALUE", value).length);
