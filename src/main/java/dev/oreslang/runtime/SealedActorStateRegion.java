@@ -29,6 +29,7 @@ final class SealedActorStateRegion
     private final ActorStateLoans loans = new ActorStateLoans(0);
     private long generation = 1;
     private boolean retired;
+    private boolean physicalTasksQuiesced;
     private boolean reclaimed;
 
     private record Slot(Class<?> type, Object initial) {
@@ -211,22 +212,38 @@ final class SealedActorStateRegion
         }
     }
 
-    /** Runtime-only STOP fence: no admissions or field access after this. */
-    @Override
-    public void close() {
+    /**
+     * First phase of STOP: revoke new admissions and all existing views, but
+     * retain storage even when no loan is active. Source continuations, actor
+     * children and cleanup Tasks may still be physically running.
+     */
+    void sealOnStop() {
         synchronized (lock) {
             if (retired) return;
             retired = true;
             if (generation != Long.MAX_VALUE) generation++;
             loans.close();
+        }
+    }
+
+    /**
+     * Called only after ActorRuntime has physically quiesced source work.
+     * This second phase can release scalars once the last lexical loan exits.
+     */
+    @Override
+    public void close() {
+        synchronized (lock) {
+            sealOnStop();
+            physicalTasksQuiesced = true;
             reclaimIfQuiescent();
         }
     }
 
     private void reclaimIfQuiescent() {
-        // Only the final lexical loan release can clear the data. Never free
-        // physical storage merely because STOP revoked access.
-        if (retired && !reclaimed && loans.activeCount() == 0) {
+        // STOP and zero live loans are NOT sufficient. Physical task cleanup
+        // must also be complete before this storage is retired.
+        if (retired && physicalTasksQuiesced && !reclaimed
+                && loans.activeCount() == 0) {
             java.util.Arrays.fill(values, null);
             slots.clear();
             reclaimed = true;
