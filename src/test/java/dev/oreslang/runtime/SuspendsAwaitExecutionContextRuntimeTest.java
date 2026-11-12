@@ -87,4 +87,79 @@ final class SuspendsAwaitExecutionContextRuntimeTest {
             assertEquals(0, gate.pendingRuntimeWaiterCount());
         }
     }
+
+    @Test
+    void nestedTasksHaveDistinctExecutionIdsAndAuthenticatedParentLineage() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            AtomicReference<ExecutionContext> parentContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> childContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> grandchildContext = new AtomicReference<>();
+            AtomicLong firstParentDispatch = new AtomicLong();
+            AtomicLong firstChildDispatch = new AtomicLong();
+            AtomicInteger parentPc = new AtomicInteger();
+            AtomicInteger childPc = new AtomicInteger();
+
+            OresFuture<Integer> parent = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                if (parentPc.getAndIncrement() == 0) {
+                    assertEquals(0L, current.parentExecution(), "root Task has no parent");
+                    parentContext.set(current);
+                    firstParentDispatch.set(OresScheduler.currentDispatchId());
+                    OresFuture<Integer> child = scheduler.start(childResume -> {
+                        ExecutionContext childCurrent = OresScheduler.currentExecutionContext();
+                        assertNotNull(childCurrent);
+                        if (childPc.getAndIncrement() == 0) {
+                            childContext.set(childCurrent);
+                            assertEquals(parentContext.get().id().execution(),
+                                    childCurrent.parentExecution());
+                            firstChildDispatch.set(OresScheduler.currentDispatchId());
+                            OresFuture<Integer> grandchild = scheduler.start(grandchildResume -> {
+                                ExecutionContext grandchildCurrent =
+                                        OresScheduler.currentExecutionContext();
+                                grandchildContext.set(grandchildCurrent);
+                                assertEquals(childCurrent.id().execution(),
+                                        grandchildCurrent.parentExecution());
+                                assertEquals(ExecutionContext.AllocationKind.NONE,
+                                        grandchildCurrent.allocationDomain().kind());
+                                return OresScheduler.done(40);
+                            });
+                            return OresScheduler.await(grandchild);
+                        }
+                        assertSame(childContext.get(), childCurrent,
+                                "child resume must retain original logical identity");
+                        assertNotEquals(firstChildDispatch.get(),
+                                OresScheduler.currentDispatchId());
+                        return OresScheduler.done(((Integer) childResume.value()) + 1);
+                    });
+                    return OresScheduler.await(child);
+                }
+                assertSame(parentContext.get(), current,
+                        "parent resume must retain original logical identity");
+                assertNotEquals(firstParentDispatch.get(),
+                        OresScheduler.currentDispatchId());
+                return OresScheduler.done(((Integer) resume.value()) + 1);
+            });
+
+            assertEquals(42, parent.get(5, TimeUnit.SECONDS));
+            ExecutionContext root = parentContext.get();
+            ExecutionContext child = childContext.get();
+            ExecutionContext grandchild = grandchildContext.get();
+            assertNotNull(root);
+            assertNotNull(child);
+            assertNotNull(grandchild);
+            assertNotEquals(root.id(), child.id());
+            assertNotEquals(child.id(), grandchild.id());
+            assertEquals(root.id().runtimeDomain(), grandchild.id().runtimeDomain());
+            assertEquals(root.id().execution(), child.parentExecution());
+            assertEquals(child.id().execution(), grandchild.parentExecution());
+            assertEquals(0L, root.parentExecution());
+            assertEquals(ExecutionContext.AllocationKind.NONE,
+                    child.allocationDomain().kind(),
+                    "Task ancestry must never mint an actor or heap capability");
+            assertEquals(0L, child.continuation(),
+                    "causal Task parentage must not forge a compiler-lowered frame");
+        }
+    }
+
 }
