@@ -2568,12 +2568,12 @@ public final class Parser {
                     && borrowCall.arguments().isEmpty() && !borrowCall.typeArgumentsPresent();
             if (!telemetrySpan && !borrowedView) {
                 throw error(previous(),
-                        "using scoped resource requires telemetry.span(...) or a zero-argument resource.borrow() call");
+                        "using borrowed scope requires a zero-argument resource.borrow() call, or telemetry.span(...)");
             }
-            consume(AS, "using scoped resource requires 'as <binding>'");
-            Token name = consume(IDENT, "using scoped resource requires a binding name");
+            consume(AS, telemetrySpan ? "using telemetry span requires 'as <span>'" : "using borrowed scope requires 'as <view>'");
+            Token name = consume(IDENT, telemetrySpan ? "using telemetry span requires a binding name" : "using borrowed scope requires a binding name");
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using scoped resource needs a named, usable binding");
+                throw error(name, telemetrySpan ? "using telemetry span needs a named, usable binding" : "using borrowed scope needs a named, usable view binding");
             }
             List<Ast.Stmt> body = parseBlock();
             if (telemetrySpan) {
