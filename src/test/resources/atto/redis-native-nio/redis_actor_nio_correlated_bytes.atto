@@ -1,0 +1,93 @@
+// Atto-owned binary Redis KV with explicit per-request reply correlation.
+// Stage 1 is deliberately ONE client: next PR binds typed request IDs to
+// bounded multi-client NIO2 sessions through the reply router.
+// All physical TCP I/O uses async NIO2; only this Atto actor owns Map.
+// No host KV, hex codec, blocking socket, stdio, or WAL.
+define actor CorrelatedBytesNioKvActor implements StreamOperator<Tuple<int, int, Bytes, Bytes>, Tuple<int, string, Bytes>> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple<int, int, Bytes, Bytes>> mail): void {
+    const tuple = mail.value;
+    const int request_id = tuple[0];
+    const int kind = tuple[1];
+    const Bytes key = tuple[2];
+    const Bytes value = tuple[3];
+
+    if kind == 5; do self.end(); return; fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send((request_id, "OK", value));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send((request_id, "NIL", key));
+      else
+        self.send((request_id, "VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send((request_id, "ONE", key));
+      else
+        self.send((request_id, "ZERO", key));
+      fi
+      return;
+    fi
+    self.send((request_id, "ERR", key));
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn CorrelatedBytesNioKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  val socket = await listener.accept_async();
+  let int request_id = 0;
+
+  loop {
+    val frame = await socket.read_resp2_binary_async();
+    const int kind = frame[0];
+    if kind == 0; do
+      await socket.close_async();
+      await listener.close_async();
+      worker.send((0, 5, frame[2], frame[3]));
+      await worker.get_done();
+      return;
+    fi
+    if kind == 5; do
+      await socket.write_resp2_binary_async("OK", frame[3]);
+      await socket.close_async();
+      await listener.close_async();
+      worker.send((0, 5, frame[2], frame[3]));
+      await worker.get_done();
+      return;
+    fi
+    if kind == 1; do
+      await socket.write_resp2_binary_async("PONG", frame[3]);
+    else
+      request_id = request_id + 1;
+      worker.send((request_id, kind, frame[2], frame[3]));
+      val output = (await worker.outputs.next()).value.unwrap();
+      val reply = output.value;
+      if reply[0] == request_id; do
+        await socket.write_resp2_binary_async(reply[1], reply[2]);
+      else
+        // Wrong-ID output must NEVER be delivered to an unrelated client.
+        await socket.close_async();
+        await listener.close_async();
+        worker.send((0, 5, frame[2], frame[3]));
+        await worker.get_done();
+        return;
+      fi
+    fi
+  }
+}
