@@ -103,12 +103,45 @@ public final class ActorTypedMethodIR {
         }
     }
 
-    /** The returned map is a static checked expression plan, NOT executable IR. */
+    /**
+     * Immutable actor-level PRE-HIR. The descriptor's sealed state layout is
+     * present for type identity and layout checks ONLY. No state handle,
+     * scheduler permit, mailbox entrypoint or critical loan is represented.
+     */
+    public static final class ActorPlan {
+        private final ActorDescriptorIndex.Descriptor descriptor;
+        private final List<TypedMethod> checkedMethods;
+
+        private ActorPlan(
+                ActorDescriptorIndex.Descriptor descriptor,
+                List<TypedMethod> checkedMethods) {
+            this.descriptor = Objects.requireNonNull(descriptor, "actor descriptor");
+            this.checkedMethods = List.copyOf(checkedMethods);
+            for (TypedMethod method : checkedMethods) {
+                if (!method.key().actor().equals(descriptor.key())) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_TYPED_IR_PROVENANCE_MISMATCH: alien actor method in plan");
+                }
+            }
+        }
+
+        public ActorDescriptorIndex.Descriptor descriptor() { return descriptor; }
+        public List<TypedMethod> checkedMethods() { return checkedMethods; }
+        public String stateLoanStatus() { return "SEALED_STATE_LOANS_UNLOWERED"; }
+        public String mailboxDispatchStatus() { return "MAILBOX_DISPATCH_UNLOWERED"; }
+        public boolean executable() { return false; }
+    }
+
+    /** A static checked expression plan, never an executable capability. */
     public static final class Result {
         private final Map<ActorMethodIndex.MethodKey, TypedMethod> methods;
+        private final Map<ActorMethodIndex.ActorKey, ActorPlan> actors;
 
-        private Result(Map<ActorMethodIndex.MethodKey, TypedMethod> methods) {
+        private Result(
+                Map<ActorMethodIndex.MethodKey, TypedMethod> methods,
+                Map<ActorMethodIndex.ActorKey, ActorPlan> actors) {
             this.methods = Collections.unmodifiableMap(new LinkedHashMap<>(methods));
+            this.actors = Collections.unmodifiableMap(new LinkedHashMap<>(actors));
         }
 
         public Map<ActorMethodIndex.MethodKey, TypedMethod> methods() {
@@ -118,6 +151,9 @@ public final class ActorTypedMethodIR {
         public TypedMethod method(ActorMethodIndex.MethodKey key) {
             return methods.get(key);
         }
+
+        public Map<ActorMethodIndex.ActorKey, ActorPlan> actors() { return actors; }
+        public ActorPlan actor(ActorMethodIndex.ActorKey key) { return actors.get(key); }
     }
 
     /**
@@ -225,7 +261,23 @@ public final class ActorTypedMethodIR {
             throw new IllegalArgumentException(
                     "ACTOR_TYPED_IR_PROVENANCE_MISMATCH: unrepresented external method");
         }
-        return new Result(checked);
+        Map<ActorMethodIndex.ActorKey, ActorPlan> plans = new LinkedHashMap<>();
+        for (var descriptor : audit.descriptors().actors().entrySet()) {
+            var typed = checked.entrySet().stream()
+                    .filter(entry -> entry.getKey().actor().equals(descriptor.getKey()))
+                    .map(Map.Entry::getValue)
+                    .toList();
+            if (typed.size() != descriptor.getValue().methods().size()) {
+                throw new IllegalArgumentException(
+                        "ACTOR_TYPED_IR_PROVENANCE_MISMATCH: incomplete actor method plan");
+            }
+            if (plans.putIfAbsent(descriptor.getKey(),
+                    new ActorPlan(descriptor.getValue(), typed)) != null) {
+                throw new IllegalArgumentException(
+                        "ACTOR_TYPED_IR_PROVENANCE_MISMATCH: duplicate actor plan");
+            }
+        }
+        return new Result(checked, plans);
     }
 
     private static ReturnTerminator checkTerminal(
