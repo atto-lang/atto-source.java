@@ -195,15 +195,22 @@ final class ActorNestedTaskLifetimeTest {
                         outer.getDone().get(5, TimeUnit.SECONDS),
                         "parent DONE joins physically retired descendants");
 
+                AtomicReference<Throwable> producerFailure = new AtomicReference<>();
                 Thread producer = new Thread(() -> {
-                    assertFalse(ActorRuntime.inActorExecution());
-                    assertTrue(childGate.completeFromRuntime(1));
-                    assertTrue(parentGate.completeFromRuntime(1));
-                    assertFalse(ActorRuntime.inActorExecution());
+                    try {
+                        assertFalse(ActorRuntime.inActorExecution());
+                        assertTrue(childGate.completeFromRuntime(1));
+                        assertTrue(parentGate.completeFromRuntime(1));
+                        assertFalse(ActorRuntime.inActorExecution());
+                    } catch (Throwable failure) {
+                        producerFailure.compareAndSet(null, failure);
+                    }
                 }, "late-actor-task-producer");
                 producer.start();
                 producer.join(5000);
                 assertFalse(producer.isAlive());
+                assertNull(producerFailure.get(),
+                        () -> "late actor Task producer failed: " + producerFailure.get());
                 assertEquals(1, childTurns.get(),
                         "late producer completion cannot resume a cancelled actor child");
 
