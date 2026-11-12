@@ -108,7 +108,7 @@ public final class ActorReplyCorrelation implements AutoCloseable {
 
             int id = nextRequestId++;
             OresFuture<Reply> response =
-                    new OresFuture<>(() -> cancelRequest(session, id), () -> { });
+                    new OresFuture<>(() -> cancelForFuture(session, id), () -> { });
             pending.put(id, new Slot(session, response));
             session.pending++;
             return Optional.of(new Pending(id, session.id, session.generation, response));
@@ -137,6 +137,18 @@ public final class ActorReplyCorrelation implements AutoCloseable {
         return true;
     }
 
+    /** Future cancellation removes ticket before the Future's cancelled CAS.
+     * Do NOT settle the Future in this admission callback. */
+    private boolean cancelForFuture(Session session, int requestId) {
+        synchronized (gate) {
+            Slot slot = pending.get(requestId);
+            if (slot == null || slot.session != session || session.owner != this)
+                return false;
+            removeLocked(requestId, slot);
+            return true;
+        }
+    }
+
     /** Cancellation does not undo work already admitted to the KV actor. */
     public boolean cancelRequest(Session session, int requestId) {
         Objects.requireNonNull(session);
@@ -148,10 +160,9 @@ public final class ActorReplyCorrelation implements AutoCloseable {
                 return false;
             removeLocked(requestId, slot);
         }
-        if (!slot.result.isCancelled()) {
-            slot.result.failFromRuntime(
-                    new CancellationException("correlated request cancelled"));
-        }
+        if (!slot.result.failFromRuntime(
+                new CancellationException("correlated request cancelled")))
+            throw new IllegalStateException("cancelled reply/Future mismatch");
         return true;
     }
 
@@ -161,8 +172,9 @@ public final class ActorReplyCorrelation implements AutoCloseable {
         final ArrayList<Slot> discarded;
         synchronized (gate) {
             if (session.owner != this || !session.active
-                    || sessions.remove(session.id) != session)
+                    || sessions.get(session.id) != session)
                 return 0;
+            sessions.remove(session.id);
             session.active = false;
             discarded = removeSessionLocked(session);
         }
