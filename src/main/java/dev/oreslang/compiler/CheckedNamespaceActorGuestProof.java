@@ -71,8 +71,15 @@ public final class CheckedNamespaceActorGuestProof implements AutoCloseable {
         ActorRuntime.ActorRef<Object> first = null;
         ActorRuntime.ActorRef<Object> sibling = null;
         try {
-            first = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Probe");
-            sibling = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            var descriptor = NamespaceActorCriticalIrCompiler.descriptor(executable);
+            if (!descriptor.scalarFields().containsKey("received")
+                    || !descriptor.scalarFields().containsKey("budget")) {
+                throw new SecurityException("guest proof requires checked received/budget fields");
+            }
+            first = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, descriptor.actorName());
+            sibling = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, descriptor.actorName());
             first.ready().get(5, TimeUnit.SECONDS);
             sibling.ready().get(5, TimeUnit.SECONDS);
             if (first.id().equals(sibling.id())) {
