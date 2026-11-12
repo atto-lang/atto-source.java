@@ -130,6 +130,93 @@ final class SupervisorStorageEpochAuthorityTest {
         }
     }
 
+    @Test void queuedGeneration41CommitIsRecheckedAfterGeneration42Takeover() {
+        try (var runtime = new ActorRuntime()) {
+            var gate = runtime.createSupervisor().registerStoragePartition("queue", new Store());
+            var first = gate.activate();
+            var io = gate.beginIo(first);
+            AtomicReference<Runnable> queued = new AtomicReference<>();
+            assertTrue(gate.enqueueCommitIfCurrent(io, () ->
+                    queued.set(() -> fail("stale generation 41 guest mutation"))));
+            io.close(); // physical fsync has finished, but the task is still queued
+            var second = gate.activate();
+            assertEquals(2L, second.generation());
+            assertFalse(gate.dispatchCommitIfCurrent(io, queued.get()));
+            assertFalse(gate.dispatchCommitIfCurrent(io, () -> fail("duplicate")));
+            assertTrue(gate.physicallyQuiescent());
+            var current = gate.beginIo(second);
+            AtomicInteger executions = new AtomicInteger();
+            assertTrue(gate.enqueueCommitIfCurrent(current, () -> { }));
+            current.close();
+            assertTrue(gate.dispatchCommitIfCurrent(current, executions::incrementAndGet));
+            assertEquals(1, executions.get());
+            assertFalse(gate.dispatchCommitIfCurrent(current, executions::incrementAndGet));
+        }
+    }
+
+    @Test void physicalCommitExecutionBlocksNextGenerationUntilQuiescence() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var gate = runtime.createSupervisor().registerStoragePartition("physical", new Store());
+            var first = gate.activate();
+            var io = gate.beginIo(first);
+            assertTrue(gate.enqueueCommitIfCurrent(io, () -> { }));
+            io.close(); // disk fsync is done; guest dispatch is not
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch finish = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicInteger executions = new AtomicInteger();
+            Thread worker = new Thread(() -> {
+                try {
+                    assertTrue(gate.dispatchCommitIfCurrent(io, () -> {
+                        entered.countDown();
+                        try {
+                            if (!finish.await(5, TimeUnit.SECONDS))
+                                throw new IllegalStateException("blocked test callback");
+                            executions.incrementAndGet();
+                        } catch (InterruptedException ex) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(ex);
+                        }
+                    }));
+                } catch (Throwable error) { failure.set(error); }
+            }, "physical-generation41-commit");
+            worker.start();
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
+                        gate::activate, "generation 42 cannot admit while 41 is physically dispatching");
+                assertFalse(gate.physicallyQuiescent());
+            } finally {
+                finish.countDown();
+                worker.join(5000);
+            }
+            assertFalse(worker.isAlive());
+            assertNull(failure.get());
+            assertEquals(1, executions.get(), "generation 41 was authorized BEFORE takeover");
+            assertTrue(gate.physicallyQuiescent());
+            assertEquals(2L, gate.activate().generation(),
+                    "generation 42 only admitted after 41 dispatch completed");
+            assertFalse(gate.dispatchCommitIfCurrent(io, () -> fail("late stale dispatch")));
+        }
+    }
+
+    @Test void cancellationRequiresOutstandingFsyncToDrainBeforeReplacement() {
+        try (var runtime = new ActorRuntime()) {
+            var gate = runtime.createSupervisor().registerStoragePartition("cancel", new Store());
+            var first = gate.activate();
+            var io = gate.beginIo(first);
+            gate.cancel(first);
+            assertFalse(gate.permits(io));
+            assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
+                    gate::activate, "cancel must not silently turn in-flight fsync into quiescence");
+            io.close();
+            io.close(); // duplicate completion must not underflow
+            assertTrue(gate.physicallyQuiescent());
+            assertEquals(2L, gate.activate().generation());
+            assertFalse(gate.enqueueCommitIfCurrent(io, () -> fail("cancelled")));
+        }
+    }
+
     @Test void failedOrWrongDurableReservationPoisonsBeforeReadiness() {
         for (boolean wrongEpoch : new boolean[]{false, true}) {
             var store = new Store();
