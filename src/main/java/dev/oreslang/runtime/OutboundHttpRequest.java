@@ -505,11 +505,6 @@ public final class OutboundHttpRequest {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
-        final byte[] requestBody = requestBodyBytes(rawBody);
-        if (!method.equals("POST") && requestBody.length != 0) {
-            throw new IllegalArgumentException(
-                    "only POST may carry a request body");
-        }
         if (!method.equals("GET") && !method.equals("HEAD")
                 && !method.equals("POST")) {
             throw new IllegalArgumentException("http.request supports GET, HEAD or POST");
@@ -531,6 +526,14 @@ public final class OutboundHttpRequest {
         String endpoint = "127.0.0.1:" + target.getPort();
         context.requirePermission(
                 RuntimePermissions.Permission.NET, endpoint, "http.request");
+
+        // Resolve permissions before copying up to 1 MiB of guest-owned
+        // memory. Unauthorized requests must not incur body traversal or
+        // borrow mutable source bytes across actor/task boundaries.
+        final byte[] requestBody = requestBodyBytes(rawBody);
+        if (!method.equals("POST") && requestBody.length != 0) {
+            throw new IllegalArgumentException("only POST may carry a request body");
+        }
 
         // Read the immutable context on the *guest admission* carrier, not
         // the later physical-I/O worker. No userland tracing call is required.
