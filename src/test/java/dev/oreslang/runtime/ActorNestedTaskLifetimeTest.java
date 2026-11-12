@@ -79,6 +79,71 @@ final class ActorNestedTaskLifetimeTest {
     }
 
     @Test
+    void terminalParentCanStillRevokeLiveNestedChildWithoutRewritingItsResult()
+            throws Exception {
+        OresFuture<Integer> childGate = new OresFuture<>();
+        AtomicReference<TaskHandle<Integer>> parent = new AtomicReference<>();
+        AtomicReference<TaskHandle<Integer>> child = new AtomicReference<>();
+        CountDownLatch childSuspended = new CountDownLatch(1);
+        AtomicInteger childTurns = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(
+                    IsolatePolicy.developer(),
+                    () -> (message, context) -> {
+                        if ("stop".equals(message)) {
+                            context.self().stop();
+                            return;
+                        }
+                        assertEquals("start", message);
+                        parent.set(context.runtime().startTrackedActorTask(resume -> {
+                            assertTrue(resume.initial());
+                            child.set(context.runtime().startTrackedActorTask(nested -> {
+                                childTurns.incrementAndGet();
+                                assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                                if (nested.initial()) {
+                                    childSuspended.countDown();
+                                    return OresScheduler.await(childGate);
+                                }
+                                return OresScheduler.done(17);
+                            }));
+                            return OresScheduler.done(11);
+                        }));
+                    });
+            try {
+                actor.ready().get(5, TimeUnit.SECONDS);
+                actor.send("start");
+                assertTrue(childSuspended.await(5, TimeUnit.SECONDS));
+                TaskHandle<Integer> outer = parent.get();
+                TaskHandle<Integer> inner = child.get();
+                assertNotNull(outer);
+                assertNotNull(inner);
+                assertEquals(11, outer.result().get(5, TimeUnit.SECONDS));
+                assertFalse(outer.getDone().isDone());
+
+                assertTrue(outer.cancel("retire the outstanding child"),
+                        "terminal result must not disable revocation of live children");
+                assertInstanceOf(TaskHandle.Cancelled.class,
+                        inner.getDone().get(5, TimeUnit.SECONDS));
+                assertEquals(new TaskHandle.Success<>(11),
+                        outer.getDone().get(5, TimeUnit.SECONDS),
+                        "already-terminal parent result remains immutable");
+                assertEquals(11, outer.result().get(5, TimeUnit.SECONDS));
+                assertTrue(childGate.completeFromRuntime(1));
+                assertEquals(1, childTurns.get(),
+                        "late Future producer cannot resume the cancelled child");
+
+                actor.send("stop");
+                actor.done().get(5, TimeUnit.SECONDS);
+                assertTrue(actor.failure().isEmpty(), () -> String.valueOf(actor.failure()));
+            } finally {
+                childGate.completeFromRuntime(1);
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
     void cancellingParentRevokesNestedTaskWithoutForeignProducerReentry() throws Exception {
         OresFuture<Integer> parentGate = new OresFuture<>();
         OresFuture<Integer> childGate = new OresFuture<>();
