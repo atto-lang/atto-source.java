@@ -116,6 +116,41 @@ final class AttoRedisBoundedClientsGuestTest {
                     socket.getOutputStream().write(command("GET", key));
                 }
                 for (Socket socket : sockets) expect(socket, bulk(value));
+                // Every client pipelines two commands on the wire without
+                // awaiting an intervening reply. Distinct binary keys/values
+                // detect misrouted replies and enforce per-client FIFO.
+                byte[][] keys = new byte[count][];
+                byte[][] values = new byte[count][];
+                long pipelineStarted = System.nanoTime();
+                for (int i = 0; i < count; i++) {
+                    keys[i] = new byte[]{(byte) 254, (byte) i, (byte) 128};
+                    values[i] = new byte[]{
+                            (byte) (i + 17), 0, (byte) 255, 13, 10};
+                    byte[] set = command("SET", keys[i], values[i]);
+                    byte[] get = command("GET", keys[i]);
+                    ByteArrayOutputStream pipeline = new ByteArrayOutputStream();
+                    pipeline.write(set);
+                    pipeline.write(get);
+                    sockets.get(i).getOutputStream().write(pipeline.toByteArray());
+                }
+                for (int i = 0; i < count; i++) {
+                    expect(sockets.get(i), ascii("+OK\\r\\n"));
+                    expect(sockets.get(i), bulk(values[i]));
+                }
+                for (int i = 0; i < count; i++) {
+                    int other = (i + 1) % count;
+                    sockets.get(i).getOutputStream().write(command("GET", keys[other]));
+                }
+                for (int i = 0; i < count; i++) {
+                    int other = (i + 1) % count;
+                    expect(sockets.get(i), bulk(values[other]));
+                }
+                long checkedPipelineNanos = System.nanoTime() - pipelineStarted;
+                assertTrue(checkedPipelineNanos > 0);
+                System.out.println("ATTO_REDIS_MULTI_CLIENT_PIPELINE clients=" + count
+                        + " operations=" + (3 * count)
+                        + " duration_ns=" + checkedPipelineNanos
+                        + " cross_client_keys=YES binary=YES reply_identity=PASS");
                 for (Socket socket : sockets) {
                     socket.getOutputStream().write(command("QUIT"));
                 }
@@ -141,7 +176,9 @@ final class AttoRedisBoundedClientsGuestTest {
         System.out.println("ATTO_REDIS_LIVE_SHARED_ACTOR_CLIENTS=" + count + " EXECUTED_PASS");
     }
     @Test void twoLiveClients() throws Exception { runGuest(2); }
+    @Test void eightLiveClients() throws Exception { runGuest(8); }
     @Test void sixteenLiveClients() throws Exception { runGuest(16); }
+    @Test void thirtyTwoLiveClients() throws Exception { runGuest(32); }
     @Test void hundredLiveClients() throws Exception { runGuest(100); }
     @Test void invalidWireAndBlockingSocketCompileRejected() throws Exception {
         String original = source();
