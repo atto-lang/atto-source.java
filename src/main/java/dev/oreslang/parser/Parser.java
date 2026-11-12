@@ -36,12 +36,6 @@ public final class Parser {
                                List<String> generics) { }
     private final List<ForwardType> rootForwards = new ArrayList<>();
     private List<ForwardType> moduleForwards;
-    // The current AST represents traits using InterfaceDecl. Keep the parsed
-    // source kind during forward validation, rather than permitting trait and
-    // interface declarations to substitute for one another silently.
-    private final java.util.IdentityHashMap<Ast.InterfaceDecl, Token.Type> interfaceKinds =
-            new java.util.IdentityHashMap<>();
-
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
         // A public parser must not trust an externally supplied Token stream to
@@ -1265,9 +1259,14 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
+        if (kind != TRAIT && kind != INTERFACE) {
+            throw error(previous(), "expected trait or interface declaration kind");
+        }
         Ast.InterfaceDecl declaration = parseInterface(visibility);
-        interfaceKinds.put(declaration, kind);
-        return declaration;
+        return new Ast.InterfaceDecl(
+                declaration.name(), declaration.visibility(), declaration.genericParameters(),
+                declaration.parents(), declaration.members(), false,
+                kind == TRAIT ? Ast.InterfaceKind.TRAIT : Ast.InterfaceKind.INTERFACE);
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
@@ -1674,7 +1673,11 @@ public final class Parser {
                 generics = alias.genericParameters();
                 visibility = alias.visibility();
             } else if (definition instanceof Ast.InterfaceDecl iface) {
-                actual = iface.moduleContract() ? CONTRACT : interfaceKinds.getOrDefault(iface, INTERFACE);
+                actual = switch (iface.declarationKind()) {
+                    case CONTRACT -> CONTRACT;
+                    case TRAIT -> TRAIT;
+                    case INTERFACE -> INTERFACE;
+                };
                 generics = iface.genericParameters();
                 visibility = iface.visibility();
             } else {
