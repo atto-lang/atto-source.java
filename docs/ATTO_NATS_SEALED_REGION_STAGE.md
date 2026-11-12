@@ -13,6 +13,10 @@ per-actor heap, standalone actor executor, guest API, verified borrow checker,
 or near-zero-GC solution.
 
 - Allocation requires a live, runtime-minted actor execution context.
+  `allocateFromSealedDeclaration` derives the scalar layout from the
+  `Ast.ClassDecl.sealedStateFields` declaration, never ordinary class fields,
+  and rechecks literal type, duplicate names and field bounds. This stage
+  does not enable source critical syntax or bypass TypeChecker admission.
 - The region stores only 1–64 validated `Long`/`Boolean` scalar fields.
 - No field map or mutable array is exposed; the interpreter must consume
   compiler-resolved field slots, never a guest-forged numeric slot index.
@@ -37,7 +41,8 @@ or near-zero-GC solution.
 
 `SealedActorStateRegionTest` contains 5 JVM tests, including a real
 `ActorRuntime.spawnCodeActor` dispatch path with a **host-provided test
-executor** bound to a parsed immutable code image. The test checks persistent
+executor** bound to a parsed immutable code image and allocating its state
+from the same actor declaration's sealed AST schema. The test checks persistent
 state through two mailbox turns and automatic retirement on actor
 finalization. Its Java test executor is **not compiled Atto guest code**.
 
