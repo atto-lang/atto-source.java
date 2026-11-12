@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.lang.reflect.Field;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -36,6 +38,8 @@ final class ActorForeignSchedulerAdmissionTest {
                         assertTrue(runtime.currentThreadOwnsActorExecutionLease());
                         assertNull(OresScheduler.current(),
                                 "ordinary mailbox turns have no Task scheduler");
+                        assertFalse(hasInitializedSourceScheduler(runtime, context.self().id()),
+                                "new actor must not acquire a source scheduler before any task");
                         try (OresScheduler foreign = OresScheduler.runtimeOwned(
                                 "foreign-inline-task", 1, Runnable::run)) {
                             OresFuture<Integer> completed = foreign.start(resume -> {
@@ -59,6 +63,8 @@ final class ActorForeignSchedulerAdmissionTest {
                             assertTrue(completed.isDone(),
                                     "direct foreign executor should execute synchronously");
                         }
+                        assertFalse(hasInitializedSourceScheduler(runtime, context.self().id()),
+                                "rejected foreign task admission must be resource side-effect free");
                         // A regular actor receive can still create its own actor
                         // Task; the wrong scheduler check must not ban actor roots.
                         context.runtime().startActorTask(
@@ -75,6 +81,22 @@ final class ActorForeignSchedulerAdmissionTest {
                     "both tracked and ordinary actor admission must fail closed");
             assertEquals(0, controlCalls.get(),
                     "supervisor CONTROL is not an actor task carrier");
+        }
+    }
+
+    /** Host-only white-box probe; never available to guest actor code. */
+    private static boolean hasInitializedSourceScheduler(
+            ActorRuntime runtime, ActorRuntime.ActorId id) {
+        try {
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((Map<?, ?>) actorsField.get(runtime)).get(id);
+            if (cell == null) throw new AssertionError("actor cell missing");
+            Field sourceSchedulerField = cell.getClass().getDeclaredField("sourceScheduler");
+            sourceSchedulerField.setAccessible(true);
+            return sourceSchedulerField.get(cell) != null;
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("could not inspect test-only scheduler state", failure);
         }
     }
 }
