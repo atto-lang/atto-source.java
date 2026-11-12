@@ -2026,6 +2026,16 @@ public final class TypeChecker {
         // cancellation and unwind behavior have all been implemented. This
         // prevents the evaluator's generic statement fallback from silently
         // treating a borrow as a no-op or a normal heap-backed local.
+        // Parser admission is not an authorization to run a scoped resource.
+        // The trusted std.telemetry symbol, exact-once unwind, actor-owned
+        // continuation guard and ownership/effects contracts must be verified
+        // before permitting this source form to execute.
+        if (stmt instanceof Ast.UsingTelemetrySpanStmt) {
+            throw new IllegalArgumentException(
+                    "using telemetry.span(...) as span requires verified "
+                            + "typed scoped-resource cleanup and suspends/await "
+                            + "continuation lowering; feature is not enabled");
+        }
         if (stmt instanceof Ast.UsingBorrowStmt loan) {
             ScopedRequestBorrowPreflight.verify(loan);
             throw new IllegalArgumentException(
