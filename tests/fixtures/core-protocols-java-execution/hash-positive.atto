@@ -6,7 +6,10 @@ define pub class Counter implements Hash as
   pub hash_value(): int { return self.value; }
 end
 
+fnc check_hash(Hash candidate): int {
+  return candidate.hash_value();
+}
+
 pub fnc main(): int {
-  val Counter counter = new Counter(42);
-  return counter.hash_value();
+  return check_hash(new Counter(42));
 }
