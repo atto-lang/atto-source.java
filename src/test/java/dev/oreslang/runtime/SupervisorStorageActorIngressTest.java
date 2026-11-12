@@ -127,6 +127,29 @@ final class SupervisorStorageActorIngressTest {
         }
     }
 
+    @Test void failedPhysicalCleanupQuarantinesPartitionAgainstGenerationReuse() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            // Deliberately fail a trusted runtime finalization hook after
+            // actor STOP. A logical done signal is not physical cleanup proof.
+            runtime.setActorExitHook(ignored -> {
+                throw new IllegalStateException("injected actor execution-domain cleanup failure");
+            });
+            var owner = runtime.createSupervisor();
+            var gate = owner.registerStoragePartition("kafka-m6/cleanup-quarantine", new Store());
+            var first = gate.activate();
+            var actor = owner.<String>spawnStorageBoundActorHost(gate, first,
+                    IsolatePolicy.developer(), context -> (mail, self) -> { });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.cancel();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "logical finalization is allowed to report a failure");
+            assertFalse(gate.physicallyQuiescent(),
+                    "failed physical cleanup must retain exclusive partition claim");
+            assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
+                    gate::activate, "replacement on an incompletely retired partition is unsafe");
+        }
+    }
+
     @Test void actualActorContinuationQueuedDuringOldReceiveCannotResumeAfterRevocation() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var owner = runtime.createSupervisor();
@@ -135,13 +158,17 @@ final class SupervisorStorageActorIngressTest {
             var started = new CountDownLatch(1);
             var unblock = new CountDownLatch(1);
             var future = new OresFuture<Integer>();
+            var lateFuture = new OresFuture<Integer>();
             var callbacks = new AtomicInteger();
+            var lateCallbacks = new AtomicInteger();
             var target = new AtomicReference<ActorRuntime.ContinuationTarget>();
             var actor = owner.<String>spawnStorageBoundActorHost(gate, first,
                     IsolatePolicy.developer(), context -> (message, receiver) -> {
                         target.set(runtime.captureCurrentContinuationTarget());
                         runtime.enqueueOnCompletion(future, target.get(), (value, failure) ->
                                 callbacks.incrementAndGet());
+                        runtime.enqueueOnCompletion(lateFuture, target.get(), (value, failure) ->
+                                lateCallbacks.incrementAndGet());
                         started.countDown();
                         if (!unblock.await(5, TimeUnit.SECONDS))
                             throw new IllegalStateException("blocked receive");
@@ -153,6 +180,10 @@ final class SupervisorStorageActorIngressTest {
                 future.completeFromRuntime(7); // queued in ACTUAL continuation transport
                 assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
                         gate::activate);
+                // Future producer completing AFTER logical revocation must
+                // not reserve CONTROL mailbox capacity for a dead actor.
+                lateFuture.completeFromRuntime(9);
+                assertEquals(0, lateCallbacks.get());
                 unblock.countDown();
                 actor.cancel();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
@@ -160,6 +191,7 @@ final class SupervisorStorageActorIngressTest {
                 assertTrue(gate.physicallyQuiescent(), "old actor lifetime must finish");
                 assertEquals(2L, gate.activate().generation());
                 assertEquals(0, callbacks.get(), "stale continuation must be discarded");
+                assertEquals(0, lateCallbacks.get(), "post-revocation Future never runs");
             } finally {
                 unblock.countDown();
                 actor.cancel();
