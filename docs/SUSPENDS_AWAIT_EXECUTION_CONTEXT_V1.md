@@ -12,7 +12,7 @@ Status: **candidate acceptance, not cross-backend completion**.
 
 ## Execution identity and real continuations
 
-Each admitted Task owns a runtime-minted stable `ExecutionContext` (execution ID, scheduler owner, task-local context and cancellation provenance) across all awaits/cooperation. It is **not** a physical thread, carrier, dispatch, or allocation authority. Every fresh scheduler turn gets a new dispatch ID. A child Task has a distinct execution ID, although immutable task-local context can be inherited.
+Each admitted Task owns a runtime-minted stable `ExecutionContext` identity (execution ID and optional allocation domain) across all awaits/cooperation. The scheduler separately owns admission/cancellation state and source Tasks separately retain `TaskContext` bindings. Today the `parentExecution` and `continuation` fields are not yet fully compiler-lowered frame handles; do not infer that completed work from the type alone. `ExecutionContext` is **not** a physical thread, carrier, dispatch, or automatic allocation authority. Every fresh scheduler turn gets a new dispatch ID. A child Task has a distinct execution ID, although immutable task-local bindings can be inherited.
 
 Nested `suspends` calls require bounded compiler-lowered continuation frames with live typed locals, operand stack, return PC, cleanup state, ownership loan state, and actor generation where applicable. A Future completion may only enqueue a one-shot, generation-fenced continuation onto its owning scheduler or actor lane. The producer callback may not execute guest code inline, adopt the producer's ambient thread locals, forge actor admission, or reclaim suspended frame storage.
 
