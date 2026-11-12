@@ -38,7 +38,7 @@ public final class OresKeyedMap<K, V> {
             SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
 
     public enum KeyDomain {
-        STRING, SYMBOL, STRING_OR_SYMBOL
+        STRING, SYMBOL, STRING_OR_SYMBOL, BYTES
     }
 
     /**
@@ -46,7 +46,7 @@ public final class OresKeyedMap<K, V> {
      * protects dynamic/foreign callers. ANY is explicitly dynamic only.
      */
     public enum ValueDomain {
-        ANY, INT, STRING, SYMBOL, BOOL
+        ANY, INT, STRING, SYMBOL, BOOL, BYTES
     }
 
     /**
@@ -121,6 +121,15 @@ public final class OresKeyedMap<K, V> {
 
     public static <V> OresKeyedMap<String, V> stringKeys(ValueDomain values) {
         return new OresKeyedMap<>(KeyDomain.STRING, values, NO_ENTRY_VALIDATOR);
+    }
+
+    /**
+     * Binary value-semantic keys, bounded to 4096 bytes per key.
+     * OresBytes has no mutable backing exposure; the map's byte-budget
+     * accounts for tag+length and exact raw key size.
+     */
+    public static <V> OresKeyedMap<OresBytes, V> bytesKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.BYTES, values, NO_ENTRY_VALIDATOR);
     }
 
     /**
@@ -230,6 +239,7 @@ public final class OresKeyedMap<K, V> {
         Objects.requireNonNull(key, "map key");
         boolean valid = switch (domain) {
             case STRING -> key instanceof String;
+            case BYTES -> key instanceof OresBytes;
             case SYMBOL -> key instanceof OresSymbol;
             case STRING_OR_SYMBOL -> key instanceof String || key instanceof OresSymbol;
         };
@@ -237,6 +247,9 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException("key is incompatible with Map key domain " + domain);
         }
         if (key instanceof String text) checkStringKey(text);
+        if (key instanceof OresBytes bytes && bytes.size() > 4096) {
+            throw new IllegalArgumentException("Map Bytes key exceeds 4096 bytes");
+        }
     }
 
     public synchronized boolean containsKey(Object key) {
@@ -284,6 +297,7 @@ public final class OresKeyedMap<K, V> {
             case STRING -> value instanceof String;
             case SYMBOL -> value instanceof OresSymbol;
             case BOOL -> value instanceof Boolean;
+            case BYTES -> value instanceof OresBytes;
         };
         if (!valid) {
             throw new IllegalArgumentException(
@@ -312,6 +326,9 @@ public final class OresKeyedMap<K, V> {
     }
 
     private static int wireKeyBytes(Object key) {
+        // Binary keys are not String/Symbol keys in the tagged string codec.
+        // Count one kind byte, four length bytes, and the immutable payload.
+        if (key instanceof OresBytes bytes) return Math.addExact(5, bytes.size());
         // The canonical tagged-key codec defines the identical logical
         // String/PROCESS/STABLE footprint used by bulk serialization. Use its
         // strict size preflight rather than allocating a throwaway wire frame.
