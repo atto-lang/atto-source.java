@@ -40,6 +40,7 @@ external mtd (ConnectionActor c) init(): void {
 // Runtime mailbox ingress; a direct invocation is a compile-time error.
 external mtd (ConnectionActor c) receive(ActorMail<ConnectionMail> mail): void {
     // Runtime-only ingress with nominal, exhaustive variant checking.
+    // FAIL CLOSED until a trusted runtime issues an unforgeable AuthGrant.
     // No variant grants AuthGrant. Unauthenticated credit requests stay
     // rejected by the sealed critical state. Close is safe and idempotent.
     // The runtime must check ActorId/generation before entering this body.
