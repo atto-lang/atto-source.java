@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,8 +68,13 @@ public final class ActorMethodIndex {
     private ActorMethodIndex(
             Map<ActorKey, ActorDeclaration> declaredActors,
             Map<MethodKey, MethodSignature> methodSlots) {
-        this.declaredActors = Map.copyOf(declaredActors);
-        this.methodSlots = Map.copyOf(methodSlots);
+        // Map.copyOf does not promise iteration order. Preserve the ordered
+        // package scan so exact-source receipts and descriptor consumers see
+        // stable actor/method enumeration across JVM implementations.
+        this.declaredActors = Collections.unmodifiableMap(
+                new LinkedHashMap<>(declaredActors));
+        this.methodSlots = Collections.unmodifiableMap(
+                new LinkedHashMap<>(methodSlots));
     }
 
     /** A namespace-qualified lookup never falls back to another namespace. */
