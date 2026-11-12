@@ -1690,13 +1690,9 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr taskExpr,
                 Env env) {
-            if (ActorRuntime.inActorExecution()) {
-                // The type checker also rejects this today. Keep a runtime gate
-                // for host-entered/untyped execution so actor self/state cannot
-                // silently cross into an independently scheduled task.
-                throw new IllegalStateException(
-                        "task blocks cannot capture actor state until explicit actor-task capture authority is lowered");
-            }
+            // Actor task blocks are still ownership-checked detached Tasks.
+            // Their continuations must use the current actor's mailbox-backed
+            // scheduler, not the VM root/supervisor CONTROL scheduler.
             if (env.hasLiveMutexGuards()) {
                 throw new IllegalStateException(
                         "cannot launch task while holding a live MutexGuard");
@@ -1712,6 +1708,11 @@ public final class OresEvalRootNode extends RootNode {
                             taskAdmissionEpoch);
             Map<String, Ast.TaskCaptureTransfer> admitted =
                     admission.captureTransfers();
+            if (ActorRuntime.inActorExecution()
+                    && admitted.containsKey("self")) {
+                throw new SecurityException(
+                        "actor source Task cannot capture self/actor-owned mutable state");
+            }
             Set<String> syntactic =
                     dev.oreslang.ast.TaskCaptureNames.referencedIn(
                             taskExpr.body());
@@ -1753,17 +1754,30 @@ public final class OresEvalRootNode extends RootNode {
                             admitted,
                             launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
-            OresScheduler current = OresScheduler.current();
-            OresScheduler scheduler =
-                    current != null ? current : context.vm().rootScheduler();
+            boolean actorTask = ActorRuntime.inActorExecution();
             try {
                 TaskScope structuredScope = env.structuredTaskScope();
-                // Both paths yield a TaskHandle so source code can cancel the
-                // task and await its physical-quiescence barrier (get_done).
-                TaskHandle<Object> handle = structuredScope != null
-                        ? structuredScope.startTask(task)
-                        : scheduler.startTracked(task);
+                // Both paths yield a TaskHandle with a physical get_done()
+                // barrier. Only an admitted actor mailbox turn may launch
+                // actor-owned children. A parent TaskScope cannot grant actor
+                // execution authority just by being present in the Env.
+                TaskHandle<Object> handle;
+                if (actorTask) {
+                    if (structuredScope != null) {
+                        throw new SecurityException(
+                                "actor task blocks cannot inherit a foreign TaskScope");
+                    }
+                    handle = context.actors().startActorTrackedTask(task);
+                } else {
+                    OresScheduler current = OresScheduler.current();
+                    OresScheduler scheduler =
+                            current != null ? current : context.vm().rootScheduler();
+                    handle = structuredScope != null
+                            ? structuredScope.startTask(task)
+                            : scheduler.startTracked(task);
+                }
                 OresFuture<Object> future = SourceTaskHandles.register(handle);
+                if (actorTask) context.actors().ownCurrentActorFuture(future);
                 transfer.commit();
                 return future;
             } catch (RuntimeException | Error failure) {
