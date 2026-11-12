@@ -574,6 +574,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
             new ConcurrentHashMap<>(Map.of(rootSupervisor.id(), rootSupervisor));
+    /** Partition-exclusive supervisor authorities; guarded by runtimeLifecycleLock. */
+    private final Map<String, SupervisorStorageEpochAuthority> storageEpochAuthorities =
+            new java.util.HashMap<>();
     /**
      * Reverse cooperation-membership index. All mutations to this map AND an
      * ActorGroup.members set are serialized on groupMembershipLock. This is
@@ -3232,6 +3235,36 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Register one durable partition under this actual runtime supervisor.
+         * No other supervisor in the same runtime can claim the same partition.
+         * Called only by a trusted host during bootstrap; activation itself
+         * requires an independently fsynced durable-generation store.
+         *
+         * This does not expose partition I/O or an ACK method to guest code.
+         */
+        public SupervisorStorageEpochAuthority registerStoragePartition(
+                String partitionId,
+                SupervisorStorageEpochAuthority.DurableGenerationStore durableStore) {
+            requireStorageEpochHostContext(this);
+            Objects.requireNonNull(partitionId, "partitionId");
+            Objects.requireNonNull(durableStore, "durableStore");
+            if (partitionId.isEmpty() || partitionId.length() > 128
+                    || !partitionId.matches("[A-Za-z0-9][A-Za-z0-9_.:/-]*")) {
+                throw new IllegalArgumentException("invalid canonical durable partition id");
+            }
+            synchronized (runtimeLifecycleLock) {
+                if (closed.get() || supervisors.get(id) != this)
+                    throw new IllegalStateException("supervisor no longer registered");
+                if (storageEpochAuthorities.containsKey(partitionId))
+                    throw new IllegalStateException("durable partition already has a supervisor");
+                SupervisorStorageEpochAuthority gate = new SupervisorStorageEpochAuthority(
+                        ActorRuntime.this, this, partitionId, durableStore);
+                storageEpochAuthorities.put(partitionId, gate);
+                return gate;
+            }
+        }
+
+        /**
          * Associate exactly one owner CONTROL code slot with this stable
          * supervisor. Source-level guest policy loading remains compiler-gated.
          */
@@ -3292,6 +3325,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void retireCodeFromRuntime() {
+            // Physical runtime teardown revokes all supervisor-issued storage
+            // tickets before code policy reclamation. No guest callback here.
+            for (SupervisorStorageEpochAuthority gate : storageEpochAuthorities.values()) {
+                if (gate.supervisorId().equals(id)) gate.retireFromRuntime();
+            }
             SupervisorCodeSlot<?> slot = codeSlot;
             if (slot != null) slot.close();
         }
@@ -4962,6 +5000,17 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
         }
     }
+
+    /** Host-only admission boundary for a registered supervisor storage gate. */
+    void requireStorageEpochHostContext(ActorSupervisor owner) {
+        requireSupervisorContext("issue a durable supervisor generation");
+        requireCallerRuntimeAffinity("issue a durable supervisor generation");
+        requireBlockingHostContext("issue a durable supervisor generation");
+        if (closed.get() || owner == null || supervisors.get(owner.id()) != owner)
+            throw new IllegalStateException("stale or foreign supervisor runtime");
+    }
+
+    boolean storageEpochRuntimeClosed() { return closed.get(); }
 
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
