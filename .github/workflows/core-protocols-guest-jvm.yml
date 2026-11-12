@@ -5,6 +5,9 @@ on:
       - 'src/main/resources/dev/oreslang/core/protocols.atto'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/compiler/ImportGraph.java'
+      - 'src/test/java/dev/oreslang/compiler/ImportGraphTraitKindTest.java'
       - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
@@ -49,7 +52,7 @@ jobs:
       - name: Compile and execute real Atto guests plus actor reference, channel and Future hardening tests
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ActorRefIncarnationFenceTest,DirectionalChannelCapabilityFenceTest,ChannelRuntimeTest,ChannelPendingAdmissionTest,OresFutureTerminalNotificationRaceTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ImportGraphTraitKindTest,ActorRefIncarnationFenceTest,DirectionalChannelCapabilityFenceTest,ChannelRuntimeTest,ChannelPendingAdmissionTest,OresFutureTerminalNotificationRaceTest -DfailIfNoTests=true test
           echo 'CORE_PROTOCOLS_ACTOR_CHANNEL_JAVA_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
         if: always()
