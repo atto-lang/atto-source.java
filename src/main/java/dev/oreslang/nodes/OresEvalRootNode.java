@@ -8212,6 +8212,14 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return socket.readResp2BinaryBatchAsync(n.intValue());
                     };
+                    case "write_resp2_binary_batch_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_resp2_binary_batch_async");
+                        if (!(args.getFirst() instanceof List<?> replies)) {
+                            throw new IllegalArgumentException(
+                                    "write_resp2_binary_batch_async requires a list of reply tuples");
+                        }
+                        return socket.writeResp2BinaryBatchAsync(replies);
+                    };
                     case "write_resp2_binary_async" -> (Invokable) args -> {
                         requireTwo(args, "socket.write_resp2_binary_async");
                         String status = requireString(args.get(0), "binary RESP2 reply kind");
