@@ -200,12 +200,36 @@ outbound header). None has an exact-head nonzero-step passing CI receipt. **Do n
 
 ## Exporter blocking dependency
 
-The existing guest `http.request` / pinned transport supports GET and
-HEAD only; it cannot send an OTLP/HTTP `POST /v1/traces` JSON body.
-Do not add a Java-only synchronous exporter on the actor carrier or
-mislabel the source-free Node receiver as an Atto exporter. The next
-trusted cross-backend transport slice must add bounded asynchronous request
-body support, explicit NET capability and URL/payload admission, cancellation
-and physical retirement receipts, and actual test-network evidence.
-Then a native `.atto` actor can own `SpanBatch`, serialize bounded OTLP
-batches and await export without blocking the application actor.
+The Java/Graal guest `http.request` and pinned transport now contain
+an **authored, not guest-executed** bounded POST implementation. A fourth
+argument admits UTF-8 `String` or `List<int>` (portable byte-octet bootstrap)
+with a 1 MiB encoded-body maximum, immutable admission snapshot, reserved
+transport-generated `Content-Length`, existing permission and canonical
+loopback URL guards, and selector-driven physical I/O with deadlines and
+cancellation. GET/HEAD remain supported without bodies. A true native
+`Bytes` nominal guest type and network destination policies beyond
+canonical loopback are still separate compatibility/security gates.
+
+The native `ores.std/telemetry` module now provides a **pure**
+OTLP/HTTP protobuf-JSON encoder (`CompletedSpan.to_otlp_span_json`,
+`SpanBatch.to_otlp_json` for batches of 1..64) and
+`post_otlp_json_async(endpoint, json)`. The encoder emits lowercase
+hex W3C IDs, numeric span kinds and **quoted decimal** nanosecond times per
+the [current OTLP JSON specification](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding).
+It fixes low-cardinality operation names and carries no free-form attributes,
+URLs, request bodies or credentials into spans. A trusted bridge must still
+enforce exact W3C ID dimensions and receive samples from the bounded
+runtime staging queue.
+
+`NativeTelemetryActorOtlpGuestTest` uses a real .atto one-shot
+`TelemetryCollector` actor fixture, with actor mailbox delivery, pure
+encoding, and async POST to a real loopback receiver. It is a **test source,
+NOT_EXECUTED**, and is not a production collector with reusable mailbox
+drain, retry, sampling, partialSuccess acknowledgement, exporter
+self-instrumentation suppression or supervised shutdown. A status 200
+alone is **not** proof of OTLP acceptance; a compliant collector must inspect
+`partialSuccess` before calling `SpanBatch.clear_acked()`.
+
+The full automatic HTTP SERVER → actor INTERNAL → HTTP CLIENT → OTLP
+receiver trace still **has NOT_EXECUTED**. No source-level syntax,
+host smoke or synthetic JSON packet substitutes for that result.
