@@ -46,6 +46,9 @@ final class NativeTelemetryScopeGuestTest {
                         stdio.println(span.is_recording());
                         stdio.println(span.is_ended());
                       }
+                      using telemetry.span() as unnamed {
+                        stdio.println(unnamed.is_recording());
+                      }
                       return;
                     }
                     """);
@@ -53,7 +56,7 @@ final class NativeTelemetryScopeGuestTest {
             ByteArrayOutputStream stderr = new ByteArrayOutputStream();
             LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), stdout, stderr);
-            assertEquals("false\nfalse\ntrue\ntrue\nfalse\nfalse",
+            assertEquals("false\nfalse\ntrue\ntrue\nfalse\nfalse\nfalse",
                     stdout.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> stderr.toString(StandardCharsets.UTF_8));
         } finally {
