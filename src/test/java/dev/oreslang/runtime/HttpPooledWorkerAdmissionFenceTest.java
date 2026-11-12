@@ -112,6 +112,62 @@ final class HttpPooledWorkerAdmissionFenceTest {
         }
     }
 
+    @RepeatedTest(16)
+    void highContentionSharedPoolShutdownFencesOtherListeners() throws Exception {
+        // Listener A has committed a batch of dispatches on generation G1.
+        // Hold those handoff leases across A's physical shutdown seal, then
+        // unleash 128 new requests from listeners B/C. Every post-seal
+        // reservation MUST fail on G1 and succeed on replacement G2.
+        final int admittedBeforeSeal = 48;
+        final int competingAfterSeal = 128;
+        var generationOne = new HttpPooledWorkerAdmissionFence();
+        for (int i = 0; i < admittedBeforeSeal; ++i) {
+            assertTrue(generationOne.tryReserve());
+        }
+        var generationTwo = new HttpPooledWorkerAdmissionFence();
+        var ready = new CountDownLatch(competingAfterSeal);
+        var go = new CountDownLatch(1);
+        var deniedOld = new AtomicInteger();
+        var admittedReplacement = new AtomicInteger();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var requests = new ArrayList<Future<?>>();
+            for (int i = 0; i < competingAfterSeal; ++i) {
+                requests.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!go.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("simultaneous listener start gate");
+                    }
+                    if (!generationOne.tryReserve()) deniedOld.incrementAndGet();
+                    else {
+                        try { throw new AssertionError("post-seal stale generation reused"); }
+                        finally { generationOne.release(); }
+                    }
+                    if (!generationTwo.tryReserve()) {
+                        throw new AssertionError("new worker rejected valid listener");
+                    }
+                    try { admittedReplacement.incrementAndGet(); }
+                    finally { generationTwo.release(); }
+                    return null;
+                }));
+            }
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            generationOne.seal(); // linearization point for listener A
+            assertFalse(generationOne.quiescent(),
+                    "all pre-seal in-flight handoffs must remain outstanding");
+            go.countDown();
+            for (Future<?> request : requests) request.get(5, TimeUnit.SECONDS);
+            assertEquals(competingAfterSeal, deniedOld.get());
+            assertEquals(competingAfterSeal, admittedReplacement.get());
+            assertEquals(admittedBeforeSeal, generationOne.outstanding(),
+                    "listener B/C must not change A's historical handoff count");
+            assertFalse(generationOne.quiescent());
+            for (int i = 0; i < admittedBeforeSeal; ++i) generationOne.release();
+            assertTrue(generationOne.quiescent());
+            assertFalse(generationTwo.quiescent(),
+                    "B/C's replacement remains open for future admissions");
+        }
+    }
+
     @Test
     void anotherListenerMustReplaceTheSealedWorkerGeneration() {
         var oldWorker = new HttpPooledWorkerAdmissionFence();
