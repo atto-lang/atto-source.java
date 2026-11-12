@@ -606,6 +606,17 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    // Trusted operator control; disabled for all standalone runtimes by
+    // default. Context is stored in immutable envelope metadata, not payload.
+    private volatile boolean tracePropagationEnabled;
+    void configureTracePropagation(boolean enabled) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (enabled && policyCeiling.adversarial()) {
+            throw new SecurityException("untrusted runtime cannot propagate trace context");
+        }
+        tracePropagationEnabled = enabled;
+    }
+
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -1734,16 +1745,18 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            TraceParent traceParent) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                TraceParent traceParent) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, traceParent);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1752,7 +1765,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    null);
         }
 
         private boolean isContinuation() {
@@ -6439,6 +6453,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorId sender = currentActorId().orElse(null);
+        // Mail metadata is outside the transported user object, never frozen,
+        // serialized as a guest capability, or given to the actor handler.
+        TraceParent mailTrace = tracePropagationEnabled && cell.kind != ActorKind.UNTRUSTED
+                ? TaskContext.traceParent() : null;
         MessageEnvelope envelope = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
@@ -6470,7 +6488,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, sequence, mailTrace);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException(
                                 "actor mailbox credit/capacity invariant violated for " + ref.id());
@@ -6617,6 +6635,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (payloadReleased.compareAndSet(false, true)) rawRelease.run();
         };
         ActorId sender = currentActorId().orElse(null);
+        // Capture before the asynchronous mailbox credit waiter. A callback
+        // may run on another thread long after the sender's context changes.
+        final TraceParent mailTrace =
+                tracePropagationEnabled && cell.kind != ActorKind.UNTRUSTED
+                        ? TaskContext.traceParent() : null;
 
         final OresFuture<Boolean> slot;
         try {
@@ -6715,7 +6738,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     exhausted);
                         }
                         envelope = MessageEnvelope.message(
-                                prepared, releaseOnce, sender, sequence);
+                                prepared, releaseOnce, sender, sequence, mailTrace);
                         if (!cell.mailbox.tryWrite(envelope)) {
                             throw new IllegalStateException(
                                     "transferred actor mailbox slot was not physically writable for "
@@ -9629,6 +9652,19 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            // Every USER dispatch has its own logical context.
+                            // Never borrow a carrier's stale context or mutate
+                            // a sender-owned Span; only immutable W3C metadata
+                            // admitted with this exact mailbox envelope may
+                            // be installed. SourceTask snapshots it on await.
+                            boolean installMailTrace = tracePropagationEnabled;
+                            TaskContext previousMailTask = null;
+                            if (installMailTrace) {
+                                previousMailTask = TaskContext.install(null);
+                                if (activeEnvelope.traceParent() != null) {
+                                    TaskContext.pushTraceParent(activeEnvelope.traceParent());
+                                }
+                            }
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -9651,6 +9687,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
+                                if (installMailTrace) TaskContext.install(previousMailTask);
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
