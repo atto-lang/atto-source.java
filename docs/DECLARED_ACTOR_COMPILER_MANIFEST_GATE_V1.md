@@ -46,6 +46,15 @@ Bodyless define actor Foo; is rejected in favor of declare.
   just ONE canonical source scanner/provenance policy. Its auditDeclaredActors
   method derives a static witness from exactly one canonical .atto.pkg.toml
   source tree and emits exact parsed source SHA-256 and manifest SHA-256 hashes.
+- The audited source snapshot now yields immutable
+  `DeclaredActorDescriptor` metadata (package/namespace/nominal identity,
+  actor origin, public/private visibility, actor kind, scalar initial-state
+  layout, exact required method types/mutability and contract/mtd origins).
+  Length-prefixed SHA-256 covers the canonical manifest hash, every source
+  unit hash, layout and signatures. This fingerprint detects source changes;
+  it is NOT a signed attestation or authority to dispatch/allocate actors.
+  It excludes extra methods not required by an actor contract and MUST NOT
+  be interpreted as a complete executable vtable.
 - PackageNamespaceBuild.build() first validates the complete manifest-owned
   declared actor witness and the unified method index. Missing or spoofed
   obligations emit specific static errors; a correct witness still emits
@@ -83,8 +92,8 @@ Bodyless define actor Foo; is rejected in favor of declare.
 
 PackageNamespaceBuildTest: 21 previously authored cases.
 DeclaredActorContractWitnessTest: 27 authored cases.
-DeclaredActorCompilerManifestGateTest: 13 authored cases.
+DeclaredActorCompilerManifestGateTest: 17 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
-All are **authored, not executed** pending actual runner evidence.
+All are **authored, not executed** pending actual runner evidence. The four\nnew descriptor regression cases cover verified layout/signature, deep immutable\ncollections, deterministic fingerprint + mutation invalidation, and empty state.
