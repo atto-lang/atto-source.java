@@ -231,6 +231,33 @@ final class UsingTelemetrySpanScopeTest {
     }
 
     @Test
+    void scopedSpanCannotShadowExistingLexicalOwner() {
+        String code = program("""
+                val span = 7;
+                using telemetry.span("checkout") as span {
+                    return;
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("must not shadow"), denied::getMessage);
+    }
+
+    @Test
+    void nestedScopeCannotReuseAnActiveSpanAlias() {
+        String code = program("""
+                using telemetry.span("outer") as span {
+                    using telemetry.span("inner") as span {
+                        return;
+                    }
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("must not shadow"), denied::getMessage);
+    }
+
+    @Test
     void requestBorrowStillFailsClosedUntilLoanProofIsAvailable() {
         String code = """
                 pub fnc main(): void {
