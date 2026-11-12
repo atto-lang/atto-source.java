@@ -6,6 +6,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.NamespaceActorUnleasedSpawnV0;
+import dev.oreslang.compiler.NamespaceActorAsyncGuestV1;
 import dev.oreslang.compiler.CheckedNamespaceActorGuestProof;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
@@ -251,6 +252,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             // Only a fully parsed and closed-world verified namespace actor
             // plus source-level spawn/send main can enter the unleased v0
             // root. All other actor source still fails the normal TypeChecker.
+            // The typed async-actor source slice lowers each await to a
+            // scheduler continuation, never to the legacy blocking v0 root.
+            RootCallTarget asyncActorMain = NamespaceActorAsyncGuestV1.tryCreate(
+                    this, codeUnitId, text);
+            if (asyncActorMain != null) return asyncActorMain;
             RootCallTarget actorMain = NamespaceActorUnleasedSpawnV0.tryCreate(
                     this, codeUnitId, text);
             if (actorMain != null) return actorMain;
