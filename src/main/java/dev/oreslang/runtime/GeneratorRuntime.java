@@ -153,11 +153,14 @@ public final class GeneratorRuntime {
             // An async pull always returns an OresFuture, including when
             // scheduler admission itself rejects before any guest work starts.
             try {
-                // Future cancellation settles before AsyncRuntime's backing task
-                // necessarily leaves engine.next(). Arbitrate task entry against
-                // early completion so cancellation cannot reopen pull admission
-                // while the cancelled consumer still owns the activation.
-                AtomicInteger pullState = new AtomicInteger(); // 0=pending, 1=inside engine.next, 2=released
+                // A cancelled pull that has entered engine.next() may have
+                // consumed a yielded item that the caller will never observe.
+                // Fail closed: revoke the producer activation on that path,
+                // including when cancellation wins after engine.next() returns.
+                // A pull cancelled *before* entry owns no activation and does
+                // not close an otherwise usable generator.
+                // 0=pending, 1=entered, 2=exited after entry, 3=denied entry.
+                AtomicInteger pullState = new AtomicInteger();
                 OresFuture<Step<T>> pull = runtime.submit(() -> {
                     if (!pullState.compareAndSet(0, 1)) {
                         throw new CancellationException(
@@ -171,12 +174,17 @@ public final class GeneratorRuntime {
                     }
                 });
                 pull.whenCompleteRuntime((value, failure) -> {
-                    // Admission/turn failure or cancellation before the task
-                    // entered engine.next() has no physical pull to unwind.
-                    // If engine.next() is already running, its finally owns the
-                    // release and this callback must leave the gate closed.
-                    if (pullState.compareAndSet(0, 2)) {
+                    // Completion before task entry (or cancellation before
+                    // entry) has no producer turn to revoke and must release
+                    // the admission gate. CAS handles the entry/cancel race.
+                    if (pullState.compareAndSet(0, 3)) {
                         pullInFlight.set(false);
+                    } else if (pull.isCancelled()) {
+                        // No caller remains to observe an item from this pull.
+                        // Signal close without parking this callback/actor on
+                        // the producer's physical exit. closeAsync() supplies
+                        // an irrevocable receipt for that exit if required.
+                        engine.requestClose();
                     }
                 });
                 return pull;
