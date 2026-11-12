@@ -45,6 +45,45 @@ final class ActorTypedMethodSnapshotIdentityTest {
                 witness, index, descriptors, sha, "b".repeat(64));
     }
 
+    private static Map<String, Ast.Program> syntheticBadParameter(String name) {
+        var snapshot = parsed();
+        var program = snapshot.get("src/method.atto");
+        var module = program.modules().getFirst();
+        var original = (Ast.ExternalActorMethodDecl) module.declarations().getFirst();
+        var malformed = new Ast.ExternalActorMethodDecl(
+                original.actorName(), original.receiverName(), original.name(),
+                original.visibility(),
+                java.util.List.of(new Ast.Param(Ast.TypeRef.simple("int"), name)),
+                original.returnType(), original.body());
+        var replacedModule = new Ast.ModuleDecl(
+                module.name(), module.annotations(), module.contracts(),
+                java.util.List.of(malformed));
+        snapshot.put("src/method.atto",
+                new Ast.Program(program.namespace(), program.imports(),
+                        java.util.List.of(replacedModule)));
+        return snapshot;
+    }
+
+    @Test
+    void nullSyntheticParameterNameIsControlledDiagnosticNotNullPointer() {
+        var snapshot = syntheticBadParameter(null);
+        var receipt = syntheticAudit(snapshot);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorTypedMethodIR.checkSnapshot(PACKAGE, snapshot, receipt));
+        assertTrue(error.getMessage().contains("ACTOR_TYPED_IR_PARAMETER_NAME_INVALID"),
+                error.getMessage());
+    }
+
+    @Test
+    void blankSyntheticParameterNameIsNotAValidLocalBinding() {
+        var snapshot = syntheticBadParameter(" ");
+        var receipt = syntheticAudit(snapshot);
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorTypedMethodIR.checkSnapshot(PACKAGE, snapshot, receipt));
+        assertTrue(error.getMessage().contains("ACTOR_TYPED_IR_PARAMETER_NAME_INVALID"),
+                error.getMessage());
+    }
+
     @Test
     void exactAstInstancesFromOneSnapshotCanEnterStaticPrehir() {
         var snapshot = parsed();
