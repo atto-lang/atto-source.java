@@ -2549,19 +2549,51 @@ public final class Parser {
             } finally {
                 suppressRefinementOperators = previousRefinementMode;
             }
-            if (!(resource instanceof Ast.CallExpr call)
-                    || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !member.member().equals("borrow")
-                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+            // Transport loans remain a separate, non-executable AST until their
+            // ownership/lifetime proof is complete. Do not translate borrow()
+            // into a generic try/finally, which could leak a borrowed handle.
+            boolean transportBorrow = resource instanceof Ast.CallExpr borrowCall
+                    && borrowCall.callee() instanceof Ast.MemberExpr borrowMember
+                    && borrowMember.member().equals("borrow")
+                    && borrowCall.arguments().isEmpty() && !borrowCall.typeArgumentsPresent();
+            // Incremental guest-executable scoped-resource slice: allow a
+            // statically checked span(...) factory. Do not admit arbitrary
+            // resources yet: the general ScopedResource protocol still needs
+            // complete ownership/effect admission.
+            boolean telemetrySpan = resource instanceof Ast.CallExpr spanCall
+                    && spanCall.callee() instanceof Ast.MemberExpr spanMember
+                    && spanMember.member().equals("span")
+                    && !spanCall.typeArgumentsPresent();
+            if (!transportBorrow && !telemetrySpan) {
                 throw error(previous(),
-                        "using borrowed scope requires a zero-argument resource.borrow() call");
+                        "using borrowed scope requires a zero-argument resource.borrow() call"
+                        + " or a statically checked telemetry.span(...) scope");
             }
-            consume(AS, "using borrowed scope requires 'as <view>'");
-            Token name = consume(IDENT, "using borrowed scope requires a binding name");
+            consume(AS, "using scoped resource requires 'as <view>'");
+            Token name = consume(IDENT, "using scoped resource requires a binding name");
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using borrowed scope needs a named, usable view binding");
+                throw error(name, "using scoped resource needs a named, usable view binding");
             }
-            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+            List<Ast.Stmt> body = parseBlock();
+            if (transportBorrow) {
+                return new Ast.UsingBorrowStmt(resource, name.lexeme(), body);
+            }
+            // Canonical checked lowering into existing lexical bindings and
+            // try/finally. The type checker validates the span factory and
+            // the required close_scope() member; the executor's already
+            // implemented sync/async try-finally carries return, cancellation,
+            // unwind and suspension cleanup. The scope binding is outside
+            // the try body so the cleanup always refers to the acquired value,
+            // not a shadowed local from inside the body.
+            Ast.Expr closeScope = new Ast.CallExpr(
+                    new Ast.MemberExpr(new Ast.NameExpr(name.lexeme()), "close_scope"),
+                    List.of());
+            return new Ast.BlockStmt(List.of(
+                    new Ast.BindingStmt(Ast.BindingKind.VAL, null,
+                            name.lexeme(), resource),
+                    new Ast.TryStmt(body, null, List.of(),
+                            List.of(new Ast.ExprStmt(closeScope)))));
+
         }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
