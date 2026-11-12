@@ -234,6 +234,20 @@ final class ActorPublisherScopedObservationTest {
             assertTrue(producerA.awaitTermination(5, TimeUnit.SECONDS));
             assertFalse(runtime.isLiveActorAddress(address));
             assertTrue(scoped.get().closed());
+            assertEquals(0, scoped.get().pending(),
+                    "publisher STOP must synchronously drain its scoped subscription");
+
+            // sharedMemoryBytes() is a RUNTIME-WIDE measurement, not an event-
+            // only counter. Other actors may still be retiring in-flight
+            // mailbox envelopes after their test latches fire. Assert the
+            // strict zero-memory postcondition only after their physical
+            // actor-turn retirement barriers, without sleeps or polling.
+            producerB.stop();
+            observer.stop();
+            notJoined.stop();
+            assertTrue(producerB.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(notJoined.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0L, runtime.sharedMemoryBytes());
         }
     }
@@ -293,6 +307,16 @@ final class ActorPublisherScopedObservationTest {
             observer.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
             assertNull(error.get());
+            // done is a handler-local latch, so the sender's mailbox envelope
+            // may still be retained until that turn returns. Close all three
+            // shared actors and wait for their physical retirement before
+            // asserting the runtime-wide zero-byte invariant.
+            observer.stop();
+            a.stop();
+            b.stop();
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0L, runtime.sharedMemoryBytes());
         }
     }
