@@ -173,6 +173,36 @@ final class SealedActorStateAdmissionTest {
                 """, "expected method name");
     }
 
+    @Test void criticalStateLoanLambdaPreservesMutableAlias() {
+        var parsed = Parser.parse("""
+                define actor Ledger as
+                  state { let int count = 0; }
+                  critical increment(): void {
+                    self.handle_state(|mut s| -> {
+                      s.count = s.count + 1;
+                    });
+                    return;
+                  }
+                end
+                """);
+        var actor = (dev.oreslang.ast.Ast.ClassDecl) parsed.modules()
+                .getFirst().declarations().getFirst();
+        var method = actor.methods().getFirst();
+        assertTrue(method.critical(), "critical effect cannot be erased");
+        var call = assertInstanceOf(dev.oreslang.ast.Ast.CallExpr.class,
+                assertInstanceOf(dev.oreslang.ast.Ast.ExprStmt.class,
+                        method.body().getFirst()).expression());
+        var lambda = assertInstanceOf(dev.oreslang.ast.Ast.LambdaExpr.class,
+                call.arguments().getFirst());
+        assertEquals(1, lambda.parameters().size());
+        assertTrue(lambda.parameters().getFirst().mutable(),
+                "explicit mut loan alias must be carried into checked MIR");
+        assertEquals("s", lambda.parameters().getFirst().name());
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.analyze(parsed));
+        assertTrue(failure.getMessage().contains("CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED"));
+    }
+
     @Test void criticalAstForgeryCannotBypassCheckedOrLinkedEntryPoints() {
         var source = Parser.parse("""
                 define actor Ledger as

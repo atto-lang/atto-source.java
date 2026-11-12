@@ -5210,7 +5210,13 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                // A mutable lexical alias is not a type name. Preserve its
+                // mutability in the AST so the state-loan checker can require
+                // an exclusive borrow rather than silently downgrade writes.
+                if (match(MUT)) {
+                    String name = consume(IDENT, "expected mutable lambda alias after 'mut'").lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, true));
+                } else if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else if (check(IDENT) && checkNext(COLON)) {
