@@ -14,6 +14,63 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Minimal independent wire proof for the actual Atto-owned NIO Future API. */
 final class AttoOwnedNioEchoGuestTest {
     @Test
+    void realAttoWriteOnlyOwnedBytes() throws Exception {
+        runDirectional(true);
+    }
+
+    @Test
+    void realAttoReadOwnedThenLegacyWrite() throws Exception {
+        runDirectional(false);
+    }
+
+    private static void runDirectional(boolean writeOnly) throws Exception {
+        int port;
+        try (ServerSocket p = new ServerSocket(0, 1,
+                InetAddress.getByAddress(new byte[]{127, 0, 0, 1}))) {
+            port = p.getLocalPort();
+        }
+        byte[] expected = new byte[]{0, -1, 13, 10, -2, 7};
+        String body = writeOnly
+                ? "await socket.write_owned_bytes_async(Bytes.from_list([0,255,13,10,254,7]));"
+                : "val request = await socket.read_owned_bytes_async(1024);"
+                  + " await socket.write_bytes_async(request.to_list());";
+        String program = ("pub async routine main(): void {"
+                + " val listener = await network.listen_async(\"127.0.0.1\", PORT);"
+                + " val socket = await listener.accept_async();"
+                + body
+                + " await socket.close_async(); await listener.close_async();"
+                + " }").replace("PORT", Integer.toString(port));
+        OresCompiler.parseAndTypeCheck(program);
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> guest = executor.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID, new String[]{
+                                "--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
+                        .build()) {
+                    context.eval(Source.newBuilder(OresLanguage.ID,
+                            program, "directional-owned-nio.atto")
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception e) { throw new RuntimeException(e); }
+            });
+            try (Socket client = connect(guest, port)) {
+                client.setSoTimeout(4000);
+                if (!writeOnly) {
+                    client.getOutputStream().write(expected);
+                    client.getOutputStream().flush();
+                }
+                byte[] reply = client.getInputStream().readNBytes(expected.length);
+                if (!java.util.Arrays.equals(expected, reply) && guest.isDone()) {
+                    guest.get(1, TimeUnit.SECONDS);
+                }
+                assertArrayEquals(expected, reply,
+                        writeOnly ? "owned Bytes write" : "owned Bytes read");
+            }
+            guest.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void realAttoOwnedBytesEchoTransfersBinaryAndEOF() throws Exception {
         int port;
         try (ServerSocket p = new ServerSocket(0, 1,
