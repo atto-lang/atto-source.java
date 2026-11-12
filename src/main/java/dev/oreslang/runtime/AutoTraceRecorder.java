@@ -70,11 +70,14 @@ public final class AutoTraceRecorder {
         long delta = System.nanoTime() - started;
         if (delta < 0 || siteId == 0) return; // invalid sample is inert
 
-        int index = cursor.getAndIncrement();
-        if (index < 0 || index >= siteIds.length) {
-            cursor.compareAndSet(index + 1, siteIds.length);
-            dropped.getAndUpdate(v -> v == Integer.MAX_VALUE ? v : v + 1);
-            return;
+        int index;
+        while (true) {
+            index = cursor.get();
+            if (index >= siteIds.length) {
+                dropped.getAndUpdate(v -> v == Integer.MAX_VALUE ? v : v + 1);
+                return;
+            }
+            if (cursor.compareAndSet(index, index + 1)) break;
         }
         siteIds[index] = siteId;
         outcomes[index] = failed ? 1 : 0;
