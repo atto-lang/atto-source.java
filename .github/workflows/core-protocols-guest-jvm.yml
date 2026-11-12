@@ -56,6 +56,7 @@ jobs:
           report='target/surefire-reports/TEST-dev.oreslang.CoreProtocolsGuestTest.xml'
           test -s "$report"
           grep -F 'canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode' "$report"
+          grep -F 'canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods' "$report"
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
           echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
