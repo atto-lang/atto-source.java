@@ -223,6 +223,25 @@ public final class PackageNamespaceBuild {
                 audit.contractWitness(), audit.actorMethods()));
     }
 
+    /** Checked lexical state-loan SHAPE metadata only; never runnable MIR. */
+    public record CriticalStateAudit(
+            ActorAudit actorAudit,
+            Map<ActorMethodIndex.MethodKey,
+                    ExternalActorCriticalStateCheck.CheckedLoan> checkedLoans) {
+        public CriticalStateAudit {
+            java.util.Objects.requireNonNull(actorAudit);
+            checkedLoans = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(checkedLoans));
+        }
+    }
+
+    public synchronized CriticalStateAudit auditCriticalStateBodies() throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return new CriticalStateAudit(audit, ExternalActorCriticalStateCheck.verify(
+                audit.contractWitness(), audit.actorMethods(), audit.descriptors()));
+    }
+
     public synchronized Result build() throws IOException {
         SourceSnapshot source = snapshot();
         if (hasDeclaredActors(source.parsed())) {
