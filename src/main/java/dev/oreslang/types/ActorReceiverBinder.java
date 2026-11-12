@@ -187,8 +187,43 @@ public final class ActorReceiverBinder {
             }
         }
 
+        // A receiver's owner is the exact (package, namespace, nominal type),
+        // not its unqualified spelling. Distinguish an illegal cross-namespace
+        // attachment from an unknown receiver before any slot is indexed.
+        // Include ordinary classes even though class attachment lowering is
+        // separately gated: they must never be mistaken for local actors.
+        Map<String, Set<String>> namespaceOwners = new TreeMap<>();
+        for (Map.Entry<String, List<Ast.Decl>> group : grouped.entrySet()) {
+            for (Ast.Decl declaration : group.getValue()) {
+                String nominal = null;
+                if (declaration instanceof Ast.DeclaredActorDecl actor) {
+                    nominal = actor.name();
+                } else if (declaration instanceof Ast.StandaloneActorDecl actor) {
+                    nominal = actor.name();
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    nominal = klass.name();
+                }
+                if (nominal != null) {
+                    namespaceOwners.computeIfAbsent(nominal, ignored -> new LinkedHashSet<>())
+                            .add(group.getKey());
+                }
+            }
+        }
+
         Map<SourceSlot, SourceBinding> resolved = new LinkedHashMap<>();
         for (Map.Entry<String, List<Ast.Decl>> group : grouped.entrySet()) {
+            for (Ast.Decl declaration : group.getValue()) {
+                if (!(declaration instanceof Ast.ExternalActorMethodDecl method)) continue;
+                Set<String> owners = namespaceOwners.getOrDefault(method.actorName(), Set.of());
+                if (!owners.isEmpty() && !owners.contains(group.getKey())) {
+                    throw new IllegalArgumentException(
+                            "EXTERNAL_RECEIVER_NAMESPACE_MISMATCH: mtd '" + method.name()
+                                    + "' in namespace '" + group.getKey()
+                                    + "' cannot attach to receiver '" + method.actorName()
+                                    + "' declared in " + owners
+                                    + "; declare the method in the receiver's own namespace");
+                }
+            }
             // Validate namespace-wide nominal type collisions even if there
             // are zero external methods. Otherwise adding an mtd later could
             // silently change the actor bound to an existing type identity.
