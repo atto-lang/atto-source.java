@@ -3,7 +3,7 @@
 // NIO2 connection tasks and reply routing are runtime transport, NOT host KV.
 // Per-client in-flight=1; different TCP clients execute independently.
 // Does not claim async WAL, production graceful shutdown or AOT parity.
-define actor TaggedBinaryNioKvActor implements StreamOperator<Tuple<int,int,int,Bytes,Bytes>,Tuple<int,int,string,Bytes>> as
+define actor TaggedBinaryNioKvActor implements StreamOperator<Tuple[int,int,int,Bytes,Bytes],Tuple[int,int,string,Bytes]> as
   let Map<Bytes,Bytes> values;
 
   on_start(): void {
@@ -11,7 +11,7 @@ define actor TaggedBinaryNioKvActor implements StreamOperator<Tuple<int,int,int,
     return;
   }
 
-  receive(ActorMail<Tuple<int,int,int,Bytes,Bytes>> mail): void {
+  receive(ActorMail<Tuple[int,int,int,Bytes,Bytes]> mail): void {
     const tuple = mail.value;
     const int client_id = tuple[0];
     const int request_id = tuple[1];
