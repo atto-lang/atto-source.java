@@ -23,7 +23,7 @@ without a second actor scheduler or host-owned Atto broker state machine.
   `ActorContext`, actor ID, `CodeImage`, callback phase and carrier.
   Copying the public `ActorContext` getters into a fake object cannot
   manufacture a matching permit, even while the actor is executing.
-- Only INIT can mint a region allocation identity. Only RECEIVE can produce
+- Only INIT can mint a region allocation identity, **at most once per INIT callback**; a second source state allocation in the same activation is rejected. Only RECEIVE can produce
   a state RW-loan `ExecutionContext`. Only RECEIVE or TEARDOWN can retire
   an actor's physical region. All off-turn callers fail closed.
 - The underlying `ExecutionContext.actorBound` is built by
