@@ -286,7 +286,7 @@ pub async fnc serve_redis_session(
     NioConnection socket,
     int slot_id,
     int generation,
-    Channel<Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>>> requests,
+    Channel<Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>]> requests,
     Channel<Tuple[int, int, int, List[int]]> replies
 ): void {
   val reader = new RespReader();
@@ -372,14 +372,14 @@ pub async routine main(): void {
     writech available_slots, (slot, 0);
     slot = slot + 1;
   }
-  val Channel<Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>>> requests =
-      Channel.new<Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>>>(16);
+  val Channel<Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>]> requests =
+      Channel.new<Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>]>(16);
   task scope {
     let Future<void> broker = task {
       let int retired = 0;
       loop {
         if max_total_sessions != 0 && retired == max_total_sessions then break; fi
-        const Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>> request = await (nb readch requests);
+        const Tuple[int, int, int, int, List[int], List[int], Channel<Tuple[int, int, int, List[int]]>] request = await (nb readch requests);
         const int slot_id = request[0];
         const int generation = request[1];
         const int request_id = request[2];
