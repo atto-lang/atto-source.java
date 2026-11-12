@@ -1,8 +1,10 @@
-// Concurrent Atto Redis experiment: one KV actor owns the Map for all clients.
-// NIO2 accept/read/write/close stay callback-driven; guest never blocks carriers.
-// Every command carries an explicit bounded Channel<Reply> Send capability.
-// No independently scheduled task captures a mutable Array of channel handles.
-// Finite client-count fixture: not WAL, TTL, replication or production durability.
+// Finite concurrent-client Atto Redis experiment: one KV actor owns the Map.
+// All network accept/read/write/close calls use callback-driven NIO2 Futures.
+// Only scalar and String tuple fields cross the actor mailbox boundary.
+// The main Atto task exclusively consumes worker.outputs and routes by client ID.
+// Per-connection tasks capture one explicit bounded Channel<Reply>, not an Array.
+// This fixture accepts exactly client_count sockets before it pumps replies:
+// it proves multi-client state and routing, NOT a production accept-loop server.
 define actor FramedNioSharedKvActor as
   let Map<string,string> values;
 
@@ -11,36 +13,37 @@ define actor FramedNioSharedKvActor as
     return;
   }
 
-  receive(ActorMail<Tuple[int,string,string,Channel<Tuple[string,string]>]> mail): void {
-    const Tuple[int,string,string,Channel<Tuple[string,string]>] command = mail.value;
-    const int kind = command[0];
-    const string key = command[1];
-    const string value = command[2];
-    const Channel<Tuple[string,string]> reply_channel = command[3];
+  receive(ActorMail<Tuple[int,int,string,string]> mail): void {
+    const Tuple[int,int,string,string] command = mail.value;
+    const int client_id = command[0];
+    const int kind = command[1];
+    const string key = command[2];
+    const string value = command[3];
     if kind == 5; do self.end(); return; fi
+    if kind == 6; do self.send((client_id, "DONE", "")); return; fi
     if kind == 3; do
       self.values.set(key, value);
-      await nb writech reply_channel, ("OK", "");
+      self.send((client_id, "OK", ""));
       return;
     fi
     if kind == 2; do
       val found = self.values.get_optional(key);
       if found.is_none(); do
-        await nb writech reply_channel, ("NIL", "");
+        self.send((client_id, "NIL", ""));
       else
-        await nb writech reply_channel, ("VALUE", found.unwrap());
+        self.send((client_id, "VALUE", found.unwrap()));
       fi
       return;
     fi
     if kind == 4; do
       if self.values.delete(key); do
-        await nb writech reply_channel, ("ONE", "");
+        self.send((client_id, "ONE", ""));
       else
-        await nb writech reply_channel, ("ZERO", "");
+        self.send((client_id, "ZERO", ""));
       fi
       return;
     fi
-    await nb writech reply_channel, ("ERR", "");
+    self.send((client_id, "ERR", ""));
     return;
   }
 end
@@ -58,18 +61,21 @@ pub async routine main(): void {
   val Array<Future<void>> sessions = new Array<Future<void>>();
   for (let int i = 0; i < client_count; i = i + 1) {
     val socket = await listener.accept_async();
+    const int client_id = i;
     const Channel<Tuple[string,string]> inbox = reply_channels.get(i);
     val Future<void> session = task {
       loop {
         val frame = await socket.read_resp2_hex_async();
         if frame.size == 0; do
           await socket.close_async();
+          worker.send((client_id, 6, "", ""));
           return;
         fi
         const string op = frame[0];
         if op == "QUIT" && frame.size == 1; do
           await socket.write_resp2_hex_async("OK", "");
           await socket.close_async();
+          worker.send((client_id, 6, "", ""));
           return;
         fi
         if op == "PING" && frame.size == 1; do
@@ -83,7 +89,7 @@ pub async routine main(): void {
           let string value = "";
           if frame.size >= 2 then key = frame[1]; fi
           if frame.size >= 3 then value = frame[2]; fi
-          worker.send((kind, key, value, inbox));
+          worker.send((client_id, kind, key, value));
           const Tuple[string,string] response = await nb readch inbox;
           await socket.write_resp2_hex_async(response[0], response[1]);
         fi
@@ -92,11 +98,26 @@ pub async routine main(): void {
     sessions.add(session);
   }
 
+  // Main is the only consumer of worker.outputs. The actor never transports
+  // Channel or Socket capabilities; only bounded client IDs and scalar replies.
+  let int finished_clients = 0;
+  loop {
+    if finished_clients == client_count; do break; fi
+    val output = (await worker.outputs.next()).value.unwrap();
+    const Tuple[int,string,string] response = output.value;
+    const int client_id = response[0];
+    if response[1] == "DONE"; do
+      finished_clients = finished_clients + 1;
+    else
+      await nb writech reply_channels.get(client_id), (response[1], response[2]);
+    fi
+  }
+
   for (let int i = 0; i < client_count; i = i + 1) {
     await sessions.get(i);
   }
   await listener.close_async();
-  worker.send((5, "", "", reply_channels.get(0)));
+  worker.send((-1, 5, "", ""));
   await worker.get_done();
   return;
 }
