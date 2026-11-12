@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.TelemetrySpanScope;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
@@ -122,6 +123,24 @@ final class TelemetryUsingSpanLanguageTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void independentTasksCannotCaptureLexicalSpanHandles() {
+        assertThrows(RuntimeException.class, () -> {
+            Ast.Program checked = TypeChecker.check(Parser.parse("""
+                    pub async fnc main(): void {
+                      using telemetry.span("outer") as span {
+                        let Future<String> child = task {
+                          return span.trace_id();
+                        };
+                        val String result = await child;
+                      }
+                      return;
+                    }
+                    """));
+            OwnershipChecker.check(checked);
+        });
     }
 
     private static String run(String sourceText) throws Exception {
