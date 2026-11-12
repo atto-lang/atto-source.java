@@ -62,8 +62,13 @@ final class SupervisorStorageEpochAuthorityTest {
             var aIo = gate.beginIo(a);
             assertTrue(gate.permits(aIo));
 
-            // A fsync may finish after the second activation publishes. A's
-            // ticket can never enqueue a stale actor COMMIT.
+            // Takeover revokes A immediately, then refuses new admission
+            // until A's physical fsync loan is returned.
+            assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
+                    gate::activate);
+            assertFalse(gate.permits(aIo));
+            aIo.close();
+            assertTrue(gate.physicallyQuiescent());
             var b = gate.activate();
             assertEquals(2, b.generation());
             assertEquals(2, store.fsyncReservations);
@@ -78,6 +83,7 @@ final class SupervisorStorageEpochAuthorityTest {
             assertFalse(gate.enqueueCommitIfCurrent(bIo, enqueued::incrementAndGet));
             assertFalse(gate.permits(bIo));
             assertEquals(1, enqueued.get());
+            bIo.close();
             gate.cancel(b);
             assertThrows(SecurityException.class, () -> gate.beginIo(b));
 
@@ -109,6 +115,7 @@ final class SupervisorStorageEpochAuthorityTest {
             }, "delayed-stale-fsync");
             oldCompletion.start();
             assertTrue(ready.await(5, TimeUnit.SECONDS));
+            pending.close(); // fsync completed; callback remains queued
             var b = gate.activate();
             assertEquals(2, b.generation());
             finish.countDown();
@@ -118,6 +125,7 @@ final class SupervisorStorageEpochAuthorityTest {
             assertEquals(0, enqueues.get());
             var current = gate.beginIo(b);
             assertTrue(gate.enqueueCommitIfCurrent(current, enqueues::incrementAndGet));
+            current.close();
             assertEquals(1, enqueues.get());
         }
     }
@@ -131,6 +139,7 @@ final class SupervisorStorageEpochAuthorityTest {
                 var op = gate.beginIo(a);
                 if (wrongEpoch) store.wrongGeneration = true;
                 else store.fail = true;
+                op.close();
                 assertThrows(RuntimeException.class, gate::activate);
                 assertFalse(gate.permits(op), "ambiguous fsync must revoke old actor");
                 assertFalse(gate.enqueueCommitIfCurrent(op, () -> fail("old actor resumed")));
@@ -149,6 +158,7 @@ final class SupervisorStorageEpochAuthorityTest {
                     gate.enqueueCommitIfCurrent(op,
                             () -> { throw new IllegalArgumentException("callback ambiguous"); }));
             assertFalse(gate.permits(op));
+            op.close();
             assertThrows(IllegalStateException.class, gate::activate);
             assertFalse(gate.enqueueCommitIfCurrent(op, () -> fail("retry")));
         }
@@ -166,6 +176,9 @@ final class SupervisorStorageEpochAuthorityTest {
         assertFalse(beta.enqueueCommitIfCurrent(io, () -> fail("foreign")));
         runtime.close();
         assertFalse(alpha.permits(io));
+        assertFalse(alpha.physicallyQuiescent(), "unreleased I/O must stay accounted");
+        io.close();
+        assertTrue(alpha.physicallyQuiescent());
         assertThrows(IllegalStateException.class, alpha::activate);
         assertThrows(IllegalStateException.class, beta::activate);
         assertTrue(b.generation() >= 1);
