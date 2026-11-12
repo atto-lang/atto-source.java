@@ -11,6 +11,7 @@ on:
       - 'src/main/java/dev/oreslang/types/ManifestActorContractBuild.java'
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
       - 'src/main/java/dev/oreslang/compiler/ActorMethodIndex.java'
+      - 'src/main/java/dev/oreslang/compiler/DeclaredActorDescriptor.java'
       - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
       - 'src/main/java/dev/oreslang/compiler/ExportInterfaceCollector.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
