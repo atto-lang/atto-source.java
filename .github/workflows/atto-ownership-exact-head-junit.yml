@@ -1,0 +1,78 @@
+name: Atto ownership exact-head JUnit (NOT guest or backend parity)
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
+      - 'src/test/java/dev/oreslang/AttoOwnershipTransferNoMoveKeywordTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ChannelTransferOwnershipAdmissionTest.java'
+      - '.github/workflows/atto-ownership-exact-head-junit.yml'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ownership-java:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR HEAD without retaining credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable source identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git ls-files --others --exclude-standard)"
+          printf 'RECEIPT source_sha=%s\n' "$(git rev-parse HEAD)"
+          printf 'RECEIPT source_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+      - name: GraalVM Java 25 (no private source export)
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute actual parser, ownership checker and host channel JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp '-P!native-thread-unix' \
+            -Dtest=AttoOwnershipTransferNoMoveKeywordTest,ChannelTransferOwnershipAdmissionTest \
+            -Dsurefire.failIfNoSpecifiedTests=true clean test
+      - name: Require both nonempty zero-failure JUnit suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+            dev.oreslang.AttoOwnershipTransferNoMoveKeywordTest \
+            dev.oreslang.runtime.ChannelTransferOwnershipAdmissionTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then
+              echo "::error::Failures, errors or skipped cases in $suite"
+              exit 1
+            fi
+            cases="$(grep -c '<testcase' "$report")"
+            test "$cases" -ge 9
+            printf 'RECEIPT junit_suite=%s executed_cases=%s report=%s\n' "$suite" "$cases" "$report"
+          done
+          echo 'RECEIPT scope=java_compiler_and_host_runtime_ONLY guest_parity=UNATTESTED'
+      - name: Preserve exact-head JUnit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atto-ownership-junit-evidence
+          path: target/surefire-reports/
+          if-no-files-found: warn
