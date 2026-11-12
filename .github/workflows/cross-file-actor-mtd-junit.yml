@@ -12,6 +12,7 @@ on:
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
       - 'src/main/java/dev/oreslang/compiler/ActorMethodIndex.java'
       - 'src/main/java/dev/oreslang/compiler/DeclaredActorDescriptor.java'
+      - 'src/main/java/dev/oreslang/compiler/ExternalActorScalarBodyCheck.java'
       - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
       - 'src/main/java/dev/oreslang/compiler/ExportInterfaceCollector.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
@@ -22,6 +23,7 @@ on:
       - 'src/test/java/dev/oreslang/ActorContractTargetCompilerIntegrationTest.java'
       - 'src/test/java/dev/oreslang/PackageNamespaceBuildTest.java'
       - 'src/test/java/dev/oreslang/SameNamespaceDeclaredActorPackageTest.java'
+      - 'src/test/java/dev/oreslang/ExternalActorScalarBodyCheckTest.java'
       - 'contracts/declared-actor-witness-v1/**'
       - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
@@ -86,7 +88,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,SameNamespaceDeclaredActorPackageTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,SameNamespaceDeclaredActorPackageTest,ExternalActorScalarBodyCheckTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -101,6 +103,7 @@ jobs:
               ActorContractTargetCompilerIntegrationTest \
               PackageNamespaceBuildTest \
               SameNamespaceDeclaredActorPackageTest \
+              ExternalActorScalarBodyCheckTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
