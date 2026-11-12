@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Java/Graal guest-execution gates for the initial telemetry.span() scoped
+ * Java/Graal guest-execution gates for the initial telemetry.span("checkout") scoped
  * resource slice. Transport borrow scopes remain a separate fail-closed AST.
  * This does not implement an OTel exporter, general scoped resource
  * interface, JIT re-instrumentation or independent LLVM AOT parity.
@@ -28,7 +28,7 @@ final class UsingTelemetrySpanScopeTest {
                   return;
                 }
               end
-              pub fnc span(): SpanScope {
+              pub fnc span(string operation): SpanScope {
                 stdio.stdout.write("F");
                 return new SpanScope();
               }
@@ -64,7 +64,7 @@ final class UsingTelemetrySpanScopeTest {
     @Test
     void parsesAsTypedLexicalBindingAndFinallyWithExactlyOneCleanupSite() {
         Ast.FunctionDecl fn = main(program("""
-                using telemetry.span() as span {
+                using telemetry.span("checkout") as span {
                   stdio.stdout.write("B");
                 }
                 return;
@@ -83,7 +83,7 @@ final class UsingTelemetrySpanScopeTest {
     @Test
     void guestNormalScopeExitClosesAfterBody() throws Exception {
         String code = program("""
-                using telemetry.span() as span {
+                using telemetry.span("checkout") as span {
                   stdio.stdout.write("B");
                 }
                 stdio.stdout.write("A");
@@ -96,7 +96,7 @@ final class UsingTelemetrySpanScopeTest {
     @Test
     void guestReturnExitClosesBeforeLeavingCallable() throws Exception {
         String code = program("""
-                using telemetry.span() as span {
+                using telemetry.span("checkout") as span {
                   stdio.stdout.write("B");
                   return;
                 }
@@ -109,9 +109,9 @@ final class UsingTelemetrySpanScopeTest {
     @Test
     void guestNestedScopesCloseInLifoOrder() throws Exception {
         String code = program("""
-                using telemetry.span() as outer {
+                using telemetry.span("checkout") as outer {
                   stdio.stdout.write("A");
-                  using telemetry.span() as inner {
+                  using telemetry.span("checkout") as inner {
                     stdio.stdout.write("B");
                   }
                   stdio.stdout.write("D");
@@ -133,7 +133,7 @@ final class UsingTelemetrySpanScopeTest {
                   }
                 end
                 pub fnc main(): void {
-                  using telemetry.span() as span {
+                  using telemetry.span("checkout") as span {
                     return;
                   }
                 }
@@ -163,9 +163,9 @@ final class UsingTelemetrySpanScopeTest {
     @Test
     void parserRejectsInvalidScopedBinderWithoutStealingUsingIdentifiers() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(program(
-                "using telemetry.span() as _ { return; }")));
+                "using telemetry.span("checkout") as _ { return; }")));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(program(
-                "using telemetry.span() as span;")));
+                "using telemetry.span("checkout") as span;")));
         Ast.FunctionDecl fn = main("pub fnc main(): void { using(1); return; }");
         assertInstanceOf(Ast.ExprStmt.class, fn.body().getFirst());
     }
