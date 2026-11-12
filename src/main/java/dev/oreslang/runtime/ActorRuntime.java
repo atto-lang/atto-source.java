@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -2856,6 +2857,10 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Unlike ActorCell.finalized, this is signaled only after group
+        // deregistration, mailbox/accounting cleanup, and done notification.
+        // It belongs to the ref so lookup removal cannot race host waiters.
+        private final CountDownLatch retirementBarrier = new CountDownLatch(1);
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2939,10 +2944,10 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // ActorCell.finalized becomes true at the START of teardown and
+            // the cell leaves actors before doneFuture is signaled. Neither
+            // observation is a complete host-visible retirement barrier.
+            return retirementBarrier.await(timeout, unit);
         }
 
         public void send(M message) {
@@ -9195,6 +9200,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
+            // Publish the terminal host barrier only after every teardown step
+            // above, including ActorGroup subscription drain and notifications.
+            ref.retirementBarrier.countDown();
             lifecycleLock.notifyAll();
         }
 
