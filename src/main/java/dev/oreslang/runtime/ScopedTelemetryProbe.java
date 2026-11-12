@@ -11,10 +11,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * neither schedules tasks nor exports telemetry, so no guest callback or I/O
  * can occur while an actor holds a critical state loan.
  *
+ * Package-private: guest and foreign host adapters cannot call this by name.
+ * A future compiler bridge must authorize execution/tenant/generation identity,
+ * not trust numeric IDs supplied by untrusted guest code.
+ *
  * NOT wired to the source-language "using telemetry.span" lowering yet.
  * Activation, aggregation, sampling and exporter authority are separate.
  */
-public final class ScopedTelemetryProbe {
+final class ScopedTelemetryProbe {
     private static final int RUNNING = 0;
     private static final int SUSPENDED = 1;
     private static final int FINISHED = 2;
