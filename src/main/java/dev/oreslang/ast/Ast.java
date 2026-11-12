@@ -836,8 +836,15 @@ public final class Ast {
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
 
-    public record BlockStmt(List<Stmt> body) implements Stmt {
+    /**
+     * The guarded telemetry-scope bit records original 'using' syntax after
+     * lowering to lexical binding + try/finally. The type checker requires a
+     * real SpanScope close contract rather than accepting any *.span() name.
+     * It must remain on the exact AST node during check and guest execution.
+     */
+    public record BlockStmt(List<Stmt> body, boolean usingTelemetryScope) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+        public BlockStmt(List<Stmt> body) { this(body, false); }
     }
 
     /**
