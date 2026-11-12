@@ -33,6 +33,52 @@ final class ImplicitSelfLookupHardeningTest {
     }
 
     @Test
+    void inheritedImplicitCallKeepsVirtualDispatch() throws Exception {
+        assertEquals("4", run("""
+                define class Base as
+                  pub value(): int { return 1; }
+                  pub run(): int { return value(); }
+                end
+                define class Child extends Base as
+                  pub value(): int { return 4; }
+                end
+                pub routine main(): void {
+                  val child = new Child();
+                  stdio.stdout.write(child.run());
+                }
+                """));
+    }
+
+    @Test
+    void unqualifiedSuspendingMethodCannotBypassCallerEffect() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          suspend method later(): void { return; }
+                          method run(): void {
+                            later();
+                            return;
+                          }
+                        end
+                        """)));
+    }
+
+    @Test
+    void explicitMethodValueExtractionStaysDirectCallOnly() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub calculate(): int { return 7; }
+                          pub run(): void {
+                            val callback = self.calculate;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("direct-call-only"), failure.getMessage());
+    }
+
+    @Test
     void actorMethodsCanCallSiblingMethodsWithoutSelf() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
