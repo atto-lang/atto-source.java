@@ -492,7 +492,7 @@ final class GeneratorLanguageTest {
                   pub val int value = 1;
                 end
 
-                generator fnc bad(&Box box): int {
+                generator fnc bad(borrow Box box): int {
                   yield box.value;
                   return;
                 }
@@ -507,7 +507,7 @@ final class GeneratorLanguageTest {
                 end
                 async fnc bad(): void {
                   val Box box = new Box();
-                  val &Box borrowed = &box;
+                  val borrow Box borrowed = rt borrow box;
                   for await const value of [1, 2] { stdio.stdout.write(value); }
                   stdio.stdout.write(borrowed.value);
                   return;

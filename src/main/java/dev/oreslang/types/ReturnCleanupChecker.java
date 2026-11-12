@@ -82,6 +82,10 @@ public final class ReturnCleanupChecker {
         for (Ast.Param param : params) scope.define(param.name());
         State state = new State();
         statements(statements, scope, false, false, true, state);
+        validatePendingReturns(state);
+    }
+
+    private static void validatePendingReturns(State state) {
         // Deferred callbacks are invoked on scope exit, not when registered.
         // Earlier static scans cannot authorize a later-replaced closure.
         for (Binding callback : state.deferredLocalCallbacks) {
@@ -162,6 +166,8 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.BlockStmt block) {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     Scope branchScope = new Scope(scope);
@@ -187,7 +193,7 @@ public final class ReturnCleanupChecker {
             } else if (stmt instanceof Ast.TryStmt attempted) {
                 statements(attempted.body(), scope, inFinally, inDefer, trackReturns, state);
                 Scope caught = new Scope(scope);
-                caught.define(attempted.errorName());
+                if (attempted.hasCatch()) caught.define(attempted.errorName());
                 statements(attempted.catchBody(), caught, inFinally, inDefer, trackReturns, state);
                 int enclosingLoops = state.loopsInsideFinally;
                 state.loopsInsideFinally = 0;
@@ -304,6 +310,29 @@ public final class ReturnCleanupChecker {
             expression(conditional.condition(), scope, inDefer, state);
             expression(conditional.whenTrue(), scope, inDefer, state);
             expression(conditional.whenFalse(), scope, inDefer, state);
+        } else if (expr instanceof Ast.MatchExpr matched) {
+            expression(matched.subject(), scope, inDefer, state);
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                Scope armScope = new Scope(scope);
+                bindPattern(arm.pattern(), armScope);
+                expression(arm.guard(), armScope, inDefer, state);
+
+                // ARM_RESULT has its own cleanup boundary. Do not add its
+                // returned binding to the enclosing callable's FUNCTION_RETURN
+                // ledger: an outer defer runs only after this match has already
+                // published its result.
+                State armState = new State();
+                statements(arm.loweringBody(), armScope, false, inDefer, true, armState);
+                validatePendingReturns(armState);
+
+                // If the entire MatchExpr itself executes from an enclosing
+                // defer, mutations performed by the selected arm are still
+                // deferred mutations of the enclosing callable and must remain
+                // visible to its pending FUNCTION_RETURN check.
+                if (inDefer) {
+                    state.reboundInDefer.addAll(armState.reboundInDefer);
+                }
+            }
         } else if (expr instanceof Ast.TypeTestExpr test) {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
@@ -348,6 +377,10 @@ public final class ReturnCleanupChecker {
             constructor.arguments().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.AwaitExpr awaited) {
             expression(awaited.expression(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // Return/finally/defer rules inside a Task belong to that Task,
+            // never to the enclosing caller.
+            callable(task.body(), List.of(), scope);
         } else if (expr instanceof Ast.ChannelOpExpr channel) {
             expression(channel.channel(), scope, inDefer, state);
             expression(channel.value(), scope, inDefer, state);

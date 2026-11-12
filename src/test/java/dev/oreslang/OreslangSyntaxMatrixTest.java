@@ -38,7 +38,7 @@ final class OreslangSyntaxMatrixTest {
         new Sample("type/union", "type Either = int | string; fnc noop(): void{return;}"),
         new Sample("type/typeof", "type F = typeof fnc(int x) => int; fnc noop(): void{return;}"),
         new Sample("type/arrow", "type F = (int) => int; fnc noop(): void{return;}"),
-        new Sample("type/borrow", "type Ref = &int; type MutRef = &mut int; fnc noop(): void{return;}"),
+        new Sample("type/borrow", "type Ref = borrow int; type MutRef = borrow mut int; fnc noop(): void{return;}"),
         new Sample("class/basic", "define class Box as pub val string name = \"ore\"; end"),
         new Sample("class/abstract", "define abstract class Base as end"),
         new Sample("class/inheritance", "define class Base as end define class Child extends Base as end"),

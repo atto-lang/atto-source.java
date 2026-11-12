@@ -99,8 +99,31 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
-        CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        // CompiledUnit is a public record, not a signed compiler capability.
+        // Never authorize its potentially unrelated AST and execute its source.
+        String verifiedDigest = digest(unit.sourceText());
+        if (!verifiedDigest.equals(unit.sourceDigest())) {
+            throw new SecurityException("compiled hot-load unit source digest mismatch");
+        }
+        // Multi-unit imports require a trusted, complete dependency closure.
+        // A caller-provided dependency set or prechecked AST is not that proof.
+        if (!unit.dependencies().isEmpty()) {
+            throw new SecurityException("compiled hot-load requires a verified import closure");
+        }
+        // Fail closed on actual imports before invoking compiler validation:
+        // caller-supplied CompiledUnit dependencies/AST are never an import
+        // closure and an unresolved import must not enter a loader.
+        var sourceProgram = dev.oreslang.parser.Parser.parse(unit.sourceText());
+        if (!sourceProgram.imports().isEmpty()) {
+            throw new SecurityException("compiled hot-load with imports requires a verified import closure");
+        }
+        // Preserve current-main postvalidation defense in depth: no macro or
+        // transform may introduce an import hidden from source admission.
+        var checked = OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
+        if (!checked.imports().isEmpty()) {
+            throw new SecurityException("compiled hot-load with imports requires a verified import closure");
+        }
+        return stage(unit.unitId(), verifiedDigest, unit.sourceText());
     }
 
     private void validateAdmissionInputs(
@@ -136,17 +159,35 @@ public final class HotReloadManager implements AutoCloseable {
         long id = sequence.incrementAndGet();
         Context context =
                 guestPolicy.restrictedContextBuilder(executionProfile).build();
+        Generation generation = null;
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
+            generation = new Generation(
+                    this, id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            try {
+                if (generation != null) {
+                    // Roll back every publication surface and revoke the freshly
+                    // issued code-image capability before propagating admission
+                    // failure. close() is idempotent and manager cleanup is
+                    // identity-conditional, so partial map publication is safe.
+                    generation.close();
+                } else {
+                    context.close(true);
+                }
+            } catch (RuntimeException | Error cleanupFailure) {
+                // Admission failure remains the authoritative outcome. Cleanup
+                // diagnostics are retained without replacing its identity/kind.
+                if (cleanupFailure != failure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
             throw failure;
         }
     }
@@ -247,6 +288,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final long id;
         private final String codeUnitId;
         private final String sha256;
+        private final CodeImageIdentity codeImageIdentity;
         private final Context context;
         private final Source source;
         private final ExecutionProfile executionProfile;
@@ -258,6 +300,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
+            this.codeImageIdentity = CodeImageIdentity.issue(codeUnitId, id);
             this.context = context;
             this.source = source;
             this.executionProfile = executionProfile;
@@ -266,6 +309,7 @@ public final class HotReloadManager implements AutoCloseable {
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
+        CodeImageIdentity codeImageIdentity() { return codeImageIdentity; }
         public Context context() { return context; }
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
@@ -287,6 +331,11 @@ public final class HotReloadManager implements AutoCloseable {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
+                // Revoke new recovery admission before tearing down executable
+                // context state. Already-entered synchronous host recovery may
+                // finish its callback; production retirement must still wait
+                // for generation/task quiescence before invoking close().
+                codeImageIdentity.revoke();
                 try {
                     context.close(true);
                 } finally {

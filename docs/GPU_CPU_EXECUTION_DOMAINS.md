@@ -1,12 +1,17 @@
 # CPU and GPU execution-domain contract (proposal, v0 safety gate)
 
-Status: **reserved and fail-closed on Java/Graal and LLVM main-derived hardening branches**.
-This is a source-language and compiler boundary contract, **not** a claim that
-nested domain scopes, device launches, CUDA, OpenCL dispatch, or data migration
-are implemented. `gpu`, `cpu`, and `quantum` are reserved keywords.
-Presently source containing these tokens fails at compile/parse time. Existing
-independent DOP CPU kernels, OpenCL source emission, GPU fence ledgers, and draft
-accelerator PRs do not by themselves authorize ordinary source execution.
+Status (2026-10-29): **synchronous source blocks remain fail-closed on Java/Graal `main`**. This document began as the v0 reservation contract; the canonical spelling/result policy is now [CPU/GPU Task v2](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/blob/main/docs/CPU_GPU_TASK_V2.md). The v1 and v2 pinned fixture corpora remain distinct.
+
+| Source spelling | Java/Graal `main` admission | Meaning / release gate |
+| --- | --- | --- |
+| `cpu { ... }` | Rejected by parser preflight | Synchronous result `T` or `void`; typed CPU region lowering not yet on `main` |
+| `gpu { ... }` | Rejected by parser preflight | Synchronous GPU region; no host fallback or device simulation |
+| `task { ... }` / `cpu task { ... }` | Parsed, then checked for ownership and effects; runtime source Task path present | Asynchronous CPU task, one `Future<T>` completion, NOT an implicit stream |
+| `gpu task { ... }` | Parser admission only; rejected by type checker and evaluator | Requires actual GPU provider, device allocation, ownership/fence proof |
+| `nb cpu { ... }` / `nb gpu { ... }` | Legacy parser aliases of CPU/GPU Task; identical placement gates | Not a second streaming primitive |
+| `quantum` | Rejected | No unverified accelerator fallback |
+
+The table describes source paths, **not exact-head executed compiler or hardware evidence**. Native LLVM, .NET, Forge and Wasm retain their own fail-closed gates; the Wasm source path depends on the pinned LLVM compiler. Unsupported constructs must not emit executable artifacts. No physical GPU kernel execution, nested typed graph runtime, implicit host/device transfer, CUDA, OpenCL or WebGPU dispatch is certified by this document. No-value expressions have `void` / `Future<void>`, **not `Unit`**. Empty GPU work is invalid until it has a verified device effect.
 
 ## Intended syntax
 
@@ -76,19 +81,11 @@ the device on an actor carrier thread.
 8. Formatter retains explicit domain boundaries, and Java + LLVM conform to
    identical parse/type/effect/IR fixtures for legal and rejected programs.
 
-## Today: compilation checks
+## Present compiler admission checks
 
-The Java parser reserves all three domain tokens and rejects their presence
-before parsing the program, including unreachable code, nested blocks,
-declarations, and attempts to use them as ordinary identifiers.
+Java/Graal `main` reserves `cpu`, `gpu` and `quantum` as dedicated tokens. The parser rejects synchronous CPU/GPU blocks and quantum before lowering, even inside an otherwise admitted Task or unreachable branch; the lexer does not turn reserved domain words into normal identifiers. Canonical `cpu task` and `gpu task`, plus legacy `nb` forms, are parsed separately. **Parsing `gpu task` does not make it executable**: the Java type checker forbids it in the absence of physical GPU dispatch, and the evaluator retains a fail-closed guard. Java CPU Task execution is also subject to capture/actor-state ownership gates.
 
-The native parser also reserves `cpu` alongside `gpu` and `quantum`.
-Unsupported domain syntax rejects without emitting LLVM IR. Existing native
-GPU/quantum diagnostic prefixes are preserved for compatibility.
-
-When implementation begins, lift the front-end gate **only** for AST nodes
-that have complete typed effect checks, ownership admission, and verified
-backend lowering. No broad lexer rollback to identifiers.
+LLVM, .NET and Forge must independently prove their own real source-compiler rejection/no-artifact behavior rather than inherit a Java parse result. Wasm must pin the underlying compiler and independently show any host-device capability. When lifting a gate, require typed host/device effects, ownership and transfer checks, exact-head source execution, and true device evidence for GPU; never enable a blanket identifier fallback.
 
 ## Data-oriented programming integration (follow-on, still fail-closed)
 
@@ -111,3 +108,20 @@ These are runtime **preflight data contracts**, not a compiler-approved
 A trusted provider must atomically claim buffers, authenticate device
 allocation provenance, enforce no host/device aliasing and wait for real
 device fences; preflight snapshots alone do not authorize launching work.
+
+
+## G2 source-neutral kernel reference
+
+The runtime now carries a source-neutral `PortableKernelIR` used only for
+backend conformance. It supports checked AoS/SoA/AoSoA layouts, homogeneous
+`f32` elementwise scale/bias/scale-bias kernels, and an explicit deterministic
+CPU reference provider.
+
+This does **not** relax synchronous `gpu {}` / `cpu {}` rejection or the GPU Task type-checker gate. CPU Task source admission does not confer a kernel backend; there is no source `kernel` GPU device lowering yet. The CPU reference provider is never an implicit fallback for a
+GPU request and is not hard-realtime evidence.
+
+Java/Graal and LLVM/native now both lower this subset to the same OpenCL C artifact. Generated OpenCL
+source is an artifact only; real device execution still requires an
+authenticated provider, physical buffer provenance, queue admission, a
+submitted-state witness, device-event completion evidence, and verified
+retirement.

@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -95,4 +96,198 @@ final class ValueMatchExpressionTest {
             }
             """)));
     }
+
+    @Test
+    void canonicalExpressionAndBlockArmsExecuteWithLocalArmResultAndCleanup() throws Exception {
+        String program = """
+            fnc classify(int n): int {
+                let int marker = 0;
+                val int result = match<int> n over
+                    on 0 -> 1;
+                    on x -> ::
+                        val int y = x + 1;
+                        defer marker = 9;
+                        return y;
+                    end
+                end;
+                return result + marker * 100;
+            }
+
+            pub fnc main(): void {
+                stdio.println(classify(0));
+                stdio.println(classify(2));
+                return;
+            }
+            """;
+
+        var parsed = Parser.parse(program);
+        var typed = TypeChecker.check(parsed);
+        OwnershipChecker.check(typed);
+        ReturnCleanupChecker.check(typed);
+
+        var output = new ByteArrayOutputStream();
+        var guest = Source.newBuilder(
+                OresLanguage.ID, program, "canonical-value-match-block.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(guest);
+        }
+        assertEquals("1\n903",
+                output.toString(StandardCharsets.UTF_8)
+                        .trim().replace("\r", ""));
+    }
+
+    @Test
+    void canonicalBlockArmIsRetainedAsLexicalAstBody() {
+        var program = Parser.parse("""
+            fnc f(bool selected): int {
+                return match<int> selected over
+                    on true -> 1;
+                    on false -> ::
+                        val int zero = 0;
+                        return zero;
+                    end
+                end;
+            }
+            """);
+
+        var fn = (Ast.FunctionDecl) program.modules().getFirst()
+                .declarations().getFirst();
+        var returned = (Ast.ReturnStmt) fn.body().getFirst();
+        var match = (Ast.MatchExpr) returned.value();
+        assertEquals(2, match.arms().size());
+        assertTrue(match.arms().getFirst().prefixStatements().isEmpty());
+        assertEquals(1, match.arms().get(1).prefixStatements().size());
+        assertInstanceOf(Ast.NameExpr.class, match.arms().get(1).value());
+        assertTrue(match.arms().get(1).prefixStatements().stream()
+                .noneMatch(Ast.ReturnStmt.class::isInstance));
+    }
+
+    @Test
+    void canonicalValueArmSyntaxFailsClosed() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+            fnc f(bool selected): int {
+                return match<int> selected over
+                    on true -> 1
+                    on false -> 0;
+                end;
+            }
+            """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+            fnc f(bool selected): int {
+                return match<int> selected over
+                    on true -> ::
+                        val int result = 1;
+                        result;
+                    end
+                    on false -> 0;
+                end;
+            }
+            """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+            fnc f(bool selected): int {
+                return match<int> selected over
+                    on true -> ::
+                        if (selected) then
+                            return 1;
+                        fi
+                        return 2;
+                    end
+                    on false -> 0;
+                end;
+            }
+            """));
+    }
+
+    @Test
+    void armLocalDeferCannotRebindItsPendingResult() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(Parser.parse("""
+                    fnc f(int value): int {
+                        return match<int> value over
+                            on n -> ::
+                                let int result = n + 1;
+                                defer result = result + 1;
+                                return result;
+                            end
+                        end;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains(
+                "defer cannot reassign returned binding"));
+    }
+
+
+    @Test
+    void generatedAstCannotBypassTerminalOnlyArmResultRule() {
+        var early = new Ast.IfStmt(
+                java.util.List.of(new Ast.IfBranch(
+                        new Ast.LiteralExpr(true),
+                        java.util.List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(1L))))),
+                java.util.List.of());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new Ast.MatchValueArm(
+                        new Ast.WildcardPattern(),
+                        null,
+                        java.util.List.of(early),
+                        new Ast.LiteralExpr(2L)));
+    }
+
+    @Test
+    void outerDeferDoesNotTreatArmResultAsFunctionReturn() {
+        assertDoesNotThrow(() -> ReturnCleanupChecker.check(Parser.parse("""
+            fnc f(bool selected): int {
+                let int source = 1;
+                defer source = 2;
+
+                val int result = match<int> selected over
+                    on true -> ::
+                        return source;
+                    end
+                    on false -> 0;
+                end;
+
+                return result;
+            }
+            """)));
+    }
+
+    @Test
+    void matchExecutingInsideOuterDeferStillCountsItsMutationsAsDeferred() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(Parser.parse("""
+                    fnc f(bool selected): int {
+                        let int result = 1;
+                        defer match<int> selected over
+                            on true -> ::
+                                result = 2;
+                                return 1;
+                            end
+                            on false -> 0;
+                        end;
+                        return result;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains(
+                "defer cannot reassign returned binding"));
+    }
+
+    @Test
+    void historicalFirstMarkerRemainsAcceptedForValueMatch() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+            fnc f(bool selected): int {
+                return match<int> first selected over {
+                    on true { return 1; }
+                    on false { return 0; }
+                };
+            }
+            """)));
+    }
+
 }

@@ -1,0 +1,115 @@
+# Manual, source-local private filesystem execution gate.
+# The source repository is private. Never checkout or upload it to a carrier org.
+# An admin must attest true runner ephemerality out-of-band; a label alone
+# does not prove destruction of workspaces, caches, credentials or artifacts.
+name: Private source-local filesystem guest execution
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: "Approved 40-hex commit from this private source repo"
+        required: true
+        type: string
+      source_tree:
+        description: "Approved 40-hex Git tree of the source_commit"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+concurrency:
+  group: private-fs-guest-${{ inputs.source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved:
+    if: >-
+      ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java'
+       || github.event.repository.private != true
+       || github.ref != 'refs/heads/main'
+       || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'
+       || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == ''
+       || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == ''
+       || inputs.source_commit != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
+       || inputs.source_tree != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Deny unsafe source test admission without checkout
+        shell: bash
+        run: |
+          echo "::error::Private filesystem guest tests require an approved exact SHA/tree, main ref and ephemeral source-local runner"
+          exit 1
+
+  filesystem-guest:
+    if: >-
+      ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java'
+       && github.event.repository.private == true
+       && github.ref == 'refs/heads/main'
+       && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'
+       && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != ''
+       && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != ''
+       && inputs.source_commit == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
+       && inputs.source_tree == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+    # Runner groups must be admin-restricted to this private source repo;
+    # labels alone are not an isolation or runner-ownership boundary.
+    runs-on:
+      group: oreslang-private-source-ephemeral
+      labels: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 45
+    steps:
+      - name: Validate approved immutable refs before any source checkout
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.source_commit }}
+          EXPECTED_TREE: ${{ inputs.source_tree }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          echo "APPROVED_SOURCE_REFS_FORMAT_OK"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Prove immutable source and local repository identity
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.source_commit }}
+          EXPECTED_TREE: ${{ inputs.source_tree }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "SOURCE_COMMIT=$EXPECTED_COMMIT"
+          echo "SOURCE_TREE=$EXPECTED_TREE"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          # Keep private source build output off shared/reusable action caches.
+      - name: Verify GraalVM JDK 25 installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+      - name: Execute actual linked filesystem .atto guest test suites
+        shell: bash
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest,dev.oreslang.runtime.BoundedFilesystemReadLanguageTest test
+      - name: Execute existing native filesystem regression tests
+        shell: bash
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=dev.oreslang.runtime.NativeCliIoTest test
+      - name: Report limited test scope
+        shell: bash
+        run: |
+          echo "FS_GUEST_EXECUTED: linked .atto filesystem JUnit suites on source-local GraalVM runner"
+          echo "NOT_EXECUTED: cross-backend parity, full native-image AOT and REST HTTP integration"

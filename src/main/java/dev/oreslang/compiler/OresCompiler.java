@@ -11,15 +11,35 @@ import dev.oreslang.types.OwnershipChecker;
 public final class OresCompiler {
     private OresCompiler() { }
 
+    /**
+     * Opt-in first protected-state MIR slice. This executes the production
+     * parser first, then admits only one verified i64 state-root region.
+     * It does NOT bypass or relax ordinary TypeChecker/OwnershipChecker
+     * admission for general compilation and does not claim native AOT.
+     */
+    public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(String source) {
+        return ProtectedScalarMirV1.lower(Parser.parse(source));
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        program = TypeChecker.checkTypes(program);
-        OwnershipChecker.check(program);
-        return program;
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /** Imported module contracts participate in type proofs, not runtime declarations. */
+    public static Ast.Program analyze(
+            Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, java.util.Map.of(), java.util.Map.of(), importedContracts);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
@@ -33,8 +53,45 @@ public final class OresCompiler {
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program());
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return new AnalysisResult(checked.program(), checked.warnings());
+    }
+
+    /**
+     * Opt-in RT primitive subset: perform the full existing type/ownership check
+     * before admitting any source-level resource bounds or lowering to Java 8.
+     * This is not a verified no-heap runtime or WCET proof. Consumers must run
+     * the independent exact-classfile audit and target qualification gates.
+     */
+    public static RealtimePrimitiveCompiler.Artifact compileRealtimePrimitive(
+            String source, String entry, int arity,
+            RealtimePrimitiveCompiler.Budget budget, java.nio.file.Path outputDirectory)
+            throws java.io.IOException {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
+    }
+
+    /**
+     * Conservative checked-AST actor callback preflight. This proves only
+     * scalar syntax/effect exclusion, not actor heap or hard-RT execution.
+     * The checked AST is produced here, never supplied by the caller.
+     */
+    public static RealtimeActorSourceEffects.Report analyzeRealtimeActorCallback(
+            String source, String actorName, String callbackName, int arity,
+            RealtimeActorSourceEffects.Budget budget) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimeActorSourceEffects.analyzeChecked(
+                checked, actorName, callbackName, arity, budget);
+    }
+
+    /**
+     * Experimental public interface emission. Static analysis and ownership
+     * admission are mandatory before extracting metadata. This does not execute
+     * guest code, persist a cache, or authorize a decoded external interface.
+     */
+    public static ExportInterfaceCodec.InterfaceFile emitPublicInterface(
+            String source, ExportInterfaceCodec.Header header) {
+        return ExportInterfaceCollector.collect(parseAndTypeCheck(source), header);
     }
 
     /**

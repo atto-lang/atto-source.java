@@ -1,7 +1,7 @@
 # Callable overload resolution — current contract and next type-directed phase
 
-Status: **name/arity dispatch executable on Java; primitive/enum overloads
-with identical arity not yet enabled.** Relevant implementation and test
+Status: **name/arity dispatch executable on Java; same-arity nominal enum
+selection is a staged extension, not generally executable.** Relevant implementation and test
 coverage: `TypeChecker`, `OwnershipChecker`, `CallableSelector`,
 `OresEvalRootNode`, `MethodOverloadTest`, `FunctionArityOwnershipTest`.
 Typed dispatch implementation target: [issue #843](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/843).
@@ -35,47 +35,51 @@ as a harmless primitive argument because ownership lookup chose a different
 same-name function. The ownership pass now keys module function/routine
 signatures by the same arity as the compiler and runtime.
 
-## Future type-directed overloads (not yet implemented)
+## Canonical future extension: nominal enums only (not yet generally enabled)
 
-Proposed stable key for a distinct overload is:
+The authoritative pre-1.0 decision is
+[NOMINAL_ENUM_OVERLOAD_CONTRACT.md](NOMINAL_ENUM_OVERLOAD_CONTRACT.md).
+The earlier plan to differentiate `fnc f(int)` and `fnc f(float)`, rank
+primitive conversions, or choose by numeric widening has been **superseded**.
+Do not activate that behavior from the experimental
+`TypedOverloadResolver` helper or issue #843. Its ranking API is an older
+design oracle, **not** the overload-admission or runtime dispatch contract.
 
-```
-(declaration namespace, static-or-instance domain, function name,
- expanded explicit argument arity, canonical admitted parameter-type IDs)
-```
+An executable enum-aware slot will be identified by its resolved declaration
+namespace, instance/static domain, callable name, explicit argument arity, and
+the compile-time selected canonical signature ID. `fnc` and `routine`
+share a domain; return types, effects, generic names, source order, and enum
+*cases* are never dispatch discriminators.
 
-The `fnc`/`routine` kind remains **not** a discriminant; neither does
-the return type, overload source order, effect type, or generic parameter name.
+Admission must happen before executable dispatch is enabled:
 
-Candidate resolution must use static types before runtime dispatch:
+1. Select scope/receiver and expanded explicit argument **arity first**.
+2. For a same-arity pair, require at least one corresponding parameter with
+   **distinct, eligible nominal enum declaration IDs**; every other
+   parameter must have the same canonical admitted type ID. Primitive type
+   differences alone, numeric widening, structural compatibility, generics,
+   unions and `Any`/`Unknown` do not admit a pair.
+3. Each enum discriminator's complete case set must have only nullary or
+   primitive-scalar/fixed-primitive-tuple payloads, as defined by the
+   canonical contract. Enum case names and numeric wire tags are irrelevant.
+4. Resolve the unique candidate from compiler-proven nominal identities.
+   Ambiguous/incomplete static type proof must fail closed. Validate normal
+   argument assignability, ownership, effects and visibility **after**
+   selection; those checks cannot rank a different candidate.
+5. Carry an immutable selected declaration ID through the type checker,
+   ownership checker, interpreter/direct call, optimizer, method vtable,
+   imports, FFI and native/AOT lowering. Never dynamically scan candidates
+   by a runtime value, payload, structural shape or enum variant.
 
-1. Filter by callable namespace, receiver domain and arity.
-2. Reject candidates with unsatisfied accessibility, ownership, effects
-   or type constraints before allowing them to become runtime symbols.
-3. Rank exact primitive and enum **type** identity above safe numeric
-   widening. Example: `f(int)` wins over `f(float)` on a known int
-   argument, but float wins on a known float argument.
-4. Where conversions tie, fail with an ambiguity diagnostic listing each
-   candidate. Never silently use source-order, callback identity, tag shape
-   or return type as a tie breaker.
-5. Emit a resolved, versioned ABI symbol and carry it through ownership,
-   Truffle, native lowering and all method-vtable/inherited slots.
+For example, `f(Color)` and `f(Direction)` may become legal when both
+enum declarations are eligible and carry different qualified IDs. In
+contrast, `f(Color.Red)` and `f(Color.Blue)` are not separate overload
+types: both represent `Color` and belong in a `match`.
 
-`f(Color)` and `f(Direction)` are future distinct overloads because
-enums are **nominal declarations**. `f(Color.Red)` and `f(Color.Blue)`
-are not: those are variants of the same parameter type `Color` and
-belong in `match`. Overloading on different erased generic
-`Option<int>` / `Option<String>` (or `Enum<int>` / `Enum<String>`
-without runtime reification) is forbidden. Partial `Any`/`Unknown`
-static types, mixed numeric promotions (e.g. multiple equally ranked
-widening paths), and structural interfaces must fail closed until
-precisely defined.
-
-No constructor is selected from the actual message's variant tag as a
-substitute for static typed overload resolution; actor message ownership
-and immutable type descriptors must be checked first. Runtime dispatch
-may use only a compiler-proven selector, even on GraalVM where the JVM
-would normally erase generic payload parameters.
+The Java experimental direct-call implementation is stacked on unmerged
+enum work; class method vtables and LLVM guest execution are not yet
+equivalent. Existing stable production code must continue rejecting
+same-arity enum overloads until its own proof and binding path are complete.
 
 ## Parity prerequisites
 
@@ -86,7 +90,9 @@ would normally erase generic payload parameters.
 - Inherited, overridden, interface-bound, actor and async calls preserve
   chosen overload identity, argument conversions and ownership effects.
 - Static callback extraction has contextual signature selection.
-- Exact-match/widening/ambiguity/property-based tests cover primitive
-  tuples, multiple nominal enums and cross-module identical short names.
-- `Box<T>` recursive enum payloads and serializer tags must be executable
-  and independently verified before type-specific enum overloads are enabled.
+- Declaration-pair disjointness and ambiguous-proof property tests cover
+  primitive-only negative cases, eligible nominal enums, fixed primitive
+  payload tuples and cross-module identical short names.
+- Recursive, borrowed, dynamic, and generic enum payloads must be rejected
+  as overload discriminators while remaining usable in ordinary enum/match;
+  serializer and message boundaries must preserve nominal ID provenance.

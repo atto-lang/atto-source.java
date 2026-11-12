@@ -24,7 +24,7 @@ final class FutureCompositionLanguageTest {
                   return value * 2;
                 }
 
-                pub fnc main(): void {
+                pub suspends fnc main(): void {
                   val Future<int> mapped = base().map(|int value| -> {
                     return value + 1;
                   });
@@ -54,6 +54,46 @@ final class FutureCompositionLanguageTest {
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
         assertEquals("seen:42:42:40", run(program));
+    }
+
+    @Test
+    void voidFutureOnSuccessPassesNullThroughOneCallbackSlot() throws Exception {
+        String program = """
+                async fnc noValue(): void {
+                  return;
+                }
+
+                pub suspends fnc main(): void {
+                  val Future<void> observed = noValue().onSuccess(|void ignored| -> {
+                    stdio.stdout.write("seen");
+                    return;
+                  });
+                  await observed;
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("seen", run(program));
+    }
+
+    @Test
+    void mapKeepsNestedFutureUntilAnExplicitSecondAwait() throws Exception {
+        String program = """
+                pub async fnc initial(): int { return 20; }
+                pub async fnc doubleIt(int value): int { return value * 2; }
+
+                pub suspends fnc main(): void {
+                    val Future<Future<int>> nested = initial().map(|int value| -> {
+                        return doubleIt(value);
+                    });
+                    val Future<int> inner = await nested;
+                    stdio.stdout.write(await inner);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("40", run(program),
+                "map must preserve nested Future identity and require both awaits");
     }
 
     private static String run(String program) throws Exception {
