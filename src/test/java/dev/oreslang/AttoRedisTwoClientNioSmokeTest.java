@@ -88,8 +88,8 @@ final class AttoRedisTwoClientNioSmokeTest {
                 "serve_resp2_async(listener, 2, 2)");
         source = source.replace("network.listen_async(\"127.0.0.1\", 16399)",
                 "network.listen_async(\"127.0.0.1\", " + port + ")");
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         final String guestCode = source;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(guestCode));
         try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
             Future<?> guest = executor.submit(() -> {
                 try (Context context = Context.newBuilder(OresLanguage.ID)
