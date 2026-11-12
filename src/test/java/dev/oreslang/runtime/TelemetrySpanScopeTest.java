@@ -186,13 +186,13 @@ final class TelemetrySpanScopeTest {
     void rejectsUnsafeSpanNamesEvenWhenDisabled() {
         TelemetrySpanScope.disableExistingSites();
         assertThrows(IllegalArgumentException.class,
-                () -> TelemetrySpanScope.open("checkout\\nforged"));
+                () -> TelemetrySpanScope.open("checkout" + (char) 10 + "forged"));
         assertThrows(IllegalArgumentException.class,
-                () -> TelemetrySpanScope.open("checkout\\u202eforged"));
+                () -> TelemetrySpanScope.open("checkout" + (char) 0x202e + "forged"));
         assertThrows(IllegalArgumentException.class,
-                () -> TelemetrySpanScope.open("checkout\\ud800"));
+                () -> TelemetrySpanScope.open("checkout" + (char) 0xd800));
         assertThrows(IllegalArgumentException.class,
-                () -> TelemetrySpanScope.enableExistingSites(100, 1000, "unsafe\\n"));
+                () -> TelemetrySpanScope.enableExistingSites(100, 1000, "unsafe" + (char) 10));
         try (TelemetrySpanScope scope = TelemetrySpanScope.open("safe.checkout")) {
             assertFalse(scope.recording());
         } finally {
