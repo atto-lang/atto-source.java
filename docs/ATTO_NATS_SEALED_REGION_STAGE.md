@@ -13,10 +13,16 @@ per-actor heap, standalone actor executor, guest API, verified borrow checker,
 or near-zero-GC solution.
 
 - Allocation requires a live, runtime-minted actor execution context.
-  `allocateFromSealedDeclaration` derives the scalar layout from the
-  `Ast.ClassDecl.sealedStateFields` declaration, never ordinary class fields,
-  and rechecks literal type, duplicate names and field bounds. This stage
-  does not enable source critical syntax or bypass TypeChecker admission.
+  `allocateFromSealedDeclaration` now also requires the **identical**
+  `Ast.ClassDecl` object in the immutable `CodeImage` installed on that
+  exact running source actor, with the matching selected actor type. A
+  separately parsed lookalike actor and a different actor in the same image
+  both fail with `SecurityException`. Unqualified actor names must be unique
+  within the image. The source layout comes only from
+  `Ast.ClassDecl.sealedStateFields`, never ordinary class fields, and
+  rechecks literal type, duplicate names and field bounds. These are
+  **host/runtime provenance gates**, not a checked compiler borrow proof.
+  This stage does not enable source critical syntax or bypass TypeChecker.
 - The region stores only 1–64 validated `Long`/`Boolean` scalar fields.
 - No field map or mutable array is exposed; the interpreter must consume
   compiler-resolved field slots, never a guest-forged numeric slot index.
@@ -42,7 +48,9 @@ or near-zero-GC solution.
 `SealedActorStateRegionTest` contains 6 JVM tests, including a real
 `ActorRuntime.spawnCodeActor` dispatch path with a **host-provided test
 executor** bound to a parsed immutable code image and allocating its state
-from the same actor declaration's sealed AST schema. The tests check persistent
+from the same actor declaration's sealed AST schema. The test
+also rejects an identical-looking declaration parsed into a different
+code image and an unrelated declaration within the admitted image. The tests check persistent
 state through two mailbox turns, a concurrent actor STOP while a sealed
 loan is active, and automatic retirement only after physical actor
 finalization. Behavior-owned host test regions must be sealed in a turn
