@@ -30,28 +30,34 @@ run cannot substitute for live source-main protection. If source `main`
 reports `protected: false` or the required protection cannot be verified,
 private export is denied.
 
-Carrier `main` has a separate fail-closed choice: the unprotected fallback
-is bound by the **carrier contract**, not by an implicit trusted branch. If the
-carrier reports `protected: true`, V3 requires CODEOWNER review, stale-review
-dismissal, at least one approval, administrator enforcement, no review
-bypasses, no force pushes, no deletion, and the exact security CODEOWNERS file.
-If those private-repository protections are unavailable, the protected source
-contract must include an exact positive `review_pr`. That PR must be a
-same-repository PR merged to carrier `main`, authored by an account other than
-immutable reviewer ID `11139560` / login `ORESoftware`, and the latest
-review from that reviewer must be `APPROVED` on the PR's exact head before
-merge. V3 then requires the **entire final carrier main root-tree SHA** to equal
-the reviewed PR head root-tree SHA and requires the exact carrier CODEOWNERS
-bytes. Thus path, Git mode, or blob drift after review fails closed.
+Carrier `main` must also have **enforced branch protection**. A merged PR,
+an independent review, matching root-tree SHA or source-free runner success is
+not a substitute. V3 rejects `protected: false` before consulting carrier
+reviews or reading private source. `review_pr` is forbidden in the exact
+carrier-contract schema; there is no review-only destination authority mode.
+Carrier branch protection must independently enforce CODEOWNER review,
+stale-review dismissal, at least one approval, strict nonempty required
+status checks, administrator enforcement, no review bypasses, no force pushes,
+no deletion, and the pinned security CODEOWNERS file. If the protection API
+is inaccessible or incomplete, source transfer fails closed.
 
-The exact carrier-main SHA is rechecked before every source-bearing destination
-write. Full carrier review/tree attestation is repeated at initial admission,
-immediately before executable refs, and again while the source-bearing payload
-ref is still inert before creating the one-use authorization ref. Handoff ref
-cleanup is attempted for ordinary authorization failures, transport ambiguity,
-interrupts, and unexpected exceptions; both payload and authorization refs are
-removed when they still point to the exact handoff commit, and incomplete
-rollback fails closed.
+V3 rechecks the carrier's identity, `main` SHA, branch protection and security
+CODEOWNERS on **every persistent source-bearing write**, not merely before
+the first blob. Initial carrier admission also checks the source-free base
+tree, exact workflow blob and test-plan bytes. The publisher revalidates
+source governance and current incidents, and checks both refs after the
+handoff; errors trigger best-effort exact-ref rollback.
+
+**The two-ref payload/authorization handoff is not an atomic transaction.**
+The receiving executor must independently verify current protected-source
+policy, destination governance, incident dispositions, exact-tree receipt and
+authorization immediately before reading or executing source, and must
+fail closed on revocation. A producer's positive ref receipt alone is not
+an execution permit. Deleting refs does **not** purge private Git objects,
+artifacts, caches or clones; retain and independently disposition such objects
+under the incident-response process. Until the receiving executor's live
+admission checks are separately verified, do not treat a source-bearing
+handoff as approved for release or CI promotion.
 
 At the 2026-10-20 audit, source `main` still reported `protected: false`,
 and GitHub reported private-repository rulesets unavailable on the current
