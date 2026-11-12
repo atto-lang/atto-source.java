@@ -25,6 +25,7 @@ on:
       - 'src/test/java/dev/oreslang/ActorDescriptorIndexTest.java'
       - 'src/test/java/dev/oreslang/ActorTypedMethodIRTest.java'
       - 'src/test/java/dev/oreslang/compiler/ActorDescriptorProvenanceTest.java'
+      - 'src/test/java/dev/oreslang/compiler/ActorTypedMethodSnapshotIdentityTest.java'
       - 'contracts/declared-actor-witness-v1/**'
       - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
@@ -89,7 +90,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorDescriptorIndexTest,ActorTypedMethodIRTest,ActorDescriptorProvenanceTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorDescriptorIndexTest,ActorTypedMethodIRTest,ActorDescriptorProvenanceTest,ActorTypedMethodSnapshotIdentityTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -106,9 +107,10 @@ jobs:
               ActorDescriptorIndexTest \
               ActorTypedMethodIRTest \
               ActorDescriptorProvenanceTest \
+              ActorTypedMethodSnapshotIdentityTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
-            if [[ "$suite" == ActorDescriptorProvenanceTest ]]; then
+            if [[ "$suite" == ActorDescriptorProvenanceTest || "$suite" == ActorTypedMethodSnapshotIdentityTest ]]; then
               report="target/surefire-reports/TEST-dev.oreslang.compiler.${suite}.xml"
             else
               report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
