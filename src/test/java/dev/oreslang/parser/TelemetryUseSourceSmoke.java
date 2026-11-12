@@ -52,7 +52,8 @@ public final class TelemetryUseSourceSmoke {
         check(program.imports().size() == 1, "one canonical import");
         Ast.ImportDecl imported = program.imports().getFirst();
         check(imported.kind() == Ast.ImportKind.MODULE, "typed module import");
-        check(imported.path().equals("std.telemetry"), "canonical builtin path");
+        check(imported.path().equals(ImportRules.TELEMETRY_USE_SYNTAX_PATH),
+                "canonical syntax provenance path");
         check(imported.names().equals(List.of("telemetry")), "canonical source name");
         check(imported.namespace().equals("trace"), "explicit namespace alias");
         check(ImportRules.exposedBindings(imported).equals(List.of("trace")),
@@ -63,6 +64,7 @@ public final class TelemetryUseSourceSmoke {
                 "import module telemetry from \"std.telemetry\";\nfnc f(): void { return; }")
                 .imports().getFirst();
         importDenied(forged);
+        parseDenied("import module telemetry from \"@builtin:std.telemetry\";\nfnc f(): void { return; }");
         parseDenied("use std.fs as fs;\nfnc f(): void { return; }");
         parseDenied("use my.telemetry as trace;\nfnc f(): void { return; }");
         parseDenied("use std.telemetry as _;\nfnc f(): void { return; }");
@@ -110,7 +112,7 @@ public final class TelemetryUseSourceSmoke {
         check(function("using arbitrary.span(\"forged\") as spoof {}")
                         .body().getFirst() instanceof Ast.UsingTelemetrySpanStmt,
                 "parser alone never grants trusted builtin authority");
-        check(assertions == 26, "smoke expectation must be updated with assertions");
+        check(assertions == 27, "smoke expectation must be updated with assertions");
         // The self-accounting assertion above is also an executed check.
         System.out.println("ATTO_TRACE_USE_IMPORT_CAPTURE_PASS assertions=" + assertions);
     }
