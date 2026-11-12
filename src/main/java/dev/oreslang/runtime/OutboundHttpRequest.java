@@ -671,6 +671,7 @@ public final class OutboundHttpRequest {
     static List<Map.Entry<String, String>> withTraceparent(
             List<Map.Entry<String, String>> provided,
             TraceParent parent) {
+        Objects.requireNonNull(provided, "provided");
         if (parent == null) return provided;
         return withTraceparentValue(provided, parent.newChild());
     }
