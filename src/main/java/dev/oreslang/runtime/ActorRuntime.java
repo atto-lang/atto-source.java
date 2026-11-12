@@ -9842,6 +9842,7 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable cancellationSnapshot;
             boolean scheduleTeardown;
             Runnable failAsyncSendWaiters;
+            SealedActorStateRegion sealedRegionToFence;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -9857,6 +9858,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                // Capture only the sealed compiler-owned region. This is a
+                // non-guest STOP fence; do not hold lifecycleLock while
+                // closing the region's loan arbiter.
+                sealedRegionToFence = codeActorState instanceof SealedActorStateRegion state
+                        ? state : null;
                 sealing = true;
                 // STOP invalidates ordinary wake receipts before draining the
                 // queue; already-admitted SourceTask cleanup retains authority.
@@ -9898,6 +9904,16 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduleTeardown = gracefulTeardownPending
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
+            }
+            // Fencing a sealed region prevents new critical loans and makes
+            // existing views unusable immediately at STOP. The active loan
+            // remains physically pinned until its callback finally releases,
+            // and the source scheduler must quiesce before final retirement.
+            // Never take the region/loan monitor under lifecycleLock.
+            if (sealedRegionToFence != null) {
+                try { sealedRegionToFence.close(); }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish pending-producer failure only after lifecycleLock and
