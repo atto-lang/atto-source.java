@@ -1,0 +1,38 @@
+use namespace foo;
+
+// Closed-world source-level actor spawn/send proof.
+// The ordinary Graal Context.eval caller does not install a trusted lease.
+declare actor Meter;
+
+define state on actor Meter as {
+    let int received: 0;
+    let int budget: 10000;
+}
+
+external mtd (Meter p) init(): void {
+    return;
+}
+
+critical mtd (Meter p) add(int delta): void {
+    p.state.received = p.state.received + delta;
+}
+
+critical mtd (Meter p) debit(int delta): void {
+    p.state.budget = p.state.budget - delta;
+}
+
+external mtd (Meter p) receive(ActorMail<int> mail): void {
+    p.add(mail.value);
+    p.debit(mail.value);
+    return;
+}
+
+pub fnc main(): int {
+    const a = spawn Meter();
+    const b = spawn Meter();
+    for (let i = 0; i < 1000; i = i + 1) do
+        a.send(1);
+    done
+    b.send(7);
+    return 42;
+}
