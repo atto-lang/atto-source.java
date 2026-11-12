@@ -99,6 +99,10 @@ public final class CriticalActorMirV1 {
         }
         Map<String, Type> fields = new LinkedHashMap<>();
         for (Ast.ProtectedStateField field : schema.fields()) {
+            if (field.type().isBorrow() || field.type().inferArguments()
+                    || !field.type().arguments().isEmpty()) {
+                throw rejected("sealed field must have non-generic owned scalar type");
+            }
             Type type = type(field.type().name(), false);
             if (!(field.initializer() instanceof Ast.LiteralExpr literal)
                     || !literalTypeMatches(type, literal.value())
@@ -115,6 +119,10 @@ public final class CriticalActorMirV1 {
                     || param.name().equals(method.receiverName())) {
                 throw rejected("critical arguments must be distinct copied bool/int scalars");
             }
+        }
+        if (method.returnType().isBorrow() || method.returnType().inferArguments()
+                || !method.returnType().arguments().isEmpty()) {
+            throw rejected("critical return cannot borrow or expose a generic actor value");
         }
         Type returns = type(method.returnType().name(), true);
         Cursor parser = new Cursor(method.bodyTokens(), method.bodyTokenKinds(),
@@ -225,11 +233,17 @@ public final class CriticalActorMirV1 {
                     Expr condition = expression();
                     require(condition.type(), Type.BOOL, "critical branch guard");
                     take("then");
+                    // Branch-local names are never visible after the branch.
+                    Map<String, Type> scope = new LinkedHashMap<>(variables);
                     List<Step> yes = block(inLoan, true);
+                    variables.clear();
+                    variables.putAll(scope);
                     List<Step> no = List.of();
                     if (at("else")) {
                         take("else");
                         no = block(inLoan, true);
+                        variables.clear();
+                        variables.putAll(scope);
                     }
                     take("fi");
                     result.add(new Branch(condition, yes, no));
@@ -290,12 +304,15 @@ public final class CriticalActorMirV1 {
             take("|");
             take("->");
             take("{");
+            Map<String, Type> outerScope = new LinkedHashMap<>(variables);
             activeAlias = alias;
             List<Step> body;
             try {
                 body = block(true, false);
             } finally {
                 activeAlias = null;
+                variables.clear();
+                variables.putAll(outerScope);
             }
             take("}");
             take(")");
