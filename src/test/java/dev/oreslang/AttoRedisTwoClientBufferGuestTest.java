@@ -237,7 +237,7 @@ final class AttoRedisTwoClientBufferGuestTest {
         String original = source();
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(original));
         String wrongPayload = original.replace(
-                "writech requests, (client_id, kind, key, value);",
+                "writech requests, (client_id, request_id, kind, key, value);",
                 "writech requests, \"wrong payload\";");
         assertNotEquals(original, wrongPayload);
         assertThrows(RuntimeException.class,
