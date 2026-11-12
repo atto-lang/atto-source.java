@@ -745,6 +745,22 @@ public final class OutboundHttpRequest {
                 throw new IllegalArgumentException(
                         "HTTP UTF-8 request body exceeds 1 MiB limit");
             }
+            // Java's default UTF-8 encoder silently replaces malformed
+            // UTF-16. That corrupts signed/structured POST payloads and
+            // makes the bytes different from the guest's declared text.
+            for (int i = 0; i < text.length(); i++) {
+                char codeUnit = text.charAt(i);
+                if (Character.isHighSurrogate(codeUnit)) {
+                    if (i + 1 >= text.length()
+                            || !Character.isLowSurrogate(text.charAt(++i))) {
+                        throw new IllegalArgumentException(
+                                "HTTP request body contains unpaired surrogate");
+                    }
+                } else if (Character.isLowSurrogate(codeUnit)) {
+                    throw new IllegalArgumentException(
+                            "HTTP request body contains unpaired surrogate");
+                }
+            }
             byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
             if (utf8.length > max) {
                 throw new IllegalArgumentException(
