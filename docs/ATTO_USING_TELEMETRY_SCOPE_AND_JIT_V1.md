@@ -21,12 +21,19 @@ pub fnc checkout(Order order): Result<void, Error> {
 }
 ```
 
-This is the *target API*: `ores.std/telemetry`, `span.attribute`, automatic
-logical active-context activation and the associated `Span` protocol are **not
-implemented** by the parser patch. The expression is parsed as an ordinary
-`telemetry.span(...)` call. An executable test uses a small user-defined
-`Telemetry` guest class with `span(...)`/`Span.end()` to exercise the
-**language scope semantics only**. It does not emit an OTel span.
+The parser recognizes the scoped expression as an ordinary `telemetry.span(...)`
+call. A minimal native `stdlib/telemetry.atto` module **now exists** and is
+registered at `ores.std/telemetry` (with legacy `std/telemetry` alias).
+It supplies non-recording `span()` and `span(name)` factories, a
+`Span.is_recording()` query and idempotent `Span.end()` method.
+The source fixture and `NativeTelemetryScopeGuestTest` that compile and run
+this module have been authored but **NOT EXECUTED**.
+
+The true recording `span.attribute` API, trusted `TelemetrySpanScope` type,
+automatic logical active-context activation and OTLP exporter are still
+**NOT IMPLEMENTED**. Separate `UsingTelemetrySpanScopeTest` cases use a small
+user-defined guest `Telemetry` class to exercise lexical cleanup semantics,
+not OTel export.
 
 The parser must not reinterpret `using resource.borrow() as view` as a span
 scope: borrowed views retain their distinct AST node and fail-closed lifetime
@@ -89,10 +96,10 @@ be enabled.
 3. Preserve all previous `NativeTraceStdlibTest` execution checks and run
    real `.atto` tests under the optimizing Graal runtime, not interpreter
    fallback.
-4. Implement typed `TelemetrySpanScope` and a native `ores.std/telemetry`
-   class, plus runtime context capture/restore, then run real HTTP/actor/HTTP
-   tracing with an external OTLP receiver. Until then the syntax alone
-   must not be described as distributed tracing.
+4. Extend the native non-recording `ores.std/telemetry` module into a
+   typechecked `TelemetrySpanScope` recording implementation, plus runtime
+   context capture/restore; then run real HTTP/actor/HTTP tracing with an
+   external OTLP receiver. Until then the syntax alone is not distributed tracing.
 5. Repeat the same guest on LLVM; its currently narrower native compiler
    needs separate parser, ownership, unwind and actual nonblocking HTTP work
    before matching claims can be made.
