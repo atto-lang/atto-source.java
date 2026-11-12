@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -22,6 +23,7 @@ final class SuspendsAwaitExecutionContextRuntimeTest {
             AtomicReference<Throwable> producerFailure = new AtomicReference<>();
             AtomicReference<Throwable> observerFailure = new AtomicReference<>();
             AtomicInteger observers = new AtomicInteger();
+            CountDownLatch observerDone = new CountDownLatch(1);
 
             OresFuture<Integer> task = scheduler.start(resume -> {
                 assertSame(scheduler, OresScheduler.current());
@@ -51,6 +53,8 @@ final class SuspendsAwaitExecutionContextRuntimeTest {
                     observers.incrementAndGet();
                 } catch (Throwable assertion) {
                     observerFailure.set(assertion);
+                } finally {
+                    observerDone.countDown();
                 }
             });
 
@@ -75,6 +79,8 @@ final class SuspendsAwaitExecutionContextRuntimeTest {
             assertFalse(producer.isAlive(), "producer must not execute the guest continuation");
             assertNull(producerFailure.get(), () -> "producer: " + producerFailure.get());
             assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertTrue(observerDone.await(5, TimeUnit.SECONDS),
+                    "terminal callback must drain before checking its assertions");
             assertNull(observerFailure.get(), () -> "observer: " + observerFailure.get());
             assertEquals(1, observers.get());
             assertEquals(2, pc.get());
