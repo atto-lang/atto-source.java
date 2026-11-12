@@ -24,7 +24,9 @@ were closed.
   at its own dispatch boundary. Current implementation deliberately does **not**
   claim to enforce that integration.
 - `claimResponse` requires the exact original owner + snapshot + ticket and
-  succeeds at most once. There is no token-based lookup into an unbounded
+  succeeds at most once. A separate `commitHeaders` one-shot permission must
+  succeed at the actual irreversible HTTP success-header boundary; an owner
+  replacement occurring between claim and commit makes that commit fail. There is no token-based lookup into an unbounded
   registry, no public counter, static secret or hash granting authority.
 - Preparing freezes new admission; publication atomically begins draining
   the old generation and installs the new one. Existing same-owner requests
@@ -42,7 +44,7 @@ were closed.
 
 `HttpRouterGenerationAuthorityTest` exercises identical tenant/route IDs
 across two gates, forged/stale issuer and snapshot identity, once-only
-claims, cancellation, same-owner upgrade and different-owner revocation,
+claims and header commits, cancellation, same-owner upgrade and different-owner revocation,
 retained native pins, capacity exhaustion, retirement and concurrent
 admission/upgrade linearization.
 
