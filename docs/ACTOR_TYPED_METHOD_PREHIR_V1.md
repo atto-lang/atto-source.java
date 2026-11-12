@@ -31,7 +31,7 @@ The scalar v1 slice supports **only**:
 Everything else **fails closed**, including captures of globals/namespaces,
 returning the actor receiver, unknown names, member/state access, method
 calls, async/await, arbitrary expressions, borrow/ownership operations,
-multi-statement bodies, general control flow, thrown effects or direct
+multi-statement bodies, private lifecycle/receive hooks, general control flow, thrown effects or direct
 critical state loan callbacks. This is not a complete Atto type checker
 and must never be generalized through source-name matching.
 
@@ -55,7 +55,7 @@ Actor plan and result constructors are private; their maps/lists are immutable.
 
 An unsafe method body now fails at step 4 with
 `ACTOR_TYPED_IR_UNSUPPORTED_BODY` or `ACTOR_TYPED_IR_RETURN_MISMATCH`
-rather than being admitted as a runnable method. `IncrementalCompiler.compile(Map)`
+rather than being admitted as a runnable method. Any bound private CONTROL/receive hook without a normal method slot fails with `ACTOR_TYPED_IR_CONTROL_UNSUPPORTED` rather than disappearing from a supposedly complete actor plan. `IncrementalCompiler.compile(Map)`
 still rejects all declaration-only actor code with
 `DECLARED_ACTOR_MANIFEST_GATE_REQUIRED` before ABI cache mutation.
 
@@ -76,7 +76,7 @@ still rejects all declaration-only actor code with
 
 ## Verification
 
-`ActorTypedMethodIRTest` has 20 newly authored tests, comprising positive
+`ActorTypedMethodIRTest` has 21 newly authored tests, comprising positive
 scalar typing, actor descriptor binding, typed operand shape, invalid-body
 diagnostics, source changes, immutable plan/result, method removal,
 and mandatory rejection before codegen. All are included in
