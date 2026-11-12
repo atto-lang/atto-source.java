@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Bytes", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -4386,7 +4386,7 @@ public final class TypeChecker {
                 Type mapValue = typedMap.arguments().get(1);
                 if (!closedScalarMapDomains(typedMap)) {
                     throw new IllegalArgumentException(
-                            "Map indexed read requires a proven String/Symbol key and copyable scalar value");
+                            "Map indexed read requires a proven String/Symbol/Bytes key and copyable scalar value");
                 }
                 requireAssignable(index, mapKey, "typed Map index key");
                 return mapValue;
@@ -4835,8 +4835,8 @@ public final class TypeChecker {
                 if (!isAdmittedEmptyMapScalarKey(key)
                         || !isAdmittedEmptyMapScalarValue(value)) {
                     throw new IllegalArgumentException(
-                            "typed empty Map is currently limited to String/Symbol keys "
-                                    + "and primitive int/bool/string/Symbol values; "
+                            "typed empty Map is currently limited to String/Symbol/Bytes keys "
+                                    + "and primitive int/bool/string/Symbol/Bytes values; "
                                     + "unverified key/value domain " + witness);
                 }
                 Type map = resolve(witness, generics, self);
@@ -5318,14 +5318,15 @@ public final class TypeChecker {
     private static boolean isAdmittedEmptyMapScalarKey(Ast.TypeRef type) {
         return !type.inferArguments() && type.arguments().isEmpty()
                 && (type.name().equals("string") || type.name().equals("String")
-                        || type.name().equals("Symbol"));
+                        || type.name().equals("Symbol") || type.name().equals("Bytes"));
     }
 
     private static boolean isAdmittedEmptyMapScalarValue(Ast.TypeRef type) {
         return !type.inferArguments() && type.arguments().isEmpty()
                 && (type.name().equals("int") || type.name().equals("bool")
                         || type.name().equals("Bool") || type.name().equals("string")
-                        || type.name().equals("String") || type.name().equals("Symbol"));
+                        || type.name().equals("String") || type.name().equals("Symbol")
+                        || type.name().equals("Bytes"));
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -6399,6 +6400,10 @@ public final class TypeChecker {
         for (Type argument : named.arguments()) {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
         }
+
+        // Bytes is an immutable built-in scalar. The runtime still verifies
+        // actual backing ownership and actor message size budgets.
+        if (named.name().equals("$builtin$Bytes") && named.arguments().isEmpty()) return;
 
         // Built-in sum/container values are data-only when their arguments pass.
         if (named.name().equals("Option") || named.name().equals("Result")
@@ -8182,11 +8187,15 @@ public final class TypeChecker {
         Type key = mapType.arguments().get(0);
         Type value = mapType.arguments().get(1);
         boolean keyOk = key == Primitive.STRING
+                || key instanceof Named bytes && bytes.name().equals("$builtin$Bytes")
+                        && bytes.arguments().isEmpty()
                 || key instanceof Named symbol
                         && symbol.name().equals("$builtin$Symbol")
                         && symbol.arguments().isEmpty();
         boolean valueOk = value == Primitive.INT || value == Primitive.BOOL
                 || value == Primitive.STRING
+                || value instanceof Named bytes && bytes.name().equals("$builtin$Bytes")
+                        && bytes.arguments().isEmpty()
                 || value instanceof Named symbol
                         && symbol.name().equals("$builtin$Symbol")
                         && symbol.arguments().isEmpty();
@@ -8225,7 +8234,7 @@ public final class TypeChecker {
                 && named.arguments().size() == 2 && findClass("Map") == null) {
             if (!closedScalarMapDomains(named)) {
                 throw new IllegalArgumentException(
-                        "Map member requires a proven String/Symbol key "
+                        "Map member requires a proven String/Symbol/Bytes key "
                                 + "and copyable scalar value domain");
             }
             // Restrict all Map methods to the same closed witness as reads.
@@ -10320,6 +10329,14 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Bytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()
+                        || findClass("Bytes") != null) {
+                    throw new IllegalArgumentException(
+                            "Bytes is a sealed built-in binary value type without generic arguments");
+                }
+                yield new Named("$builtin$Bytes", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
