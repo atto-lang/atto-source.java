@@ -96,6 +96,113 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Object executionDomain) { }
 
+    /*
+     * Only ActorRuntime can mint a source-actor execution permit. A caller
+     * supplied ActorContext or a synthesized ExecutionContext is NOT this
+     * authority. Each compiler callback is a distinct physical source turn;
+     * its identity survives a nested state read/write within that callback,
+     * but is revoked before control returns to the scheduler.
+     */
+    enum SourceStatePhase { INIT, RECEIVE, TEARDOWN }
+
+    private static final AtomicLong NEXT_SOURCE_STATE_TURN = new AtomicLong(1L);
+    private static final AtomicLong NEXT_SOURCE_STATE_ALLOCATION = new AtomicLong(1L);
+    private static final ThreadLocal<SourceStateTurn> CURRENT_SOURCE_STATE_TURN =
+            new ThreadLocal<>();
+
+    private record SourceStateTurn(
+            ActorRuntime runtime,
+            ActorId actorId,
+            SharedCodeImageStore.CodeImage image,
+            ActorContext<Object> context,
+            SourceStatePhase phase,
+            long executionSlot,
+            Thread carrier) implements AutoCloseable {
+        @Override public void close() {
+            if (CURRENT_SOURCE_STATE_TURN.get() != this
+                    || carrier != Thread.currentThread()) {
+                throw new SecurityException("source actor turn exited on wrong physical owner");
+            }
+            CURRENT_SOURCE_STATE_TURN.remove();
+        }
+    }
+
+    private static long nextSourceIdentity(AtomicLong counter, String reason) {
+        long id = counter.getAndUpdate(
+                previous -> previous == Long.MAX_VALUE ? Long.MAX_VALUE : previous + 1L);
+        if (id <= 0 || id == Long.MAX_VALUE) {
+            throw new IllegalStateException(reason + " identity exhausted");
+        }
+        return id;
+    }
+
+    private static SourceStateTurn openSourceStateTurn(
+            ActorContext<Object> context,
+            SharedCodeImageStore.CodeImage image,
+            SourceStatePhase phase) {
+        Objects.requireNonNull(context, "trusted source actor context");
+        Objects.requireNonNull(image, "source actor code image");
+        Objects.requireNonNull(phase, "source actor phase");
+        ActorExecutionContext actual = CURRENT_ACTOR_EXECUTION.get();
+        if (actual == null || actual.runtime() != context.runtime()
+                || !actual.actorId().equals(context.self().id())
+                || context.codeImage().orElse(null) != image
+                || CURRENT_SOURCE_STATE_TURN.get() != null) {
+            throw new SecurityException("source actor turn cannot nest or forge runtime context");
+        }
+        long slot = nextSourceIdentity(NEXT_SOURCE_STATE_TURN, "source state turn");
+        SourceStateTurn issued = new SourceStateTurn(
+                actual.runtime(), actual.actorId(), image, context, phase,
+                slot, Thread.currentThread());
+        CURRENT_SOURCE_STATE_TURN.set(issued);
+        return issued;
+    }
+
+    /** Restricted runtime-internal check: no guest/compiler-controlled token is accepted. */
+    static void requireSourceStateTurn(
+            ActorContext<Object> context,
+            SharedCodeImageStore.CodeImage image,
+            SourceStatePhase phase) {
+        SourceStateTurn actual = CURRENT_SOURCE_STATE_TURN.get();
+        if (actual == null || actual.context() != context
+                || actual.image() != image || actual.phase() != phase
+                || actual.carrier() != Thread.currentThread()
+                || actual.runtime() != currentActorRuntime()
+                || !actual.actorId().equals(currentActorId().orElse(null))) {
+            throw new SecurityException("source actor state requires runtime-minted phase permit");
+        }
+    }
+
+    /** State allocation identities are minted ONLY by ActorRuntime on real init. */
+    static long issueSourceStateAllocation(
+            ActorContext<Object> context,
+            SharedCodeImageStore.CodeImage image) {
+        requireSourceStateTurn(context, image, SourceStatePhase.INIT);
+        return nextSourceIdentity(
+                NEXT_SOURCE_STATE_ALLOCATION, "source state allocation");
+    }
+
+    /**
+     * A single real runtime callback owns this immutable execution identity.
+     * Never increment a counter in a region adapter to fabricate a new task
+     * or scheduler slot while a critical loan is live.
+     */
+    static ExecutionContext sourceStateExecution(
+            ActorContext<Object> context,
+            SharedCodeImageStore.CodeImage image,
+            long allocation) {
+        requireSourceStateTurn(context, image, SourceStatePhase.RECEIVE);
+        if (allocation <= 0 || allocation == Long.MAX_VALUE) {
+            throw new SecurityException("source state allocation domain is invalid");
+        }
+        SourceStateTurn actual = CURRENT_SOURCE_STATE_TURN.get();
+        return ExecutionContext.actorBound(
+                actual.executionSlot(), actual.executionSlot(),
+                actual.executionSlot(), 1L,
+                allocation, 1L, allocation,
+                0L, 0L);
+    }
+
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
      * The callback must return before execute returns; off-thread submission
@@ -8955,7 +9062,10 @@ public final class ActorRuntime implements AutoCloseable {
                     @SuppressWarnings("unchecked")
                     ActorContext<Object> sourceContext =
                             (ActorContext<Object>) (ActorContext<?>) context;
-                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                    try (var permit = openSourceStateTurn(
+                            sourceContext, codeImage, SourceStatePhase.TEARDOWN)) {
+                        codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                    }
                 }
             } finally {
                 synchronized (lifecycleLock) {
@@ -9533,12 +9643,15 @@ public final class ActorRuntime implements AutoCloseable {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
                                 (ActorContext<Object>) (ActorContext<?>) context;
-                        ActorOwnedGuestState created =
-                                Objects.requireNonNull(
-                                        codeExecutor.initializeActor(
-                                                codeActorType,
-                                                sourceContext),
-                                        "source actor executor returned null state");
+                        ActorOwnedGuestState created;
+                        try (var permit = openSourceStateTurn(
+                                sourceContext, codeImage, SourceStatePhase.INIT)) {
+                            created = Objects.requireNonNull(
+                                    codeExecutor.initializeActor(
+                                            codeActorType,
+                                            sourceContext),
+                                    "source actor executor returned null state");
+                        }
                         if (!created.ownerActorId().equals(ref.id())) {
                             throw new SecurityException(
                                     "source actor state owner "
@@ -9642,11 +9755,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
-                                    codeExecutor.receiveActor(
-                                            codeActorType,
-                                            codeActorState,
-                                            sourceMail,
-                                            sourceContext);
+                                    try (var permit = openSourceStateTurn(
+                                            sourceContext, codeImage, SourceStatePhase.RECEIVE)) {
+                                        codeExecutor.receiveActor(
+                                                codeActorType,
+                                                codeActorState,
+                                                sourceMail,
+                                                sourceContext);
+                                    }
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
@@ -9714,6 +9830,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
                     // throw; never strand actor authority on a reused carrier.
+                    CURRENT_SOURCE_STATE_TURN.remove();
                     CURRENT_ACTOR_EXECUTION.remove();
                     currentActor.remove();
                 }
