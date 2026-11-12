@@ -29,6 +29,7 @@ final class UsingTelemetrySpanScopeTest {
                 }
               end
               pub fnc span(): SpanScope {
+                stdio.stdout.write("F");
                 return new SpanScope();
               }
             end
@@ -89,7 +90,7 @@ final class UsingTelemetrySpanScopeTest {
                 return;
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
-        assertEquals("BCA", run(code));
+        assertEquals("FBCA", run(code));
     }
 
     @Test
@@ -102,7 +103,7 @@ final class UsingTelemetrySpanScopeTest {
                 stdio.stdout.write("never");
                 """);
         assertEquals(0, OresCompiler.parseAndTypeCheckWithDiagnostics(code).warnings().size());
-        assertEquals("BC", run(code));
+        assertEquals("FBC", run(code));
     }
 
     @Test
@@ -118,7 +119,7 @@ final class UsingTelemetrySpanScopeTest {
                 return;
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
-        assertEquals("ABCD C".replace(" ", ""), run(code));
+        assertEquals("FAFBCDC", run(code));
     }
 
     @Test
