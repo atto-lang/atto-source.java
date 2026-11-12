@@ -6110,8 +6110,14 @@ public final class TypeChecker {
                     case "read_bytes_async" -> {
                         result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
                     }
+                    case "read_buffer_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
                     case "write_bytes_async" -> {
                         result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "write_buffer_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
                     }
                     case "close_async" -> {
                         result = Primitive.VOID; parameters = List.of();
