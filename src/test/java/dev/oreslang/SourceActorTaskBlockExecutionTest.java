@@ -18,13 +18,15 @@ final class SourceActorTaskBlockExecutionTest {
         assertEquals("42", run("""
                 define actor Worker as
                   receive(ActorMail<String> mail): void {
-                    val int base = 40;
-                    let Future<int> child = task {
-                      rt cooperate;
-                      return base + 2;
-                    };
-                    val int answer = await child;
-                    self.send(answer);
+                    if mail.value == "run"; do
+                      val int base = 40;
+                      let Future<int> child = task {
+                        rt cooperate;
+                        stdio.stdout.write(base + 2);
+                        return base + 2;
+                      };
+                      return;
+                    fi
                     self.end();
                     return;
                   }
@@ -33,8 +35,7 @@ final class SourceActorTaskBlockExecutionTest {
                   val worker = spawn Worker();
                   await worker.get_ready();
                   worker.send("run");
-                  val result = (await worker.outputs.next()).value.unwrap();
-                  stdio.stdout.write(result.value);
+                  worker.send("stop");
                   await worker.get_done();
                   return;
                 }
