@@ -29,7 +29,10 @@ final class TelemetryUsingSpanLanguageTest {
                   return;
                 }
                 """;
-        Ast.FunctionDecl function = Parser.parse(source).functions().getFirst();
+        Ast.FunctionDecl function = (Ast.FunctionDecl) Parser.parse(source).modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(declaration -> declaration instanceof Ast.FunctionDecl)
+                .findFirst().orElseThrow();
         Ast.UsingTelemetrySpanStmt outer = assertInstanceOf(
                 Ast.UsingTelemetrySpanStmt.class, function.body().getFirst());
         assertEquals("span", outer.binding());
