@@ -85,14 +85,17 @@ final class LogicalPunctuationOperatorTest {
     void typesMustBeBoolAndSinglePunctuationIsNotBoolean() {
         for (String expression : List.of(
                 "1 && true", "false || 1", "true ^^ 1",
-                "true | false", "true & false")) {
+                "true | false", "true & false",
+                "true | true ^^ false")) {
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
                             "fnc invalid(): bool { return " + expression + "; }")), expression);
         }
         for (String source : List.of(
                 "fnc bad(): bool { return true ^ false; }",
-                "fnc bad(): bool { return true ^ ^ false; }")) {
+                "fnc bad(): bool { return true ^ ^ false; }",
+                "fnc bad(): void { if true, false then return; fi }",
+                "fnc bad(): void { while true, false do break; done }")) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
         }
     }

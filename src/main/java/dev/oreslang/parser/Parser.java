@@ -3793,11 +3793,10 @@ public final class Parser {
             binding = new Ast.BindingStmt(Ast.BindingKind.LET, null, name, value, false);
             predicate = parseCondition();
         } else {
-            predicate = normalizeLegacyConditionPipe(value);
-            while (match(COMMA)) {
-                predicate = new Ast.BinaryExpr("&&", predicate,
-                        normalizeLegacyConditionPipe(parseLogicalOr()));
-            }
+            predicate = value;
+            // Single comma is not a boolean conjunction operator.
+            if (check(COMMA)) throw error(peek(),
+                    "legacy ',' boolean condition operator is removed; use '&&'");
         }
         if (wrapped) consume(RPAREN, "expected ')' after condition");
         return new ConditionHead(binding, predicate);
@@ -3852,26 +3851,12 @@ public final class Parser {
     }
 
     private Ast.Expr parseCondition() {
-        Ast.Expr expression = normalizeLegacyConditionPipe(parseLogicalOr());
-        // Legacy condition-only comma means logical AND. Prefer && in new code.
-        while (match(COMMA)) {
-            expression = new Ast.BinaryExpr(
-                    "&&",
-                    expression,
-                    normalizeLegacyConditionPipe(parseLogicalOr()));
-        }
+        Ast.Expr expression = parseLogicalOr();
+        // Commas still delimit arguments and tuple elements, not boolean AND.
+        if (check(COMMA)) throw error(peek(),
+                "legacy ',' boolean condition operator is removed; use '&&'");
+        // Bare '|' stays a distinct bitwise/union syntax, never a bool OR alias.
         return expression;
-    }
-
-    private Ast.Expr normalizeLegacyConditionPipe(Ast.Expr expr) {
-        if (expr instanceof Ast.BinaryExpr binary) {
-            String operator = binary.operator().equals("|") ? "||" : binary.operator();
-            return new Ast.BinaryExpr(
-                    operator,
-                    normalizeLegacyConditionPipe(binary.left()),
-                    normalizeLegacyConditionPipe(binary.right()));
-        }
-        return expr;
     }
 
     private Ast.MatchStmt parseMatch(boolean procedural) {
