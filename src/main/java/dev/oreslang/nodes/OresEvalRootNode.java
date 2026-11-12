@@ -1199,6 +1199,14 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
+            // Immediately completed source calls/arguments and ordinary statement
+            // progression may synchronously invoke their next callback. Retain
+            // those callbacks on this heap-owned task instead of nesting Java
+            // interpreter/control-plane frames without a bound.
+            private static final int MAX_IMMEDIATE_SOURCE_CALLBACKS = 16_384;
+            private static final int MAX_IMMEDIATE_SOURCE_DELIVERIES = 1_000_000;
+            private final ArrayDeque<Runnable> immediateSourceCallbacks = new ArrayDeque<>();
+            private boolean drainingImmediateSourceCallbacks;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
@@ -1221,6 +1229,42 @@ public final class OresEvalRootNode extends RootNode {
             private java.util.concurrent.CancellationException cancellationCause;
             private Throwable fatalCleanupFailure;
             private OresScheduler.Step<Object> nextStep;
+
+            private void dispatchImmediateSourceCallback(Runnable callback) {
+                Objects.requireNonNull(callback, "source continuation");
+                if (nextStep != null) {
+                    throw new IllegalStateException(
+                            "source callback scheduled after terminal Await/Done");
+                }
+                if (immediateSourceCallbacks.size() >= MAX_IMMEDIATE_SOURCE_CALLBACKS) {
+                    throw new IllegalStateException(
+                            "source callback queue budget exceeded");
+                }
+                immediateSourceCallbacks.addLast(callback);
+                if (drainingImmediateSourceCallbacks) return;
+                drainingImmediateSourceCallbacks = true;
+                int delivered = 0;
+                try {
+                    while (!immediateSourceCallbacks.isEmpty()) {
+                        if (nextStep != null) {
+                            throw new IllegalStateException(
+                                    "source callback crossed terminal Await/Done");
+                        }
+                        if (++delivered > MAX_IMMEDIATE_SOURCE_DELIVERIES) {
+                            throw new IllegalStateException(
+                                    "source callback dispatch budget exceeded");
+                        }
+                        immediateSourceCallbacks.removeFirst().run();
+                    }
+                } catch (RuntimeException | Error failed) {
+                    // A failed callback never leaks into the next physical
+                    // resume turn; a single task owns the entire pump.
+                    immediateSourceCallbacks.clear();
+                    throw failed;
+                } finally {
+                    drainingImmediateSourceCallbacks = false;
+                }
+            }
 
             private SourceTask(
                     Ast.FunctionDecl function,
@@ -1287,6 +1331,7 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
                     nextStep = null;
+                    immediateSourceCallbacks.clear();
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
@@ -1395,6 +1440,7 @@ public final class OresEvalRootNode extends RootNode {
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
+                    immediateSourceCallbacks.clear();
                     unwindCancelledSource();
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
@@ -2328,8 +2374,9 @@ public final class OresEvalRootNode extends RootNode {
                 // A later source statement or completion callback is not part
                 // of this statement's exception scope. Never reinterpret its
                 // error as another completion for the current block.
-                runStatements(
-                        task, statements, env, defers, index + 1, continuation);
+                task.dispatchImmediateSourceCallback(
+                        () -> runStatements(
+                                task, statements, env, defers, index + 1, continuation));
                 return;
             }
 
@@ -2340,13 +2387,14 @@ public final class OresEvalRootNode extends RootNode {
                     defers,
                     (ignored, flow) -> {
                         if (flow.kind() == SourceFlowKind.NORMAL) {
-                            runStatements(
-                                    task,
-                                    statements,
-                                    env,
-                                    defers,
-                                    index + 1,
-                                    continuation);
+                            task.dispatchImmediateSourceCallback(
+                                    () -> runStatements(
+                                            task,
+                                            statements,
+                                            env,
+                                            defers,
+                                            index + 1,
+                                            continuation));
                         } else {
                             finishBlock(
                                     task,
@@ -4719,13 +4767,10 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, List.of(), failure);
                         } else {
                             values.add(value);
-                            evalSuspendableArgumentAt(
-                                    t,
-                                    expressions,
-                                    env,
-                                    values,
-                                    index + 1,
-                                    continuation);
+                            t.dispatchImmediateSourceCallback(
+                                    () -> evalSuspendableArgumentAt(
+                                            t, expressions, env, values,
+                                            index + 1, continuation));
                         }
                     });
         }
@@ -5321,49 +5366,56 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            // Separate callee exceptions from consumer exceptions. Dispatching
+            // the consumer within an invocation catch would deliver a failure
+            // twice if downstream threw during synchronous completion.
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
+                result = invoke(invocation);
+            } catch (RuntimeException | Error failure) {
+                task.dispatchImmediateSourceCallback(
+                        () -> continuation.accept(task, null, failure));
+                return;
+            }
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // Already settled Futures are values: no scheduler handoff,
+                // MutexGuard release, or ownership/epoch transition occurs.
+                if (future.isDone()) {
+                    Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error failure) {
+                        task.dispatchImmediateSourceCallback(
+                                () -> continuation.accept(task, null, failure));
                         return;
                     }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
+                    Object value = completed;
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, value, null));
+                    return;
                 }
-            } catch (RuntimeException | Error failure) {
-                continuation.accept(task, null, failure);
+                if (env.hasLiveMutexGuards()) {
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, null,
+                                    new IllegalStateException(
+                                            "cannot suspend on an implicit Future while holding a live MutexGuard")));
+                    return;
+                }
+                try {
+                    task.suspend(future, (t, value, failure) ->
+                            t.dispatchImmediateSourceCallback(
+                                    () -> continuation.accept(t, value, failure)));
+                } catch (RuntimeException | Error failure) {
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, null, failure));
+                }
+                return;
             }
+            task.dispatchImmediateSourceCallback(
+                    () -> continuation.accept(task, result, null));
         }
 
-        private boolean invocationDeclaresAsync(Invocation invocation) {
+                private boolean invocationDeclaresAsync(Invocation invocation) {
             return switch (invocation.kind()) {
                 case FUNCTION, FUNCTION_BODY ->
                         ((Ast.FunctionDecl) invocation.target()).async()
