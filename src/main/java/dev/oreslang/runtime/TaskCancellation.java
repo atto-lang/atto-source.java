@@ -159,6 +159,18 @@ final class TaskCancellation {
         return ready;
     }
 
+    /**
+     * Physical descendants outlive their parent's terminal result Future.
+     * A parent cancellation request may still revoke those descendants until
+     * their scheduler-confirmed lifetime receipts retire; never infer their
+     * absence from the revocation children set, which detaches on cancel.
+     */
+    boolean hasPendingPhysicalChildren() {
+        synchronized (GRAPH_LOCK) {
+            return !lifetimeChildren.isEmpty();
+        }
+    }
+
     /** Runtime diagnostic for bounded lifetime-tree retention tests. */
     int ownedChildCount() {
         synchronized (GRAPH_LOCK) {
