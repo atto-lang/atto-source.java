@@ -3,6 +3,9 @@ package dev.oreslang;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.IsolatePolicy;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Timeout;
 
 import java.nio.file.Files;
@@ -120,6 +123,29 @@ final class NamespaceActorUnleasedSpawnV0Test {
             final int id = i;
             assertThrows(RuntimeException.class, () -> evaluate(invalid[id]),
                     "unverified actor state effect " + id);
+        }
+    }
+
+    @Test
+    void hostOnlyWaitBridgeCannotParkAnotherActorCarrier() throws Exception {
+        String checked = source();
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var parent = runtime.spawnShared(() -> (message, actorContext) -> {
+                try (Context nested = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).build()) {
+                    RuntimeException error = assertThrows(RuntimeException.class,
+                            () -> nested.eval(guest(checked, "nested-actor-context.atto")));
+                    assertTrue(error.getMessage().contains(
+                            "cannot park an actor or Mailman carrier"), error.getMessage());
+                }
+            });
+            parent.ready().get(3, TimeUnit.SECONDS);
+            parent.send(1L);
+            parent.drain().get(10, TimeUnit.SECONDS);
+            assertTrue(parent.failure().isEmpty(),
+                    "nested source-main admission must reject without failing the actor");
+            parent.stop();
+            parent.done().get(3, TimeUnit.SECONDS);
         }
     }
 
