@@ -39,8 +39,11 @@ scalar snapshot, without exporting a guest getter, raw pointer or supervisor
 state capability. Separate #2796 tests exercise concurrent reader cohorts,
 writer fairness, cancellation, retirement and carrier matrices.
 
-The terminal failure path revokes the actor's region even if the existing
-runtime skips graceful teardown on failure. Normal source-actor STOP closes
+The terminal failure path revokes the actor's region for **either** a checked
+write failure (including int overflow) **or** a rejected mailbox envelope on a
+real current actor turn, even if the existing runtime skips graceful teardown
+on failure. A forged off-turn call is denied before region cleanup so it
+cannot force-release an innocent actor's memory. Normal source-actor STOP closes
 its loan manager, checks `physicallyRetired()`, then clears scalar fields.
 Any unretired physical loan blocks cleanup rather than silently reclaiming
 still-referenced state.
