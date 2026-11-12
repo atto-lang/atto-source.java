@@ -845,8 +845,7 @@ public final class Ast {
      * physical-quiescence barrier; children may not outlive this statement.
      * Borrowed captures remain separately gated by compiler-issued scoped
      * READ authority.
-     */
-    /**
+     *
      * {@code task scope [deadline(ms)] [supervise] { ... }}. A deadline cancels
      * the scope's child tasks when it expires (the scope body itself keeps
      * running to its exit, then joins). {@code supervise}: a failed child does
