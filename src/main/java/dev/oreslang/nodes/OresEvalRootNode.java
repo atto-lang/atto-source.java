@@ -1190,6 +1190,11 @@ public final class OresEvalRootNode extends RootNode {
             // task (parent task or awaited caller), re-installed every turn.
             private dev.oreslang.runtime.TaskContext taskContext =
                     dev.oreslang.runtime.TaskContext.current();
+            // Immutable trace context is a separate snapshot. Mutable span
+            // guards and continuation tickets are never carrier-local and
+            // never inherited across child Task boundaries.
+            private dev.oreslang.runtime.TraceContextV1 logicalTraceContext =
+                    dev.oreslang.runtime.TraceContinuationContextV1.current();
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1268,12 +1273,27 @@ public final class OresEvalRootNode extends RootNode {
                     throws Exception {
                 dev.oreslang.runtime.TaskContext previousContext =
                         dev.oreslang.runtime.TaskContext.install(taskContext);
+                dev.oreslang.runtime.TraceContextV1 previousTrace =
+                        dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                logicalTraceContext);
                 try {
                     return resumeTurn(resume);
                 } finally {
-                    // Bindings entered/exited during this turn stay with the task.
-                    taskContext = dev.oreslang.runtime.TaskContext.current();
-                    dev.oreslang.runtime.TaskContext.install(previousContext);
+                    // Rebind BOTH immutable context snapshots to this heap-owned
+                    // task before restoring the carrier's previous task/trace
+                    // context. Never leak one actor's trace to another turn.
+                    try {
+                        taskContext = dev.oreslang.runtime.TaskContext.current();
+                        logicalTraceContext =
+                                dev.oreslang.runtime.TraceContinuationContextV1.current();
+                    } finally {
+                        try {
+                            dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                    previousTrace);
+                        } finally {
+                            dev.oreslang.runtime.TaskContext.install(previousContext);
+                        }
+                    }
                 }
             }
 
