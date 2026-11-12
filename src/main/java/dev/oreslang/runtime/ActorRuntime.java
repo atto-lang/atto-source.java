@@ -609,6 +609,17 @@ public final class ActorRuntime implements AutoCloseable {
     // Trusted operator control; disabled for all standalone runtimes by
     // default. Context is stored in immutable envelope metadata, not payload.
     private volatile boolean tracePropagationEnabled;
+    // Trusted runtime-owned, per-isolate bounded semantic staging only.
+    // Never expose to source actors or forward to userland interceptors.
+    private volatile SemanticTraceBuffer traceSpanBuffer;
+    void configureTraceSpanBuffer(SemanticTraceBuffer collector) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (collector != null && policyCeiling.adversarial()) {
+            throw new SecurityException("untrusted actor runtime cannot own tracing buffer");
+        }
+        traceSpanBuffer = collector;
+    }
+
     void configureTracePropagation(boolean enabled) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         if (enabled && policyCeiling.adversarial()) {
@@ -9659,12 +9670,28 @@ public final class ActorRuntime implements AutoCloseable {
                             // be installed. SourceTask snapshots it on await.
                             boolean installMailTrace = tracePropagationEnabled;
                             TaskContext previousMailTask = null;
+                            SemanticTraceBuffer.Scope actorTurnSpan = null;
                             if (installMailTrace) {
                                 previousMailTask = TaskContext.install(null);
-                                if (activeEnvelope.traceParent() != null) {
-                                    TaskContext.pushTraceParent(activeEnvelope.traceParent());
+                                TraceParent admittedParent = activeEnvelope.traceParent();
+                                if (admittedParent != null) {
+                                    TraceParent currentParent = admittedParent;
+                                    SemanticTraceBuffer observer = traceSpanBuffer;
+                                    if (observer != null && admittedParent.sampled()) {
+                                        // A child span represents this actor
+                                        // *dispatch turn*, not the total
+                                        // lifetime of a suspended source Task.
+                                        TraceParent child = admittedParent.newChild();
+                                        actorTurnSpan = observer.begin(child,
+                                                admittedParent.spanId(),
+                                                SemanticTraceBuffer.ACTOR_RECEIVE,
+                                                SemanticTraceBuffer.Kind.INTERNAL);
+                                        currentParent = child;
+                                    }
+                                    TaskContext.pushTraceParent(currentParent);
                                 }
                             }
+                            boolean actorTurnFailed = false;
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -9686,7 +9713,14 @@ public final class ActorRuntime implements AutoCloseable {
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
+                            } catch (RuntimeException | Error failure) {
+                                actorTurnFailed = true;
+                                throw failure;
                             } finally {
+                                // Every USER dispatch turn has one lifecycle
+                                // boundary even if the code later suspends.
+                                // Async *task* completion is a separate span.
+                                SemanticTraceBuffer.finish(actorTurnSpan, 0, actorTurnFailed);
                                 if (installMailTrace) TaskContext.install(previousMailTask);
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
