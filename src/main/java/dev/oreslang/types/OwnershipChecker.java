@@ -1661,6 +1661,30 @@ public final class OwnershipChecker {
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
 
+        // Mirror TypeChecker's direct-call-only lexical self resolution.
+        // A wrong-arity method call must not fall through to an unrelated
+        // global callable, and the explicit receiver path must retain its
+        // mutable-loan, actor isolation, and suspension admission rules.
+        if (call.origin() == Ast.CallOrigin.DIRECT
+                && call.callee() instanceof Ast.NameExpr implicit
+                && !isBooleanIntrinsicName(implicit.name())
+                && scope.lookup(implicit.name()) == null) {
+            VarState receiver = scope.lookup("self");
+            if (receiver != null) {
+                Ast.TypeRef receiverType = receiver.type.isBorrow()
+                        ? receiver.type.borrowedTarget() : receiver.type;
+                Ast.ClassDecl owner = findClass(receiverType.name());
+                if (owner != null
+                        && hasMethodNamed(owner, implicit.name(), new LinkedHashSet<>())) {
+                    return checkCall(
+                            call.rewrite(
+                                    new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                            scope);
+                }
+            }
+        }
+
         if (call.callee() instanceof Ast.NameExpr name
                 && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
             if (call.arguments().size() != 1) {
