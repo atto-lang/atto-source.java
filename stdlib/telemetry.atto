@@ -18,12 +18,16 @@ define module telemetry as
       return false;
     }
 
-    pub fnc end(mut self)(): bool {
+    pub fnc is_ended(): bool {
+      return self.ended;
+    }
+
+    pub fnc end(mut self)(): void {
       if self.ended; do
-        return false;
+        return;
       fi
       self.ended = true;
-      return true;
+      return;
     }
   end
 
