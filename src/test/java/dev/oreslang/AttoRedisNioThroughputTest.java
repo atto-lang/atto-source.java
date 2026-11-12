@@ -112,6 +112,13 @@ final class AttoRedisNioThroughputTest {
                 request = frame(ascii("DEL"), key);
                 expected = ascii(oracle.remove(keySlot) == null ? ":0\r\n" : ":1\r\n");
             }
+            // Opt-in delayed flight recording: do not fill the bounded first
+            // 8192-event ring with actor startup and the initial warmup loops.
+            // This is benchmark-client control only, never guest/network I/O.
+            if (i == WARM && trial == TRIALS - 1
+                    && "1".equals(System.getenv("ATTO_REDIS_PROFILE_STEADY_ENABLED"))) {
+                CorePerf.configure(true);
+            }
             if (i == WARM) begin = System.nanoTime();
             long started = System.nanoTime();
             check(client, request, expected, label, trial, i);
@@ -275,7 +282,13 @@ final class AttoRedisNioThroughputTest {
     void profileRealAttoFramedNioUsingCorePerf() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_PROFILE_ENABLED")),
                 "opt-in diagnostic: real Atto guest + CorePerf bounded ring");
-        CorePerf.configure(true);
+        boolean steadyProfile =
+                "1".equals(System.getenv("ATTO_REDIS_PROFILE_STEADY_ENABLED"));
+        if (steadyProfile) {
+            CorePerf.configure(false);
+        } else {
+            CorePerf.configure(true);
+        }
         try {
             double rate = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed_coreperf");
             assertTrue(rate > 0 && Double.isFinite(rate));
