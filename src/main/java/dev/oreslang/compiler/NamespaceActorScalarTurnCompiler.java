@@ -215,16 +215,23 @@ final class NamespaceActorScalarTurnCompiler {
                 ActorRuntime.ActorContext<Object> context) {
             requireTurn(requestedActor, context);
             if (!(state instanceof Owned owned)
-                    || !owned.ownerActorId().equals(context.self().id())
-                    || !mail.recipient().equals(context.self().id())
-                    || !mail.equals(context.currentMail().orElse(null))
-                    || !(mail.value() instanceof Long)) {
-                throw new SecurityException("cross-actor or forged scalar mailbox ingress");
+                    || !owned.ownerActorId().equals(context.self().id())) {
+                throw new SecurityException("cross-actor scalar allocation identity");
             }
             // This executes the compiler-admitted closed MIR through the
             // physical #2796 RW loan manager (zero pending capacity). No
-            // suspension or public state capability is created.
+            // suspension or public state capability is created. Envelope
+            // validation belongs inside the same terminal-failure cleanup
+            // scope: an invalid message on a REAL actor turn must not strand
+            // the physical loan manager when graceful teardown is skipped.
             try {
+                if (mail == null
+                        || !mail.recipient().equals(context.self().id())
+                        || !mail.equals(context.currentMail().orElse(null))
+                        || !(mail.value() instanceof Long)) {
+                    throw new SecurityException(
+                            "cross-actor or forged scalar mailbox ingress");
+                }
                 if (booleanField) owned.scalar().setTrue(context);
                 else owned.scalar().increment(context);
             } catch (RuntimeException | Error failure) {
