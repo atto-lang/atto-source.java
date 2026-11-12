@@ -2,7 +2,7 @@
 // Production physical TCP I/O is NIO2 CompletionHandler only.
 // Java NIO2 frames RESP2 into immutable owned Bytes; Atto alone owns Map.
 // One client, memory-only; no blocking socket, stdio, WAL or host-owned KV.
-define actor OwnedBytesNioKvActor as
+define actor OwnedBytesNioKvActor implements StreamOperator<Tuple[int, Bytes, Bytes], Tuple[string, Bytes]> as
   let Map<Bytes,Bytes> values;
 
   on_start(): void {
