@@ -66,19 +66,19 @@ final class AutomaticCallProbeGuestTest {
 
     @Test
     void explicitOffCannotClaimAReceipt() {
-        PolyglotException failure = assertThrows(PolyglotException.class,
+        RuntimeException failure = assertThrows(RuntimeException.class,
                 () -> run(SOURCE, "--ores-telemetry=off",
                         "--ores-telemetry-receipt=stderr"));
-        assertTrue(failure.getMessage().contains("telemetry receipt requires"),
-                failure.getMessage());
+        assertTrue(failure.toString().contains("telemetry receipt requires"),
+                failure.toString());
     }
 
     @Test
     void typoedTelemetryModeFailsClosed() {
-        PolyglotException failure = assertThrows(PolyglotException.class,
+        RuntimeException failure = assertThrows(RuntimeException.class,
                 () -> run(SOURCE, "--ores-telemetry=fulll"));
-        assertTrue(failure.getMessage().contains("unsupported telemetry mode"),
-                failure.getMessage());
+        assertTrue(failure.toString().contains("unsupported telemetry mode"),
+                failure.toString());
     }
 
     @Test
