@@ -200,6 +200,29 @@ public final class PackageNamespaceBuild {
         return auditSnapshot(snapshot());
     }
 
+    /**
+     * A separately opted-in, scalar-only BODY analysis of contracted external
+     * mtd declarations. Its metadata cannot enable codegen or actor dispatch;
+     * the general actor-owned state/effect checker is not implemented.
+     */
+    public record ScalarBodyAudit(
+            ActorAudit actorAudit,
+            Map<ActorMethodIndex.MethodKey,
+                    ExternalActorScalarBodyCheck.VerifiedBody> verifiedBodies) {
+        public ScalarBodyAudit {
+            java.util.Objects.requireNonNull(actorAudit);
+            verifiedBodies = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(verifiedBodies));
+        }
+    }
+
+    public synchronized ScalarBodyAudit auditScalarContractBodies() throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return new ScalarBodyAudit(audit, ExternalActorScalarBodyCheck.verify(
+                audit.contractWitness(), audit.actorMethods()));
+    }
+
     public synchronized Result build() throws IOException {
         SourceSnapshot source = snapshot();
         if (hasDeclaredActors(source.parsed())) {
