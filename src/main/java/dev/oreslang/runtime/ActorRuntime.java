@@ -96,6 +96,11 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Object executionDomain) { }
 
+    /** Captured BEFORE actor registration and first physical turn. */
+    private record ActorStorageBinding(
+            SupervisorStorageEpochAuthority gate,
+            SupervisorStorageEpochAuthority.Activation activation) { }
+
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
      * The callback must return before execute returns; off-thread submission
@@ -3235,6 +3240,29 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Start a REAL ActorCell whose init, mailbox and ordinary continuation
+         * turns are fenced to this exact supervisor activation before the
+         * ActorCell is registered or scheduled. Host-only integration hook;
+         * source-level supervisor lowering remains a separate task.
+         *
+         * This is a trusted host BehaviorFactory and may not be called by
+         * DATA actor turns. The actor cannot receive the bearer ticket.
+         */
+        public <M> ActorRef<M> spawnStorageBoundActorHost(
+                SupervisorStorageEpochAuthority gate,
+                SupervisorStorageEpochAuthority.Activation activation,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            requireStorageEpochHostContext(this);
+            Objects.requireNonNull(gate, "storage generation gate");
+            Objects.requireNonNull(activation, "supervisor incarnation");
+            gate.requireBinding(activation, this);
+            return spawnInternal(ActorKind.PRIVATE, policy,
+                    behaviorFactory, true, null, null, null,
+                    new ActorStorageBinding(gate, activation));
+        }
+
+        /**
          * Register one durable partition under this actual runtime supervisor.
          * No other supervisor in the same runtime can claim the same partition.
          * Called only by a trusted host during bootstrap; activation itself
@@ -5531,6 +5559,19 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            ActorStorageBinding storageBinding) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -5614,7 +5655,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent);
+                        parent,
+                        storageBinding);
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -8432,6 +8474,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        /** Runtime-owned incarnation, never a guest string or mutable field. */
+        private final ActorStorageBinding storageBinding;
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
@@ -8592,12 +8636,14 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
-                ActorCell<?> parent) {
+                ActorCell<?> parent,
+                ActorStorageBinding storageBinding) {
             this.storageActorOrdinal = nextStorageActorOrdinal.getAndIncrement();
             if (storageActorOrdinal <= 0) {
                 throw new IllegalStateException("runtime WAL actor slot sequence exhausted");
             }
             this.ref = ref;
+            this.storageBinding = storageBinding;
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -9536,9 +9582,16 @@ public final class ActorRuntime implements AutoCloseable {
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+            SupervisorStorageEpochAuthority.ActorTurnLease storageTurn = null;
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
+                // This is a PHYSICAL ActorCell turn, not a bridge callback.
+                // The turn is held until after endTurn/teardown, so a
+                // supervisor cannot advance epoch during an active actor.
+                if (storageBinding != null)
+                    storageTurn = storageBinding.gate().enterActorTurn(
+                            storageBinding.activation());
                 // Admission may throw on a single-writer lease violation.
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
@@ -9578,6 +9631,9 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() && !sourceStopCleanupActive) return;
 
                 if (!stopped.get() && behavior == null && codeActorState == null) {
+                    if (storageBinding != null)
+                        storageBinding.gate().requireCurrentActorTurn(
+                                storageBinding.activation());
                     if (codeExecutor != null) {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
@@ -9669,6 +9725,13 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !sourceTaskCommand)) break;
                         }
 
+                        // Check after dequeue, immediately before source task
+                        // resume, ordinary continuation or receive dispatch.
+                        // The physical actor-turn lease also prevents a new
+                        // durable epoch being admitted during the callback.
+                        if (storageBinding != null)
+                            storageBinding.gate().requireCurrentActorTurn(
+                                    storageBinding.activation());
                         if (activeEnvelope.isContinuation()) {
                             activeEnvelope.continuation().run();
                         } else {
@@ -9763,8 +9826,12 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
                     // throw; never strand actor authority on a reused carrier.
-                    CURRENT_ACTOR_EXECUTION.remove();
-                    currentActor.remove();
+                    try {
+                        if (storageTurn != null) storageTurn.close();
+                    } finally {
+                        CURRENT_ACTOR_EXECUTION.remove();
+                        currentActor.remove();
+                    }
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
