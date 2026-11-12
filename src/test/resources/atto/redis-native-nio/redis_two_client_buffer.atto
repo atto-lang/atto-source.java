@@ -382,10 +382,11 @@ pub async routine main(): void {
           const List<int> value = request[4];
           worker.send((kind, key, value));
           val output = (await worker.outputs.next()).value.unwrap();
+          const Tuple[int, List[int]] actor_reply = output.value;
           if client_id == 1; do
-            writech reply_one, (request_id, output.value[0], output.value[1]);
+            writech reply_one, (request_id, actor_reply[0], actor_reply[1]);
           else
-            writech reply_two, (request_id, output.value[0], output.value[1]);
+            writech reply_two, (request_id, actor_reply[0], actor_reply[1]);
           fi
         fi
       }
