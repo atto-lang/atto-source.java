@@ -432,6 +432,7 @@ public final class NativeHttp implements AutoCloseable {
         final List<String> path;
         // Immutable, HTTP-authorized request trace context. Never guest payload.
         final TraceParent traceParent;
+        final SemanticTraceBuffer.Scope serverSpan;
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
@@ -461,9 +462,17 @@ public final class NativeHttp implements AutoCloseable {
             this.owner = context;
             // Admission already validated raw header count/size. Unknown,
             // malformed or duplicate traceparent is never trusted.
+            List<String> incoming = raw.getRequestHeaders().get("traceparent");
             this.traceParent = admittedServerTraceContext(
-                    raw.getRequestHeaders().get("traceparent"),
-                    context.autoTrace().enabled());
+                    incoming, context.autoTrace().enabled());
+            String parentId = "";
+            if (incoming != null && incoming.size() == 1) {
+                parentId = TraceParent.parse(incoming.getFirst())
+                        .map(TraceParent::spanId).orElse("");
+            }
+            this.serverSpan = context.semanticTrace().begin(
+                    this.traceParent, parentId, SemanticTraceBuffer.HTTP_SERVER,
+                    SemanticTraceBuffer.Kind.SERVER);
         }
         // Linearize cancellation against success header emission. Never
         // hold this monitor while performing blocking socket I/O.
@@ -529,6 +538,14 @@ public final class NativeHttp implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
+                // Logical SERVER completion is the physical HTTP exchange
+                // retirement, not the initial request dispatch or Future
+                // allocation. Terminal racing paths funnel through this
+                // single admission-removal winner.
+                int completedStatus;
+                synchronized (this) { completedStatus = responseStatus; }
+                SemanticTraceBuffer.finish(serverSpan, completedStatus,
+                        completedStatus == 0 || completedStatus >= 500);
                 if (poolWorker != null) poolWorker.requests.remove(this);
                 if (CorePerf.enabled()) {
                     CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
