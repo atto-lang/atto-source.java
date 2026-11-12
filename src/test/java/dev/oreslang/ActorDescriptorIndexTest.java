@@ -60,6 +60,12 @@ final class ActorDescriptorIndexTest {
     }
 
     @Test
+    void descriptorConstructorIsNotExposedAsRuntimeCapability() {
+        assertEquals(0, ActorDescriptorIndex.Descriptor.class.getConstructors().length);
+        assertEquals(0, ActorDescriptorIndex.class.getConstructors().length);
+    }
+
+    @Test
     void descriptorBindsNominalContractMethodAndSealedStateOrigins() throws IOException {
         var audit = build().auditDeclaredActors();
         var d = descriptor(audit);
