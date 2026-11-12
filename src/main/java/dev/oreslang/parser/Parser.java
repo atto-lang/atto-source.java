@@ -1249,12 +1249,38 @@ public final class Parser {
                 throw error(peek(), "actor handle_state is compiler-owned; "
                         + "user-defined state-loan authority is forbidden");
             }
-            // critical is a protected-state effect, not an ordinary actor
-            // method named "critical". Do not silently drop the effect
-            // while compiler checked-loan lowering is unavailable.
+            // Preserve critical as explicit AST metadata. It is never an
+            // ordinary method called 'critical', and generic execution is
+            // still rejected before TypeChecker expansion or raw evaluation.
             if (isContextualIdentifier("critical")) {
-                throw error(peek(), "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: "
-                        + "critical methods require checked state loans and non-suspending effects");
+                Token criticalToken = advance();
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.isStatic
+                        || mods.isAbstract || mods.shared || mods.untrusted
+                        || mods.structural || mods.nonLexical || mods.trapped) {
+                    throw error(criticalToken,
+                            "critical actor method cannot have modifiers or annotations");
+                }
+                Ast.MethodDecl parsed = parseMethod(List.of(), mods);
+                if (parsed.name().equals("receive") || parsed.name().equals("on_start")
+                        || parsed.name().equals("tear_down") || parsed.name().equals("handle_state")
+                        || parsed.name().equals("on_panic")) {
+                    throw error(criticalToken,
+                            "critical actor method cannot define runtime lifecycle or intrinsics");
+                }
+                if (parsed.body().isEmpty() || parsed.isAbstract()
+                        || parsed.isStatic() || parsed.async() || parsed.suspends()
+                        || parsed.structural() || !parsed.genericParameters().isEmpty()
+                        || !parsed.effects().equals(Ast.EffectSpec.none())) {
+                    throw error(criticalToken,
+                            "critical method requires non-suspending checked body");
+                }
+                methods.add(new Ast.MethodDecl(
+                        parsed.name(), parsed.visibility(), false, false,
+                        false, false, false, parsed.explicitReceiverType(),
+                        parsed.genericParameters(), parsed.parameters(), parsed.returnType(),
+                        parsed.annotations(), parsed.body(), parsed.effects(), true));
+                continue;
             }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "

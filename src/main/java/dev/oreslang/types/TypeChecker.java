@@ -221,6 +221,11 @@ public final class TypeChecker {
                     "ACTOR_STATE_INTRINSIC_FORGED: actor '" + actor.name()
                             + "' cannot define compiler-owned handle_state");
         }
+        if (actor.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
+            throw new IllegalArgumentException(
+                    "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: class/actor '"
+                            + actor.name() + "' contains an unlowered critical method");
+        }
     }
 
     /**

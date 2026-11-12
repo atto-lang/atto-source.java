@@ -136,18 +136,76 @@ final class SealedActorStateAdmissionTest {
                 """, "actor handle_state is compiler-owned");
     }
 
-    @Test void criticalActorMethodCannotBecomeOrdinaryActorMethod() {
-        rejected("""
+    @Test void criticalIsPreservedAsAstEffectAndCannotRunAsOrdinaryMethod() {
+        for (String source : java.util.List.of(
+                """
                 define actor Ledger as
                   critical increment(): void { return; }
                 end
-                """, "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED");
-        rejected("""
+                """,
+                """
                 define actor Ledger as
                   state { let int count = 0; }
                   critical increment(): void { return; }
                 end
-                """, "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED");
+                """)) {
+            var parsed = Parser.parse(source);
+            var actor = (dev.oreslang.ast.Ast.ClassDecl) parsed.modules()
+                    .getFirst().declarations().getFirst();
+            assertEquals(1, actor.methods().size());
+            assertTrue(actor.methods().getFirst().critical(),
+                    "critical must survive as typed AST metadata");
+            assertFalse(actor.methods().getFirst().name().equals("critical"),
+                    "critical must never degrade into an ordinary member name");
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.analyze(parsed));
+            assertTrue(failure.getMessage().contains("CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED"));
+        }
+        rejected("""
+                define actor Ledger as
+                  critical receive(ActorMail<int> mail): void { return; }
+                end
+                """, "critical actor method cannot define runtime lifecycle");
+        rejected("""
+                define actor Ledger as
+                  critical suspends increment(): void { return; }
+                end
+                """, "expected method name");
+    }
+
+    @Test void criticalAstForgeryCannotBypassCheckedOrLinkedEntryPoints() {
+        var source = Parser.parse("""
+                define actor Ledger as
+                  safe_name(): void { return; }
+                end
+                """);
+        var module = source.modules().getFirst();
+        var actor = (dev.oreslang.ast.Ast.ClassDecl) module.declarations().getFirst();
+        var original = actor.methods().getFirst();
+        var critical = new dev.oreslang.ast.Ast.MethodDecl(
+                original.name(), original.visibility(), original.isStatic(),
+                original.isAbstract(), original.async(), original.suspends(),
+                original.structural(), original.explicitReceiverType(),
+                original.genericParameters(), original.parameters(), original.returnType(),
+                original.annotations(), original.body(), original.effects(), true);
+        var injected = new dev.oreslang.ast.Ast.ClassDecl(
+                actor.name(), actor.visibility(), actor.isAbstract(), actor.actorKind(),
+                actor.genericParameters(), actor.parents(), actor.interfaces(),
+                actor.fields(), actor.constructor(), java.util.List.of(critical),
+                actor.actorConcurrency(), actor.sealedStateFields());
+        var forged = new dev.oreslang.ast.Ast.Program(
+                source.namespace(), source.imports(), java.util.List.of(
+                        new dev.oreslang.ast.Ast.ModuleDecl(
+                                module.name(), module.annotations(), module.contracts(),
+                                java.util.List.of(injected))));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.analyze(forged));
+        assertTrue(failure.getMessage().contains("CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED"));
+        var linked = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        source, java.util.Map.of("Ledger", injected),
+                        java.util.Map.of(), java.util.Map.of()));
+        assertTrue(linked.getMessage().contains("CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED"));
     }
 
     @Test void directAstCannotForgeCompilerOwnedHandleStateIntrinsic() {

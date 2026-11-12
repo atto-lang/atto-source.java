@@ -353,6 +353,10 @@ public final class OresEvalRootNode extends RootNode {
                                     "ACTOR_STATE_INTRINSIC_FORGED: actor '"
                                             + klass.name() + "' defines handle_state");
                         }
+                        if (klass.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
+                            throw new IllegalStateException(
+                                    "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: raw AST critical method");
+                        }
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
