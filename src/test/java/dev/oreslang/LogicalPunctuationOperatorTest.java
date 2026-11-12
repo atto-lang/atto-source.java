@@ -129,6 +129,22 @@ final class LogicalPunctuationOperatorTest {
     }
 
     @Test
+    void userRequestedTypeFirstBooleanDeclarationsExecute() throws Exception {
+        String sample = """
+                pub fnc main(): int {
+                  bool a = true;
+                  bool b = false;
+                  bool and = a && b;
+                  bool or = a || b;
+                  bool xor = a ^^ b;
+                  return (!and && or && xor) ? 42 : 7;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sample)));
+        assertEquals(42, runMainInt(sample));
+    }
+
+    @Test
     void tokensAreAdjacentAndWordsRemainOrdinaryIdentifiers() {
         List<Token> spaced = new Lexer("true ^ ^ false").scan();
         assertEquals(2, spaced.stream().filter(t -> t.type() == Token.Type.CARET).count());
