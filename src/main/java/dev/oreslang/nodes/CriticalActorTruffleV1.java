@@ -136,7 +136,7 @@ public final class CriticalActorTruffleV1 {
             Objects.requireNonNull(mail, "runtime-issued mail");
             Objects.requireNonNull(arguments, "critical arguments");
             requireContext(context, mail, true);
-            if (state.ownerActorId() != context.self().id() || state.image != image
+            if (!state.ownerActorId().equals(context.self().id()) || state.image != image
                     || state.retired) {
                 throw new SecurityException("foreign, retired or stale actor state");
             }
@@ -160,7 +160,7 @@ public final class CriticalActorTruffleV1 {
                                     boolean requireMail) {
             if (context.codeImage().orElse(null) != image
                     || ActorRuntime.currentActorRuntime() != context.runtime()
-                    || ActorRuntime.currentActorId().orElse(null) != context.self().id()) {
+                    || !context.self().id().equals(ActorRuntime.currentActorId().orElse(null))) {
                 throw new SecurityException("critical method requires exact actor runtime and CodeImage");
             }
             if (requireMail && (context.currentMail().orElse(null) != mail
@@ -198,7 +198,7 @@ public final class CriticalActorTruffleV1 {
                              ActorRuntime.ActorContext<Object> context,
                              ActorStateLoans.ExclusiveLoan loan) {
             if (retired || ActorRuntime.currentActorRuntime() != context.runtime()
-                    || ActorRuntime.currentActorId().orElse(null) != owner
+                    || !owner.equals(ActorRuntime.currentActorId().orElse(null))
                     || context.currentMail().orElse(null) != mail
                     || mail.recipient() != owner
                     || !loan.heldBy(mail)) {
@@ -255,7 +255,7 @@ public final class CriticalActorTruffleV1 {
          */
         @Override public void close() {
             if (retired) return;
-            if (ActorRuntime.currentActorId().orElse(null) != owner) {
+            if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
                 throw new SecurityException("foreign actor cannot reclaim state");
             }
             if (loans.activeCount() != 0 || loans.pendingCount() != 0) {
@@ -445,7 +445,7 @@ public final class CriticalActorTruffleV1 {
         @Override void run(StateFrame frame) { frame.put(index, type, value.value(frame)); }
     }
     private static final class BlockNode extends StepNode {
-        @Children private final StepNode[] statements;
+        @Children private StepNode[] statements;
         BlockNode(List<CriticalActorMirV1.Step> source, Layout layout) {
             statements = source.stream().map(step -> compileStep(step, layout))
                     .toArray(StepNode[]::new);
