@@ -1111,8 +1111,17 @@ public final class Parser {
                     if (!match(EQUAL, COLON))
                         throw error(peek(), "sealed actor state field needs a literal initializer");
                     Ast.Expr initializer = parseExpression();
-                    if (!(initializer instanceof Ast.LiteralExpr))
+                    if (!(initializer instanceof Ast.LiteralExpr literal))
                         throw error(previous(), "sealed actor state initializer must be a literal");
+                    // A literal AST node alone is not enough: it could hold
+                    // a String, float or bool in an int slot (or vice versa).
+                    // With the physical state layout still unlowered, enforce
+                    // the exact supported scalar representation at admission.
+                    Object initialValue = literal.value();
+                    if ((type.name().equals("int") && !(initialValue instanceof Long))
+                            || (type.name().equals("bool") && !(initialValue instanceof Boolean)))
+                        throw error(previous(), "sealed actor state initializer type must match "
+                                + type.name());
                     consume(SEMICOLON, "sealed actor state field requires ';'");
                     sealedStateFields.add(new Ast.ProtectedStateField(fieldName, type, initializer));
                 }
