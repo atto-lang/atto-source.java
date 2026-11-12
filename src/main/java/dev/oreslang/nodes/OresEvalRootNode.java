@@ -7110,6 +7110,41 @@ public final class OresEvalRootNode extends RootNode {
                         arguments -> applyIntegerIntrinsic(integerIntrinsic, arguments),
                         values);
             }
+            // Resolve lexical self using the compiler-linked instance slot.
+            // Do not dynamically search arbitrary runtime receiver members:
+            // that could expose subtype-only methods or imported capabilities.
+            if (call.callee() instanceof Ast.NameExpr unqualified
+                    && env.lexicalContainerClass() != null
+                    && env.lookup(unqualified.name()) == Env.MISSING
+                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
+                            "print", "task_context", "task_cancel_requested",
+                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
+                Object lexicalSelf = env.lookup("self");
+                if (lexicalSelf instanceof OresObject receiver) {
+                    CallableSelector selector =
+                            CallableSelector.instance(unqualified.name(), call.arguments().size());
+                    Ast.MethodDecl declared = findMethod(env.lexicalContainerClass(), selector);
+                    if (declared != null) {
+                        if (findFunction(unqualified.name(), call.arguments().size()) != null
+                                || namedImports.containsKey(unqualified.name())) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous unqualified call '" + unqualified.name()
+                                            + "': both a self method and a free/imported callable match; "
+                                            + "write self." + unqualified.name() + "(...) or qualify the function");
+                        }
+                        Ast.MethodDecl selected = receiver.owner.findMethod(receiver.klass, selector);
+                        if (selected == null) {
+                            throw new IllegalStateException(
+                                    "linked receiver is missing a lexically checked method slot");
+                        }
+                        receiver.owner.requireClassMemberVisible(
+                                selected.visibility(), receiver.owner.declaringClass(selected),
+                                env.accessClass(), "method", selected.name());
+                        List<Object> args = evaluateArguments(call.arguments(), env);
+                        return receiver.owner.methodInvocation(receiver, selected, args);
+                    }
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
