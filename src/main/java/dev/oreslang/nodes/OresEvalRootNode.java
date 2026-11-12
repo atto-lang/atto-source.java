@@ -5099,6 +5099,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            Ast.CallExpr resolved = bareHandleStateCall(call, env);
+            if (resolved != null) {
+                evalSuspendableCall(task, resolved, env, continuation);
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -6981,7 +6986,25 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        // Dispatch is lexical and direct-call-only. Never reify an actor
+        // state capability or dynamically search another actor's methods.
+        private Ast.CallExpr bareHandleStateCall(Ast.CallExpr call, Env env) {
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || !name.name().equals("handle_state")
+                    || env.lookup("handle_state") != Env.MISSING
+                    || !isActorLexicalBoundary(env.accessClass())) return null;
+            Object receiver = env.lookup("self");
+            if (!(receiver instanceof OresObject object)
+                    || object.klass.actorKind() == Ast.ActorKind.NONE) return null;
+            return call.rewrite(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), "handle_state"),
+                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            Ast.CallExpr resolved = bareHandleStateCall(call, env);
+            if (resolved != null) return prepareInvocation(resolved, env);
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
