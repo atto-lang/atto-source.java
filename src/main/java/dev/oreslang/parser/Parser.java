@@ -2605,12 +2605,13 @@ public final class Parser {
                 }
             }
             // Canonical checked lowering into existing lexical bindings and
-            // try/finally. The type checker validates the span factory and
-            // the required close_scope() member; the executor's already
-            // implemented sync/async try-finally carries return, cancellation,
-            // unwind and suspension cleanup. The scope binding is outside
-            // the try body so the cleanup always refers to the acquired value,
-            // not a shadowed local from inside the body.
+            // try/finally. The type checker validates the candidate span
+            // factory and close_scope() signature. This admission is limited
+            // to non-suspending source, with tested normal/return paths; generic
+            // try/finally support is NOT proof of telemetry cancellation,
+            // migration, or exceptional-effect cleanup. The scope binding is
+            // outside the try body so cleanup resolves the acquired value,
+            // not a shadowed body local.
             Ast.Expr closeScope = new Ast.CallExpr(
                     new Ast.MemberExpr(new Ast.NameExpr(name.lexeme()), "close_scope"),
                     List.of());
