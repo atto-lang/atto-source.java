@@ -99,16 +99,42 @@ sealed state attachments are linked using the same (package, namespace,
 actor) identity.
 
 The `SameNamespaceDeclaredActorPackageTest` suite constructs **seven real
-physical source files** with three duplicate basenames in separate folders:
+physical source files** including four `counter.atto` files in separate folders:
 one actor declaration, two actor contracts, three external methods and one
 sealed-state attachment. It checks the cross-file descriptor and method
 origins, plus a mixed `.atto`/`.ores` package; shuffled source enumeration;
 multiple actors with identical selectors in one namespace; identical actor
 names in separate namespaces; independent state; both supported `mtd`
 receiver spellings; fingerprint invalidation after adding another source;
-and strict rejection of duplicate nominal actors/contracts, method slots,
+plus deterministic, immutable actor/method index iteration; and strict rejection
+of duplicate nominal actors/contracts, method slots,
 state schemas, foreign/missing namespace, missing files, mismatched signature,
 private contract implementation and source outside the manifest roots.
+
+For example, three distinct files may independently declare the same flat
+namespace (the full tested package also contains separate reset-contract,
+reset-method, read-method and sealed-state files):
+
+```atto
+// src/contracts/counter.atto
+namespace foo;
+define pub contract CounterApi for actor as
+  mtd increment(int delta): int;
+  mtd get_count(): int;
+end
+
+// src/declarations/counter.atto
+namespace foo;
+declare pub actor Counter implements CounterApi, ResetApi;
+
+// src/methods/counter.atto
+namespace foo;
+pub mtd (Counter c) increment(int delta): int { return delta; }
+```
+
+The namespace is shared **only within the same manifest package**.
+A matching directory, filename, namespace in another package, or untracked
+source file never supplies implicit actor authority.
 
 This is **static manifest/linker conformance only**. The package's
 `build()` still fails with `DECLARED_ACTOR_CODEGEN_UNSUPPORTED`; no claim is
@@ -121,7 +147,7 @@ and produce exact-head, unskipped Surefire receipts.
 PackageNamespaceBuildTest: 21 previously authored cases.
 DeclaredActorContractWitnessTest: 27 authored cases.
 DeclaredActorCompilerManifestGateTest: 17 authored cases.
-SameNamespaceDeclaredActorPackageTest: 19 authored cases.
+SameNamespaceDeclaredActorPackageTest: 21 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
