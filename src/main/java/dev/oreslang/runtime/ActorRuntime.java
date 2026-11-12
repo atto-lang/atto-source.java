@@ -9100,7 +9100,18 @@ public final class ActorRuntime implements AutoCloseable {
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
             staticSelectCursors.clear();
+            // A compiler-lowered sealed region may only be reclaimed after
+            // source tasks and their cleanup reached physical quiescence above.
+            // Do not release live state on the first STOP request: closing
+            // the loan arbiter fences future reads/writes and the region
+            // retains its scalar storage until every finally releases.
+            ActorOwnedGuestState retiringState = codeActorState;
             codeActorState = null;
+            if (retiringState instanceof SealedActorStateRegion sealedState) {
+                try { sealedState.close(); }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) { recordFinalizationFailure(failure); }
+            }
             try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
