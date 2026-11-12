@@ -1265,7 +1265,15 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
-        Ast.InterfaceDecl declaration = parseInterface(visibility);
+        Ast.InterfaceDecl parsed = parseInterface(visibility);
+        // The local interfaceKinds map is for forward-declaration admission,
+        // but it is lost when the parser returns an AST to ImportGraph.
+        // Persist the exact trait kind on the AST for cross-file linking.
+        Ast.InterfaceDecl declaration = kind == TRAIT
+                ? new Ast.InterfaceDecl(
+                        parsed.name(), parsed.visibility(), parsed.genericParameters(),
+                        parsed.parents(), parsed.members(), false, true)
+                : parsed;
         interfaceKinds.put(declaration, kind);
         return declaration;
     }
