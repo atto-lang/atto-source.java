@@ -2512,6 +2512,10 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
                 }
+                if (stmt instanceof Ast.UsingTelemetrySpanStmt) {
+                    throw new IllegalStateException(
+                            "using telemetry.span() cannot execute without checked scoped cleanup and suspension restoration");
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -6350,6 +6354,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.UsingBorrowStmt) {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
+            }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt) {
+                throw new IllegalStateException(
+                        "using telemetry.span() cannot execute without checked scoped cleanup and suspension restoration");
             }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
