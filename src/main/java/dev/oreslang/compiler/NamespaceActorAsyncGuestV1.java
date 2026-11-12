@@ -264,6 +264,10 @@ public final class NamespaceActorAsyncGuestV1 {
 
         @Override
         public OresScheduler.Step<Long> resume(OresScheduler.Resume resume) throws Exception {
+            // Terminal retirement is an unwinding state, not a recoverable
+            // execution state. In particular finish() must not recursively
+            // retry on its own terminal failure or close code images twice.
+            if (phase == Phase.RETIRE) return advance(resume);
             try {
                 return advance(resume);
             } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
@@ -271,10 +275,6 @@ public final class NamespaceActorAsyncGuestV1 {
                 try { stopActors(); } catch (Throwable ignored) { fatal.addSuppressed(ignored); }
                 throw fatal;
             } catch (Throwable error) {
-                if (phase == Phase.RETIRE) {
-                    if (failure == null) failure = error;
-                    return advanceRetirement();
-                }
                 if (failure == null) failure = error;
                 return beginRetirement();
             }
@@ -390,13 +390,6 @@ public final class NamespaceActorAsyncGuestV1 {
             index = 0;
             if (actors.isEmpty()) return finish();
             return OresScheduler.await(actors.get(index).getDone());
-        }
-
-        private OresScheduler.Step<Long> advanceRetirement() throws Exception {
-            if (++index < actors.size()) {
-                return OresScheduler.await(actors.get(index).getDone());
-            }
-            return finish();
         }
 
         private OresScheduler.Step<Long> finish() throws Exception {
