@@ -6013,6 +6013,16 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        // Bytes methods are synchronous: never mis-type them as Future<T>.
+        if (named.name().equals("Bytes")) {
+            return switch (name) {
+                case "size" -> new Function(List.of(), Primitive.INT);
+                case "byte_at" -> new Function(List.of(Primitive.INT), Primitive.INT);
+                case "take" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+            };
+        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -6081,15 +6091,6 @@ public final class TypeChecker {
                         result = Primitive.VOID; parameters = List.of();
                     }
                     default -> throw new IllegalArgumentException("unknown NioListener member " + name);
-                }
-            }
-            case "Bytes" -> {
-                switch (name) {
-                    case "size" -> { result = Primitive.INT; parameters = List.of(); }
-                    case "byte_at" -> { result = Primitive.INT; parameters = List.of(Primitive.INT); }
-                    case "take" -> { result = new Named("Bytes", List.of()); parameters = List.of(); }
-                    case "close" -> { result = Primitive.VOID; parameters = List.of(); }
-                    default -> throw new IllegalArgumentException("unknown Bytes member " + name);
                 }
             }
             case "NioConnection" -> {
