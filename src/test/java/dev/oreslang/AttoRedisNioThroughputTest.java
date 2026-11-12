@@ -355,7 +355,7 @@ final class AttoRedisNioThroughputTest {
                 } else {
                     pipelined.write(frame(ascii("DEL"), key));
                     responses.add(ascii(oracle.remove(keySlot) == null
-                            ? ":0\\r\\n" : ":1\\r\\n"));
+                            ? ":0\r\n" : ":1\r\n"));
                 }
             }
             client.getOutputStream().write(pipelined.toByteArray());
@@ -374,7 +374,7 @@ final class AttoRedisNioThroughputTest {
         // Map, preserving the previous strict oracle and no-WAL contract.
         for (int keySlot : oracle.keySet()) {
             byte[] key = {(byte) keySlot, (byte) (keySlot * 17)};
-            check(client, frame(ascii("DEL"), key), ascii(":1\\r\\n"),
+            check(client, frame(ascii("DEL"), key), ascii(":1\r\n"),
                     label + "_cleanup", 0, keySlot);
         }
         System.out.printf("ATTO_BATCH_PIPELINE_RATE label=%s pipeline=%d "
@@ -388,10 +388,10 @@ final class AttoRedisNioThroughputTest {
             int warm, int measured, String label) throws Exception {
         String code = resource(name);
         int port = freePort();
-        String bind = "network.listen_async(\\\"127.0.0.1\\\", 16399)";
+        String bind = "network.listen_async(\"127.0.0.1\", 16399)";
         assertTrue(code.contains(bind));
         code = code.replace(bind,
-                "network.listen_async(\\\"127.0.0.1\\\", " + port + ")");
+                "network.listen_async(\"127.0.0.1\", " + port + ")");
         if ("redis_actor_nio_batch.atto".equals(name)) {
             String selector = "socket.read_resp2_binary_batch_async(16)";
             assertTrue(code.contains(selector));
