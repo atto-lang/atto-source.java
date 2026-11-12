@@ -62,6 +62,22 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     }
 
     /** Takeover revokes the old ticket but cannot activate until I/O drains. */
+    /** Physical ActorCell turn lease; only runtime's actual actor dispatcher can mint. */
+    static final class ActorTurnLease implements AutoCloseable {
+        private final SupervisorStorageEpochAuthority gate;
+        private boolean released;
+        private ActorTurnLease(SupervisorStorageEpochAuthority gate) { this.gate = gate; }
+        @Override public void close() {
+            synchronized (gate.lock) {
+                if (released) return;
+                released = true;
+                if (--gate.actorTurnsInFlight < 0)
+                    throw new IllegalStateException("actor turn lease underflow");
+                gate.lock.notifyAll();
+            }
+        }
+    }
+
     public static final class QuiescencePendingException extends IllegalStateException {
         public QuiescencePendingException(int physicalIo, int executingCommits) {
             super("supervisor takeover waiting for physical I/O=" + physicalIo
@@ -82,6 +98,7 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     // Guarded by lock; these are physical operation receipts, NOT guest state.
     private int physicalIoInFlight;
     private int executingCommits;
+    private int actorTurnsInFlight;
 
     SupervisorStorageEpochAuthority(ActorRuntime runtime,
             ActorRuntime.ActorSupervisor supervisor, String partition,
@@ -118,8 +135,10 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
             // Revocation linearizes before quiescence check. A retry after
             // all physical loans drain may safely reserve the next epoch.
             active = null;
-            if (physicalIoInFlight != 0 || executingCommits != 0)
-                throw new QuiescencePendingException(physicalIoInFlight, executingCommits);
+            if (physicalIoInFlight != 0 || executingCommits != 0
+                    || actorTurnsInFlight != 0)
+                throw new QuiescencePendingException(
+                        physicalIoInFlight, executingCommits + actorTurnsInFlight);
             long expected = generation;
             if (expected == Long.MAX_VALUE - 1) {
                 poisoned = true;
@@ -242,10 +261,44 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
         }
     }
 
-    /** Only covers operations and callbacks registered at THIS gate. */
+    /**
+     * The actual ActorRuntime.ActorCell calls this when it obtains the
+     * physical carrier, before init/mailbox/continuation dispatch. The
+     * activation is a JVM object identity, never guest-supplied strings.
+     */
+    ActorTurnLease enterActorTurn(Activation ticket) {
+        synchronized (lock) {
+            if (!currentLocked(ticket))
+                throw new SecurityException("actor turn has stale supervisor activation");
+            if (actorTurnsInFlight == Integer.MAX_VALUE)
+                throw new IllegalStateException("supervisor physical actor turn quota");
+            ++actorTurnsInFlight;
+            return new ActorTurnLease(this);
+        }
+    }
+
+    /** Recheck immediately before every ordinary mail / continuation. */
+    void requireCurrentActorTurn(Activation ticket) {
+        synchronized (lock) {
+            if (!currentLocked(ticket))
+                throw new SecurityException("revoked supervisor actor mailbox/continuation");
+        }
+    }
+
+    /** Opaque activation must belong to this exact gate and still be current. */
+    void requireBinding(Activation ticket, ActorRuntime.ActorSupervisor owner) {
+        if (owner != supervisor) throw new SecurityException("foreign supervisor actor binding");
+        synchronized (lock) {
+            if (!currentLocked(ticket))
+                throw new SecurityException("stale/foreign actor activation binding");
+        }
+    }
+
+    /** Covers registered fsyncs, executing commits AND bound physical actor turns. */
     public boolean physicallyQuiescent() {
         synchronized (lock) {
-            return physicalIoInFlight == 0 && executingCommits == 0;
+            return physicalIoInFlight == 0 && executingCommits == 0
+                    && actorTurnsInFlight == 0;
         }
     }
 
