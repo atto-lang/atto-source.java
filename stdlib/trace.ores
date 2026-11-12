@@ -82,4 +82,36 @@ define module Trace as
   pub fnc event(int correlation_id, int phase_id, int elapsed_ns): Event {
     return new Event(correlation_id, phase_id, elapsed_ns);
   }
+
+  // A small, portable, sampled span boundary for call / network / I/O hooks.
+  // No objects, formatting, clock read or I/O when disabled. A nonzero
+  // start token is meaningful only inside its originating process/clock.
+  pub fnc begin_span(bool enabled): int {
+    return start_ns(enabled);
+  }
+
+  // Completed observations are handed to an actor-owned bounded collector.
+  // False means disabled, invalid input, or a full buffer. This is not OTLP
+  // and does not automatically propagate distributed trace context.
+  pub fnc finish_span(Buffer buffer, int correlation_id, int phase_id, int started_ns): bool {
+    if started_ns <= 0 || correlation_id < 0 || phase_id <= 0; do
+      return false;
+    fi
+    return buffer.record(correlation_id, phase_id, duration_ns(started_ns));
+  }
+
+  // Reserved low-cardinality semantic IDs, stable across backends.
+  // Export adapters resolve labels off the hot path. Never use an arbitrary
+  // string or request data as a phase ID.
+  pub fnc phase_function_call(): int { return 100; }
+  pub fnc phase_http_client(): int { return 200; }
+  pub fnc phase_http_server(): int { return 201; }
+  pub fnc phase_tcp_connect(): int { return 300; }
+  pub fnc phase_tcp_read(): int { return 301; }
+  pub fnc phase_tcp_write(): int { return 302; }
+  pub fnc phase_file_read(): int { return 400; }
+  pub fnc phase_file_write(): int { return 401; }
+  pub fnc phase_actor_send(): int { return 500; }
+  pub fnc phase_actor_receive(): int { return 501; }
+  pub fnc phase_actor_await(): int { return 502; }
 end
