@@ -2401,8 +2401,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw terminated(cell.ref);
             }
             OresScheduler executingScheduler = OresScheduler.current();
+            // Inspect the already-installed scheduler WITHOUT invoking the lazy
+            // sourceScheduler() factory. A foreign inline scheduler must be
+            // denied without creating actor-owned scheduler/executor state.
             if (executingScheduler != null
-                    && executingScheduler != cell.sourceScheduler()) {
+                    && executingScheduler != cell.sourceScheduler) {
                 throw new SecurityException(
                         "actor Task may not be launched from a foreign scheduler domain");
             }
