@@ -2509,6 +2509,31 @@ public final class ActorRuntime implements AutoCloseable {
         return future;
     }
 
+    /**
+     * Admit a source `task { }` block to the currently executing actor's
+     * mailbox-backed scheduler. The actor's PRIVATE/SHARED worker pool runs
+     * each continuation; the supervisor CONTROL executor is never involved.
+     *
+     * The returned handle keeps its own physical getDone() barrier. Actor
+     * STOP seals/cancels this source scheduler before actor-owned memory
+     * can be reclaimed. Untrusted actors currently need the quota-aware
+     * tracked-child path and must fail closed until that bridge is available.
+     */
+    public <T> TaskHandle<T> startActorTrackedTask(OresScheduler.Task<T> task) {
+        Objects.requireNonNull(task, "task");
+        requireCallerRuntimeAffinity("start actor source task");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor task blocks require an executing actor turn");
+        }
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "untrusted actor task blocks require quota-aware tracked-child admission");
+        }
+        return cell.sourceScheduler().startTracked(task);
+    }
+
     private void releaseUntrustedSourceTask(
             ActorCell<?> cell, UntrustedLogicalQuota quota) {
         synchronized (cell.lifecycleLock) {
