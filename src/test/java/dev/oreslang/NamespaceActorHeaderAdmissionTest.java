@@ -20,7 +20,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 final class NamespaceActorHeaderAdmissionTest {
     private static Ast.Program parse(String body) {
-        return Parser.parse("namespace foo;\n" + body);
+        return Parser.parse("use namespace foo;\n" + body);
+    }
+
+    @Test
+    void canonicalHeaderIsContextualAndLegacyHeaderStillReadable() {
+        assertEquals("foo", parse("declare actor Foo;").namespace());
+        assertEquals("foo", Parser.parse("namespace foo;\\ndeclare actor Foo;").namespace());
+    }
+
+    @Test
+    void malformedUseNamespaceHeaderAndOutOfOrderHeaderFailClosed() {
+        for (String source : new String[] {
+                "use namespace;\\ndeclare actor Foo;",
+                "use namespace foo.bar;\\ndeclare actor Foo;",
+                "use namespace foo\\ndeclare actor Foo;",
+                "use namespace foo;\\nuse namespace bar;\\ndeclare actor Foo;",
+                "use unknown;\\ndeclare actor Foo;",
+                "declare actor Foo;\\nuse namespace foo;"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
     }
 
     @Test
