@@ -300,4 +300,76 @@ final class AttoRedisNioThroughputTest {
                 baseline, optimized, framed, singleReply, ownedBytes, redis, optimized / baseline,
                 framed / optimized, singleReply / framed, ownedBytes / singleReply, ownedBytes / redis);
     }
+
+    /**
+     * Real Atto Bytes actor running inside optimizing GraalVM plus the exact
+     * standalone Rust RESP2 oracle as an external TEST CLIENT. The guest
+     * continues to use NIO2 and alone owns its Map<Bytes,Bytes>. This is
+     * strictly one-client until reply correlation is implemented.
+     */
+    @Test
+    @Timeout(value = 240, unit = TimeUnit.SECONDS)
+    void rustOracleChecksRealOwnedBytesActorAndOfficialRedis() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_RUST_ORACLE_ENABLED")),
+                "requires explicit exact-blob Rust oracle/GraalVM carrier");
+        assertEquals("1", System.getenv("ATTO_REQUIRE_OPTIMIZING_TRUFFLE"),
+                "certification must forbid interpreter fallback");
+        String binary = System.getenv("ATTO_REDIS_RUST_BENCH_BIN");
+        assertNotNull(binary, "the exact-source Rust benchmark executable is required");
+        assertTrue(new java.io.File(binary).canExecute(), "Rust benchmark is not executable");
+
+        String filename = "redis_actor_nio_owned_bytes.atto";
+        String code = resource(filename);
+        int port = freePort();
+        String bind = "network.listen_async(\"127.0.0.1\", 16399)";
+        assertTrue(code.contains(bind));
+        code = code.replace(bind,
+                "network.listen_async(\"127.0.0.1\", " + port + ")");
+        OresCompiler.parseAndTypeCheck(code);
+        final String guestCode = code;
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> guest = executor.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID,
+                                new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
+                        .build()) {
+                    context.eval(Source.newBuilder(OresLanguage.ID, guestCode, filename)
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
+                }
+            });
+            Process benchmark = null;
+            try {
+                // Unlike a readiness TCP probe, the Rust driver is the FIRST
+                // connection. This one-client Atto guest retires on EOF.
+                benchmark = new ProcessBuilder(
+                        binary,
+                        "--rust", "127.0.0.1:" + REDIS_PORT,
+                        "--atto", "127.0.0.1:" + port,
+                        "--requests", "5000", "--warmup", "2000",
+                        "--trials", "1", "--clients", "1", "--pipeline", "1",
+                        "--keys", "1024", "--value-bytes", "64", "--seed", "42")
+                        .redirectErrorStream(true).start();
+                if (!benchmark.waitFor(180, TimeUnit.SECONDS)) {
+                    benchmark.destroyForcibly();
+                    fail("Rust RESP2 oracle timed out");
+                }
+                String output = new String(
+                        benchmark.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                assertEquals(0, benchmark.exitValue(), output);
+                assertTrue(output.contains("atto_median_ops_per_sec="), output);
+                assertTrue(output.contains("rust_median_ops_per_sec="), output);
+                assertTrue(output.contains("correctness=PASS"), output);
+                assertFalse(output.contains("RESP_ORACLE_FAILURE"), output);
+                System.out.println("ATTO_GRAALVM_REAL_RUST_ORACLE=EXECUTED_PASS");
+                System.out.println(output);
+                guest.get(30, TimeUnit.SECONDS);
+            } finally {
+                if (benchmark != null && benchmark.isAlive()) benchmark.destroyForcibly();
+                if (!guest.isDone()) guest.cancel(true);
+            }
+        }
+    }
 }
