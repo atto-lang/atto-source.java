@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.SharedCodeImageStore;
 
@@ -241,6 +242,13 @@ public final class NamespaceActorUnleasedSpawnV0 {
                     "checked namespace-actor main accepts no host arguments");
             if (context.isolatePolicy().adversarial()) throw new SecurityException(
                     "source actor spawn v0 unavailable in adversarial contexts");
+            // The normal Graal root applies the full capability policy.
+            // Special source admission must not silently skip that boundary.
+            CapabilityChecker.check(
+                    plan.program(), context.isolatePolicy(),
+                    context.permissionCheckMode());
+            // This bounded v0 runner deliberately executes on the calling
+            // host thread, not by parking a CONTROL/actor carrier.
             try (SharedCodeImageStore images = new SharedCodeImageStore()) {
                 ActorRuntime.ActorCodeExecutor code =
                         NamespaceActorCriticalIrCompiler.compileForVerifiedMain(
