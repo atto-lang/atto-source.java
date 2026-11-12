@@ -142,6 +142,24 @@ final class NamespaceActorCriticalIrCompilerTest {
     }
 
     @Test
+    void multipleVerifiedCriticalCallsAreAcceptedWithinOneMailboxTurn() throws Exception {
+        String multiple = source().replace(
+                "p.debit(mail.value);",
+                "p.debit(mail.value); p.add(mail.value);");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var exec = compile(store, multiple, "ir/repeated-verified-calls.atto");
+            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, exec, "Probe");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send(7L);
+            actor.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(actor.failure().isEmpty());
+            actor.stop();
+            actor.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void mutationCorpusRejectsNoncriticalWritesAndLoanEscapes() throws Exception {
         String s = source();
         String[] invalid = {
@@ -149,7 +167,7 @@ final class NamespaceActorCriticalIrCompilerTest {
                 s.replace("critical mtd (Probe p) debit", "pub critical mtd (Probe p) debit"),
                 s.replace("p.add(mail.value);", "p.state.received = mail.value;"),
                 s.replace("p.debit(mail.value);", "p.add(1);"),
-                s.replace("p.debit(mail.value);", "p.debit(mail.value); p.add(mail.value);"),
+                s.replace("p.debit(mail.value);", "p.debit(mail.value); p.unchecked(mail.value);"),
                 s.replace("p.state.received + delta", "other.state.received + delta"),
                 s.replace("p.state.received + delta", "p.state.unknown + delta"),
                 s.replace("p.state.received = p.state.received + delta",
