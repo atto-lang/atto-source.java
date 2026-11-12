@@ -8186,6 +8186,16 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "listener.accept_async");
                         return listener.acceptAsync();
                     };
+                    case "serve_redis_actor_async" -> (Invokable) args -> {
+                        requireTwo(args, "listener.serve_redis_actor_async");
+                        if (!(args.get(0) instanceof ActorRuntime.ActorRef<?> worker)
+                                || !(args.get(1) instanceof Number n)
+                                || !isIntegral(n)) {
+                            throw new IllegalArgumentException(
+                                    "bounded Redis service needs typed actor reference and integer client limit");
+                        }
+                        return listener.serveRedisActorAsync(worker, n.intValue());
+                    };
                     case "local_port_async" -> (Invokable) args -> {
                         requireZero(args, "listener.local_port_async");
                         return dev.oreslang.runtime.OresFuture.completed(listener.port());
