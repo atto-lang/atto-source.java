@@ -47,6 +47,12 @@ final class TraceContextSuspensionTest {
             } finally {
                 TraceContext.install(prior);
             }
+            AtomicReference<TraceContext> subscriberContext = new AtomicReference<>(CHILD);
+            CountDownLatch subscriberCalled = new CountDownLatch(1);
+            task.whenCompleteRuntime((value, failure) -> {
+                subscriberContext.set(TraceContext.current());
+                subscriberCalled.countDown();
+            });
             assertTrue(suspended.await(5, TimeUnit.SECONDS));
             // The one carrier is reused, but the peer has no inherited span.
             assertNull(scheduler.start(r -> OresScheduler.done(
@@ -66,6 +72,9 @@ final class TraceContextSuspensionTest {
             assertFalse(producer.isAlive());
             assertNull(producerFailure.get(), () -> "producer failed: " + producerFailure.get());
             assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertTrue(subscriberCalled.await(5, TimeUnit.SECONDS));
+            assertNull(subscriberContext.get(),
+                    "terminal Future subscribers must not inherit the completed task's span");
             assertEquals(2, pc.get());
             assertNull(scheduler.start(r -> OresScheduler.done(
                     TraceContext.current())).get(5, TimeUnit.SECONDS));
