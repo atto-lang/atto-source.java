@@ -74,8 +74,15 @@ compiler sites.
 The policy tests cover OFF default, `BOUNDARIES`/`CALLS`/`FULL` coverage
 ceilings, independent domain policies, sealed profiles and no-op updates.
 These are **host policy unit tests**, not a full Truffle optimizing-JIT or real
-compiler instrumentation proof. The gate has not yet been wired to the
-call-entry/exit and stdlib HTTP/actor hooks.
+compiler instrumentation proof. The gate is now **wired to the checked callable dispatcher**, which records
+numeric call admission durations in a fixed-size, per-isolate
+`AutoTraceRecorder`. It does **not** yet trace async task completion,
+emit OTel spans, or provide a trusted, externally accessible runtime
+reconfiguration service. The numeric recording gate is controlled by trusted
+`--ores-telemetry=calls` at startup. An explicitly requested
+`--ores-telemetry-receipt=stderr` emits a **cold shutdown-only diagnostic
+receipt**, never synchronous guest hot-path output. Its site IDs are an
+internal provisional hash and **not** cross-backend stable public IDs.
 
 A trace-capable JIT/AOT build can change the **recording mode** without
 redeployment only for probes which were compiled in. If we want to
@@ -107,3 +114,40 @@ be enabled.
 Related contracts:
 [shared zero-code tracing](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/feat/atto-instrumentation-contract-v1-20261112/docs/AUTO_INSTRUMENTATION_AND_DISTRIBUTED_TRACING_V1.md)
 and [shared v1 instrumentation ABI](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/feat/atto-instrumentation-contract-v1-20261112/contracts/v1/instrumentation-api-v1.json).
+
+
+## Additional Java/Graal implementation slice: immutable context and HTTP
+
+- `TraceParent` is a strict **W3C v00-only**, lowercase-hex,
+  nonzero 16-byte trace ID / 8-byte span ID value. Roots/children use
+  `SecureRandom`, preserve the sampling flag and reject malformed headers.
+  Parsing does not presently support future W3C versions or `tracestate`.
+- `TaskContext.pushTraceParent()` stores the immutable parent inside the
+  task's already heap-retained logical context chain. `SourceTask` saves and
+  restores this same chain across suspend/resume; OS/JVM thread-locals are
+  caches for the current turn, not the authority.
+- `ActorRuntime.MessageEnvelope` now includes a private immutable
+  `TraceParent` field *outside* the user message graph. Both synchronous
+  send and asynchronous mailbox admission capture the sender's value **before
+  any asynchronous waiter callback**. USER dispatch installs the captured
+  context, then restores its carrier's prior state on normal/error exit.
+  Propagation is disabled by default and excluded for untrusted recipients.
+  This has not been proven on the exact Java compiler branch.
+- `OutboundHttpRequest.request()` captures the parent at guest admission,
+  after the existing network permission check, and adds a new valid child
+  `traceparent` HTTP header to an immutable list handed to the physical I/O
+  worker. It rejects duplicate user-supplied tracing headers and respects the
+  established 100-header/32768-byte request limits.
+- **Still missing:** HTTP SERVER automatic span creation and extraction from
+  inbound headers, semantic CLIENT/ACTOR spans, OTLP/HTTP export from a bounded
+  native Atto telemetry actor, safe `tracestate` handling, actor-tenant trust
+  policy, compiler-generated full function body probes, and actual Java/LLVM
+  executed guest trace receipts. The original Java HTTP frontend still relies
+  on a host transport rather than the proposed native `std/http` implementation.
+
+Tests authored on this branch:
+`AutomaticCallProbeGuestTest`, `AutoTraceRecorderTest`,
+`TraceParentTest`, `TraceTaskContextTest`,
+`ActorTraceContextPropagationTest`, and
+`OutboundHttpTraceInjectionTest`. None has an exact-head nonzero-step
+passing CI receipt. **Do not present a source-level match as runtime pass.**
