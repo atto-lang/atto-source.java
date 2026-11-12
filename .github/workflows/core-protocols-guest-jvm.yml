@@ -6,6 +6,11 @@ on:
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/OresFuture.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRefIncarnationFenceTest.java'
+      - 'src/test/java/dev/oreslang/runtime/DirectionalChannelCapabilityFenceTest.java'
       - 'tests/fixtures/core-protocols-v1/**'
       - '.github/workflows/core-protocols-guest-jvm.yml'
   workflow_dispatch:
@@ -16,7 +21,7 @@ permissions:
 jobs:
   compiler-and-guest:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - name: Checkout immutable triggering HEAD
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -41,11 +46,11 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
-      - name: Compile real parser/typechecker and execute Atto guest fixtures
+      - name: Compile and execute real Atto guests plus actor reference, channel and Future hardening tests
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest -DfailIfNoTests=true test
-          echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ActorRefIncarnationFenceTest,DirectionalChannelCapabilityFenceTest,ChannelRuntimeTest,ChannelPendingAdmissionTest,OresFutureTerminalNotificationRaceTest -DfailIfNoTests=true test
+          echo 'CORE_PROTOCOLS_ACTOR_CHANNEL_JAVA_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
         if: always()
         run: |
