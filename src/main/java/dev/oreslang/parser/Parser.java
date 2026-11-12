@@ -513,6 +513,11 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // Contextual 'critical mtd' is an out-of-line, PRIVATE actor method.
+        // Lexical admission only; never lower to executable code by accident.
+        if (isCriticalActorMethodHead()) {
+            return parseCriticalActorMethod(annotations, modifiers);
+        }
         // Runtime-only actor hooks use an explicit contextual ingress marker.
         // This marker is separate from public method visibility and does not
         // grant a guest callable or executable actor permission.
@@ -674,6 +679,81 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    private boolean isCriticalActorMethodHead() {
+        return isContextualIdentifier("critical")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("mtd")
+                && tokens.get(current + 2).type() == LPAREN;
+    }
+
+    /**
+     * Preserve private critical method body tokens without parsing a state
+     * write as a normal guest closure. No runtime authority is issued here.
+     */
+    private Ast.CriticalActorMethodDecl parseCriticalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "critical actor methods");
+        if (modifiers.visibilitySeen) {
+            throw error(peek(), "critical actor methods are private and cannot carry visibility modifiers");
+        }
+        rejectCallableStructuralAnnotation(annotations, "critical actor methods");
+        rejectDiscardedDeclarationAnnotations(annotations, "critical actor methods");
+        consumeContextualIdentifier("critical", "expected critical actor method marker");
+        consumeContextualIdentifier("mtd", "critical must be followed by mtd");
+        consume(LPAREN, "critical receiver requires '(Actor receiver)'");
+        Ast.TypeRef type = parseTypeRef();
+        if (type.isBorrow() || type.inferArguments() || !type.arguments().isEmpty()) {
+            throw error(previous(), "critical receiver requires non-generic nominal actor");
+        }
+        String receiver = consume(IDENT, "expected critical actor receiver binding").lexeme();
+        consume(RPAREN, "expected ')' after critical actor receiver");
+        String name = consumeCallableName("expected critical actor method name");
+        if (java.util.Set.of("init", "receive", "handle_state", "on_panic").contains(name)) {
+            throw error(previous(), "critical actor method cannot shadow runtime-owned ingress");
+        }
+        consume(LPAREN, "critical method parameter list requires '('");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after critical method parameters");
+        if (parameters.stream().anyMatch(p -> p.structural() || p.name().equals(receiver))) {
+            throw error(previous(), "critical parameters cannot be structural or shadow receiver");
+        }
+        Ast.TypeRef returns = match(FAT_ARROW, COLON)
+                ? parseTypeRef() : Ast.TypeRef.simple("void");
+        if (!parseCheckedEffects().isEmpty()) {
+            throw error(previous(), "critical actor effects require checked MIR lowering");
+        }
+        consume(LBRACE, "critical actor method needs a braced body");
+        int depth = 1;
+        List<String> body = new ArrayList<>();
+        List<String> kinds = new ArrayList<>();
+        while (depth > 0) {
+            if (check(EOF)) throw error(peek(), "unterminated critical actor method body");
+            Token token = advance();
+            if (token.type() == LBRACE) depth++;
+            if (token.type() == RBRACE) {
+                depth--;
+                if (depth == 0) break;
+            }
+            // Reject even nested lexical awaits/unsafe. Parser tokens are
+            // untrusted source and no state-loan suspension is supported.
+            if (token.type() == AWAIT || token.type() == UNSAFE
+                    || token.type() == SPAWN || token.type() == STOP
+                    || token.type() == RT || token.type() == SUPER) {
+                throw error(token, "critical actor body cannot suspend, spawn or escape authority");
+            }
+            body.add(token.lexeme());
+            kinds.add(token.type().name());
+            if (body.size() > 4096) {
+                throw error(token, "critical actor body exceeds 4096 lexical tokens");
+            }
+        }
+        if (body.isEmpty()) throw error(previous(), "critical actor body cannot be empty");
+        return new Ast.CriticalActorMethodDecl(
+                type.name(), receiver, name, Ast.Visibility.PRIVATE, parameters,
+                returns, body, kinds);
     }
 
     /** Contextual mtd accepts both receiver-first and name-first declarations. */

@@ -176,6 +176,13 @@ public final class TypeChecker {
                                     + "' requires actor-context authority, mailbox dispatch "
                                     + "and activation-generation fencing");
                 }
+                if (declaration instanceof Ast.CriticalActorMethodDecl critical) {
+                    throw new IllegalArgumentException(
+                            "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: '" + critical.name()
+                                    + "' on actor '" + critical.actorName()
+                                    + "' requires compiler-owned state loans, checked critical MIR, "
+                                    + "actor-context authority and generation-fenced dispatch");
+                }
                 if (declaration instanceof Ast.StandaloneActorDecl actor) {
                     throw new IllegalArgumentException(
                             "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: '" + actor.name()

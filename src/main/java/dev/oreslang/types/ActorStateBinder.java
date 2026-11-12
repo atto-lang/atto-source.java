@@ -130,6 +130,16 @@ public final class ActorStateBinder {
                         existingMembers.computeIfAbsent(
                                 slot, ignored -> new LinkedHashSet<>()).add(method.name());
                     }
+                    if (decl instanceof Ast.CriticalActorMethodDecl method) {
+                        Slot slot = new Slot(packageIdentity, namespace, method.actorName());
+                        if (!actors.containsKey(slot)) {
+                            throw new IllegalArgumentException(
+                                    "critical actor method has no nominal actor in package namespace: "
+                                            + method.actorName());
+                        }
+                        existingMembers.computeIfAbsent(
+                                slot, ignored -> new LinkedHashSet<>()).add(method.name());
+                    }
                 }
             }
         }

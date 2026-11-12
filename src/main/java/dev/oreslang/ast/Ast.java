@@ -62,7 +62,35 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, ActorStateDecl { }
+            ExternalActorMethodDecl, ActorStateDecl, CriticalActorMethodDecl { }
+
+    /**
+     * Lexical AST for private out-of-line critical actor methods.
+     * The body is NOT an executable statement list. Parser captures original
+     * token lexemes and kinds without granting state-loan authority.
+     * TypeChecker must reject this declaration until borrow-checked MIR and
+     * runtime-owned actor dispatch exist.
+     */
+    public record CriticalActorMethodDecl(
+            String actorName, String receiverName, String name,
+            Visibility visibility, List<Param> parameters, TypeRef returnType,
+            List<String> bodyTokens, List<String> bodyTokenKinds) implements Decl {
+        public CriticalActorMethodDecl {
+            if (actorName == null || actorName.isBlank()
+                    || receiverName == null || receiverName.isBlank()
+                    || name == null || name.isBlank()
+                    || visibility != Visibility.PRIVATE) {
+                throw new IllegalArgumentException("critical actor method requires private nominal receiver");
+            }
+            java.util.Objects.requireNonNull(returnType, "critical return type");
+            parameters = List.copyOf(parameters);
+            bodyTokens = List.copyOf(bodyTokens);
+            bodyTokenKinds = List.copyOf(bodyTokenKinds);
+            if (bodyTokens.isEmpty() || bodyTokens.size() != bodyTokenKinds.size()) {
+                throw new IllegalArgumentException("critical actor body tokens require exact kinds");
+            }
+        }
+    }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
