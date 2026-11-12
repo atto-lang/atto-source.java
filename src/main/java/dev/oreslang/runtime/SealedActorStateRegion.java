@@ -55,6 +55,30 @@ final class SealedActorStateRegion
      */
     static SealedActorStateRegion allocateFromSealedDeclaration(Ast.ClassDecl declaration) {
         Objects.requireNonNull(declaration, "sealed actor declaration");
+        SharedCodeImageStore.CodeImage admitted = ActorRuntime.currentActorCodeImage();
+        String admittedType = ActorRuntime.currentSourceActorType();
+        if (admitted == null || admittedType == null) {
+            throw new SecurityException(
+                    "sealed declaration requires an admitted source actor code image");
+        }
+        boolean exactDeclaration = false;
+        int sameSimpleName = 0;
+        for (Ast.ModuleDecl module : admitted.program().modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.ClassDecl actor)) continue;
+                if (actor.name().equals(declaration.name())) sameSimpleName++;
+                if (actor == declaration
+                        && (admittedType.equals(actor.name())
+                            || admittedType.equals(module.name() + "." + actor.name()))) {
+                    exactDeclaration = true;
+                }
+            }
+        }
+        if (!exactDeclaration
+                || (admittedType.equals(declaration.name()) && sameSimpleName != 1)) {
+            throw new SecurityException(
+                    "sealed actor declaration is not the admitted source actor type/image");
+        }
         if (declaration.actorKind() == Ast.ActorKind.NONE
                 || !declaration.fields().isEmpty()
                 || declaration.sealedStateFields().isEmpty()
