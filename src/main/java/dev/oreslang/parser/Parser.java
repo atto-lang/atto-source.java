@@ -118,7 +118,15 @@ public final class Parser {
             }
         }
         String namespace = null;
-        if (match(NAMESPACE)) {
+        // Canonical Atto source header: 'use namespace <flat-name>;'.
+        // 'use' remains contextual, preserving ordinary identifiers elsewhere.
+        boolean canonicalNamespace = isContextualIdentifier("use");
+        if (canonicalNamespace) {
+            advance();
+            consume(NAMESPACE, "file header 'use' must be followed by 'namespace'");
+        }
+        // Retain bare 'namespace x;' for legacy fixtures and compatibility.
+        if (canonicalNamespace || match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
             consume(SEMICOLON, "namespace declaration must end with ';'");
