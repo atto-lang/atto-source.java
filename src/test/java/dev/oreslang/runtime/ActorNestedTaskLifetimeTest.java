@@ -243,7 +243,11 @@ final class ActorNestedTaskLifetimeTest {
                             assertThrows(RuntimeException.class,
                                     () -> context.runtime().startTrackedActorTask(
                                             resume -> OresScheduler.done(999)),
-                                    "STOP must seal actor Task admission in the same turn");
+                                    "STOP must seal tracked actor Task admission in the same turn");
+                            assertThrows(RuntimeException.class,
+                                    () -> context.runtime().startActorTask(
+                                            resume -> OresScheduler.done(999)),
+                                    "STOP must also seal untracked actor task admission");
                             return;
                         }
                         assertEquals("start", message);
