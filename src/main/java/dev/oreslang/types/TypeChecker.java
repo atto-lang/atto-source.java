@@ -50,6 +50,13 @@ public final class TypeChecker {
             "Channel", "Future", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
 
+    // These nominal names carry VM-supplied mailbox identity or authority.
+    // A user class/alias must not make the type checker treat its fields as
+    // trusted ActorMail/ActorOutput metadata or its instances as ActorRef.
+    private static final Set<String> SEALED_ACTOR_PROTOCOL_TYPES = Set.of(
+            "ActorMail", "ActorOutput", "ActorOutputStream",
+            "ActorRef", "ActorId", "ActorKind");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -383,6 +390,10 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
                 else if (declaration instanceof Ast.ClassDecl klass) {
+                    if (SEALED_ACTOR_PROTOCOL_TYPES.contains(klass.name())) {
+                        throw new IllegalArgumentException(
+                                klass.name() + " is a reserved actor protocol type; user classes cannot shadow it");
+                    }
                     if (Set.of("HttpResponse", "HttpClientResponse", "HttpClientBody")
                             .contains(klass.name())) {
                         throw new IllegalArgumentException(
@@ -393,6 +404,10 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    if (SEALED_ACTOR_PROTOCOL_TYPES.contains(alias.name())) {
+                        throw new IllegalArgumentException(
+                                alias.name() + " is a reserved actor protocol type; type aliases cannot shadow it");
+                    }
                     if (alias.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
