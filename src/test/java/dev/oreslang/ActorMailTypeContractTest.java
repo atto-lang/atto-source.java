@@ -247,4 +247,26 @@ final class ActorMailTypeContractTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void vmActorMailboxProtocolNamesCannotBeShadowedByClassesOrTypeAliases() {
+        for (String name : java.util.List.of(
+                "ActorMail", "ActorOutput", "ActorOutputStream",
+                "ActorRef", "ActorId", "ActorKind")) {
+            IllegalArgumentException nominal = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "define class " + name + " as end")));
+            assertTrue(nominal.getMessage().contains("reserved actor protocol type"),
+                    name + ": " + nominal.getMessage());
+
+            IllegalArgumentException alias = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "type " + name + " = int;")));
+            assertTrue(alias.getMessage().contains("reserved actor protocol type"),
+                    name + ": " + alias.getMessage());
+        }
+    }
+
 }
