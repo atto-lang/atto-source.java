@@ -154,9 +154,10 @@ final class GeneratorRuntimeTest {
             java.util.concurrent.FutureTask<Void> closing = new java.util.concurrent.FutureTask<>(
                     () -> { generator.close(); return null; });
             Thread closer = Thread.ofVirtual().start(closing);
+            OresFuture<GeneratorRuntime.Step<Integer>> pull;
             try {
                 assertTrue(leaving.await(2, TimeUnit.SECONDS));
-                var pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
+                pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
                         generator::nextStep);
                 assertEquals(OresFuture.class, pull.getClass());
                 assertThrows(java.util.concurrent.TimeoutException.class,
