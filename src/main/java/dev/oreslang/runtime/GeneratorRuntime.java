@@ -125,6 +125,11 @@ public final class GeneratorRuntime {
 
         @Override
         public void close() {
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "ACTOR_GENERATOR_UNSUPPORTED: synchronous generator close "
+                        + "requires root-owner cleanup; an actor cannot park its carrier");
+            }
             engine.close();
         }
     }
