@@ -636,18 +636,27 @@ final class GeneratorRuntimeTest {
     void asyncCloseFutureWaitsForPhysicalProducerExit() throws Exception {
         CountDownLatch leaving = new CountDownLatch(1);
         CountDownLatch allowExit = new CountDownLatch(1);
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
         try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
             try { turn.run(); }
             finally {
-                leaving.countDown();
-                boolean interrupted = false;
-                for (;;) {
-                    try { allowExit.await(); break; }
-                    catch (InterruptedException ignored) { interrupted = true; }
+                // A consumer turn must finish and settle nextStep() before
+                // this test can request close. Only hold the producer's
+                // physical finalizer, not every AsyncRuntime turn.
+                if (Thread.currentThread() == producerThread.get()) {
+                    leaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { allowExit.await(); break; }
+                        catch (InterruptedException ignored) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
                 }
-                if (interrupted) Thread.currentThread().interrupt();
             }
-        }); var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1))) {
+        }); var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            producerThread.set(Thread.currentThread());
+            emitter.emit(1);
+        })) {
             assertEquals(1, generator.nextStep().get(2, TimeUnit.SECONDS).value());
             OresFuture<Void> closing = generator.closeAsync();
             try {
