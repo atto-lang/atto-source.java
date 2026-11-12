@@ -2553,7 +2553,7 @@ public final class Parser {
                     || !(call.callee() instanceof Ast.MemberExpr member)
                     || call.typeArgumentsPresent()) {
                 throw error(previous(),
-                        "using requires resource.borrow() or telemetry.span([name])");
+                        "using borrowed scope requires a zero-argument resource.borrow() call");
             }
             boolean telemetrySpan = member.member().equals("span")
                     && member.receiver() instanceof Ast.NameExpr namespace
@@ -2562,16 +2562,22 @@ public final class Parser {
                     && call.arguments().isEmpty();
             if (!telemetrySpan && !borrowedView) {
                 throw error(previous(),
-                        "using requires resource.borrow() or telemetry.span([name])");
+                        "using borrowed scope requires a zero-argument resource.borrow() call");
             }
             if (telemetrySpan && call.arguments().size() > 1) {
                 throw error(previous(),
                         "using telemetry.span accepts zero or one span-name argument");
             }
-            consume(AS, "using scope requires 'as <alias>'");
-            Token name = consume(IDENT, "using scope requires a binding name");
+            consume(AS, telemetrySpan
+                    ? "using telemetry.span requires 'as <span>'"
+                    : "using borrowed scope requires 'as <view>'");
+            Token name = consume(IDENT, telemetrySpan
+                    ? "using telemetry.span requires a binding name"
+                    : "using borrowed scope requires a binding name");
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using scope needs a named, usable alias");
+                throw error(name, telemetrySpan
+                        ? "using telemetry.span needs a named, usable span binding"
+                        : "using borrowed scope needs a named, usable view binding");
             }
             List<Ast.Stmt> body = parseBlock();
             if (telemetrySpan) {
