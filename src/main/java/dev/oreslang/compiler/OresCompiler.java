@@ -12,6 +12,19 @@ public final class OresCompiler {
     private OresCompiler() { }
 
     /**
+     * Opt-in, closed-world namespace actor runtime lowering. The source
+     * program must already be published as one immutable VM CodeImage.
+     * This does NOT loosen normal TypeChecker admission for arbitrary
+     * external mtd bodies: NamespaceActorIngressV1 validates the exact
+     * private init/receive AST and emits a runtime-owned executor directly.
+     */
+    public static NamespaceActorIngressV1.Plan compileNamespaceActorIngressV1(
+            dev.oreslang.runtime.SharedCodeImageStore.CodeImage image,
+            String packageIdentity, String actorName) {
+        return NamespaceActorIngressV1.compile(image, packageIdentity, actorName);
+    }
+
+    /**
      * Opt-in first protected-state MIR slice. This executes the production
      * parser first, then admits only one verified i64 state-root region.
      * It does NOT bypass or relax ordinary TypeChecker/OwnershipChecker
