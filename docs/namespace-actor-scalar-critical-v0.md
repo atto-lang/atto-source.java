@@ -72,6 +72,29 @@ individual source/test/runtime blobs; its whole Git tree is different
 from Java PR #2892. Approval and a full-head executed CI gate are
 mandatory before merging.
 
+## Executed exact-file regression receipt (November 11, 2026)
+
+[Funded carrier run #43151720757](https://github.com/voxletra/voxletra-e2e/actions/runs/43151720757)
+at head `814558eeefc25d404c18ede17abfa0dac810bd04`, tree
+`d7978afebe9795b913f30c325be8f1b3ee9c9670`, executed
+**56/56 JUnit tests, zero failures/errors/skips** with nonempty CI steps:
+
+- Scalar critical compiler/runtime: 7
+- Return-only namespace bootstrap: 6
+- Ingress parser/static binder admission: 11
+- Attached-state schema/source provenance: 19
+- Namespace actor header admission: 13
+
+Git object checks proved **individual** source/test/runtime/fixture blobs
+before Maven executed. They did **not** prove source PR-head tree identity.
+The normal guest code generation, general critical MIR, Native Image,
+LLVM parity and actual AMQP publish/get/ACK remain **NOT_EXECUTED**.
+
+AttoRMQ's [PR #14](https://github.com/atto-poc/atto-rmq-clone.atto/pull/14)
+contains the byte-identical critical scalar fixture. Its
+[exact-head Rust/Go run #43151304374](https://github.com/atto-poc/atto-rmq-clone.atto/actions/runs/43151304374)
+passed, but those reference/source tests are not guest execution.
+
 ## Next P0
 
 Replace this closed hand-recognized source pattern with a general
