@@ -8,6 +8,11 @@ import java.util.regex.Pattern;
 /** Shared invariants for source imports and capability-gated Java host imports. */
 public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
+    /**
+     * Parser-produced syntax marker only; not a runtime import or credential.
+     * Generic quoted imports cannot spell this reserved compiler namespace.
+     */
+    public static final String TELEMETRY_USE_SYNTAX_PATH = "@builtin:std.telemetry";
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
 
@@ -81,7 +86,8 @@ public final class ImportRules {
         // module resolver and scoped using cleanup have been implemented.
         // A handwritten "import ... from \"std.telemetry\"" must not bypass
         // that boundary either. Do NOT expose this as a generic file import.
-        if ("std.telemetry".equals(imported.path())) {
+        if (TELEMETRY_USE_SYNTAX_PATH.equals(imported.path())
+                || "std.telemetry".equals(imported.path())) {
             throw new IllegalArgumentException(
                     "use std.telemetry requires a trusted compiler builtin resolver "
                             + "and scoped-span lifetime lowering; feature is not enabled");
