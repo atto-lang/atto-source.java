@@ -158,4 +158,17 @@ final class AttoRedisBoundedClientsGuestTest {
         assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(blockingSocket));
     }
+
+    @Test void nestedReplyChannelRejectsNonSendRcPayload() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc reject_nested(
+                            Channel<Tuple[int, Channel<Rc<int>>]> requests
+                        ): void {
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("task-safe"), failure::getMessage);
+    }
 }
