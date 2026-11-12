@@ -3,7 +3,7 @@
 // bounded multi-client NIO2 sessions through the reply router.
 // All physical TCP I/O uses async NIO2; only this Atto actor owns Map.
 // No host KV, hex codec, blocking socket, stdio, or WAL.
-define actor CorrelatedBytesNioKvActor implements StreamOperator<Tuple<int, int, Bytes, Bytes>, Tuple<int, string, Bytes>> as
+define actor CorrelatedBytesNioKvActor implements StreamOperator<Tuple[int, int, Bytes, Bytes], Tuple[int, string, Bytes]> as
   let Map<Bytes,Bytes> values;
 
   on_start(): void {
@@ -11,7 +11,7 @@ define actor CorrelatedBytesNioKvActor implements StreamOperator<Tuple<int, int,
     return;
   }
 
-  receive(ActorMail<Tuple<int, int, Bytes, Bytes>> mail): void {
+  receive(ActorMail<Tuple[int, int, Bytes, Bytes]> mail): void {
     const tuple = mail.value;
     const int request_id = tuple[0];
     const int kind = tuple[1];
