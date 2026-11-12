@@ -30,12 +30,23 @@ final class LogicalPunctuationOperatorTest {
         return output.toString(StandardCharsets.UTF_8);
     }
 
+    /** Do not treat a guest program that merely launches as a passing truth-table fixture. */
+    private static int runMainInt(String program) throws Exception {
+        Source source = Source.newBuilder(OresLanguage.ID, program, "logical-punctuation-exit.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            return context.eval(source).asInt();
+        }
+    }
+
     @Test
     void fullTruthTablesAndPrecedenceCompileAndExecute() throws Exception {
         String source = Files.readString(Path.of("contracts", "logical-punctuation-v1",
                 "scalar-parity.atto"), StandardCharsets.UTF_8);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
-        assertDoesNotThrow(() -> run(source));
+        assertEquals(42, runMainInt(source),
+                "canonical shared .atto truth-table must return 42, not merely avoid throwing");
         assertEquals("true\n", run("""
                 pub fnc main(): void {
                   stdio.println(
@@ -56,6 +67,23 @@ final class LogicalPunctuationOperatorTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void parserEncodesPrecedenceAndAssociativityWithoutWordAliases() {
+        var tree = new Parser(new Lexer("a || b ^^ c && d").scan()).parseExpression();
+        var disjunction = assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class, tree);
+        assertEquals("||", disjunction.operator());
+        var exclusive = assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class, disjunction.right());
+        assertEquals("^^", exclusive.operator());
+        assertEquals("&&", assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class,
+                exclusive.right()).operator());
+
+        var chain = new Parser(new Lexer("a ^^ b ^^ c").scan()).parseExpression();
+        var outer = assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class, chain);
+        assertEquals("^^", outer.operator());
+        assertEquals("^^", assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class,
+                outer.left()).operator());
     }
 
     @Test
