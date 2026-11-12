@@ -160,9 +160,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("prechecked code unit id cannot be blank");
         }
-        if (PRECHECKED_PROGRAM.get() != null) {
+        if (PRECHECKED_PROGRAM.get() != null
+                || CHECKED_ACTOR_GUEST.get() != null) {
             throw new IllegalStateException(
-                    "nested prechecked Oreslang program leases are not supported");
+                    "nested or mixed prechecked Oreslang program leases are not supported");
         }
         PrecheckedProgramLease lease = new PrecheckedProgramLease(
                 codeUnitId, sourceText, program);
