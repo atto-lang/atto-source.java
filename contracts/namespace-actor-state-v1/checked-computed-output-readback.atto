@@ -1,0 +1,38 @@
+use namespace foo;
+
+// Experimental closed-world native Atto actor output readback.
+// Real actor computes a checked +1 result after its critical updates,
+// then transfers it through a bounded immutable output channel.
+declare actor Meter;
+
+define state on actor Meter as {
+    let int received: 0;
+    let int budget: 10000;
+}
+
+external mtd (Meter p) init(): void {
+    return;
+}
+
+critical mtd (Meter p) add(int delta): void {
+    p.state.received = p.state.received + delta;
+}
+
+critical mtd (Meter p) debit(int delta): void {
+    p.state.budget = p.state.budget - delta;
+}
+
+external mtd (Meter p) receive(ActorMail<int> mail): void {
+    p.add(mail.value);
+    p.debit(mail.value);
+    p.send(mail.value + 1);
+    return;
+}
+
+pub fnc main(): int {
+    const a = spawn Meter();
+    const b = spawn Meter();
+    a.send(41);
+    b.send(7);
+    return a.output_value();
+}
