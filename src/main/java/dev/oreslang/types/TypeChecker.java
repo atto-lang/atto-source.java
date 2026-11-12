@@ -2015,6 +2015,79 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Initial, intentionally narrow admission for parser-lowered telemetry
+     * scopes. Ordinary method-call checking only proves close_scope exists:
+     * this guard additionally requires a nominal SpanScope and a synchronous,
+     * non-generic, zero-argument void cleanup. Full transitive effect,
+     * ownership-escape and native telemetry-provenance proofs are separate
+     * gates; never report this as a certified ScopedResource protocol.
+     */
+    private void verifyTelemetryScopeContract(
+            Ast.BlockStmt scope, Env env, Set<String> generics, Type self) {
+        if (scope.body().size() != 2
+                || !(scope.body().get(0) instanceof Ast.BindingStmt acquired)
+                || !(scope.body().get(1) instanceof Ast.TryStmt protectedBody)
+                || acquired.kind() != Ast.BindingKind.VAL
+                || !protectedBody.catchBody().isEmpty()
+                || protectedBody.hasCatch()
+                || protectedBody.finallyBody().size() != 1
+                || !(protectedBody.finallyBody().getFirst() instanceof Ast.ExprStmt finalizer)
+                || !(finalizer.expression() instanceof Ast.CallExpr closeCall)
+                || !(closeCall.callee() instanceof Ast.MemberExpr closeMember)
+                || !closeMember.member().equals("close_scope")
+                || !(closeMember.receiver() instanceof Ast.NameExpr alias)
+                || !alias.name().equals(acquired.name())
+                || !closeCall.arguments().isEmpty()
+                || closeCall.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "using telemetry span requires an intact lexical binding and close_scope cleanup");
+        }
+        if (!(acquired.initializer() instanceof Ast.CallExpr create)
+                || !(create.callee() instanceof Ast.MemberExpr factory)
+                || !factory.member().equals("span")
+                || !(factory.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("telemetry")
+                || env.lookup("telemetry") != null
+                || create.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "using telemetry scope requires the unshadowed telemetry.span factory");
+        }
+        Type resourceType = typeOf(acquired.initializer(), env, generics, self);
+        if (!(resourceType instanceof Named nominal)
+                || !(nominal.name().equals("SpanScope")
+                    || nominal.name().equals("telemetry.SpanScope"))
+                || !nominal.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "using telemetry.span must acquire a nominal SpanScope, got " + resourceType);
+        }
+        Ast.ClassDecl owner = classes.get(nominal.name());
+        if (owner == null) owner = classes.get("telemetry.SpanScope");
+        if (owner == null) owner = classes.get("SpanScope");
+        if (owner == null || owner.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "using telemetry.span requires a declared non-actor SpanScope class");
+        }
+        List<Ast.MethodDecl> closing = owner.methods().stream()
+                .filter(method -> method.name().equals("close_scope"))
+                .toList();
+        if (closing.size() != 1) {
+            throw new IllegalArgumentException(
+                    "using SpanScope requires exactly one close_scope() method");
+        }
+        Ast.MethodDecl close = closing.getFirst();
+        if (close.isStatic() || close.isAbstract() || close.async() || close.suspends()
+                || !close.parameters().isEmpty() || !close.genericParameters().isEmpty()
+                || !close.returnType().name().equals("void")
+                || !close.returnType().arguments().isEmpty()
+                || !close.effects().isEmpty()
+                || close.visibility() != Ast.Visibility.PUBLIC) {
+            throw new IllegalArgumentException(
+                    "using SpanScope.close_scope must be public, synchronous, zero-argument,"
+                    + " non-generic, void and free of declared throw/raise/panic effects");
+        }
+    }
+
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.LocalTypeDeclStmt declaration) {
             throw new IllegalArgumentException(
@@ -2165,6 +2238,9 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.BlockStmt block) {
+            if (block.usingTelemetryScope()) {
+                verifyTelemetryScopeContract(block, env, generics, self);
+            }
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
