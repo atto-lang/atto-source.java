@@ -92,4 +92,20 @@ final class NamespaceReceiverOwnershipTest {
         assertTrue(error.getMessage().contains("namespace header must occur once"),
                 error.getMessage());
     }
+
+    @Test
+    void localTypeAliasCannotBeMistakenForForeignActorHomonym() {
+        var sourceSet = Map.of(
+                "src/foo.atto", Parser.parse(
+                        "use namespace foo; declare actor Worker1;"),
+                "src/bar.atto", Parser.parse(
+                        "use namespace bar; define type Worker1 = int; "
+                                + "pub mtd (Worker1 self) big_ly(): void { return; }"));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet(PACKAGE, sourceSet));
+        assertTrue(error.getMessage().contains("has no nominal actor"), error.getMessage());
+        assertTrue(!error.getMessage().contains("EXTERNAL_RECEIVER_NAMESPACE_MISMATCH"),
+                error.getMessage());
+    }
+
 }
