@@ -70,8 +70,8 @@ final class ActorTraceContextPropagationTest {
                 delivered.countDown();
             });
             var upstream = runtime.<String>spawnShared(() -> (message, ctx) -> {
-                downstream.send(message);
                 stillInProducer.set(TaskContext.traceParent());
+                downstream.send(message);
             });
 
             TaskContext saved = TaskContext.pushTraceParent(parent);
