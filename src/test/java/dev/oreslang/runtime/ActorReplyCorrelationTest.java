@@ -28,6 +28,12 @@ final class ActorReplyCorrelationTest {
                 status, bytes("opaque"));
     }
 
+    private static void assertRetired(ActorReplyCorrelation.Pending pending) {
+        var failure = assertThrows(java.util.concurrent.CompletionException.class,
+                pending.response()::join);
+        assertInstanceOf(CancellationException.class, failure.getCause());
+    }
+
     @Test
     void exactReplyAndByteOwnership() throws Exception {
         try (var gate = new ActorReplyCorrelation()) {
@@ -80,7 +86,7 @@ final class ActorReplyCorrelationTest {
             assertFalse(gate.reply(reply(first, "OK")));
             var second = gate.tryBegin(s).orElseThrow();
             assertTrue(gate.cancelRequest(s, second.requestId()));
-            assertThrows(CancellationException.class, second.response()::join);
+            assertRetired(second);
             assertFalse(gate.cancelRequest(s, second.requestId()));
             assertFalse(gate.reply(reply(second, "OK")));
             assertEquals(0, gate.pendingCount());
@@ -97,10 +103,10 @@ final class ActorReplyCorrelationTest {
             var b = gate.tryBegin(oldB).orElseThrow();
             var c = gate.tryBegin(current).orElseThrow();
             assertEquals(1, gate.closeSession(oldA));
-            assertThrows(CancellationException.class, a.response()::join);
+            assertRetired(a);
             assertFalse(gate.reply(reply(a, "OK")));
             assertEquals(1, gate.retireGeneration(1));
-            assertThrows(CancellationException.class, b.response()::join);
+            assertRetired(b);
             assertEquals(1, gate.pendingCount());
             assertTrue(gate.reply(reply(c, "VALUE")));
             assertEquals("VALUE", c.response().get(1, TimeUnit.SECONDS).status());
@@ -133,7 +139,7 @@ final class ActorReplyCorrelationTest {
         gate.close();
         assertEquals(0, gate.pendingCount());
         assertEquals(0, gate.sessionCount());
-        assertThrows(CancellationException.class, pending.response()::join);
+        assertRetired(pending);
         assertFalse(gate.reply(reply(pending, "OK")));
         assertTrue(gate.tryBegin(s).isEmpty());
         assertTrue(gate.openSession(2).isEmpty());
