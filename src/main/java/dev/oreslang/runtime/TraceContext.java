@@ -35,6 +35,9 @@ public final class TraceContext {
 
     /** Child execution context; a span implementation must generate a fresh span ID. */
     public TraceContext child(String childSpanId) {
+        if (spanId.equals(childSpanId)) {
+            throw new IllegalArgumentException("child span ID must differ from the parent span ID");
+        }
         return new TraceContext(traceId, childSpanId, sampled);
     }
 
