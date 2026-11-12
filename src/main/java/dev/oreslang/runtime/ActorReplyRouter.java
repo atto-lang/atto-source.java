@@ -133,6 +133,19 @@ public final class ActorReplyRouter<T> implements AutoCloseable {
         return entry != null && entry.reply.completeFromRuntime(value);
     }
 
+    /**
+     * Called only by the single runtime-owned ActorTaggedReplyDispatcher after
+     * it has consumed and verified an actor output envelope. This method is
+     * intentionally package-private: guest code cannot forge output delivery.
+     */
+    boolean deliverTagged(long clientId, long requestId, T value) {
+        Client client;
+        synchronized (lock) {
+            client = clients.get(clientId);
+        }
+        return client != null && deliver(client, requestId, value);
+    }
+
     public boolean fail(Client client, long requestId, Throwable failure) {
         Objects.requireNonNull(failure, "failure");
         Pending entry = remove(client, requestId);
