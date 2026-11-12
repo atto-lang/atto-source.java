@@ -173,6 +173,8 @@ final class AttoRedisMultiClientNioGuestTest {
             });
 
             CountDownLatch letIdleQuit = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger completedFast =
+                    new java.util.concurrent.atomic.AtomicInteger();
             try {
             // One peer connects first and remains idle: it must not block
             // the other 99 clients from the same Atto-owned Map.
@@ -192,8 +194,6 @@ final class AttoRedisMultiClientNioGuestTest {
                 }
             });
             assertTrue(idleConnected.await(15, TimeUnit.SECONDS));
-            java.util.concurrent.atomic.AtomicInteger completedFast =
-                    new java.util.concurrent.atomic.AtomicInteger();
             List<Future<?>> fast = new ArrayList<>();
             for (int i = 0; i < CLIENTS - 1; i++) {
                 final int index = i;
