@@ -905,12 +905,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation invokableInvocation(Invokable callable, List<?> args) {
-            // Extracted method/static values must enter the same trampoline
-            // slots as direct calls, not recursively start nested trampolines.
-            if (callable instanceof BoundMethod bound) {
-                return bound.receiver.owner.prepareBoundMethodInvocation(
-                        bound.receiver, bound.methodName, objectArguments(args), bound.accessClass);
-            }
+            // Extracted static functions enter the same trampoline slots as
+            // direct calls. Instance methods are deliberately direct-call-only.
             if (callable instanceof StaticFunctionValue function) {
                 return function.owner.prepareStaticValueInvocation(
                         function.klass, function.functionName, objectArguments(args), function.accessClass);
@@ -8766,7 +8762,10 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, classVisitSet())) {
-                    return new BoundMethod(object, name, env == null ? null : env.accessClass());
+                    throw new IllegalArgumentException(
+                            "instance method '" + object.klass.name() + "." + name
+                                    + "' is direct-call-only; use self." + name
+                                    + "(...) or a scoped explicit lambda");
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
@@ -9164,15 +9163,6 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
-            CallableSelector selector = CallableSelector.instance(name, args.size());
-            Ast.MethodDecl method = findMethod(receiver.klass, selector);
-            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
-            if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
-            return methodInvocation(receiver, method, args);
-        }
-
         private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.staticFunction(name, args.size());
             Ast.MethodDecl fn = findStaticFunction(klass, selector);
@@ -9225,18 +9215,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * Go-style method value: method code remains shared in the class method
-         * table.  Extraction materializes only the receiver identity plus the
-         * statically known method-name family; callback arity selects the same
-         * closed-world CallableSelector slot used by direct calls.
-         *
-         * <p>Direct receiver.method(...) calls bypass this object entirely, so
-         * ordinary method invocation has no bound-method allocation.  An AOT
-         * backend may lower a non-escaping value to a register/stack "fat
-         * pointer" (receiver + resolved slot) instead of heap allocating it.
-         */
-        /**
-         * First-class static callable counterpart to BoundMethod.  No receiver
+         * First-class static callable value. No instance receiver
          * is captured; only the owning class and shared static slot family are
          * retained.  Invocation arity selects the closed-world static selector.
          */
@@ -9255,22 +9234,6 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override public Object call(List<Object> arguments) {
                 return owner.invoke(owner.prepareStaticValueInvocation(klass, functionName, arguments, accessClass));
-            }
-        }
-
-        private static final class BoundMethod implements Invokable {
-            private final OresObject receiver;
-            private final String methodName;
-            private final Ast.ClassDecl accessClass;
-
-            private BoundMethod(OresObject receiver, String methodName, Ast.ClassDecl accessClass) {
-                this.receiver = receiver;
-                this.methodName = methodName;
-                this.accessClass = accessClass;
-            }
-
-            @Override public Object call(List<Object> arguments) {
-                return receiver.owner.invoke(receiver.owner.prepareBoundMethodInvocation(receiver, methodName, arguments, accessClass));
             }
         }
 
