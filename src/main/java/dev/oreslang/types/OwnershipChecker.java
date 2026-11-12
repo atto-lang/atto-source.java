@@ -4433,6 +4433,15 @@ public final class OwnershipChecker {
             return isVerifiedActorReference(type) ? scalar : none;
         }
 
+        // A completed accept creates a uniquely owned NIO2 connection.
+        // Independent tasks may MOVE (never Copy/Share) this exact handle.
+        // The per-socket native runtime enforces one pending I/O operation
+        // per direction; the caller loses the handle on task capture.
+        if (name.equals("NioConnection")) {
+            return type.arguments().isEmpty() && findClass("NioConnection") == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+
         // Task-owned authority and actor-turn/foreign capabilities do not
         // become Send merely by being wrapped in an owned binding.
         if (switch (name) {
