@@ -115,6 +115,26 @@ final class CoreProtocolsGuestTest {
     }
 
     @Test
+    void canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode() throws Exception {
+        // Positive compiler/guest tests: not merely parser acceptance and not
+        // reflection on Java-side implementations. Native .atto source owns
+        // both nominal trait implementations and method bodies.
+        for (String fixture : new String[]{
+                "hash-positive.atto", "clone-positive.atto"}) {
+            Path source = Path.of("tests", "fixtures",
+                    "core-protocols-java-execution", fixture);
+            assertTrue(Files.isRegularFile(source),
+                    "missing real .atto guest fixture " + fixture);
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+            var execution = LinkedProgramRunner.runWithExitStatus(
+                    source, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(42, execution.exitStatus(),
+                    "compiled Atto guest must invoke Hash/Clone methods: " + fixture);
+        }
+    }
+
+    @Test
     void canonicalAttoNegativeFixturesRejectInvalidConformance() {
         for (String fixture : new String[]{
                 "eq-missing-negative.atto", "eq-wrong-signature-negative.atto",
