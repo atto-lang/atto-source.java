@@ -189,6 +189,9 @@ public final class CriticalActorTruffleV1 {
         private final long[] handles;
         private final ActorStateLoans loans = new ActorStateLoans(0);
         private volatile boolean retired;
+        // Any failed physical commit may leave a partial multi-field update.
+        // Do not allow a later mailbox turn to observe or reuse that state.
+        private volatile boolean commitPoisoned;
 
         private OwnedState(ActorRuntime.ActorId owner,
                            SharedCodeImageStore.CodeImage image,
@@ -204,7 +207,8 @@ public final class CriticalActorTruffleV1 {
         private void require(ActorRuntime.ActorInboxMail<Object> mail,
                              ActorRuntime.ActorContext<Object> context,
                              ActorStateLoans.ExclusiveLoan loan) {
-            if (retired || ActorRuntime.currentActorRuntime() != context.runtime()
+            if (retired || commitPoisoned
+                    || ActorRuntime.currentActorRuntime() != context.runtime()
                     || !owner.equals(ActorRuntime.currentActorId().orElse(null))
                     || context.currentMail().orElse(null) != mail
                     || mail.recipient() != owner
@@ -216,7 +220,7 @@ public final class CriticalActorTruffleV1 {
         private ActorStateLoans.ExclusiveLoan begin(
                 ActorRuntime.ActorInboxMail<Object> mail,
                 ActorRuntime.ActorContext<Object> context) {
-            if (retired || context.self().id() != owner) {
+            if (retired || commitPoisoned || !owner.equals(context.self().id())) {
                 throw new SecurityException("actor retired or has foreign state");
             }
             var grant = loans.acquireAsync(mail);
@@ -249,11 +253,13 @@ public final class CriticalActorTruffleV1 {
             require(mail, context, loan);
             if (values.length != handles.length)
                 throw new SecurityException("critical field layout changed");
-            for (int i = 0; i < handles.length; i++) {
-                if (!arena.putLong(handles[i], 0, values[i])) {
-                    throw new IllegalStateException("actor state arena retired during commit");
-                }
-            }
+            // All changes are staged in a detached array before publication.
+            // A physical failure after one slot write cannot be rolled back
+            // reliably on a retired arena; quarantine the entire actor-owned
+            // state rather than allowing a mixed-version read on the next turn.
+            writeFieldsOrQuarantine(values,
+                    (slot, value) -> arena.putLong(handles[slot], 0, value),
+                    () -> commitPoisoned = true);
         }
 
         /**
@@ -271,6 +277,34 @@ public final class CriticalActorTruffleV1 {
             retired = true;
             loans.close();
             arena.close();
+        }
+    }
+
+    @FunctionalInterface
+    interface ScalarFieldWriter {
+        boolean write(int slot, long value);
+    }
+
+    /**
+     * Publish a staged scalar state image. A failed slot write (including an
+     * exception) must poison the owner before the caller can release its
+     * exclusive loan. In particular it must never return partial success.
+     * Package-scoped to exercise the failure path with deterministic writers.
+     */
+    static void writeFieldsOrQuarantine(
+            long[] values, ScalarFieldWriter writer, Runnable quarantine) {
+        Objects.requireNonNull(values, "staged actor fields");
+        Objects.requireNonNull(writer, "actor-owned field writer");
+        Objects.requireNonNull(quarantine, "actor quarantine action");
+        try {
+            for (int i = 0; i < values.length; i++) {
+                if (!writer.write(i, values[i])) {
+                    throw new IllegalStateException("actor state arena retired during commit");
+                }
+            }
+        } catch (RuntimeException | Error failure) {
+            quarantine.run();
+            throw failure;
         }
     }
 
