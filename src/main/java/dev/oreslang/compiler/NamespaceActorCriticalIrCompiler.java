@@ -79,6 +79,19 @@ final class NamespaceActorCriticalIrCompiler {
         return compiled.descriptor();
     }
 
+    /**
+     * Compiler-only fact derived from the fully checked native receive AST.
+     * A guest cannot turn an arbitrary ActorRef into an output source by
+     * choosing a method name in main().
+     */
+    static boolean emitsScalarOutput(ActorRuntime.ActorCodeExecutor executor) {
+        if (!(executor instanceof Executable compiled)
+                || compiled.descriptor().codeImage() != compiled.codeImage()) {
+            throw new SecurityException("actor output requires a verified compiler code image");
+        }
+        return compiled.emitReceivedValue();
+    }
+
     private record InitialField(String name, long value) { }
 
     /**
