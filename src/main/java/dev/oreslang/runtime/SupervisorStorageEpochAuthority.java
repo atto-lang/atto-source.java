@@ -23,7 +23,7 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
     /** Port to the trusted, exclusive-writer durable generation ledger. */
     public interface DurableGenerationStore {
         long currentGeneration();
-        long reserveAndSyncNext(long expectedPrevious);
+        long reserveAndSyncNext(long expectedPrevious, String runtimeIssuedToken);
     }
 
     public static final class Activation {
@@ -99,14 +99,17 @@ public final class SupervisorStorageEpochAuthority implements AutoCloseable {
                 throw new IllegalStateException("supervisor generation exhausted");
             }
             try {
-                long persisted = store.reserveAndSyncNext(expected);
+                // Mint the runtime capability BEFORE storage FENCE, so the
+                // durable helper never accepts a token chosen by the bridge.
+                byte[] nonce = new byte[16];
+                random.nextBytes(nonce);
+                String token = HexFormat.of().formatHex(nonce);
+                long persisted = store.reserveAndSyncNext(expected, token);
                 if (persisted != expected + 1) {
                     throw new SecurityException("durable generation was not exactly incremented");
                 }
                 generation = persisted;
-                byte[] nonce = new byte[16];
-                random.nextBytes(nonce);
-                active = new Activation(this, persisted, HexFormat.of().formatHex(nonce));
+                active = new Activation(this, persisted, token);
                 return active;
             } catch (RuntimeException | Error ambiguous) {
                 poisoned = true;
