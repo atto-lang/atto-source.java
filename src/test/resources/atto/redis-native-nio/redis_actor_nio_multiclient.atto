@@ -1,0 +1,121 @@
+// Concurrent Atto Redis experiment: one KV actor owns the Map for all clients.
+// NIO2 accept/read/write/close stay callback-driven; guest never blocks carriers.
+// One output-pump task routes (client-id, status, hex-value) into per-client
+// bounded response channels. The network tasks never consume worker.outputs.
+// Finite client-count fixture intentionally isolates concurrent correctness;
+// not a production listener, WAL, TTL, replication, or throughput claim.
+define actor FramedNioSharedKvActor as
+  let Map<string,string> values;
+
+  on_start(): void {
+    self.values = ~map<string,string>();
+    return;
+  }
+
+  receive(ActorMail<Tuple<int,int,string,string>> mail): void {
+    const Tuple<int,int,string,string> command = mail.value;
+    const int client_id = command[0];
+    const int kind = command[1];
+    const string key = command[2];
+    const string value = command[3];
+    if kind == 5; do
+      self.send((-1, "STOP", ""));
+      self.end();
+      return;
+    fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send((client_id, "OK", ""));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send((client_id, "NIL", ""));
+      else
+        self.send((client_id, "VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send((client_id, "ONE", ""));
+      else
+        self.send((client_id, "ZERO", ""));
+      fi
+      return;
+    fi
+    self.send((client_id, "ERR", ""));
+    return;
+  }
+end
+
+pub async routine main(): void {
+  const int client_count = 8;
+  val worker = spawn FramedNioSharedKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16401);
+  let Array<Channel<Tuple<string,string>>> reply_channels = new Array<Channel<Tuple<string,string>>>();
+  for (let int i = 0; i < client_count; i = i + 1) {
+    reply_channels.add(Channel.new<Tuple<string,string>>(32));
+  }
+
+  // This is the only reader of the actor's output stream. Each connection
+  // reads only its own reply channel, so replies cannot be stolen by peers.
+  val Future<void> distributor = task {
+    loop {
+      val output = (await worker.outputs.next()).value.unwrap();
+      const Tuple<int,string,string> response = output.value;
+      const int client_id = response[0];
+      if client_id == -1; do return; fi
+      await nb writech reply_channels.get(client_id), (response[1], response[2]);
+    }
+  };
+
+  let Array<Future<void>> sessions = new Array<Future<void>>();
+  for (let int i = 0; i < client_count; i = i + 1) {
+    val socket = await listener.accept_async();
+    const int client_id = i;
+    const Channel<Tuple<string,string>> inbox = reply_channels.get(i);
+    val Future<void> session = task {
+      loop {
+        val frame = await socket.read_resp2_hex_async();
+        if frame.size == 0; do
+          await socket.close_async();
+          return;
+        fi
+        const string op = frame[0];
+        if op == "QUIT" && frame.size == 1; do
+          await socket.write_resp2_hex_async("OK", "");
+          await socket.close_async();
+          return;
+        fi
+        if op == "PING" && frame.size == 1; do
+          await socket.write_resp2_hex_async("PONG", "");
+        else
+          let int kind = 0;
+          if op == "GET" && frame.size == 2 then kind = 2; fi
+          if op == "SET" && frame.size == 3 then kind = 3; fi
+          if op == "DEL" && frame.size == 2 then kind = 4; fi
+          let string key = "";
+          let string value = "";
+          if frame.size >= 2 then key = frame[1]; fi
+          if frame.size >= 3 then value = frame[2]; fi
+          worker.send((client_id, kind, key, value));
+          const Tuple<string,string> reply = await nb readch inbox;
+          await socket.write_resp2_hex_async(reply[0], reply[1]);
+        fi
+      }
+    };
+    sessions.add(session);
+  }
+
+  for (let int i = 0; i < client_count; i = i + 1) {
+    await sessions.get(i);
+  }
+  await listener.close_async();
+  worker.send((-1, 5, "", ""));
+  await distributor;
+  await worker.get_done();
+  return;
+}
