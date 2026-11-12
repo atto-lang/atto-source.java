@@ -2053,6 +2053,16 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "using telemetry scope requires the unshadowed telemetry.span factory");
         }
+        // The scope alias is an affine capability, not an ordinary
+        // shadowable binding. Reject collisions before the lexical binding
+        // is introduced, including nested scopes with the same alias.
+        // Otherwise a nested cleanup or observer could resolve a different
+        // live resource under the same source-level name.
+        if (env.lookup(acquired.name()) != null) {
+            throw new IllegalArgumentException(
+                    "using SpanScope alias must not shadow an existing local or live scope: "
+                            + acquired.name());
+        }
         Type resourceType = typeOf(acquired.initializer(), env, generics, self);
         if (!(resourceType instanceof Named nominal)
                 || !(nominal.name().equals("SpanScope")
