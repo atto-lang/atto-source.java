@@ -1,0 +1,60 @@
+// Atto-owned binary Redis KV with explicit per-request reply correlation.
+// Stage 1 is deliberately ONE client: next PR binds typed request IDs to
+// bounded multi-client NIO2 sessions through the reply router.
+// All physical TCP I/O uses async NIO2; only this Atto actor owns Map.
+// No host KV, hex codec, blocking socket, stdio, or WAL.
+define actor CorrelatedBytesNioKvActor implements StreamOperator<Tuple[int, int, Bytes, Bytes], Tuple[int, string, Bytes]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, int, Bytes, Bytes]> mail): void {
+    const tuple = mail.value;
+    const int request_id = tuple[0];
+    const int kind = tuple[1];
+    const Bytes key = tuple[2];
+    const Bytes value = tuple[3];
+
+    if kind == 5; do self.end(); return; fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send((request_id, "OK", value));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send((request_id, "NIL", key));
+      else
+        self.send((request_id, "VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send((request_id, "ONE", key));
+      else
+        self.send((request_id, "ZERO", key));
+      fi
+      return;
+    fi
+    self.send((request_id, "ERR", key));
+    return;
+  }
+end
+
+// Bounded multi-client NIO2 session engine owns ONLY socket/request metadata.
+// The one Atto actor above remains the sole owner of all key/value state.
+// QUIT/EOF ends one client; the actor retires after both sessions are closed.
+pub async routine main(): void {
+  val worker = spawn CorrelatedBytesNioKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  await listener.serve_redis_actor_async(worker, 2);
+  await listener.close_async();
+  worker.stop();
+  await worker.get_done();
+}
