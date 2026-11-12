@@ -134,7 +134,8 @@ final class NamespaceActorScalarTurnCompilerTest {
                 SOURCE.replace("c.bump();", "b.bump();"),
                 SOURCE.replace("critical mtd (Counter c) bump", "pub critical mtd (Counter c) bump"),
                 SOURCE.replace("let int count", "let bool count"),
-                SOURCE.replace("return;\n            }\n            critical", "return;\n            }\n            pub fnc other(): void { return; }\n            critical")
+                SOURCE.replace("critical mtd (Counter c) bump",
+                        "pub fnc other(): void { return; }\ncritical mtd (Counter c) bump")
         };
         try (SharedCodeImageStore store = new SharedCodeImageStore()) {
             for (int i = 0; i < mutations.length; i++) {
