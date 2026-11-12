@@ -132,12 +132,15 @@ public final class PackageNamespaceBuild {
             dev.oreslang.types.ActorContractWitness.Result contractWitness,
             ActorMethodIndex actorMethods,
             Map<String, String> sourceSha256,
-            String manifestSha256) {
+            String manifestSha256,
+            Map<ActorMethodIndex.ActorKey, DeclaredActorDescriptor> descriptors) {
         public ActorAudit {
             java.util.Objects.requireNonNull(contractWitness);
             java.util.Objects.requireNonNull(actorMethods);
             sourceSha256 = java.util.Collections.unmodifiableMap(
                     new LinkedHashMap<>(sourceSha256));
+            descriptors = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(descriptors));
         }
     }
 
@@ -183,8 +186,10 @@ public final class PackageNamespaceBuild {
             hashes.put(source.getKey(), java.util.HexFormat.of().formatHex(
                     digest(source.getValue().getBytes(StandardCharsets.UTF_8))));
         }
-        return new ActorAudit(witness, index, hashes,
-                java.util.HexFormat.of().formatHex(manifestFingerprint));
+        String manifestHash = java.util.HexFormat.of().formatHex(manifestFingerprint);
+        var descriptors = DeclaredActorDescriptor.collect(
+                packageIdentity, witness, index, snapshot.parsed(), hashes, manifestHash);
+        return new ActorAudit(witness, index, hashes, manifestHash, descriptors);
     }
 
     /**
