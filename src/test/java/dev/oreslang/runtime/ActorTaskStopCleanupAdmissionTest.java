@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.parser.Parser;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -12,8 +11,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * STOP permits already admitted task lexical cleanup, not new task admission.
- * Running the assertions from a real cleanup-only actor scheduler continuation
- * catches the case where sourceScheduler() remains allocated after STOP.
+ * A nested actor-owned task requests STOP after the parent has yielded into
+ * Await; this also works for UNTRUSTED actors, whose quota forbids unrelated
+ * synchronous mailbox turns while a logical task cohort is suspended.
+ * The cleanup assertions catch sourceScheduler() remaining reachable after STOP.
  */
 @Timeout(30)
 final class ActorTaskStopCleanupAdmissionTest {
@@ -22,7 +23,6 @@ final class ActorTaskStopCleanupAdmissionTest {
             throws Exception {
         for (ActorRuntime.ActorKind kind : ActorRuntime.ActorKind.values()) {
             OresFuture<Integer> unresolved = new OresFuture<>();
-            CountDownLatch afterSuspension = new CountDownLatch(1);
             AtomicInteger initialTurns = new AtomicInteger();
             AtomicInteger cleanupTurns = new AtomicInteger();
             AtomicReference<Throwable> assertionFailure = new AtomicReference<>();
@@ -51,12 +51,6 @@ final class ActorTaskStopCleanupAdmissionTest {
                             ActorRuntime.ActorContext<Object> context) {
                         assertEquals("Worker", type);
                         assertEquals(context.self().id(), state.ownerActorId());
-                        if ("marker".equals(mail.value())) {
-                            // Source task turns take priority over user mail.
-                            // This receipt proves the initial turn suspended.
-                            afterSuspension.countDown();
-                            return;
-                        }
                         assertEquals("start", mail.value());
                         context.runtime().startActorTask(
                                 new OresScheduler.CleanupAwareTask<Integer>() {
@@ -64,6 +58,19 @@ final class ActorTaskStopCleanupAdmissionTest {
                                     public OresScheduler.Step<Integer> resume(
                                             OresScheduler.Resume resume) {
                                         if (resume.initial()) {
+                                            // A nested task on this SAME actor
+                                            // scheduler requests STOP on its
+                                            // next turn. The parent must have
+                                            // yielded into WAITING first; no
+                                            // host sleep/marker/other actor mail
+                                            // can bypass untrusted quota rules.
+                                            context.runtime().startActorTask(stopTurn -> {
+                                                assertTrue(stopTurn.initial());
+                                                assertEquals(context.self().id(),
+                                                        ActorRuntime.currentActorId().orElseThrow());
+                                                context.self().stop();
+                                                return OresScheduler.done(0);
+                                            });
                                             initialTurns.incrementAndGet();
                                             return OresScheduler.await(unresolved);
                                         }
@@ -96,13 +103,10 @@ final class ActorTaskStopCleanupAdmissionTest {
                 try {
                     actor.ready().get(5, TimeUnit.SECONDS);
                     actor.send("start");
-                    actor.send("marker");
-                    assertTrue(afterSuspension.await(5, TimeUnit.SECONDS),
-                            kind + " source Task did not suspend before STOP");
-                    assertEquals(1, initialTurns.get());
-
-                    actor.stop();
+                    // STOP is scheduled by the nested actor Task only after
+                    // the parent has returned an asynchronous Await.
                     actor.done().get(5, TimeUnit.SECONDS);
+                    assertEquals(1, initialTurns.get());
                     assertNull(assertionFailure.get(),
                             () -> "cleanup admission guard failed: " + assertionFailure.get());
                     assertEquals(1, cleanupTurns.get(),
