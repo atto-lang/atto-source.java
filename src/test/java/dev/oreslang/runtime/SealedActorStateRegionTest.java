@@ -346,6 +346,15 @@ final class SealedActorStateRegionTest {
                         assertThrows(IllegalStateException.class,
                                 () -> region.write(view -> OresFuture.completed("async")),
                                 "critical callbacks cannot return an async Future");
+                        assertThrows(IllegalStateException.class,
+                                () -> region.write(view ->
+                                        java.util.concurrent.CompletableFuture.completedFuture("async")),
+                                "CompletionStage must not leak across a critical scope");
+                        java.util.concurrent.FutureTask<String> hostFuture =
+                                new java.util.concurrent.FutureTask<>(() -> "async");
+                        assertThrows(IllegalStateException.class,
+                                () -> region.write(view -> hostFuture),
+                                "host Future must not escape a critical scope");
                         assertEquals(0, region.activeLoanCount(),
                                 "callback cleanup must release every loan");
                     } catch (Throwable error) {
