@@ -967,10 +967,11 @@ public final class OresScheduler implements AutoCloseable {
             // or duplicate dispatch must never clear another running dispatch's
             // executing flag, watchdog identity or quota-retirement barrier.
             AtomicBoolean ownsExecution = new AtomicBoolean();
+            long enqueuedAt = CorePerf.start();
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
-                        runTurn(ownsExecution);
+                        runTurn(ownsExecution, enqueuedAt);
                     }
                 }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
             } catch (RuntimeException | Error rejected) {
@@ -979,7 +980,7 @@ public final class OresScheduler implements AutoCloseable {
             }
         }
 
-        private void runTurn(AtomicBoolean ownsExecution) {
+        private void runTurn(AtomicBoolean ownsExecution, long enqueuedAt) {
             // Claim the physical guest execution lease BEFORE transitioning to
             // RUNNING. Otherwise cancellation can observe RUNNING with
             // executing=false, announce quiescence and release actor memory
@@ -993,6 +994,10 @@ public final class OresScheduler implements AutoCloseable {
             }
             ownsExecution.set(true);
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            // This records scheduler queue/admission delay, not task.resume() work.
+            // Each physical dispatch owns its timestamp; stale runs cannot erase
+            // the active dispatch's clock even on a reused carrier.
+            CorePerf.end(CorePerf.SCHEDULER_TURN_QUEUE, enqueuedAt);
 
             ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(onWatchdogOverrun);
             watchdogLease = lease;
