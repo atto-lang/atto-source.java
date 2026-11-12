@@ -70,6 +70,10 @@ public final class ActorStateBinder {
         Map<Slot, Ast.Decl> actors = new LinkedHashMap<>();
         Map<Slot, String> actorOrigins = new LinkedHashMap<>();
         Map<Slot, Set<String>> existingMembers = new LinkedHashMap<>();
+        // Effect domains must not share an actor method name until the
+        // checker has a single, owner-bound dispatch and overload identity.
+        Map<Slot, Set<String>> ordinaryActorMethods = new LinkedHashMap<>();
+        Map<Slot, Set<String>> criticalNames = new LinkedHashMap<>();
         Map<Slot, Set<String>> criticalSignatures = new LinkedHashMap<>();
         Map<Slot, Binding> states = new LinkedHashMap<>();
         Map<Ast.Decl, String> origins = new IdentityHashMap<>();
@@ -128,19 +132,41 @@ public final class ActorStateBinder {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.ExternalActorMethodDecl method) {
                         Slot slot = new Slot(packageIdentity, namespace, method.actorName());
+                        if (actors.containsKey(slot)) {
+                            if (criticalNames.getOrDefault(slot, Set.of()).contains(method.name())) {
+                                throw new IllegalArgumentException(
+                                        "critical and ordinary actor methods share dispatch name: "
+                                                + method.name());
+                            }
+                            ordinaryActorMethods.computeIfAbsent(
+                                    slot, ignored -> new LinkedHashSet<>()).add(method.name());
+                        }
                         existingMembers.computeIfAbsent(
                                 slot, ignored -> new LinkedHashSet<>()).add(method.name());
                     }
                     if (decl instanceof Ast.CriticalActorMethodDecl method) {
                         Slot slot = new Slot(packageIdentity, namespace, method.actorName());
-                        if (!actors.containsKey(slot)) {
+                        Ast.Decl owner = actors.get(slot);
+                        if (owner == null) {
                             throw new IllegalArgumentException(
                                     "critical actor method has no nominal actor in package namespace: "
                                             + method.actorName());
                         }
+                        if (!(owner instanceof Ast.StandaloneActorDecl)) {
+                            throw new IllegalArgumentException(
+                                    "out-of-line critical actor method requires 'declare actor': "
+                                            + method.actorName());
+                        }
+                        if (ordinaryActorMethods.getOrDefault(slot, Set.of()).contains(method.name())) {
+                            throw new IllegalArgumentException(
+                                    "critical and ordinary actor methods share dispatch name: "
+                                            + method.name());
+                        }
                         String signature = method.name() + "/" + method.parameters().size();
                         if (!criticalSignatures.computeIfAbsent(
-                                slot, ignored -> new LinkedHashSet<>()).add(signature)) {
+                                slot, ignored -> new LinkedHashSet<>()).add(signature)
+                                || !criticalNames.computeIfAbsent(
+                                        slot, ignored -> new LinkedHashSet<>()).add(method.name())) {
                             throw new IllegalArgumentException(
                                     "duplicate private critical actor method slot: " + signature);
                         }
