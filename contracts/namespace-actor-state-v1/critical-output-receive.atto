@@ -1,0 +1,30 @@
+use namespace foo;
+
+// Checked native Atto receive emits a copied int via bounded runtime
+// ActorOutput channel AFTER both critical writes; no state alias escapes.
+// Compiler-internal IR gate; this is not general guest actor lowering.
+declare actor Probe;
+
+define state on actor Probe as {
+    let int received: 0;
+    let int budget: 10000;
+}
+
+external mtd (Probe p) init(): void {
+    return;
+}
+
+critical mtd (Probe p) add(int delta): void {
+    p.state.received = p.state.received + delta;
+}
+
+critical mtd (Probe p) debit(int delta): void {
+    p.state.budget = p.state.budget - delta;
+}
+
+external mtd (Probe p) receive(ActorMail<int> mail): void {
+    p.add(mail.value);
+    p.debit(mail.value);
+    p.send(mail.value);
+    return;
+}
