@@ -30,8 +30,10 @@ public class LogicalTraceScopeSmoke {
     } finally { pool.shutdownNow(); }
     check(!rt.resume(c),"replayed continuation rejected");
     check(rt.exit(inner, ScopedTelemetryProbe.Outcome.OK)!=null,"inner exited");
+    check(inner.detached(),"inner scope releases parent and actor graph");
     check(rt.context().spanId()==8,"parent restored");
     check(rt.exit(outer, ScopedTelemetryProbe.Outcome.OK)!=null,"outer exited");
+    check(outer.detached(),"outer scope releases its owner and probe");
     check(rt.exit(outer, ScopedTelemetryProbe.Outcome.OK)==null,"double exit denied");
     check(rt.context().spanId()==7,"inherited restored");
     check(rt.retire(ScopedTelemetryProbe.Outcome.CANCELLED).isEmpty(),"empty retirement");
@@ -42,6 +44,7 @@ public class LogicalTraceScopeSmoke {
     var frozen=stopped.suspend();
     var outcomes=stopped.retire(ScopedTelemetryProbe.Outcome.ACTOR_STOPPED);
     check(outcomes.size()==2,"cancel drains all nested scopes");
+    check(st1.detached() && st2.detached(),"STOP clears both nested scope graphs");
     check(outcomes.stream().allMatch(q->q.outcome()==ScopedTelemetryProbe.Outcome.ACTOR_STOPPED),"stop status");
     check(stopped.depth()==0 && stopped.isRetired(),"retired state");
     check(!stopped.resume(frozen),"retire invalidates ticket");
