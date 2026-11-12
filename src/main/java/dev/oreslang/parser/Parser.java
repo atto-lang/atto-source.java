@@ -2549,19 +2549,36 @@ public final class Parser {
             } finally {
                 suppressRefinementOperators = previousRefinementMode;
             }
-            if (!(resource instanceof Ast.CallExpr call)
-                    || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !member.member().equals("borrow")
-                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+            // This is a syntactic distinction only. The checker must resolve
+            // the span factory to the trusted std.telemetry symbol; spelling
+            // a user method ".span" must never grant compiler-owned cleanup.
+            boolean borrowed = resource instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.MemberExpr member
+                    && member.member().equals("borrow")
+                    && call.arguments().isEmpty() && !call.typeArgumentsPresent();
+            boolean telemetrySpan = resource instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.MemberExpr member
+                    && member.member().equals("span")
+                    && !call.typeArgumentsPresent() && call.arguments().size() <= 2;
+            if (!borrowed && !telemetrySpan) {
                 throw error(previous(),
-                        "using borrowed scope requires a zero-argument resource.borrow() call");
+                        "using scope requires resource.borrow() with no arguments or telemetry.span(...)");
             }
-            consume(AS, "using borrowed scope requires 'as <view>'");
-            Token name = consume(IDENT, "using borrowed scope requires a binding name");
+            consume(AS, borrowed
+                    ? "using borrowed scope requires 'as <view>'"
+                    : "using telemetry span requires 'as <span>'");
+            Token name = consume(IDENT, borrowed
+                    ? "using borrowed scope requires a binding name"
+                    : "using telemetry span requires a binding name");
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using borrowed scope needs a named, usable view binding");
+                throw error(name, borrowed
+                        ? "using borrowed scope needs a named, usable view binding"
+                        : "using telemetry span needs a named, usable binding");
             }
-            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+            List<Ast.Stmt> body = parseBlock();
+            return borrowed
+                    ? new Ast.UsingBorrowStmt(resource, name.lexeme(), body)
+                    : new Ast.UsingTelemetrySpanStmt(resource, name.lexeme(), body);
         }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
@@ -4145,6 +4162,8 @@ public final class Parser {
             }
             if (stmt instanceof Ast.UsingBorrowStmt loan
                     && valueArmPrefixContainsReturn(loan.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt span
+                    && valueArmPrefixContainsReturn(span.body())) return true;
         }
         return false;
     }
