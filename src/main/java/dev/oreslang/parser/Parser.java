@@ -118,6 +118,15 @@ public final class Parser {
             }
         }
         String namespace = null;
+        // Both "namespace foo;" and "use namespace foo;" name the SAME
+        // compilation-unit namespace. "use" is contextual here, not a new
+        // globally reserved keyword or an import of another package's actor
+        // authority. Each file supplies its own explicit namespace header.
+        if (isContextualIdentifier("use")
+                && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == NAMESPACE) {
+            advance(); // contextual use
+        }
         if (match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
