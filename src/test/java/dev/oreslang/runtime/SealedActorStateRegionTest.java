@@ -156,6 +156,8 @@ final class SealedActorStateRegionTest {
                   state { let int count = 0; }
                 end
                 """);
+        var actorSchema = (dev.oreslang.ast.Ast.ClassDecl)
+                parsed.modules().getFirst().declarations().getFirst();
         try (var store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime()) {
             var code = store.publish("nats-sealed-region-test", parsed);
@@ -172,7 +174,8 @@ final class SealedActorStateRegionTest {
                     assertEquals("AcceptanceCounter", typeName);
                     assertEquals(context.self().id(),
                             ActorRuntime.currentActorId().orElseThrow());
-                    var region = SealedActorStateRegion.allocate(Map.of("count", 0L));
+                    var region = SealedActorStateRegion.allocateFromSealedDeclaration(
+                            actorSchema);
                     retained.set(region);
                     return region;
                 }
