@@ -4419,7 +4419,8 @@ public final class Parser {
 
     private Ast.Expr parseLogicalOr() {
         Ast.Expr expr = parseLogicalXor();
-        while (!isChannelCallbackDelimiter() && matchAdjacentPair(PIPE)) {
+        while (!isChannelCallbackDelimiter()
+                && (matchAdjacentPair(PIPE) || matchLogicalWord("OR"))) {
             expr = new Ast.BinaryExpr("||", expr, parseLogicalXor());
         }
         return expr;
@@ -4435,14 +4436,18 @@ public final class Parser {
 
     private Ast.Expr parseLogicalXor() {
         Ast.Expr expr = parseLogicalAnd();
-        if (matchAdjacentPair(CARET)) throw error(previous(),
-                "'^^' is reserved and is not AttoLang source syntax; use Xor(a, b)");
+        // XOR evaluates both operands exactly once, left to right. Unlike
+        // calls to Xor(), the symbolic operator is not subject to shadowing.
+        while (matchAdjacentPair(CARET) || matchLogicalWord("XOR")) {
+            expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
+        }
         return expr;
     }
 
     private Ast.Expr parseLogicalAnd() {
         Ast.Expr expr = parseBitwiseOr();
-        while (matchAdjacentPair(AMP)) expr = new Ast.BinaryExpr("&&", expr, parseBitwiseOr());
+        while (matchAdjacentPair(AMP) || matchLogicalWord("AND"))
+            expr = new Ast.BinaryExpr("&&", expr, parseBitwiseOr());
         return expr;
     }
 
@@ -5652,6 +5657,13 @@ public final class Parser {
                 || !adjacent(first, second) || !adjacent(second, third)) return false;
         advance();
         advance();
+        advance();
+        return true;
+    }
+
+    /** Case-sensitive uppercase infix aliases; do not consume ordinary names. */
+    private boolean matchLogicalWord(String spelling) {
+        if (!check(IDENT) || !peek().lexeme().equals(spelling)) return false;
         advance();
         return true;
     }

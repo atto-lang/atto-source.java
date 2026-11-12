@@ -10265,6 +10265,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
+                case "^^" -> truth(left) ^ truth(right);
                 case "<<" -> integralLong(left) << shiftDistance(right);
                 case ">>" -> integralLong(left) >> shiftDistance(right);
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);
