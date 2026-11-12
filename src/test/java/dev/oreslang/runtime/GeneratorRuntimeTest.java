@@ -700,4 +700,87 @@ final class GeneratorRuntimeTest {
             assertThrows(java.util.NoSuchElementException.class, iterator::next);
         }
     }
+
+    @Test
+    void directPullConsumesIteratorPrefetchBeforeAdvancingProducer() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(11);
+                 emitter.emit(22);
+                 emitter.emit(33);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            assertTrue(iterator.hasNext(), "repeated peek must not advance");
+            assertEquals(11, generator.nextStep().value(),
+                    "direct API must consume the prefetched first yield");
+            assertEquals(22, iterator.next(),
+                    "Iterator.next must not return the already claimed first yield");
+            assertTrue(iterator.hasNext());
+            assertEquals(33, generator.nextStep().value());
+            assertFalse(iterator.hasNext());
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void directPullAndIteratorNextShareOneOrderedActivation() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(41);
+                 emitter.emit(42);
+             })) {
+            assertEquals(41, generator.nextStep().value());
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            assertEquals(42, iterator.next());
+            assertFalse(iterator.hasNext());
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void closeDiscardsPrefetchForBothDirectAndIteratorConsumers() {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(runtime, emitter -> {
+                 emitter.emit(7);
+                 emitter.emit(8);
+             })) {
+            var iterator = generator.iterator();
+            assertTrue(iterator.hasNext());
+            generator.close();
+            assertTrue(generator.nextStep().done(),
+                    "direct pull must not leak a prefetched yield after close");
+            assertFalse(iterator.hasNext());
+            assertThrows(java.util.NoSuchElementException.class, iterator::next);
+        }
+    }
+
+    @Test
+    void iteratorPrefetchRejectsOverlappingDirectPull() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.<Integer>generator(runtime, emitter -> {
+                 entered.countDown();
+                 release.await();
+                 emitter.emit(99);
+             })) {
+            java.util.concurrent.FutureTask<Boolean> peek =
+                    new java.util.concurrent.FutureTask<>(() -> generator.iterator().hasNext());
+            Thread consumer = Thread.ofVirtual().start(peek);
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                var overlap = assertThrows(IllegalStateException.class, generator::nextStep);
+                assertTrue(overlap.getMessage().contains("concurrent Iterator.next()"));
+                release.countDown();
+                assertTrue(peek.get(2, TimeUnit.SECONDS));
+                assertEquals(99, generator.nextStep().value());
+                assertFalse(generator.iterator().hasNext());
+            } finally {
+                release.countDown();
+                consumer.join();
+            }
+        }
+    }
 }
