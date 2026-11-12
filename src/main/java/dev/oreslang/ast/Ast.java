@@ -62,7 +62,58 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl, ActorStateDecl, CriticalActorMethodDecl { }
+            ExternalActorMethodDecl, ActorStateDecl, CriticalActorMethodDecl, MailEnumDecl { }
+
+    /**
+     * Nominal, sealed, immutable actor-mail ADT source declaration.
+     * Payloads are scalar borrowed/copy-safe types only. This is NOT a
+     * generic enum execution permit: ordinary TypeChecker remains closed.
+     * The compiler's V3 ingress pass exhaustively binds every variant.
+     */
+    public record MailEnumVariant(String name, List<Param> fields) {
+        public MailEnumVariant {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException(
+                    "actor mail variant needs a name");
+            fields = List.copyOf(fields);
+            if (fields.size() > 8) throw new IllegalArgumentException(
+                    "actor mail variant scalar field budget exceeded");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (Param field : fields) {
+                if (field == null || field.structural() || field.mutable()
+                        || field.type().isBorrow() || field.type().inferArguments()
+                        || !field.type().arguments().isEmpty()
+                        || !(field.type().name().equals("int")
+                                || field.type().name().equals("bool"))
+                        || !names.add(field.name())) {
+                    throw new IllegalArgumentException(
+                            "actor mail fields must be unique, copied int/bool scalars");
+                }
+            }
+        }
+    }
+
+    public record MailEnumDecl(
+            String name, Visibility visibility, List<MailEnumVariant> variants)
+            implements Decl {
+        public MailEnumDecl {
+            if (name == null || name.isBlank() || name.startsWith("_")
+                    || !Character.isUpperCase(name.charAt(0))) {
+                throw new IllegalArgumentException("actor mail enum must be nominal UpperCamelCase");
+            }
+            java.util.Objects.requireNonNull(visibility, "actor mail enum visibility");
+            variants = List.copyOf(variants);
+            if (variants.isEmpty() || variants.size() > 32) {
+                throw new IllegalArgumentException("actor mail enum requires 1..32 variants");
+            }
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (MailEnumVariant variant : variants) {
+                if (variant == null || !names.add(variant.name())
+                        || !Character.isUpperCase(variant.name().charAt(0))) {
+                    throw new IllegalArgumentException("duplicate/invalid actor mail variant");
+                }
+            }
+        }
+    }
 
     /**
      * Lexical AST for private out-of-line critical actor methods.
