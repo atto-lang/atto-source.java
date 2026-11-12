@@ -78,6 +78,78 @@ public final class CriticalActorTruffleV1 {
         return new Executable(image, actor, methodName, layout, target);
     }
 
+    /**
+     * One actor state schema and multiple verified Truffle targets. All
+     * methods share the SINGLE runtime-owned arena initialized by the first
+     * target; independent per-method heaps would violate Atto actor state.
+     *
+     * The bundle is compiler/runtime metadata, not a guest method table.
+     * Call sites are statically selected from the verified receive AST.
+     */
+    public static Bundle compileBundle(
+            SharedCodeImageStore.CodeImage image, String packageIdentity,
+            String actor) {
+        Objects.requireNonNull(image, "code image");
+        var slot = new ActorStateBinder.Slot(
+                packageIdentity, image.program().namespace(), actor);
+        var typed = CriticalActorMirV1.lowerSourceSet(
+                packageIdentity, Map.of(image.codeUnitId(), image.program())).get(slot);
+        if (typed == null || typed.isEmpty() || typed.size() > 32) {
+            throw unsupported("actor requires 1..32 verified critical methods");
+        }
+        Map<String, Executable> compiled = new LinkedHashMap<>();
+        Map<String, CriticalActorMirV1.Method> contracts = new LinkedHashMap<>();
+        for (var method : typed) {
+            if (compiled.containsKey(method.name())) {
+                throw unsupported("ambiguous or overloaded critical method: " + method.name());
+            }
+            Executable target = compile(image, packageIdentity, actor, method.name());
+            compiled.put(method.name(), target);
+            contracts.put(method.name(), method);
+        }
+        return new Bundle(image, actor, compiled, contracts);
+    }
+
+    public static final class Bundle {
+        private final SharedCodeImageStore.CodeImage image;
+        private final String actor;
+        private final Map<String, Executable> targets;
+        private final Map<String, CriticalActorMirV1.Method> contracts;
+
+        private Bundle(SharedCodeImageStore.CodeImage image, String actor,
+                       Map<String, Executable> targets,
+                       Map<String, CriticalActorMirV1.Method> contracts) {
+            this.image = image;
+            this.actor = actor;
+            this.targets = Map.copyOf(targets);
+            this.contracts = Map.copyOf(contracts);
+        }
+
+        public int methodCount() { return targets.size(); }
+
+        public Map<String, CriticalActorMirV1.Method> contracts() {
+            return contracts;
+        }
+
+        public OwnedState initializeActor(ActorRuntime.ActorContext<Object> context) {
+            if (context.codeImage().orElse(null) != image) {
+                throw new SecurityException("foreign actor bundle code image");
+            }
+            return targets.values().iterator().next().initializeActor(context);
+        }
+
+        public Object invokeFromMailbox(
+                String name, OwnedState state,
+                ActorRuntime.ActorInboxMail<Object> mail,
+                ActorRuntime.ActorContext<Object> context, Object... values) {
+            Executable target = targets.get(name);
+            if (target == null) {
+                throw new SecurityException("undeclared critical method dispatch");
+            }
+            return target.invokeFromMailbox(state, mail, context, values);
+        }
+    }
+
     public static final class Executable {
         private final SharedCodeImageStore.CodeImage image;
         private final String actorName;
