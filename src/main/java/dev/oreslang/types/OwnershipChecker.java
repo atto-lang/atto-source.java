@@ -1415,7 +1415,8 @@ public final class OwnershipChecker {
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
-                            + "pass owned values or an explicit Channel<T> instead");
+                            + "pass owned values or an explicit Channel<T> instead"
+                            + " [captured type: " + capture.source.type + "]");
                 }
             }
             validateDeferredCaptures(captured);
@@ -4435,6 +4436,13 @@ public final class OwnershipChecker {
             return isVerifiedActorReference(type) ? scalar : none;
         }
 
+        // The exact NIO2 handle is affine and may MOVE to one task.
+        // Do not accidentally classify arbitrary imported/nominal lookalikes.
+        if (name.equals("NioConnection")) {
+            return type.arguments().isEmpty() && findClass("NioConnection") == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+
         // Task-owned authority and actor-turn/foreign capabilities do not
         // become Send merely by being wrapped in an owned binding.
         if (switch (name) {
@@ -4509,11 +4517,6 @@ public final class OwnershipChecker {
                 share &= child.share();
             }
             return new AutoTraitRules.Capabilities(send, sync, share);
-        }
-
-        if (name.equals("NioConnection") && declaredClass == null) {
-            return type.arguments().isEmpty()
-                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
         }
 
         if (name.equals("Channel")) {
