@@ -23,6 +23,17 @@ public final class OresCompiler {
             String packageIdentity, String actorName) {
         return NamespaceActorIngressV1.compile(image, packageIdentity, actorName);
     }
+    /**
+     * Opt-in V2 multi-method actor bundle. Unmodified broker ADT receive
+     * declarations remain fail-closed until typed ADT routing and runtime
+     * activation grants are implemented.
+     */
+    public static NamespaceActorIngressV2.Plan compileNamespaceActorIngressV2(
+            dev.oreslang.runtime.SharedCodeImageStore.CodeImage image,
+            String packageIdentity, String actorName) {
+        return NamespaceActorIngressV2.compile(image, packageIdentity, actorName);
+    }
+
 
     /**
      * Opt-in first protected-state MIR slice. This executes the production
