@@ -1415,7 +1415,8 @@ public final class OwnershipChecker {
                         && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
-                            + "pass owned values or an explicit Channel<T> instead");
+                            + "pass owned values or an explicit Channel<T> instead"
+                            + " [captured type: " + capture.source.type + "]");
                 }
             }
             validateDeferredCaptures(captured);
