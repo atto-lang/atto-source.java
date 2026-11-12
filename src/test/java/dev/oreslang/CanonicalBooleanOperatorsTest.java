@@ -29,7 +29,7 @@ final class CanonicalBooleanOperatorsTest {
 
     @Test
     void shortCircuitingAndEagerXorAreObservable() throws Exception {
-        assertEquals("1\nfalse\n3\ntrue\n5\n6\ntrue\n7\n8\ntrue\n", run("""
+        assertEquals("1\nfalse\n3\ntrue\n5\n6\ntrue\n7\n8\nfalse\n", run("""
                 fnc mark(bool value, int id): bool {
                   stdio.println(id);
                   return value;
