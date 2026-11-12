@@ -58,6 +58,7 @@ public final class AsyncNioTcp {
         private final AsynchronousServerSocketChannel channel;
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean accepting = new AtomicBoolean();
+        private final AtomicBoolean servingRedisActor = new AtomicBoolean();
 
         private Listener(OresContext context, AsynchronousServerSocketChannel channel) {
             this.context = context;
@@ -73,6 +74,38 @@ public final class AsyncNioTcp {
         }
 
         public OresFuture<Connection> acceptAsync() {
+            if (servingRedisActor.get())
+                return OresFuture.failed(new IllegalStateException(
+                        "listener is owned by a bounded Redis actor server"));
+            return acceptCore();
+        }
+
+        /** Single-use server consumes the listener's accept authority. */
+        public OresFuture<Void> serveRedisActorAsync(
+                ActorRuntime.ActorRef<?> actor, int maxTotalSessions) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "listener.serve_redis_actor_async");
+            if (!servingRedisActor.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "Redis actor server already started for listener"));
+            }
+            if (accepting.get() || closed.get()) {
+                servingRedisActor.set(false);
+                return OresFuture.failed(new IllegalStateException(
+                        "listener has a pending accept or is closed"));
+            }
+            return AsyncNioActorRedisServer.serve(
+                    context, this, actor, maxTotalSessions);
+        }
+
+        OresFuture<Connection> acceptForServer() {
+            if (!servingRedisActor.get())
+                return OresFuture.failed(new IllegalStateException(
+                        "bounded Redis server does not own accept authority"));
+            return acceptCore();
+        }
+
+        private OresFuture<Connection> acceptCore() {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
                     "listener.accept_async");
             if (closed.get() || !accepting.compareAndSet(false, true)) {
