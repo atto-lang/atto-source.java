@@ -2308,6 +2308,14 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.ActorStateAccessStmt critical) {
+            // Typed syntax is never implicit permission to mint a state loan.
+            // Executable promotion must prove the manifest-owned actor schema,
+            // receiver, effects and no-escape MIR on this exact source set.
+            throw new IllegalArgumentException(
+                    "ACTOR_CRITICAL_STATE_MIR_UNSUPPORTED: " + critical.mode()
+                    + " requires authenticated state schema and lifetime lowering");
+        }
         if (stmt instanceof Ast.LocalTypeDeclStmt declaration) {
             throw new IllegalArgumentException(
                     "local type '" + declaration.name() + "' is parsed but requires checked "

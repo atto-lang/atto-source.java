@@ -2846,6 +2846,16 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // Preserve a state-loan as its own AST node, never as a normal method
+        // invocation or user-provided closure. The executable MIR gate stays
+        // closed until the state schema and actor continuation are verified.
+        if (check(SELF) && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).type() == IDENT
+                && tokens.get(current + 2).lexeme().equals("handle_state")
+                && tokens.get(current + 3).type() == LPAREN) {
+            return parseActorStateAccessStatement();
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
@@ -5861,6 +5871,50 @@ public final class Parser {
                 && nextType != TRUE && nextType != FALSE) return false;
         advance();
         return true;
+    }
+
+
+    /**
+     * Distinct statement-only actor intrinsic:
+     *   self.handle_state(critical-write |s| -> { s.total = ...; });
+     *   self.handle_state(critical-read |s| -> { ... });
+     *
+     * Never accept the spelling as a runtime-lookup call or an expression
+     * whose borrowed state view can be returned/stored.
+     */
+    private Ast.ActorStateAccessStmt parseActorStateAccessStatement() {
+        consume(SELF, "critical state access requires actor-local self");
+        consume(DOT, "critical state access requires self.handle_state");
+        consumeContextualIdentifier("handle_state",
+                "critical state access requires compiler-owned handle_state");
+        consume(LPAREN, "critical state access requires '('");
+        Ast.CriticalStateMode mode;
+        if (isAdjacentCompoundKeyword("critical", "read")) {
+            advance();
+            consume(MINUS, "critical-read must use adjacent '-'");
+            consumeContextualIdentifier("read", "expected critical-read mode");
+            mode = Ast.CriticalStateMode.READ;
+        } else if (isAdjacentCompoundKeyword("critical", "write")) {
+            advance();
+            consume(MINUS, "critical-write must use adjacent '-'");
+            consumeContextualIdentifier("write", "expected critical-write mode");
+            mode = Ast.CriticalStateMode.WRITE;
+        } else {
+            throw error(peek(),
+                    "handle_state requires adjacent critical-read or critical-write mode");
+        }
+        consume(PIPE, "critical state requires '|view|' closure");
+        String view = consume(IDENT, "critical state requires a named view").lexeme();
+        consume(PIPE, "critical state requires closing '|' after view");
+        consume(ARROW, "critical state access requires '->' before body");
+        List<Ast.Stmt> body = parseBlock();
+        consume(RPAREN, "critical state access requires closing ')'");
+        match(SEMICOLON);
+        try {
+            return new Ast.ActorStateAccessStmt(mode, view, body);
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), invalid.getMessage());
+        }
     }
 
     private boolean isAdjacentCompoundKeyword(String first, String second) {
