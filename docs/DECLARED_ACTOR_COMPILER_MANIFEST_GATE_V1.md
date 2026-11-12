@@ -96,4 +96,6 @@ DeclaredActorCompilerManifestGateTest: 17 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
-All are **authored, not executed** pending actual runner evidence. The four\nnew descriptor regression cases cover verified layout/signature, deep immutable\ncollections, deterministic fingerprint + mutation invalidation, and empty state.
+All are **authored, not executed** pending actual runner evidence. The four
+new descriptor regression cases cover verified layout/signature, deep immutable
+collections, deterministic fingerprint + mutation invalidation, and empty state.
