@@ -281,6 +281,66 @@ final class AttoRedisNioThroughputTest {
     }
 
     @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void correlatedOwnedBytesActorPreservesBinaryAndPipelining() throws Exception {
+        verifyFramedNioGuest("redis_actor_nio_correlated_bytes.atto");
+    }
+
+    @Test
+    @Timeout(value = 90, unit = TimeUnit.SECONDS)
+    void correlatedOwnedBytesActorPreserves256RequestPipelineOrdering() throws Exception {
+        String filename = "redis_actor_nio_correlated_bytes.atto";
+        String code = resource(filename);
+        int port = freePort();
+        String bind = "network.listen_async(\"127.0.0.1\", 16399)";
+        assertTrue(code.contains(bind));
+        code = code.replace(bind, "network.listen_async(\"127.0.0.1\", " + port + ")");
+        OresCompiler.parseAndTypeCheck(code);
+        final String guestCode = code;
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<?> guest = executor.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID,
+                                new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
+                        .build()) {
+                    context.eval(Source.newBuilder(OresLanguage.ID,
+                                    guestCode, filename)
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
+                }
+            });
+            try (Socket client = awaitGuest(guest, port)) {
+                client.setTcpNoDelay(true);
+                client.setSoTimeout(30000);
+                ByteArrayOutputStream requests = new ByteArrayOutputStream();
+                ByteArrayOutputStream expected = new ByteArrayOutputStream();
+                for (int i = 0; i < 128; i++) {
+                    byte[] key = {(byte) i, 0, (byte) 255};
+                    byte[] value = {0, (byte) i, (byte) 254, 13, 10};
+                    requests.write(frame(ascii("SET"), key, value));
+                    expected.write(OK);
+                }
+                for (int i = 0; i < 128; i++) {
+                    byte[] key = {(byte) i, 0, (byte) 255};
+                    byte[] value = {0, (byte) i, (byte) 254, 13, 10};
+                    requests.write(frame(ascii("GET"), key));
+                    expected.write(bulk(value));
+                }
+                client.getOutputStream().write(requests.toByteArray());
+                assertArrayEquals(expected.toByteArray(),
+                        client.getInputStream().readNBytes(expected.size()),
+                        "256 pipelined typed actor request IDs must preserve output order");
+                check(client, frame(ascii("QUIT")), OK, filename, 0, 256);
+                assertEquals(-1, client.getInputStream().read());
+            }
+            guest.get(30, TimeUnit.SECONDS);
+        }
+        System.out.println("ATTO_CORRELATED_REAL_ACTOR_256_PIPELINE=PASS");
+    }
+
+    @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_PERF_ENABLED")),
