@@ -365,7 +365,7 @@ pub async routine main(): void {
   const int max_active_clients = 100;
   const int max_total_sessions = 0;
   val Channel<Tuple[int, int]> available_slots =
-      Channel.new<Tuple[int, int>>(max_active_clients);
+      Channel.new<Tuple[int, int]>(max_active_clients);
   let int slot = 0;
   loop {
     if slot == max_active_clients then break; fi
