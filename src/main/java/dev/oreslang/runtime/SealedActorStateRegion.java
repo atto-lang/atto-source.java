@@ -283,6 +283,13 @@ final class SealedActorStateRegion
         }
     }
 
+    /** Host-only observation for deterministic STOP race tests, no grant. */
+    boolean isSealed() {
+        synchronized (lock) {
+            return retired;
+        }
+    }
+
     boolean isReclaimed() {
         synchronized (lock) {
             return reclaimed;
