@@ -3564,10 +3564,11 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
-                        case "send" -> {
+                        case "send", "try_send", "send_async" -> {
+                            String operation = member.member();
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
-                                        "ActorRef.send expects exactly one mailbox value");
+                                        "ActorRef." + operation + " expects exactly one mailbox value");
                             }
                             Type payload = typeOf(
                                     call.arguments().getFirst(), env, generics, self);
@@ -3575,13 +3576,18 @@ public final class TypeChecker {
                                     payload,
                                     actorClass.actorKind(),
                                     false,
-                                    "ActorRef.send mailbox value");
+                                    "ActorRef." + operation + " mailbox value");
                             Type expectedPayload = actorMailboxPayloadType(actorRef);
                             requireAssignable(
                                     payload,
                                     expectedPayload,
-                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
-                            yield Primitive.VOID;
+                                    "ActorRef." + operation + " mailbox value for actor '"
+                                            + actorClass.name() + "'");
+                            yield switch (operation) {
+                                case "try_send" -> Primitive.BOOL;
+                                case "send_async" -> new Named("Future", List.of(Primitive.VOID));
+                                default -> Primitive.VOID;
+                            };
                         }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
@@ -4146,7 +4152,7 @@ public final class TypeChecker {
                     }
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "send", "try_send", "send_async", "stop", "cancel", "kill" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
