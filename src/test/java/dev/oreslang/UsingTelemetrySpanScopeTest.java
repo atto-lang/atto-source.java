@@ -104,7 +104,7 @@ final class UsingTelemetrySpanScopeTest {
         assertThrows(PolyglotException.class, () -> run(program("""
                 using telemetry.span("failure") as span {
                   val Array<int> missing = new Array<int>();
-                  missing.get(0);
+                  stdio.stdout.write(missing.get(0));
                 }
                 """), output));
         assertEquals("E", output.toString(StandardCharsets.UTF_8));
