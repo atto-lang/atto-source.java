@@ -98,6 +98,23 @@ define module telemetry as
     return rest == "";
   }
 
+  // Source-level W3C ID guard: count each hex digit by literal splits.
+  // This runs only at explicit recording-object construction, not on the
+  // tracing-disabled automatic probe path. Split-based counting is chosen
+  // because a string length intrinsic is not yet exposed in core Atto.
+  // The trusted runtime bridge independently validates IDs without splits.
+  pub fnc is_exact_lower_hex(String input, int expected_length): bool {
+    if !is_lower_hex(input) || expected_length < 1; do return false; fi
+    let int count = 0;
+    for (const digit of arr[
+        "0", "1", "2", "3", "4", "5", "6", "7",
+        "8", "9", "a", "b", "c", "d", "e", "f"]) {
+      val pieces = input.split_literal(digit);
+      count = count + pieces.size - 1;
+    }
+    return count == expected_length && input.replace_literal("0", "") != "";
+  }
+
   pub fnc operation_name(int operation_id): String {
     if operation_id == 100; do return "atto.function"; fi
     if operation_id == 200; do return "HTTP CLIENT"; fi
@@ -127,8 +144,9 @@ define module telemetry as
       if operation_id < 1 || kind < 1 || kind > 5 ||
           start_unix_ns < 1 || end_unix_ns < start_unix_ns ||
           http_status < 0 || http_status > 599 ||
-          !is_lower_hex(trace_id) || !is_lower_hex(span_id) ||
-          (parent_span_id != "" && !is_lower_hex(parent_span_id)); do
+          !is_exact_lower_hex(trace_id, 32) ||
+          !is_exact_lower_hex(span_id, 16) ||
+          (parent_span_id != "" && !is_exact_lower_hex(parent_span_id, 16)); do
         rt fail("telemetry: invalid completed span metadata");
       fi
       // Trusted internal bridge must validate W3C hex ID dimensions before
