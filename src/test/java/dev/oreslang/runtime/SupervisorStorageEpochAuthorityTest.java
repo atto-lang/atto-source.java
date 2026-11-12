@@ -11,6 +11,29 @@ import static org.junit.jupiter.api.Assertions.*;
 /** HOST-ONLY tests of the real ActorRuntime supervisor storage authority. */
 @Timeout(15)
 final class SupervisorStorageEpochAuthorityTest {
+    private static volatile CountDownLatch enteredActor;
+    private static volatile CountDownLatch leaveActor;
+    private static final AtomicInteger actualActorMessages = new AtomicInteger();
+
+    /** Factory intentionally capture-free: actor mail still executes in ActorRuntime. */
+    private static ActorRuntime.BehaviorFactory<Integer> actorFactory() {
+        return context -> (message, actorContext) -> {
+            actualActorMessages.incrementAndGet();
+            CountDownLatch entered = enteredActor;
+            if (entered != null) entered.countDown();
+            CountDownLatch leave = leaveActor;
+            if (leave != null) {
+                try {
+                    if (!leave.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("actor turn test deadline");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
+        };
+    }
+
     private static final class Store
             implements SupervisorStorageEpochAuthority.DurableGenerationStore {
         private long epoch;
@@ -27,6 +50,61 @@ final class SupervisorStorageEpochAuthorityTest {
             if (wrongGeneration) return epoch;
             fsyncReservations++;
             return ++epoch;
+        }
+    }
+
+    @Test
+    void actualActorCarrierPinsGenerationThroughPhysicalMailTurn() throws Exception {
+        enteredActor = new CountDownLatch(1);
+        leaveActor = new CountDownLatch(1);
+        actualActorMessages.set(0);
+        try (var runtime = new ActorRuntime()) {
+            var supervisor = runtime.createSupervisor();
+            var group = runtime.createActorGroup(supervisor);
+            var gate = supervisor.registerStoragePartition("actual-actor", new Store());
+            var activation = gate.activate();
+            var actor = supervisor.startStorageChildHost(group,
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    actorFactory(), gate, activation);
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send(41);
+            try {
+                assertTrue(enteredActor.await(5, TimeUnit.SECONDS),
+                        "actual ActorCell must execute mailbox work");
+                assertThrows(SupervisorStorageEpochAuthority.QuiescencePendingException.class,
+                        gate::activate, "generation cannot advance across a running actor turn");
+                assertEquals(1, actualActorMessages.get());
+            } finally {
+                leaveActor.countDown();
+            }
+            // No new actor work is allowed after activation revocation:
+            // actor is retired by the runtime on its next scheduler admission.
+            assertTrue(gate.physicallyQuiescent() || actor.isAlive());
+            var next = gate.activate();
+            assertEquals(2L, next.generation());
+            actor.send(42);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "stale actor mailbox/continuation turn must fail closed");
+            assertEquals(1, actualActorMessages.get(),
+                    "generation 41 must never execute a post-takeover message");
+        } finally {
+            enteredActor = null;
+            leaveActor = null;
+        }
+    }
+
+    @Test
+    void foreignSupervisorGroupCannotBindStorageActor() {
+        try (var runtime = new ActorRuntime()) {
+            var owner = runtime.createSupervisor();
+            var wrong = runtime.createSupervisor();
+            var group = runtime.createActorGroup(wrong);
+            var gate = owner.registerStoragePartition("private", new Store());
+            var activation = gate.activate();
+            assertThrows(SecurityException.class, () ->
+                    owner.startStorageChildHost(group, ActorRuntime.ActorKind.PRIVATE,
+                            IsolatePolicy.developer(), actorFactory(), gate, activation));
+            assertEquals(0, group.workerCount());
         }
     }
 
