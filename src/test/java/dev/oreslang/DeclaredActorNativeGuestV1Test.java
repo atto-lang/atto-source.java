@@ -205,8 +205,10 @@ final class DeclaredActorNativeGuestV1Test {
     @Test
     void privateInitRunsExactlyAsTheNativeActorStartupHook() throws Exception {
         PackageNamespaceBuild packageBuild = build();
-        write("src/counter/start.atto", NS
-                + "mtd (Counter c) init(): void { self.send(1); return; }");
+        String initSource = Files.readString(Path.of(
+                "contracts", "declared-actor-native-guest-v1", "init.atto"));
+        assertTrue(initSource.startsWith("use namespace counter;"));
+        write("src/counter/start.atto", initSource);
         Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
         Ast.ClassDecl counter = verified.modules().getFirst().declarations().stream()
                 .filter(d -> d instanceof Ast.ClassDecl)
