@@ -125,7 +125,18 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
+        // "use" is contextual so existing functions and values named use
+        // retain their expression grammar. This form only reserves the
+        // canonical builtin import spelling; it does not grant runtime or
+        // telemetry capability. ImportRules rejects unresolved builtin
+        // authority until the std.telemetry resolver is compiler-backed.
+        while (check(IMPORT) || isContextualIdentifier("use")) {
+            if (match(IMPORT)) {
+                imports.add(parseImport());
+            } else {
+                imports.add(parseTelemetryUse());
+            }
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
@@ -253,6 +264,33 @@ public final class Parser {
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
+    }
+
+    private Ast.ImportDecl parseTelemetryUse() {
+        Token use = consume(IDENT, "expected 'use' for a builtin module import");
+        if (!use.lexeme().equals("use")) throw error(use, "expected 'use'");
+        Token root = consume(IDENT, "use requires a canonical std module path");
+        if (!root.lexeme().equals("std")) {
+            throw error(root, "only 'use std.telemetry as <alias>;' is admitted");
+        }
+        consume(DOT, "use std requires a dotted builtin module name");
+        Token module = consume(IDENT, "expected telemetry module after 'use std.'");
+        if (!module.lexeme().equals("telemetry") || check(DOT)) {
+            throw error(module, "only 'use std.telemetry as <alias>;' is admitted");
+        }
+        consume(AS, "use std.telemetry requires 'as <alias>'");
+        Token alias = consume(IDENT, "use std.telemetry requires a namespace alias");
+        if (alias.lexeme().equals("_") || alias.lexeme().equals("using")
+                || alias.lexeme().equals("use")) {
+            throw error(alias, "use std.telemetry requires a usable namespace alias");
+        }
+        consume(SEMICOLON, "use std.telemetry requires a terminal ';'");
+        // Preserve a single canonical compiler-owned import path. Generic
+        // quoted import paths are untrusted; ImportRules must fail closed
+        // until a typed builtin resolver is actually available.
+        return new Ast.ImportDecl(
+                Ast.ImportKind.MODULE, List.of("telemetry"), false,
+                alias.lexeme(), "std.telemetry");
     }
 
     private Ast.ImportDecl parseImport() {
