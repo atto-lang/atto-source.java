@@ -131,7 +131,9 @@ final class NativeHttpRawWireAdmissionTest {
             for (String host : new String[] {
                     "example.test:abc", ":8080", "localhost:65536", "[gggg]",
                     "localhost:", "::1", "example.test%20attacker", "localhost/other",
-                    "[2001:::db8]", "[::ffff:999.1.1.1]"
+                    "[2001:::db8]", "[::ffff:999.1.1.1]",
+                    "999.1.1.1", "127.1", "127.0.1", "2130706433",
+                    "127.000.0.1", "192.0.2.256", "1.2.3.4.5", "127.1:80"
             }) {
                 assertTrue(request(address, get("Host: " + host + "\r\n"))
                                 .startsWith("HTTP/1.1 400"),

@@ -143,6 +143,18 @@ public final class NativeHttp implements AutoCloseable {
                         || (c >= '0' && c <= '9') || c == '.' || c == '-'
                         || c == '_' || c == '~')) return false;
             }
+            // Numeric-only reg-names are ambiguous: some host resolvers
+            // interpret short, integer or octal IPv4 forms differently.
+            // Only a canonical four-octet decimal IPv4 literal is admitted.
+            boolean numericAddress = true;
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (c != '.' && (c < '0' || c > '9')) {
+                    numericAddress = false;
+                    break;
+                }
+            }
+            if (numericAddress && !validIpv4Tail(name)) return false;
         }
         if (port == null) return true;
         if (port.isEmpty() || port.length() > 5) return false;
