@@ -28,6 +28,22 @@ source with nested `task { }` / `await` under shared/private actors and rejects
 unsafe captures of mailbox `self` / `ActorMail`. Those authored tests still
 require executed receipts before any PASS claim.
 
+## Logical scheduler admission
+
+A physical actor-carrier thread can run a synchronous nested scheduler
+callback without leaving its actor lease. That does **not** grant the nested
+scheduler authority to mint new actor Tasks. Both ordinary
+`startActorTask` and tracked `startTrackedActorTask` admission now reject
+any non-null `OresScheduler.current()` which differs from the actor cell's
+mailbox-backed `sourceScheduler()`. Ordinary actor receive turns can admit
+actor roots with no current Task scheduler. An executing actor Task can admit
+children only through its exact owning scheduler.
+
+`ActorForeignSchedulerAdmissionTest` uses a foreign inline scheduler nested
+within a real SHARED actor physical carrier and asserts that both admission
+entry points reject it without invoking CONTROL. Passing source-level code
+review is not a substitute for executed JVM tests.
+
 ## Nested task ownership and physical lifetime
 
 A `task { ... }` started from another **tracked** actor Task inherits the
@@ -68,7 +84,7 @@ coverage, not evidence of execution before a real runner produces a receipt.
 Run from the Java repo, with the required JDK/Graal/Maven native prerequisites:
 
 ```sh
-mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorTrackedTaskCancellationTest,ActorNestedTaskLifetimeTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
+mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,ActorForeignSchedulerAdmissionTest,ActorTrackedTaskCancellationTest,ActorNestedTaskLifetimeTest,SourceActorTaskExecutionTest,ActorTaskBlockGuestExecutionTest test
 ```
 
 Release gate: exact-head executed JUnit results, explicit job steps and XML
