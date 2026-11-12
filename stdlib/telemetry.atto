@@ -144,6 +144,23 @@ define module telemetry as
       self.http_status = http_status;
       self.failed = failed;
     }
+
+    // A protobuf-JSON Span record with fixed low-cardinality names.
+    // The IDs were checked as lowercase hex at construction; no source
+    // labels, credentials or arbitrary metadata enter the JSON body.
+    pub fnc to_otlp_span_json(): String {
+      val String parent = self.parent_span_id == "" ? "" :
+        ",\"parentSpanId\":\"" + self.parent_span_id + "\"";
+      val String status = self.failed ? ",\"status\":{\"code\":2}" : "";
+      return "{\"traceId\":\"" + self.trace_id
+        + "\",\"spanId\":\"" + self.span_id + "\""
+        + parent
+        + ",\"name\":\"" + operation_name(self.operation_id) + "\""
+        + ",\"kind\":" + int_text(self.kind)
+        + ",\"startTimeUnixNano\":\"" + int_text(self.start_unix_ns) + "\""
+        + ",\"endTimeUnixNano\":\"" + int_text(self.end_unix_ns) + "\""
+        + status + "}";
+    }
   end
 
   // Strictly actor-owned batch backing. A collector actor must own this
