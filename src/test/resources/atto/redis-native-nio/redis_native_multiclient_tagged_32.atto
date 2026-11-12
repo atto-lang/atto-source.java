@@ -1,0 +1,495 @@
+// Native Atto Redis multi-client prototype. All key/value state is owned by
+// exactly one Atto KV actor; Java/NIO2 performs framing and async transport only.
+// 32 fixed per-session channels, bounded USER queue, no Java-host KV or stdio.
+// One outstanding actor request per TCP session preserves RESP2 wire order.
+// This fixed-capacity variant is deliberately closed after all 32 sessions exit.
+define actor TaggedBytesKvActor implements StreamOperator<Tuple[int, int, int, Bytes, Bytes], Tuple[int, int, string, Bytes]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, int, int, Bytes, Bytes]> mail): void {
+    const tuple = mail.value;
+    const int client_id = tuple[0];
+    const int request_id = tuple[1];
+    const int kind = tuple[2];
+    const Bytes key = tuple[3];
+    const Bytes value = tuple[4];
+    if kind == 5; do self.end(); return; fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send((client_id, request_id, "OK", value));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send((client_id, request_id, "NIL", key));
+      else
+        self.send((client_id, request_id, "VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send((client_id, request_id, "ONE", key));
+      else
+        self.send((client_id, request_id, "ZERO", key));
+      fi
+      return;
+    fi
+    self.send((client_id, request_id, "ERR", key));
+    return;
+  }
+end
+
+// Each TCP connection is moved into exactly one native Atto task.
+// No task except the broker is allowed to consume worker.outputs.
+// Responses can be coalesced, but there is only one in-flight KV request
+// per client until a bounded per-client reordering ledger is implemented.
+pub async fnc serve_tagged_session(
+    NioConnection socket,
+    int client_id,
+    Channel<Tuple[int, int, int, Bytes, Bytes]> requests,
+    Channel<Tuple[int, string, Bytes]> replies
+): void {
+  let int next_id = 0;
+  loop {
+    const frames = await socket.read_resp2_binary_batch_async(16);
+    let mut List[Tuple[string, Bytes]] responses = [];
+    let int i = 0;
+    loop {
+      if i == frames.size then break; fi
+      const Tuple[int, string, Bytes, Bytes] frame = frames.get(i);
+      const int kind = frame[0];
+      if kind == 0 || kind == 5; do
+        if kind == 5; do
+          responses.add(("OK", frame[3]));
+        fi
+        if responses.size > 0; do
+          await socket.write_resp2_binary_batch_async(responses);
+        fi
+        await socket.close_async();
+        writech requests, (client_id, -1, -1, frame[2], frame[3]);
+        return;
+      fi
+      if kind == 1; do
+        responses.add(("PONG", frame[3]));
+      else
+        next_id = next_id + 1;
+        // This bounded channel provides backpressure, not an unbounded queue.
+        // The single broker forwards each tagged command to the Atto actor.
+        writech requests, (client_id, next_id, kind, frame[2], frame[3]);
+        const Tuple[int, string, Bytes] reply = await (nb readch replies);
+        if reply[0] != next_id; do
+          // Never deliver a response whose request ID belongs to another
+          // request or connection. Fail closed and retire this session.
+          await socket.close_async();
+          writech requests, (client_id, -1, -1, frame[2], frame[3]);
+          return;
+        fi
+        responses.add((reply[1], reply[2]));
+      fi
+      i = i + 1;
+    }
+    if responses.size > 0; do
+      await socket.write_resp2_binary_batch_async(responses);
+    fi
+  }
+}
+
+pub async routine main(): void {
+  val worker = spawn TaggedBytesKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  val Channel<Tuple[int, int, int, Bytes, Bytes]> requests =
+      Channel.new<Tuple[int, int, int, Bytes, Bytes]>(32);
+  val Channel<Tuple[int, string, Bytes]> reply_1 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_2 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_3 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_4 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_5 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_6 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_7 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_8 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_9 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_10 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_11 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_12 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_13 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_14 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_15 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_16 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_17 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_18 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_19 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_20 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_21 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_22 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_23 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_24 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_25 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_26 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_27 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_28 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_29 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_30 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_31 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val Channel<Tuple[int, string, Bytes]> reply_32 =
+      Channel.new<Tuple[int, string, Bytes]>(1);
+  val NioConnection first = await listener.accept_async();
+  task scope {
+    let Future<void> broker = task {
+      let int retired = 0;
+      loop {
+        if retired == 32 then break; fi
+        const Tuple[int, int, int, Bytes, Bytes] req =
+            await (nb readch requests);
+        const int client_id = req[0];
+        const int request_id = req[1];
+        const int kind = req[2];
+        if kind == -1; do
+          retired = retired + 1;
+          if retired == 32; do
+            worker.send((0, 0, 5, req[3], req[4]));
+            await worker.get_done();
+            return;
+          fi
+        else
+          worker.send((client_id, request_id, kind, req[3], req[4]));
+          val output = (await worker.outputs.next()).value.unwrap();
+          const Tuple[int, int, string, Bytes] reply = output.value;
+          if reply[0] != client_id || reply[1] != request_id; do
+            if client_id == 1; do
+              writech reply_1, (-1, "ERR", req[3]);
+            elseif client_id == 2; do
+              writech reply_2, (-1, "ERR", req[3]);
+            elseif client_id == 3; do
+              writech reply_3, (-1, "ERR", req[3]);
+            elseif client_id == 4; do
+              writech reply_4, (-1, "ERR", req[3]);
+            elseif client_id == 5; do
+              writech reply_5, (-1, "ERR", req[3]);
+            elseif client_id == 6; do
+              writech reply_6, (-1, "ERR", req[3]);
+            elseif client_id == 7; do
+              writech reply_7, (-1, "ERR", req[3]);
+            elseif client_id == 8; do
+              writech reply_8, (-1, "ERR", req[3]);
+            elseif client_id == 9; do
+              writech reply_9, (-1, "ERR", req[3]);
+            elseif client_id == 10; do
+              writech reply_10, (-1, "ERR", req[3]);
+            elseif client_id == 11; do
+              writech reply_11, (-1, "ERR", req[3]);
+            elseif client_id == 12; do
+              writech reply_12, (-1, "ERR", req[3]);
+            elseif client_id == 13; do
+              writech reply_13, (-1, "ERR", req[3]);
+            elseif client_id == 14; do
+              writech reply_14, (-1, "ERR", req[3]);
+            elseif client_id == 15; do
+              writech reply_15, (-1, "ERR", req[3]);
+            elseif client_id == 16; do
+              writech reply_16, (-1, "ERR", req[3]);
+            elseif client_id == 17; do
+              writech reply_17, (-1, "ERR", req[3]);
+            elseif client_id == 18; do
+              writech reply_18, (-1, "ERR", req[3]);
+            elseif client_id == 19; do
+              writech reply_19, (-1, "ERR", req[3]);
+            elseif client_id == 20; do
+              writech reply_20, (-1, "ERR", req[3]);
+            elseif client_id == 21; do
+              writech reply_21, (-1, "ERR", req[3]);
+            elseif client_id == 22; do
+              writech reply_22, (-1, "ERR", req[3]);
+            elseif client_id == 23; do
+              writech reply_23, (-1, "ERR", req[3]);
+            elseif client_id == 24; do
+              writech reply_24, (-1, "ERR", req[3]);
+            elseif client_id == 25; do
+              writech reply_25, (-1, "ERR", req[3]);
+            elseif client_id == 26; do
+              writech reply_26, (-1, "ERR", req[3]);
+            elseif client_id == 27; do
+              writech reply_27, (-1, "ERR", req[3]);
+            elseif client_id == 28; do
+              writech reply_28, (-1, "ERR", req[3]);
+            elseif client_id == 29; do
+              writech reply_29, (-1, "ERR", req[3]);
+            elseif client_id == 30; do
+              writech reply_30, (-1, "ERR", req[3]);
+            elseif client_id == 31; do
+              writech reply_31, (-1, "ERR", req[3]);
+            elseif client_id == 32; do
+              writech reply_32, (-1, "ERR", req[3]);
+            fi
+          else
+            if client_id == 1; do
+              writech reply_1, (reply[1], reply[2], reply[3]);
+            elseif client_id == 2; do
+              writech reply_2, (reply[1], reply[2], reply[3]);
+            elseif client_id == 3; do
+              writech reply_3, (reply[1], reply[2], reply[3]);
+            elseif client_id == 4; do
+              writech reply_4, (reply[1], reply[2], reply[3]);
+            elseif client_id == 5; do
+              writech reply_5, (reply[1], reply[2], reply[3]);
+            elseif client_id == 6; do
+              writech reply_6, (reply[1], reply[2], reply[3]);
+            elseif client_id == 7; do
+              writech reply_7, (reply[1], reply[2], reply[3]);
+            elseif client_id == 8; do
+              writech reply_8, (reply[1], reply[2], reply[3]);
+            elseif client_id == 9; do
+              writech reply_9, (reply[1], reply[2], reply[3]);
+            elseif client_id == 10; do
+              writech reply_10, (reply[1], reply[2], reply[3]);
+            elseif client_id == 11; do
+              writech reply_11, (reply[1], reply[2], reply[3]);
+            elseif client_id == 12; do
+              writech reply_12, (reply[1], reply[2], reply[3]);
+            elseif client_id == 13; do
+              writech reply_13, (reply[1], reply[2], reply[3]);
+            elseif client_id == 14; do
+              writech reply_14, (reply[1], reply[2], reply[3]);
+            elseif client_id == 15; do
+              writech reply_15, (reply[1], reply[2], reply[3]);
+            elseif client_id == 16; do
+              writech reply_16, (reply[1], reply[2], reply[3]);
+            elseif client_id == 17; do
+              writech reply_17, (reply[1], reply[2], reply[3]);
+            elseif client_id == 18; do
+              writech reply_18, (reply[1], reply[2], reply[3]);
+            elseif client_id == 19; do
+              writech reply_19, (reply[1], reply[2], reply[3]);
+            elseif client_id == 20; do
+              writech reply_20, (reply[1], reply[2], reply[3]);
+            elseif client_id == 21; do
+              writech reply_21, (reply[1], reply[2], reply[3]);
+            elseif client_id == 22; do
+              writech reply_22, (reply[1], reply[2], reply[3]);
+            elseif client_id == 23; do
+              writech reply_23, (reply[1], reply[2], reply[3]);
+            elseif client_id == 24; do
+              writech reply_24, (reply[1], reply[2], reply[3]);
+            elseif client_id == 25; do
+              writech reply_25, (reply[1], reply[2], reply[3]);
+            elseif client_id == 26; do
+              writech reply_26, (reply[1], reply[2], reply[3]);
+            elseif client_id == 27; do
+              writech reply_27, (reply[1], reply[2], reply[3]);
+            elseif client_id == 28; do
+              writech reply_28, (reply[1], reply[2], reply[3]);
+            elseif client_id == 29; do
+              writech reply_29, (reply[1], reply[2], reply[3]);
+            elseif client_id == 30; do
+              writech reply_30, (reply[1], reply[2], reply[3]);
+            elseif client_id == 31; do
+              writech reply_31, (reply[1], reply[2], reply[3]);
+            elseif client_id == 32; do
+              writech reply_32, (reply[1], reply[2], reply[3]);
+            fi
+          fi
+        fi
+      }
+      return;
+    };
+    let Future<void> client_1 = task {
+      await serve_tagged_session(first, 1, requests, reply_1);
+      return;
+    };
+    val NioConnection socket_2 = await listener.accept_async();
+    let Future<void> client_2 = task {
+      await serve_tagged_session(socket_2, 2, requests, reply_2);
+      return;
+    };
+    val NioConnection socket_3 = await listener.accept_async();
+    let Future<void> client_3 = task {
+      await serve_tagged_session(socket_3, 3, requests, reply_3);
+      return;
+    };
+    val NioConnection socket_4 = await listener.accept_async();
+    let Future<void> client_4 = task {
+      await serve_tagged_session(socket_4, 4, requests, reply_4);
+      return;
+    };
+    val NioConnection socket_5 = await listener.accept_async();
+    let Future<void> client_5 = task {
+      await serve_tagged_session(socket_5, 5, requests, reply_5);
+      return;
+    };
+    val NioConnection socket_6 = await listener.accept_async();
+    let Future<void> client_6 = task {
+      await serve_tagged_session(socket_6, 6, requests, reply_6);
+      return;
+    };
+    val NioConnection socket_7 = await listener.accept_async();
+    let Future<void> client_7 = task {
+      await serve_tagged_session(socket_7, 7, requests, reply_7);
+      return;
+    };
+    val NioConnection socket_8 = await listener.accept_async();
+    let Future<void> client_8 = task {
+      await serve_tagged_session(socket_8, 8, requests, reply_8);
+      return;
+    };
+    val NioConnection socket_9 = await listener.accept_async();
+    let Future<void> client_9 = task {
+      await serve_tagged_session(socket_9, 9, requests, reply_9);
+      return;
+    };
+    val NioConnection socket_10 = await listener.accept_async();
+    let Future<void> client_10 = task {
+      await serve_tagged_session(socket_10, 10, requests, reply_10);
+      return;
+    };
+    val NioConnection socket_11 = await listener.accept_async();
+    let Future<void> client_11 = task {
+      await serve_tagged_session(socket_11, 11, requests, reply_11);
+      return;
+    };
+    val NioConnection socket_12 = await listener.accept_async();
+    let Future<void> client_12 = task {
+      await serve_tagged_session(socket_12, 12, requests, reply_12);
+      return;
+    };
+    val NioConnection socket_13 = await listener.accept_async();
+    let Future<void> client_13 = task {
+      await serve_tagged_session(socket_13, 13, requests, reply_13);
+      return;
+    };
+    val NioConnection socket_14 = await listener.accept_async();
+    let Future<void> client_14 = task {
+      await serve_tagged_session(socket_14, 14, requests, reply_14);
+      return;
+    };
+    val NioConnection socket_15 = await listener.accept_async();
+    let Future<void> client_15 = task {
+      await serve_tagged_session(socket_15, 15, requests, reply_15);
+      return;
+    };
+    val NioConnection socket_16 = await listener.accept_async();
+    let Future<void> client_16 = task {
+      await serve_tagged_session(socket_16, 16, requests, reply_16);
+      return;
+    };
+    val NioConnection socket_17 = await listener.accept_async();
+    let Future<void> client_17 = task {
+      await serve_tagged_session(socket_17, 17, requests, reply_17);
+      return;
+    };
+    val NioConnection socket_18 = await listener.accept_async();
+    let Future<void> client_18 = task {
+      await serve_tagged_session(socket_18, 18, requests, reply_18);
+      return;
+    };
+    val NioConnection socket_19 = await listener.accept_async();
+    let Future<void> client_19 = task {
+      await serve_tagged_session(socket_19, 19, requests, reply_19);
+      return;
+    };
+    val NioConnection socket_20 = await listener.accept_async();
+    let Future<void> client_20 = task {
+      await serve_tagged_session(socket_20, 20, requests, reply_20);
+      return;
+    };
+    val NioConnection socket_21 = await listener.accept_async();
+    let Future<void> client_21 = task {
+      await serve_tagged_session(socket_21, 21, requests, reply_21);
+      return;
+    };
+    val NioConnection socket_22 = await listener.accept_async();
+    let Future<void> client_22 = task {
+      await serve_tagged_session(socket_22, 22, requests, reply_22);
+      return;
+    };
+    val NioConnection socket_23 = await listener.accept_async();
+    let Future<void> client_23 = task {
+      await serve_tagged_session(socket_23, 23, requests, reply_23);
+      return;
+    };
+    val NioConnection socket_24 = await listener.accept_async();
+    let Future<void> client_24 = task {
+      await serve_tagged_session(socket_24, 24, requests, reply_24);
+      return;
+    };
+    val NioConnection socket_25 = await listener.accept_async();
+    let Future<void> client_25 = task {
+      await serve_tagged_session(socket_25, 25, requests, reply_25);
+      return;
+    };
+    val NioConnection socket_26 = await listener.accept_async();
+    let Future<void> client_26 = task {
+      await serve_tagged_session(socket_26, 26, requests, reply_26);
+      return;
+    };
+    val NioConnection socket_27 = await listener.accept_async();
+    let Future<void> client_27 = task {
+      await serve_tagged_session(socket_27, 27, requests, reply_27);
+      return;
+    };
+    val NioConnection socket_28 = await listener.accept_async();
+    let Future<void> client_28 = task {
+      await serve_tagged_session(socket_28, 28, requests, reply_28);
+      return;
+    };
+    val NioConnection socket_29 = await listener.accept_async();
+    let Future<void> client_29 = task {
+      await serve_tagged_session(socket_29, 29, requests, reply_29);
+      return;
+    };
+    val NioConnection socket_30 = await listener.accept_async();
+    let Future<void> client_30 = task {
+      await serve_tagged_session(socket_30, 30, requests, reply_30);
+      return;
+    };
+    val NioConnection socket_31 = await listener.accept_async();
+    let Future<void> client_31 = task {
+      await serve_tagged_session(socket_31, 31, requests, reply_31);
+      return;
+    };
+    val NioConnection socket_32 = await listener.accept_async();
+    let Future<void> client_32 = task {
+      await serve_tagged_session(socket_32, 32, requests, reply_32);
+      return;
+    };
+  }
+  await listener.close_async();
+  return;
+}
