@@ -228,6 +228,96 @@ final class SealedActorStateRegionTest {
     }
 
     @Test
+    void externalStopFencesInFlightSourceLoanAndWaitsForPhysicalExit()
+            throws Exception {
+        // The actor is a real ActorRuntime code actor, but its executor is a
+        // host test double. This exercises STOP vs a live lexical state loan.
+        var program = Parser.parse("""
+                define actor StopCounter as
+                  state { let int count = 0; }
+                end
+                """);
+        var declaration = (dev.oreslang.ast.Ast.ClassDecl)
+                program.modules().getFirst().declarations().getFirst();
+        try (var store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime()) {
+            var code = store.publish("nats-stop-race-test", program);
+            AtomicReference<SealedActorStateRegion> region = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            CountDownLatch enteredLoan = new CountDownLatch(1);
+            CountDownLatch exitLoan = new CountDownLatch(1);
+            CountDownLatch releasedLoan = new CountDownLatch(1);
+
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return code;
+                }
+
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String name, ActorRuntime.ActorContext<Object> ctx) {
+                    var state = SealedActorStateRegion.allocateFromSealedDeclaration(declaration);
+                    region.set(state);
+                    return state;
+                }
+
+                @Override public void receiveActor(String name,
+                        ActorRuntime.ActorOwnedGuestState raw,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> ctx) {
+                    var state = (SealedActorStateRegion) raw;
+                    try {
+                        state.write(view -> {
+                            view.writeInt("count", 1);
+                            enteredLoan.countDown();
+                            try {
+                                if (!exitLoan.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("external STOP did not release handler");
+                                }
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                            assertThrows(IllegalStateException.class,
+                                    () -> view.readInt("count"),
+                                    "STOP must revoke a previously held view");
+                            assertFalse(state.isReclaimed(),
+                                    "live loan pins storage across STOP");
+                            return null;
+                        });
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        releasedLoan.countDown();
+                    }
+                }
+            };
+
+            var actor = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "StopCounter");
+            actor.send(1L);
+            assertTrue(enteredLoan.await(5, TimeUnit.SECONDS));
+            assertNotNull(region.get());
+            Thread stopping = Thread.ofPlatform().start(actor::stop);
+            try {
+                // STOP might be waiting on physical completion; sealing is
+                // checked by actual view access after both threads rendezvous.
+                assertEquals(1, region.get().activeLoanCount());
+                assertFalse(region.get().isReclaimed());
+            } finally {
+                exitLoan.countDown();
+            }
+            assertTrue(releasedLoan.await(5, TimeUnit.SECONDS));
+            stopping.join(5_000);
+            assertFalse(stopping.isAlive(), "STOP did not complete");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "in-flight STOP state invariant violated");
+            assertEquals(0, region.get().activeLoanCount());
+            assertTrue(region.get().isReclaimed(),
+                    "actual actor finalization must reclaim after active handler exits");
+        }
+    }
+
+    @Test
     void nestedLoansAndInvalidFieldTypesFailClosedWithoutWeakeningOwnership()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
