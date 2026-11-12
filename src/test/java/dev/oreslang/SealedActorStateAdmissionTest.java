@@ -94,6 +94,33 @@ final class SealedActorStateAdmissionTest {
                   state {}
                 end
                 """, "at least one field");
+        // Literal AST kind is not a type: wrong scalar slots must fail
+        // before actor allocation or the future physical state lowering.
+        rejected("""
+                define actor Ledger as
+                  state { let int x = true; }
+                end
+                """, "initializer type must match int");
+        rejected("""
+                define actor Ledger as
+                  state { let bool ready = 42; }
+                end
+                """, "initializer type must match bool");
+        rejected("""
+                define actor Ledger as
+                  state { let int x = 1.5; }
+                end
+                """, "initializer type must match int");
+        rejected("""
+                define actor Ledger as
+                  state { let bool ready = "true"; }
+                end
+                """, "initializer type must match bool");
+        assertDoesNotThrow(() -> Parser.parse("""
+                define actor Ledger as
+                  state { let int count = 0; let bool ready = false; }
+                end
+                """));
     }
 
     @Test void userCannotSpoofSealedStateAuthorityWithActorMethod() {
