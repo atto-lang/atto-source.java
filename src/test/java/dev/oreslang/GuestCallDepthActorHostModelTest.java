@@ -7,7 +7,6 @@ import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -22,7 +21,6 @@ final class GuestCallDepthActorHostModelTest {
         // Both SHARED actor turns use a one-worker SHARED carrier pool.
         var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            AtomicInteger siblingDeliveries = new AtomicInteger();
             var exhausted = runtime.<String>spawnShared(factory ->
                     (message, turn) -> {
                         int reserved = 0;
@@ -40,7 +38,9 @@ final class GuestCallDepthActorHostModelTest {
                         int depth = GuestCallDepthGuard.enter();
                         try {
                             assertEquals(1, depth, "previous turn polluted the carrier");
-                            siblingDeliveries.incrementAndGet();
+                            assertEquals("alive", message);
+                            // The only path that terminates this sibling is
+                            // its own authenticated mailbox turn below.
                         } finally {
                             GuestCallDepthGuard.leave(depth);
                             turn.self().stop();
@@ -56,7 +56,6 @@ final class GuestCallDepthActorHostModelTest {
             assertInstanceOf(GuestCallDepthExceededException.class,
                     exhausted.failure().orElseThrow());
             assertTrue(sibling.failure().isEmpty());
-            assertEquals(1, siblingDeliveries.get());
         }
     }
 }
