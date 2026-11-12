@@ -159,17 +159,21 @@ final class ChannelTransferOwnershipAdmissionTest {
     }
 
     @Test
-    void ownedResultRejectsForgedDuplicateOrMissingPayloadAuthority() {
+    void ownedResultCannotBeForgedThroughPublicConstructors() {
+        java.lang.reflect.Constructor<?>[] constructors =
+                ChannelRuntime.OwnedTryWriteResult.class.getDeclaredConstructors();
+        assertTrue(constructors.length >= 1);
+        for (java.lang.reflect.Constructor<?> constructor : constructors) {
+            assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()),
+                    "owned admission receipt creation must stay runtime-private");
+        }
+        ChannelRuntime.Channel<Payload> inbox = new ChannelRuntime.Channel<>(1);
         Payload payload = new Payload(16);
-        assertThrows(IllegalArgumentException.class,
-                () -> new ChannelRuntime.OwnedTryWriteResult<>(
-                        ChannelRuntime.OwnedWriteOutcome.COMMITTED, payload));
-        assertThrows(NullPointerException.class,
-                () -> new ChannelRuntime.OwnedTryWriteResult<Payload>(
-                        ChannelRuntime.OwnedWriteOutcome.BACKPRESSURE, null));
-        assertThrows(NullPointerException.class,
-                () -> new ChannelRuntime.OwnedTryWriteResult<Payload>(
-                        null, payload));
+        ChannelRuntime.OwnedTryWriteResult<Payload> result =
+                inbox.tryWriteOwned(payload);
+        assertTrue(result.committed());
+        assertNull(result.returnedPayload());
+        assertSame(payload, inbox.tryRead().orElseThrow());
     }
 
     @Test
