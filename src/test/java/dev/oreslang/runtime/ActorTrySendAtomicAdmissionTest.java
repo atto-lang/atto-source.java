@@ -132,4 +132,72 @@ final class ActorTrySendAtomicAdmissionTest {
             actor.stop();
         }
     }
+    @Test
+    void invalidPayloadWithFreeUserCreditFailsTypedAndRefundsAdmission() throws Exception {
+        List<Object> received = Collections.synchronizedList(new ArrayList<>());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var target = runtime.<Object>spawnShared(oneMessagePolicy(),
+                    () -> (mail, context) -> received.add(mail));
+            target.ready().get(5, TimeUnit.SECONDS);
+
+            // A non-Sendable host object is not just a failed immediate probe
+            // when capacity exists. Validation must reject it, without
+            // poisoning the capacity or creating a deferred delivery.
+            RuntimeException invalid = assertThrows(RuntimeException.class,
+                    () -> target.trySend(new Object()));
+            assertFalse(invalid instanceof ActorRuntime.ActorMailboxFullException,
+                    "invalid transport must not look like mailbox saturation");
+
+            assertTrue(target.trySend(17),
+                    "failed transport validation must refund its claimed USER slot");
+            target.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(17), received,
+                    "rejected object must never arrive after a later accepted send");
+            target.stop();
+            target.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void cancellingOldestPendingProducerSkipsItWithoutStealingSuccessorCredit()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        List<Integer> received = Collections.synchronizedList(new ArrayList<>());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var target = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (mail, context) -> {
+                if (mail == 1) {
+                    entered.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn never released");
+                    }
+                }
+                received.add(mail);
+            });
+            target.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            target.send(2);
+            OresFuture<Void> first = target.sendAsync(3);
+            OresFuture<Void> second = target.sendAsync(4);
+            assertFalse(first.isDone());
+            assertFalse(second.isDone());
+            assertTrue(first.cancel(false), "oldest waiter cancellation must revoke its credit claim");
+            assertFalse(second.isDone(), "next waiter must not receive credit before a real dequeue");
+            assertFalse(target.trySend(5), "immediate sender must not steal a waiting producer's credit");
+
+            release.countDown();
+            second.get(5, TimeUnit.SECONDS);
+            target.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2, 4), received,
+                    "FIFO successor must enter once; cancelled predecessor cannot arrive");
+            assertTrue(target.trySend(6), "cancelled waiter must not leak USER capacity");
+            target.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2, 4, 6), received);
+            target.stop();
+            target.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+        }
+    }
+
 }
