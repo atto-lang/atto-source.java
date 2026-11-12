@@ -362,8 +362,17 @@ public final class GeneratorRuntime {
                         } catch (CancellationException cancelled) {
                             if (!closed.get()) publish(new FailedEvent<>(cancelled));
                         } catch (Throwable failure) {
-                            if (!closed.get()) publish(new FailedEvent<>(failure));
-                            else closeFailure.compareAndSet(null, failure);
+                            if (!closed.get()) {
+                                publish(new FailedEvent<>(failure));
+                            } else if (!(failure instanceof InterruptedException)) {
+                                // close() cancels the producer task with
+                                // interruption. The interrupt used to stop
+                                // its blocked body is an expected cancellation,
+                                // not a failed defer/finally. Preserve all
+                                // other cleanup errors, including exceptions
+                                // raised while unwinding after cancellation.
+                                closeFailure.compareAndSet(null, failure);
+                            }
                         }
                         return null;
                     });
