@@ -285,17 +285,18 @@ pub fnc encode_reply(Tuple[int, List[int]] reply): List<int> {
 pub async fnc serve_redis_session(
     NioConnection socket,
     int client_id,
-    Channel<Tuple[int, int, List[int], List[int]]> requests,
-    Channel<Tuple[int, List[int]]> replies
+    Channel<Tuple[int, int, int, List[int], List[int]]> requests,
+    Channel<Tuple[int, int, List[int]]> replies
 ): void {
   val reader = new RespReader();
+  let int request_id = 0;
   loop {
     const Bytes chunk = await socket.read_buffer_async(1024);
     if chunk.size == 0; do
       await socket.close_async();
       let List<int> stop_key = [];
       let List<int> stop_value = [];
-      writech requests, (client_id, -1, stop_key, stop_value);
+      writech requests, (client_id, -1, -1, stop_key, stop_value);
       return;
     fi
     let int i = 0;
@@ -307,7 +308,7 @@ pub async fnc serve_redis_session(
         await socket.close_async();
         let List<int> stop_key = [];
         let List<int> stop_value = [];
-        writech requests, (client_id, -1, stop_key, stop_value);
+        writech requests, (client_id, -1, -1, stop_key, stop_value);
         return;
       fi
       if state == 1; do
@@ -317,7 +318,7 @@ pub async fnc serve_redis_session(
           await socket.close_async();
           let List<int> stop_key = [];
           let List<int> stop_value = [];
-          writech requests, (client_id, -1, stop_key, stop_value);
+          writech requests, (client_id, -1, -1, stop_key, stop_value);
           return;
         fi
         let List<int> key = [];
@@ -330,9 +331,18 @@ pub async fnc serve_redis_session(
           val selected_value = reader.args.get(2);
           value = copy_bytes(rt borrow selected_value);
         fi
-        writech requests, (client_id, kind, key, value);
-        const Tuple[int, List[int]] reply = await (nb readch replies);
-        await socket.write_buffer_async(Bytes.from_list(encode_reply(reply)));
+        request_id = request_id + 1;
+        writech requests, (client_id, request_id, kind, key, value);
+        const Tuple[int, int, List[int]] reply = await (nb readch replies);
+        if reply[0] != request_id; do
+          await socket.close_async();
+          let List<int> stop_key = [];
+          let List<int> stop_value = [];
+          writech requests, (client_id, -1, -1, stop_key, stop_value);
+          return;
+        fi
+        const Tuple[int, List[int]] reply_payload = (reply[1], reply[2]);
+        await socket.write_buffer_async(Bytes.from_list(encode_reply(reply_payload)));
         reset_resp2(rt mut borrow reader);
       fi
       i = i + 1;
@@ -349,32 +359,33 @@ pub async routine main(): void {
   // The next milestone generalizes the broker's reply routing table.
   val first = await listener.accept_async();
 
-  val Channel<Tuple[int, int, List[int], List[int]]> requests =
-      Channel.new<Tuple[int, int, List[int], List[int]]>(8);
-  val Channel<Tuple[int, List[int]]> reply_one =
-      Channel.new<Tuple[int, List[int]]>(2);
-  val Channel<Tuple[int, List[int]]> reply_two =
-      Channel.new<Tuple[int, List[int]]>(2);
+  val Channel<Tuple[int, int, int, List[int], List[int]]> requests =
+      Channel.new<Tuple[int, int, int, List[int], List[int]]>(8);
+  val Channel<Tuple[int, int, List[int]]> reply_one =
+      Channel.new<Tuple[int, int, List[int]]>(2);
+  val Channel<Tuple[int, int, List[int]]> reply_two =
+      Channel.new<Tuple[int, int, List[int]]>(2);
   task scope {
     let Future<void> broker = task {
       let int retired = 0;
       loop {
         if retired == 2 then break; fi
-        const Tuple[int, int, List[int], List[int]] request =
+        const Tuple[int, int, int, List[int], List[int]] request =
             await (nb readch requests);
         const int client_id = request[0];
-        const int kind = request[1];
+        const int request_id = request[1];
+        const int kind = request[2];
         if kind == -1; do
           retired = retired + 1;
         else
-          const List<int> key = request[2];
-          const List<int> value = request[3];
+          const List<int> key = request[3];
+          const List<int> value = request[4];
           worker.send((kind, key, value));
           val output = (await worker.outputs.next()).value.unwrap();
           if client_id == 1; do
-            writech reply_one, output.value;
+            writech reply_one, (request_id, output.value[0], output.value[1]);
           else
-            writech reply_two, output.value;
+            writech reply_two, (request_id, output.value[0], output.value[1]);
           fi
         fi
       }
