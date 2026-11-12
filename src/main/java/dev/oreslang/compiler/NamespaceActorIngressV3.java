@@ -131,6 +131,25 @@ public final class NamespaceActorIngressV3 {
                         packageIdentity, source.namespace(), actorName, "receive", 1))) {
             throw denied("source nominal actor/state/ingress binding failed");
         }
+        // These fields are minted or seeded only by the trusted actor
+        // runtime. User-authored mail, even when nominal and well typed,
+        // is NEVER an authentication or generation capability.
+        for (Ast.ProtectedStateField field : state.fields()) {
+            if ((field.name().equals("authenticated")
+                    || field.name().equals("activated"))
+                    && (!(field.initializer() instanceof Ast.LiteralExpr initial)
+                        || !Boolean.FALSE.equals(initial.value()))) {
+                throw denied("runtime-only actor activation must initialize false");
+            }
+        }
+        var typedByActor = CriticalActorMirV1.lowerSourceSet(
+                packageIdentity, sources).get(slot);
+        if (typedByActor == null || typedByActor.size() != methods.size()) {
+            throw denied("typed critical method set incomplete");
+        }
+        for (var method : typedByActor) {
+            rejectRuntimeOnlyWrites(method.steps());
+        }
         var bundle = CriticalActorTruffleV1.compileBundle(
                 image, packageIdentity, actorName);
         if (bundle.methodCount() != methods.size()) {
@@ -158,6 +177,23 @@ public final class NamespaceActorIngressV3 {
         Map<String, Route> routes = compileRoutes(receive, mailEnum, variants,
                 bundle.contracts());
         return new Plan(image, actorName, typeSymbol, variants, routes, bundle);
+    }
+
+    private static void rejectRuntimeOnlyWrites(List<CriticalActorMirV1.Step> steps) {
+        for (var step : steps) {
+            if (step instanceof CriticalActorMirV1.SetField write
+                    && Set.of("authenticated", "activated", "generation",
+                            "connection_generation", "connection_id",
+                            "channel_id", "frame_max").contains(write.field())) {
+                throw denied("critical user method cannot mint runtime-only identity/authority");
+            }
+            if (step instanceof CriticalActorMirV1.Branch branch) {
+                rejectRuntimeOnlyWrites(branch.yes());
+                rejectRuntimeOnlyWrites(branch.no());
+            } else if (step instanceof CriticalActorMirV1.WriteLoan loan) {
+                rejectRuntimeOnlyWrites(loan.body());
+            }
+        }
     }
 
     private static boolean scalarType(Ast.TypeRef type, String name) {
