@@ -286,7 +286,7 @@ pub async fnc serve_redis_session(
     NioConnection socket,
     int client_id,
     Channel<Tuple[int, int, List[int], List[int]]> requests,
-    Channel<Tuple[int, List[int]>> replies
+    Channel<Tuple[int, List[int]]> replies
 ): void {
   val reader = new RespReader();
   loop {
@@ -331,7 +331,7 @@ pub async fnc serve_redis_session(
           value = copy_bytes(rt borrow selected_value);
         fi
         writech requests, (client_id, kind, key, value);
-        val Option<Tuple[int, List[int]>> maybe_reply = await (nb readch replies);
+        val Option<Tuple[int, List[int]]> maybe_reply = await (nb readch replies);
         if maybe_reply.is_none(); do
           await socket.close_async();
           return;
@@ -357,10 +357,10 @@ pub async routine main(): void {
 
   val Channel<Tuple[int, int, List[int], List[int]>> requests =
       Channel.new<Tuple[int, int, List[int], List[int]>>(8);
-  val Channel<Tuple[int, List[int]>> reply_one =
-      Channel.new<Tuple[int, List[int]>>(2);
-  val Channel<Tuple[int, List[int]>> reply_two =
-      Channel.new<Tuple[int, List[int]>>(2);
+  val Channel<Tuple[int, List[int]]> reply_one =
+      Channel.new<Tuple[int, List[int]]>(2);
+  val Channel<Tuple[int, List[int]]> reply_two =
+      Channel.new<Tuple[int, List[int]]>(2);
   task scope {
     let Future<void> broker = task {
       let int retired = 0;
