@@ -238,4 +238,8 @@ final class SealedActorStateRegion
             return reclaimed;
         }
     }
+
+    int activeLoanCount() {
+        return loans.activeCount();
+    }
 }
