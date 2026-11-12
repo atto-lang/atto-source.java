@@ -90,8 +90,11 @@ Bodyless define actor Foo; is rejected in favor of declare.
 
 ## Physical same-namespace multi-file conformance
 
-A single manifest package may declare `namespace foo;` independently at the
-top of multiple `.atto` and `.ores` source files. The explicit namespace is
+A single manifest package may declare either `namespace foo;` or
+`use namespace foo;` independently at the top of multiple `.atto` and
+`.ores` source files. The contextual `use` spelling is normalized by the
+parser to the same `Ast.Program.namespace()` value, without introducing a
+globally reserved keyword. The explicit namespace is
 the compilation identity, not the directory path or a filename. These files
 are discovered from the canonical manifest's source roots and their root-level
 actor contracts, nominal declarations, external `mtd` declarations, and
@@ -106,10 +109,12 @@ origins, plus a mixed `.atto`/`.ores` package; shuffled source enumeration;
 multiple actors with identical selectors in one namespace; identical actor
 names in separate namespaces; independent state; both supported `mtd`
 receiver spellings; fingerprint invalidation after adding another source;
-plus deterministic, immutable actor/method index iteration; and strict rejection
+plus deterministic, immutable actor/method index iteration and mixed
+namespace-header spellings; and strict rejection
 of duplicate nominal actors/contracts, method slots,
 state schemas, foreign/missing namespace, missing files, mismatched signature,
 private contract implementation and source outside the manifest roots.
+Negative parser tests also reject malformed/dotted `use namespace` headers.
 
 For example, three distinct files may independently declare the same flat
 namespace (the full tested package also contains separate reset-contract,
@@ -147,7 +152,7 @@ and produce exact-head, unskipped Surefire receipts.
 PackageNamespaceBuildTest: 21 previously authored cases.
 DeclaredActorContractWitnessTest: 27 authored cases.
 DeclaredActorCompilerManifestGateTest: 17 authored cases.
-SameNamespaceDeclaredActorPackageTest: 21 authored cases.
+SameNamespaceDeclaredActorPackageTest: 25 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
