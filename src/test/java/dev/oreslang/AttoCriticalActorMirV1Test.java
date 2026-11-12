@@ -119,4 +119,46 @@ final class AttoCriticalActorMirV1Test {
         assertNull(assertInstanceOf(CriticalActorMirV1.Return.class,
                 method.steps().getLast()).value());
     }
+
+    @Test
+    void branchLocalAndLoanLocalVariablesCannotEscapeTheirLifetime() {
+        var scoped = """
+                critical mtd (CounterActor c) scoped(): int {
+                    let int answer = 0;
+                    using state.write(critical |s| -> {
+                        if s.enabled then
+                            let int temporary = 4;
+                            s.value = temporary;
+                        fi
+                        answer = temporary;
+                    });
+                    return answer;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> lower(scoped));
+        var escapedLoan = """
+                critical mtd (CounterActor c) escaped(): int {
+                    using state.write(critical |s| -> {
+                        let int temporary = 4;
+                        s.value = temporary;
+                    });
+                    return temporary;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> lower(escapedLoan));
+    }
+
+    @Test
+    void directlyConstructedBorrowedAstStateCannotBypassMirTyping() {
+        var parsed = Parser.parse(HEADER + BODY);
+        var method = parsed.modules().getFirst().declarations().stream()
+                .filter(Ast.CriticalActorMethodDecl.class::isInstance)
+                .map(Ast.CriticalActorMethodDecl.class::cast).findFirst().orElseThrow();
+        var borrowed = new Ast.ActorStateDecl("CounterActor", java.util.List.of(
+                new Ast.ProtectedStateField("value",
+                        Ast.TypeRef.borrowed(Ast.TypeRef.simple("int"), false),
+                        new Ast.LiteralExpr(0L))));
+        assertThrows(IllegalArgumentException.class,
+                () -> CriticalActorMirV1.lower(borrowed, method));
+    }
 }
