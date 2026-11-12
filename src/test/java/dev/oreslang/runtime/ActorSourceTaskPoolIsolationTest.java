@@ -27,6 +27,7 @@ final class ActorSourceTaskPoolIsolationTest {
             AtomicReference<OresScheduler> owner = new AtomicReference<>();
             AtomicReference<Thread> producerThread = new AtomicReference<>();
             AtomicReference<Thread> resumedThread = new AtomicReference<>();
+            AtomicReference<Throwable> publisherFailure = new AtomicReference<>();
             AtomicInteger controlCalls = new AtomicInteger();
             AtomicInteger parentTurns = new AtomicInteger();
             AtomicInteger childTurns = new AtomicInteger();
@@ -108,19 +109,25 @@ final class ActorSourceTaskPoolIsolationTest {
                             "suspended actor task must not finish eagerly");
 
                     publisher = new Thread(() -> {
-                        producerThread.set(Thread.currentThread());
-                        assertFalse(ActorRuntime.inActorExecution());
-                        assertNull(OresScheduler.current());
-                        assertThrows(IllegalStateException.class,
-                                () -> runtime.startActorTask(r -> OresScheduler.done(0)),
-                                "a Future producer cannot mint actor tasks");
-                        assertTrue(producer.completeFromRuntime(5));
-                        assertFalse(ActorRuntime.inActorExecution(),
-                                "the producer must not execute actor continuations");
+                        try {
+                            producerThread.set(Thread.currentThread());
+                            assertFalse(ActorRuntime.inActorExecution());
+                            assertNull(OresScheduler.current());
+                            assertThrows(IllegalStateException.class,
+                                    () -> runtime.startActorTask(r -> OresScheduler.done(0)),
+                                    "a Future producer cannot mint actor tasks");
+                            assertTrue(producer.completeFromRuntime(5));
+                            assertFalse(ActorRuntime.inActorExecution(),
+                                    "the producer must not execute actor continuations");
+                        } catch (Throwable failure) {
+                            publisherFailure.compareAndSet(null, failure);
+                        }
                     }, "foreign-io-completion-" + kind);
                     publisher.start();
                     publisher.join(4000);
                     assertFalse(publisher.isAlive(), "foreign producer did not exit");
+                    assertNull(publisherFailure.get(),
+                            () -> "foreign completion thread failed: " + publisherFailure.get());
 
                     assertEquals(11, parent.get().get(4, TimeUnit.SECONDS));
                     assertNotNull(child.get());
