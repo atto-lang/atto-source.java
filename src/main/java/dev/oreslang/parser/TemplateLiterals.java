@@ -66,7 +66,10 @@ final class TemplateLiterals {
                 at = closingBacktick(source, at + 1, nesting + 1, budget) + 1;
             } else if (c == '/' && at + 1 < source.length() && source.charAt(at + 1) == '/') {
                 at += 2;
-                while (at < source.length() && source.charAt(at) != '\n') at++;
+                // Match the ordinary Java lexer: both LF and CR end a // comment.
+                // CR-only source must not hide a closing interpolation brace.
+                while (at < source.length() && source.charAt(at) != '\n'
+                        && source.charAt(at) != '\r') at++;
             } else if (c == '/' && at + 1 < source.length() && source.charAt(at + 1) == '*') {
                 at = skipBlockComment(source, at + 2);
             } else if (c == '{') {
