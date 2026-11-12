@@ -1,0 +1,408 @@
+// Atto-owned incremental RESP2 + indexed Bytes Map KV, native asynchronous NIO2.
+// Requires Java compiler async NIO PR #2894 + Redis guest integration PR #2897.
+// No host RESP parser, stdio pipe, host-side KV, blocking socket, or Rust fallback.
+// Current wire limit: three args, command <=16, key <=4096, value <=16384;
+// 256 distinct live keys, up to 100 concurrent loopback clients per bounded session, no persistence or supervision.
+// NIO completion returns owned Bytes (no boxed List<int> socket reads/writes); parser and response encoder still use byte-list intermediates.
+
+// Source-local actors cannot depend on sibling nominal classes without
+// explicit imports. Use compiler-checked built-in tuples as the initial
+// mailbox wire ABI: Tuple<int, List<int>, List<int>> (command), and
+// Tuple<int, List<int>> (reply). Nominal cross-module contracts follow.
+define class RespReader as
+  pub let int phase = 0;
+  pub let int argc = 0;
+  pub let int argc_digits = 0;
+  pub let int arg_index = 0;
+  pub let int bulk_length = 0;
+  pub let int bulk_digits = 0;
+  pub let int body_read = 0;
+  pub let int bytes_total = 0;
+  pub let mut List<int> body = [];
+  pub let mut List<List<int>> args = [];
+end
+
+pub fnc copy_bytes(borrow List<int> bytes): List<int> {
+  let mut List<int> copied = [];
+  let int i = 0;
+  loop {
+    if i == bytes.size then return copied; fi
+    copied.add(bytes.get(i));
+    i = i + 1;
+  }
+}
+
+pub fnc same_bytes(borrow List<int> left, borrow List<int> right): bool {
+  if left.size != right.size then return false; fi
+  let int i = 0;
+  loop {
+    if i == left.size then return true; fi
+    if left.get(i) != right.get(i) then return false; fi
+    i = i + 1;
+  }
+}
+
+pub fnc ascii_command(borrow List<int> input, List<int> canonical): bool {
+  if input.size != canonical.size then return false; fi
+  let int i = 0;
+  loop {
+    if i == input.size then return true; fi
+    let int value = input.get(i);
+    if value >= 97 && value <= 122 then value = value - 32; fi
+    if value != canonical.get(i) then return false; fi
+    i = i + 1;
+  }
+}
+
+// Output: 0 unknown/invalid arity, 1 PING, 2 GET, 3 SET, 4 DEL, 5 QUIT.
+// This only accepts exactly the supported arities, never a partial command.
+pub fnc command_kind(borrow List<List<int>> args): int {
+  val command = args.get(0);
+  if args.size == 1; do
+    if ascii_command(rt borrow command, [80, 73, 78, 71]) then return 1; fi
+    if ascii_command(rt borrow command, [81, 85, 73, 84]) then return 5; fi
+    return 0;
+  fi
+  if args.size == 2; do
+    if ascii_command(rt borrow command, [71, 69, 84]) then return 2; fi
+    if ascii_command(rt borrow command, [68, 69, 76]) then return 4; fi
+    return 0;
+  fi
+  if args.size == 3; do
+    if ascii_command(rt borrow command, [83, 69, 84]) then return 3; fi
+  fi
+  return 0;
+}
+
+// The parser is a genuine byte-by-byte Atto state machine. It never treats
+// bulk payload CR/LF, NUL or invalid UTF-8 as delimiters and it never allocates
+// a declared oversized bulk body. Returns 0=incomplete, 1=frame, -1=invalid.
+pub fnc feed_resp2(borrow mut RespReader r, int b): int {
+  if b < 0 || b > 255 then return -1; fi
+  r.bytes_total = r.bytes_total + 1;
+  if r.bytes_total > 20576 then return -1; fi
+
+  if r.phase == 0; do
+    if b != 42 then return -1; fi
+    r.phase = 1;
+    return 0;
+  fi
+  if r.phase == 1; do
+    if b == 13; do
+      if r.argc_digits != 1 || r.argc < 1 || r.argc > 3 then return -1; fi
+      r.phase = 2;
+      return 0;
+    fi
+    if r.argc_digits != 0 || b < 49 || b > 51 then return -1; fi
+    r.argc = b - 48;
+    r.argc_digits = 1;
+    return 0;
+  fi
+  if r.phase == 2; do
+    if b != 10 then return -1; fi
+    r.phase = 3;
+    return 0;
+  fi
+  if r.phase == 3; do
+    if b != 36 then return -1; fi
+    r.bulk_digits = 0;
+    r.bulk_length = 0;
+    r.body_read = 0;
+    r.body = [];
+    r.phase = 4;
+    return 0;
+  fi
+  if r.phase == 4; do
+    if b == 13; do
+      if r.bulk_digits == 0 then return -1; fi
+      r.phase = 5;
+      return 0;
+    fi
+    if b < 48 || b > 57 || r.bulk_digits >= 5 then return -1; fi
+    if r.bulk_digits > 0 && r.bulk_length == 0 then return -1; fi
+    r.bulk_length = r.bulk_length * 10 + (b - 48);
+    r.bulk_digits = r.bulk_digits + 1;
+    if r.arg_index == 0 && r.bulk_length > 16 then return -1; fi
+    if r.arg_index == 1 && r.bulk_length > 4096 then return -1; fi
+    if r.arg_index == 2 && r.bulk_length > 16384 then return -1; fi
+    return 0;
+  fi
+  if r.phase == 5; do
+    if b != 10 then return -1; fi
+    if r.bulk_length == 0 then r.phase = 7; else r.phase = 6; fi
+    return 0;
+  fi
+  if r.phase == 6; do
+    r.body.add(b);
+    r.body_read = r.body_read + 1;
+    if r.body_read == r.bulk_length then r.phase = 7; fi
+    return 0;
+  fi
+  if r.phase == 7; do
+    if b != 13 then return -1; fi
+    r.phase = 8;
+    return 0;
+  fi
+  if r.phase == 8; do
+    if b != 10 then return -1; fi
+    r.args.add(r.body);
+    r.arg_index = r.arg_index + 1;
+    if r.arg_index == r.argc then return 1; fi
+    r.phase = 3;
+    return 0;
+  fi
+  return -1;
+}
+
+pub fnc reset_resp2(borrow mut RespReader r): void {
+  r.phase = 0;
+  r.argc = 0;
+  r.argc_digits = 0;
+  r.arg_index = 0;
+  r.bulk_length = 0;
+  r.bulk_digits = 0;
+  r.body_read = 0;
+  r.bytes_total = 0;
+  r.body = [];
+  r.args = [];
+  return;
+}
+
+// The storage actor owns one indexed, bounded Map<Bytes,Bytes>. The
+// compiler-owned Map uses immutable OresBytes value hashing, not a linear
+// List<List<int>> search. Conversion snapshots only on actor ingress/egress.
+define actor BinaryKvActor as
+  let Map<Bytes,Bytes> db;
+
+  on_start(): void {
+    self.db = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  emit_reply(int kind, List<int> value): void {
+    self.send((kind, value));
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, List[int], List[int]]> mail): void {
+    const tuple = mail.value;
+    const int kind = tuple[0];
+    const List<int> key = tuple[1];
+    const List<int> value = tuple[2];
+    if kind == 5; do self.end(); return; fi
+    if kind == 1; do self.emit_reply(5, []); return; fi
+    if kind == 0; do self.emit_reply(6, []); return; fi
+
+    const Bytes owned_key = Bytes.from_list(key);
+    if kind == 2; do
+      val found = self.db.get_optional(owned_key);
+      if found.is_none(); do self.emit_reply(0, []); return; fi
+      const Bytes result = found.unwrap();
+      self.emit_reply(2, result.to_list());
+      return;
+    fi
+
+    if kind == 3; do
+      if self.db.size >= 256; do
+        // Overwriting an existing key must remain legal at capacity. We use
+        // atomic presence rather than rejecting a valid replacement.
+        val present = self.db.get_optional(owned_key);
+        if present.is_none(); do self.emit_reply(6, []); return; fi
+      fi
+      const Bytes owned_value = Bytes.from_list(value);
+      self.db.set(owned_key, owned_value);
+      self.emit_reply(1, []);
+      return;
+    fi
+
+    if kind == 4; do
+      if self.db.delete(owned_key); do
+        self.emit_reply(3, []);
+      else
+        self.emit_reply(4, []);
+      fi
+      return;
+    fi
+
+    self.emit_reply(6, []);
+    return;
+  }
+end
+
+// RESP bulk encoding in Atto: decimal length with no host itoa, UTF-8 or
+// parser shortcuts. The initial v1 byte API is still List<int>, not Bytes.
+pub fnc encode_bulk(borrow List<int> value): List<int> {
+  let mut List<int> out = [36];
+  let int left = value.size;
+  let int divisor = 10000;
+  let bool started = false;
+  loop {
+    let int digit = 0;
+    loop {
+      if left < divisor then break; fi
+      left = left - divisor;
+      digit = digit + 1;
+    }
+    if digit > 0 || started || divisor == 1; do
+      out.add(48 + digit);
+      started = true;
+    fi
+    if divisor == 1 then break; fi
+    if divisor == 10000 then divisor = 1000;
+    elseif divisor == 1000 then divisor = 100;
+    elseif divisor == 100 then divisor = 10;
+    else divisor = 1; fi
+  }
+  out.add(13);
+  out.add(10);
+  let int i = 0;
+  loop {
+    if i == value.size then break; fi
+    out.add(value.get(i));
+    i = i + 1;
+  }
+  out.add(13);
+  out.add(10);
+  return out;
+}
+
+pub fnc encode_reply(Tuple[int, List[int]] reply): List<int> {
+  if reply[0] == 0 then return [36, 45, 49, 13, 10]; fi
+  if reply[0] == 1 then return [43, 79, 75, 13, 10]; fi
+  if reply[0] == 2; do
+    const List<int> data = reply[1];
+    return encode_bulk(rt borrow data);
+  fi
+  if reply[0] == 3 then return [58, 49, 13, 10]; fi
+  if reply[0] == 4 then return [58, 48, 13, 10]; fi
+  if reply[0] == 5 then return [43, 80, 79, 78, 71, 13, 10]; fi
+  return [45, 69, 82, 82, 32, 117, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100, 13, 10];
+}
+
+// Each session owns one accepted NIO2 socket. Client tasks never consume
+// the shared KV actor output stream; a single broker owns response routing.
+// Channel capacity is fixed, and each client admits one outstanding request.
+pub async fnc serve_redis_session(
+    NioConnection socket,
+    int client_id,
+    Channel<Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>]> requests,
+    Channel<Tuple[int, int, List[int]]> replies
+): void {
+  val reader = new RespReader();
+  let int request_id = 0;
+  loop {
+    const Bytes chunk = await socket.read_buffer_async(1024);
+    if chunk.size == 0; do
+      await socket.close_async();
+      let List<int> stop_key = [];
+      let List<int> stop_value = [];
+      writech requests, (client_id, -1, -1, stop_key, stop_value, replies);
+      return;
+    fi
+    let int i = 0;
+    loop {
+      if i == chunk.size then break; fi
+      val int state = feed_resp2(rt mut borrow reader, chunk.get(i));
+      if state == -1; do
+        await socket.write_buffer_async(Bytes.from_list([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]));
+        await socket.close_async();
+        let List<int> stop_key = [];
+        let List<int> stop_value = [];
+        writech requests, (client_id, -1, -1, stop_key, stop_value, replies);
+        return;
+      fi
+      if state == 1; do
+        val int kind = command_kind(rt borrow reader.args);
+        if kind == 5; do
+          await socket.write_buffer_async(Bytes.from_list([43, 79, 75, 13, 10]));
+          await socket.close_async();
+          let List<int> stop_key = [];
+          let List<int> stop_value = [];
+          writech requests, (client_id, -1, -1, stop_key, stop_value, replies);
+          return;
+        fi
+        let List<int> key = [];
+        let List<int> value = [];
+        if reader.args.size >= 2 then
+          val selected_key = reader.args.get(1);
+          key = copy_bytes(rt borrow selected_key);
+        fi
+        if reader.args.size >= 3 then
+          val selected_value = reader.args.get(2);
+          value = copy_bytes(rt borrow selected_value);
+        fi
+        request_id = request_id + 1;
+        writech requests, (client_id, request_id, kind, key, value, replies);
+        const Tuple[int, int, List[int]] reply = await (nb readch replies);
+        if reply[0] != request_id; do
+          await socket.close_async();
+          let List<int> stop_key = [];
+          let List<int> stop_value = [];
+          writech requests, (client_id, -1, -1, stop_key, stop_value, replies);
+          return;
+        fi
+        const Tuple[int, List[int]] reply_payload = (reply[1], reply[2]);
+        await socket.write_buffer_async(Bytes.from_list(encode_reply(reply_payload)));
+        reset_resp2(rt mut borrow reader);
+      fi
+      i = i + 1;
+    }
+  }
+}
+
+
+ // A bounded cohort of up to 100 simultaneously live clients. Each client
+ // owns exactly one socket and one reply channel; one broker owns the shared
+ // actor output stream. Later work can make admission an unbounded lifetime
+ // with separate active-connection and generation-token accounting.
+pub async routine main(): void {
+  val worker = spawn BinaryKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  const int max_clients = 100;
+  val Channel<Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>]> requests =
+      Channel.new<Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>]>(128);
+  task scope {
+    let Future<void> broker = task {
+      let int retired = 0;
+      loop {
+        if retired == max_clients then break; fi
+        const Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>] request = await (nb readch requests);
+        const int client_id = request[0];
+        const int request_id = request[1];
+        const int kind = request[2];
+        if kind == -1; do
+          retired = retired + 1;
+        else
+          const List<int> key = request[3];
+          const List<int> value = request[4];
+          const Channel<Tuple[int, int, List[int]]> response_port = request[5];
+          worker.send((kind, key, value));
+          val output = (await worker.outputs.next()).value.unwrap();
+          const Tuple[int, List[int]] actor_reply = output.value;
+          writech response_port, (request_id, actor_reply[0], actor_reply[1]);
+        fi
+      }
+      let List<int> stop_key = [];
+      let List<int> stop_value = [];
+      worker.send((5, stop_key, stop_value));
+      await worker.get_done();
+      return;
+    };
+    let int accepted = 0;
+    loop {
+      if accepted == max_clients then break; fi
+      val client_socket = await listener.accept_async();
+      accepted = accepted + 1;
+      const int session_id = accepted;
+      val Channel<Tuple[int, int, List[int]]> reply_port =
+          Channel.new<Tuple[int, int, List[int]]>(2);
+      let Future<void> session = task {
+        await serve_redis_session(client_socket, session_id, requests, reply_port);
+        return;
+      };
+    }
+  }
+  await listener.close_async();
+  return;
+}
