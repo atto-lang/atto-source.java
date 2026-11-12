@@ -78,7 +78,7 @@ jobs:
               )
               print(f'ATTO_USING_JAVA_VERIFIED_SUITE={suite} executed={count}')
               total += count
-          assert total >= 20, f'Expected at least nineteen span tests and borrow regression: {total}'
+          assert total >= 22, f'Expected at least twenty-one span tests and borrow regression: {total}'
           print(f'ATTO_USING_JAVA_GUEST_JUNIT_PASS={total}')
           PY
       - name: Preserve exact-head guest proof reports
