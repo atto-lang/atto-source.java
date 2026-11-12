@@ -3194,6 +3194,17 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            // Parsed lexical critical state callbacks are descriptors only.
+            // This guard must reject them even in an otherwise ordinary class
+            // or function: no host/guest dynamic method dispatch may turn a
+            // state-loan witness into executable actor authority.
+            if (runtime.operation().equals("actor_state_critical_read_unlowered")
+                    || runtime.operation().equals("actor_state_critical_write_unlowered")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_STATE_LOAN_LOWERING_UNSUPPORTED: parsed critical-read/write "
+                                + "requires verified actor-owned HIR/MIR, scoped RW permits "
+                                + "and generation-fenced scheduler execution");
+            }
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
