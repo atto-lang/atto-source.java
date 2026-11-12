@@ -214,6 +214,18 @@ public final class ActorTypedMethodIR {
                             "ACTOR_TYPED_IR_PROVENANCE_MISMATCH: missing source namespace");
                 }
                 Ast.ExternalActorMethodDecl method = origin.nominalBinding().method();
+                Ast.Program actorProgram = parsed.get(origin.actorUnit());
+                if (actorProgram == null
+                        || !actorKey.namespace().equals(actorProgram.namespace())
+                        || !hasExactRootDeclaration(actorProgram,
+                                origin.nominalBinding().nominalActor())
+                        || !hasExactRootDeclaration(sourceProgram, method)) {
+                    // Equal AST *values* parsed independently are not the
+                    // authenticated AST identities used by the binder. This
+                    // closes stale/mixed snapshot reuse of actor method IR.
+                    throw new IllegalArgumentException(
+                            "ACTOR_TYPED_IR_SOURCE_AST_IDENTITY_MISMATCH: " + key);
+                }
                 if (!method.actorName().equals(actorKey.actorName())
                         || !method.name().equals(signature.name())
                         || method.parameters().size() != signature.arity()
@@ -297,6 +309,19 @@ public final class ActorTypedMethodIR {
         return new Result(checked, plans);
     }
 
+    private static boolean hasExactRootDeclaration(
+            Ast.Program program, Ast.Decl expected) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (!dev.oreslang.parser.Parser.ROOT_MODULE.equals(module.name())) {
+                continue;
+            }
+            for (Ast.Decl candidate : module.declarations()) {
+                if (candidate == expected) return true;
+            }
+        }
+        return false;
+    }
+
     private static ReturnTerminator checkTerminal(
             List<Ast.Stmt> body, String resultType, String receiver,
             Map<String, ParameterRead> parameters,
@@ -364,6 +389,14 @@ public final class ActorTypedMethodIR {
             Value right = checkValue(binary.right(), receiver, params, key, depth + 1, nodes);
             if (!left.typeName().equals("int") || !right.typeName().equals("int")) {
                 throw unsupported(key, "integer arithmetic requires exactly int operands");
+            }
+            if ((binary.operator().equals("/") || binary.operator().equals("%"))
+                    && right instanceof ScalarLiteral constant
+                    && constant.value() instanceof Long integer
+                    && integer == 0L) {
+                throw new IllegalArgumentException(
+                        "ACTOR_TYPED_IR_DIVIDE_BY_ZERO: " + key
+                                + " has a provably zero integer divisor");
             }
             return new CheckedIntBinary(binary.operator(), left, right);
         }
