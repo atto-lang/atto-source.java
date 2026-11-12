@@ -255,6 +255,23 @@ public final class ActorTypedMethodIR {
                 }
             }
         }
+        // The nominal binder can recognize private lifecycle hooks such as
+        // on_start/tear_down/receive without granting them public slots.
+        // Never silently omit such opaque bodies from a "typed" actor plan:
+        // CONTROL/receive require a separate compiler-owned effect/runtime IR.
+        for (var sourceSlot : audit.contractWitness().boundMethods().keySet()) {
+            var actorKey = new ActorMethodIndex.ActorKey(
+                    sourceSlot.packageIdentity(), sourceSlot.namespace(),
+                    sourceSlot.actor());
+            if (!audit.descriptors().actors().containsKey(actorKey)) continue;
+            var key = new ActorMethodIndex.MethodKey(
+                    actorKey, sourceSlot.name(), sourceSlot.arity());
+            if (!checked.containsKey(key)) {
+                throw new IllegalArgumentException(
+                        "ACTOR_TYPED_IR_CONTROL_UNSUPPORTED: unlowered actor-owned "
+                                + "lifecycle, receive or other method body: " + sourceSlot);
+            }
+        }
         if (checked.size() != audit.actorMethods().methods().keySet().stream()
                 .filter(key -> audit.descriptors().actors().containsKey(key.actor()))
                 .count()) {
