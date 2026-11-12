@@ -6,7 +6,7 @@
 define module telemetry as
   pub define class Span as
     pub val String name;
-    let bool ended = false;
+    let mut bool ended = false;
 
     pub constructor(String name) {
       self.name = name;
