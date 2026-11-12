@@ -6,6 +6,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/GeneratorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/GeneratorCancellationInterruptionTest.java'
       - '.github/workflows/generator-interruption-close-focused.yml'
+      - 'scripts/VerifyGeneratorCloseReports.java'
   workflow_dispatch:
 
 permissions:
@@ -41,17 +42,8 @@ jobs:
       - name: Execute real generator lifecycle regression tests
         run: |
           set -euo pipefail
+          java scripts/VerifyGeneratorCloseReports.java --selftest
           mvn -B -ntp -Dtest=GeneratorCancellationInterruptionTest,GeneratorRuntimeTest -DfailIfNoTests=true test
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          report = Path('target/surefire-reports/TEST-dev.oreslang.runtime.GeneratorCancellationInterruptionTest.xml')
-          if not report.is_file():
-              raise SystemExit('Missing actual generator cancellation suite report')
-          root = ET.parse(report).getroot()
-          fields = {k: int(root.attrib.get(k, '-1'))
-                    for k in ('tests', 'errors', 'failures', 'skipped')}
-          if fields != {'tests': 3, 'errors': 0, 'failures': 0, 'skipped': 0}:
-              raise SystemExit(f'Invalid executed regression count: {fields}')
-          print('GENERATOR_CLOSE_EXECUTED tests=3 failures=0 errors=0 skipped=0')
-          PY
+          java scripts/VerifyGeneratorCloseReports.java \
+            target/surefire-reports/TEST-dev.oreslang.runtime.GeneratorCancellationInterruptionTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.GeneratorRuntimeTest.xml
