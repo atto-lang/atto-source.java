@@ -76,7 +76,7 @@ pub async routine main(): void {
 
     // Exactly one Atto actor stream owns the replies. Collect up to 16
     // already-executed commands in wire order; do NOT introduce host KV.
-    let mut List<Tuple[string,Bytes>> replies = [];
+    let mut List<Tuple[string,Bytes]> replies = [];
     let int j = 0;
     loop {
       if j == accepted then break; fi
