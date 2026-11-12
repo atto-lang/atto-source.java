@@ -8247,7 +8247,10 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.getFirst() instanceof OresBytes bytes)) {
                             throw new IllegalArgumentException("write requires a frozen Bytes value");
                         }
-                        return socket.writeOwnedBytesAsync(bytes);
+                        // Diagnostic only: route typed Bytes through the
+                        // known-good byte-list writer to isolate NIO buffer
+                        // handoff from compiler/guest call invocation.
+                        return socket.writeBytesAsync(bytes.toList());
                     };
                     case "read_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.read_bytes_async");
