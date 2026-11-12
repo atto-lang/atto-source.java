@@ -1,0 +1,161 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Unqualified DIRECT calls bind lexical self only when an instance method
+ * family exists. They must keep the same typed and owned invocation semantics
+ * as explicit self.method(...) calls.
+ */
+final class ImplicitSelfLookupHardeningTest {
+
+    @Test
+    void executableClassCallsUseSameReceiverAsExplicitSelf() throws Exception {
+        assertEquals("14", run("""
+                define class Counter as
+                  pub value(): int { return 7; }
+                  pub both(): int { return value() + self.value(); }
+                end
+                pub routine main(): void {
+                  val item = new Counter();
+                  stdio.stdout.write(item.both());
+                }
+                """));
+    }
+
+    @Test
+    void actorMethodsCanCallSiblingMethodsWithoutSelf() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  pub heartbeat(): int { return 7; }
+                  pub run(): int { return heartbeat() + self.heartbeat(); }
+                end
+                """)));
+    }
+
+    @Test
+    void actorMethodFamilyTakesPriorityOverFileFunction() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc heartbeat(): int { return 99; }
+                define actor Worker as
+                  pub heartbeat(): int { return 7; }
+                  pub run(): int { return heartbeat(); }
+                end
+                """)));
+    }
+
+    @Test
+    void wrongArityCannotFallThroughToGlobalFunction() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc heartbeat(int value): int { return value; }
+                        define actor Worker as
+                          pub heartbeat(): int { return 7; }
+                          pub run(): int { return heartbeat(99); }
+                        end
+                        """)));
+        assertNotNull(failure.getMessage());
+    }
+
+    @Test
+    void localCallableWinsOverMethodFamily() throws Exception {
+        assertEquals("9", run("""
+                define class Box as
+                  pub calculate(): int { return 7; }
+                  pub run(): int {
+                    val (() => int) calculate = || -> 9;
+                    return calculate();
+                  }
+                end
+                pub routine main(): void {
+                  val box = new Box();
+                  stdio.stdout.write(box.run());
+                }
+                """));
+    }
+
+    @Test
+    void localNonCallableDoesNotFallBackToInstanceMethod() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub calculate(): int { return 7; }
+                          pub run(): int {
+                            val calculate = 42;
+                            return calculate();
+                          }
+                        end
+                        """)));
+    }
+
+    @Test
+    void actorLifecycleHooksRemainRuntimeOnly() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub on_start(): void { return; }
+                          pub run(): void {
+                            on_start();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("lifecycle"), failure.getMessage());
+    }
+
+    @Test
+    void bareNameNeverCapturesActorSelfAsMethodValue() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub heartbeat(): int { return 7; }
+                          pub run(): void {
+                            val handler = heartbeat;
+                            return;
+                          }
+                        end
+                        """)));
+    }
+
+    @Test
+    void classConstructorCannotInvokeUnqualifiedInstanceMethod() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          constructor() { calculate(); }
+                          pub calculate(): void { return; }
+                        end
+                        """)));
+    }
+
+    @Test
+    void freeFunctionCannotAcquireImplicitSelf() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub calculate(): int { return 7; }
+                        end
+                        fnc outsider(): int { return calculate(); }
+                        """)));
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "implicit-self-lookup.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            context.eval(source);
+        }
+        return out.toString(StandardCharsets.UTF_8);
+    }
+}
