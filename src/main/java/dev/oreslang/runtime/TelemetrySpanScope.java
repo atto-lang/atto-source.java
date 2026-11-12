@@ -205,7 +205,11 @@ public final class TelemetrySpanScope implements AutoCloseable {
         String lower = key.toLowerCase(java.util.Locale.ROOT);
         if (lower.contains("password") || lower.contains("authorization")
                 || lower.contains("cookie") || lower.contains("secret")
-                || lower.contains("token") || lower.contains("body")) {
+                || lower.contains("token") || lower.contains("body")
+                || lower.contains("credential") || lower.contains("api_key")
+                || lower.contains("apikey") || lower.contains("private_key")
+                || lower.contains("access_key") || lower.contains("session")
+                || lower.contains("headers") || lower.contains("bearer")) {
             throw new SecurityException("sensitive attribute keys are not allowed");
         }
         // Do not invoke an arbitrary Number.toString() on an actor carrier.
@@ -218,8 +222,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
         if (!scalar) {
             throw new IllegalArgumentException("telemetry attribute must be a boxed primitive scalar");
         }
-        if (value instanceof Double n && !Double.isFinite(n)
-                || value instanceof Float n && !Float.isFinite(n)) {
+        if (value instanceof Double doubleValue && !Double.isFinite(doubleValue)
+                || value instanceof Float floatValue && !Float.isFinite(floatValue)) {
             throw new IllegalArgumentException("telemetry attribute must be finite");
         }
         String safe = String.valueOf(value);
