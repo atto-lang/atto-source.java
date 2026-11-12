@@ -2373,7 +2373,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "tracked actor task requires an admitted actor carrier");
         }
-        return TaskHandle.startVia(task, null, this::startActorTask);
+        // A nested source Task must be physically joined by its parent even
+        // if the parent's result Future settles first. The parent token is
+        // available only within the matching tracked Task execution domain;
+        // ordinary actor receives remain independent actor-owned roots.
+        return TaskHandle.startVia(
+                task, TaskHandle.currentParentForNestedActorTask(), this::startActorTask);
     }
 
     private <T> OresFuture<T> startActorTask(
