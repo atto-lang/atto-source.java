@@ -141,6 +141,24 @@ final class AsyncNioResp2 {
         return new DecodedFrame(opcode, List.copyOf(args), pos);
     }
 
+    /** Encode an owned binary value directly into a RESP frame, without hex. */
+    static byte[] encodeBinary(String status, OresBytes payload) throws IOException {
+        if (!"VALUE".equals(status)) return encode(status, "");
+        if (payload == null) throw new IOException("VALUE needs owned byte payload");
+        try (OresBytes.ReadLease lease = payload.readLease()) {
+            ByteBuffer value = lease.buffer();
+            int n = value.remaining();
+            if (n > MAX_VALUE) throw new IOException("RESP value exceeds cap");
+            byte[] header = ("$" + n + "\r\n").getBytes(StandardCharsets.US_ASCII);
+            byte[] frame = new byte[header.length + n + 2];
+            System.arraycopy(header, 0, frame, 0, header.length);
+            value.get(frame, header.length, n);
+            frame[frame.length - 2] = '\r';
+            frame[frame.length - 1] = '\n';
+            return frame;
+        }
+    }
+
     static byte[] encode(String status, String hexPayload) throws IOException {
         if (status == null) throw new IOException("missing RESP status");
         if (hexPayload == null) hexPayload = "";
