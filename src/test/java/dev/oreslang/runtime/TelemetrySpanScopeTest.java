@@ -110,6 +110,40 @@ final class TelemetrySpanScopeTest {
     }
 
     @Test
+    void inheritedContextNeverGrantsChildTaskParentSpanAuthority() throws Exception {
+        TelemetrySpanScope.enableExistingSites(100, 10_000, "test.");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            java.util.concurrent.atomic.AtomicInteger pc = new java.util.concurrent.atomic.AtomicInteger();
+            AtomicReference<TelemetrySpanScope> handle = new AtomicReference<>();
+            AtomicReference<TraceContext> inherited = new AtomicReference<>();
+            OresFuture<Boolean> parent = scheduler.start(resume -> {
+                if (pc.getAndIncrement() == 0) {
+                    TelemetrySpanScope scope = TelemetrySpanScope.open("test.parent");
+                    handle.set(scope);
+                    inherited.set(TraceContext.current());
+                    OresFuture<Boolean> child = scheduler.start(childResume -> {
+                        assertSame(inherited.get(), TraceContext.current(),
+                                "immutable trace identity must be inherited");
+                        assertThrows(IllegalStateException.class,
+                                () -> scope.attribute("child.attempt", 1));
+                        assertThrows(IllegalStateException.class, scope::close);
+                        return OresScheduler.done(true);
+                    });
+                    return OresScheduler.await(child);
+                }
+                assertEquals(Boolean.TRUE, resume.value());
+                assertSame(inherited.get(), TraceContext.current());
+                handle.get().close();
+                return OresScheduler.done(true);
+            });
+            assertTrue(parent.get(5, TimeUnit.SECONDS));
+            assertTrue(handle.get().ended());
+        } finally {
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
     void invalidOperatorRequestsDoNotEnableTracing() {
         TelemetrySpanScope.disableExistingSites();
         assertThrows(IllegalArgumentException.class,
