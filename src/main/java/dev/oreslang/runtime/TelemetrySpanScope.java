@@ -158,6 +158,15 @@ public final class TelemetrySpanScope implements AutoCloseable {
     public String name() { return name; }
     public boolean recording() { return recording; }
 
+    /** Read-only trace identifiers for propagation and diagnostic fixtures. */
+    public String traceId() {
+        return active == null ? "" : active.traceId();
+    }
+
+    public String spanId() {
+        return active == null ? "" : active.spanId();
+    }
+
     /** Host diagnostic copy. No guest API exposes the mutable attributes map. */
     public Map<String, String> attributesSnapshot() {
         return Map.copyOf(attributes);
