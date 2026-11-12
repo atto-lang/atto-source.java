@@ -4108,12 +4108,16 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
-                if (member.member().equals("attribute")) {
-                    return new Function(List.of(Primitive.STRING, Unknown.INSTANCE),
-                            Primitive.VOID);
-                }
-                throw new IllegalArgumentException(
-                        "telemetry span supports only attribute(key, scalar) inside using scope");
+                return switch (member.member()) {
+                    case "attribute" -> new Function(
+                            List.of(Primitive.STRING, Unknown.INSTANCE), Primitive.VOID);
+                    case "trace_id", "span_id" ->
+                            new Function(List.of(), Primitive.STRING);
+                    case "recording" ->
+                            new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown telemetry span member " + member.member());
+                };
             }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Nested extraction consumes the receiver. unwrap_all also
