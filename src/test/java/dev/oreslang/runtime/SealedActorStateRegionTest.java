@@ -104,9 +104,11 @@ final class SealedActorStateRegionTest {
     void stopFencesLiveViewAndDefersReclamationUntilFinally() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<SealedActorStateRegion> retained = new AtomicReference<>();
             CountDownLatch checked = new CountDownLatch(1);
             var actor = runtime.<Integer>spawnShared(() -> {
                 var region = SealedActorStateRegion.allocate(Map.of("count", 0L));
+                retained.set(region);
                 return (message, context) -> {
                     try {
                         region.write(view -> {
@@ -121,9 +123,6 @@ final class SealedActorStateRegionTest {
                         });
                         assertFalse(region.isReclaimed(),
                                 "loan release alone cannot reclaim before task quiescence");
-                        region.close(); // Simulates runtime's post-quiescence phase.
-                        assertTrue(region.isReclaimed(),
-                                "physical finalization after last loan must reclaim");
                         assertThrows(IllegalStateException.class,
                                 () -> region.write(view -> null));
                     } catch (Throwable error) {
@@ -137,7 +136,13 @@ final class SealedActorStateRegionTest {
             actor.send(1);
             assertTrue(checked.await(5, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
-            assertNull(failure.get(), "state reclamation violated lifetime rule");
+            assertNull(failure.get(), "STOP fencing violated lifetime rule");
+            assertNotNull(retained.get());
+            assertFalse(retained.get().isReclaimed(),
+                    "behavior-owned test region is not automatically a codeActorState");
+            retained.get().close(); // Host test emulates post-quiescence cleanup.
+            assertTrue(retained.get().isReclaimed(),
+                    "only quiesced final phase may reclaim storage");
         }
     }
 
