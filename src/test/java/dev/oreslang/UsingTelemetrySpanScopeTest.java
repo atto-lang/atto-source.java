@@ -284,4 +284,78 @@ final class UsingTelemetrySpanScopeTest {
         Ast.FunctionDecl fn = main("pub fnc main(): void { using(1); return; }");
         assertInstanceOf(Ast.ExprStmt.class, fn.body().getFirst());
     }
+
+    @Test
+    void guestConditionalTakenReturnClosesExactlyOnce() throws Exception {
+        String code = program("""
+                if true {
+                  using telemetry.span("conditional-taken") as span {
+                    stdio.stdout.write("B");
+                    return;
+                  }
+                } else {
+                  stdio.stdout.write("never");
+                } fi
+                stdio.stdout.write("never");
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
+        assertEquals("FBC", run(code));
+    }
+
+    @Test
+    void guestConditionalNotTakenNeverAcquiresScope() throws Exception {
+        String code = program("""
+                if false {
+                  using telemetry.span("conditional-not-taken") as span {
+                    stdio.stdout.write("never");
+                  }
+                } else {
+                  stdio.stdout.write("E");
+                } fi
+                return;
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
+        assertEquals("E", run(code));
+    }
+
+    @Test
+    void rejectsDynamicOperationUntilCrossBackendEffectContractExists() {
+        String code = program("""
+                val operation = "checkout";
+                using telemetry.span(operation) as span {
+                  return;
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("literal operation"), denied::getMessage);
+    }
+
+    @Test
+    void operationMustBeNonemptyAndAtMost256Utf8Bytes() {
+        for (String operation : new String[] {"", "a".repeat(257),
+                "\uD83D\uDE80".repeat(65)}) {
+            String code = program("using telemetry.span(\"" + operation
+                    + "\") as span { return; }");
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)));
+            assertTrue(denied.getMessage().contains("256 UTF-8 bytes"), denied::getMessage);
+        }
+        String valid = program("using telemetry.span(\"" + "a".repeat(256)
+                + "\") as span { return; }");
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
+    void manuallyClosingAnActiveScopeIsRejected() {
+        String code = program("""
+                using telemetry.span("checkout") as span {
+                  span.close_scope();
+                  return;
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("cannot escape"), denied::getMessage);
+    }
 }
