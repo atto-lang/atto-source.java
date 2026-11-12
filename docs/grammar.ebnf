@@ -65,8 +65,8 @@ actor_callable_decl
    general namespace actor execution. *)
 external_actor_method_decl
                 = [ "define" ] visibility "mtd"
-                  ( "(" type_ref [ IDENT ] ")" callable_name
-                  | callable_name "(" type_ref [ IDENT ] ")" )
+                  ( "(" type_ref [ IDENT | "self" ] ")" callable_name
+                  | callable_name "(" type_ref [ IDENT | "self" ] ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
 
 actor_decl      = [ "define" ] visibility [ "shared" ] "actor" IDENT [ generic_params ]
