@@ -235,3 +235,41 @@ alone is **not** proof of OTLP acceptance; a compliant collector must inspect
 The full automatic HTTP SERVER → actor INTERNAL → HTTP CLIENT → OTLP
 receiver trace still **has NOT_EXECUTED**. No source-level syntax,
 host smoke or synthetic JSON packet substitutes for that result.
+
+## 2026-11-12 security audit: transport, parentage, private CI
+
+- Semantic span admission and `Completed` validation now reject an all-zero,
+  uppercase, malformed or self-referential 16-hex parent span ID. Empty parent
+  means root; `httpStatus` may be 0 (unknown) or 100..599 only. Added negative
+  `SemanticTraceBufferTest` cases. Exact Java Git blob
+  `9a065aa1ccddf65002fbe4db783320374f3001d1` and unchanged
+  `TraceParent.java` blob
+  `38315cf30146d587fff795aeb5538793f8a765a1` were compiled under local
+  JDK 21 with a **minimal test-only trace gate stub**, then passed 8,026
+  assertions including 800 simultaneous MPSC submissions, capacity 64,
+  correct dropped accounting and W3C round trips.
+  These tests do NOT prove JDK25, GraalVM, or actual Truffle deoptimization.
+- For outbound POST, canonical destination NET permission now gates
+  **before** copying up to 1 MiB of guest-owned bytes. The immutable
+  `String` admission path rejects lone UTF-16 surrogate code units instead
+  of relying on Java's lossy default UTF-8 replacement; valid supplementary
+  pairs such as emoji are retained. The exact method body extracted from
+  `OutboundHttpRequest.java` was compiled and exercised under local JDK21
+  in an isolated class with 18 assertions (the complete source file and
+  real .atto HTTP guest were NOT compiled).
+- A source-free private runner capacity canary ran in
+  `benefactor-cc/benefactor-e2e`, at commit
+  `60b0b9d36feaa15a2658b20dfd2ad93b77cc1788` and GitHub Actions
+  run `43330250212`: **SUCCESS, three executed job steps**.
+  It did not check out, mirror, or expose private Atto source. This
+  establishes *runner capacity only*, NOT source-transfer authorization.
+- Source `.github/private-ci-approved-repositories.txt` and
+  `.github/private-ci-carrier-contracts.json` require an exact reviewed
+  destination and a PR-specific governed plan. The private successful
+  benefactor carrier is **not approved for Java PR #2989**. No private
+  source mirror was created. Exact-tree or exact-blob publication via the
+  connector is not an allowlist/reviewer bypass.
+- Full JDK25/Graal compiler, actor guest, HTTP POST/OTLP socket, native
+  collector delivery, backend parity and true zero-instrumentation E2E
+  remain **NOT_EXECUTED / NOT_IMPLEMENTED**. Keep this PR draft.
+
