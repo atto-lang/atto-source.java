@@ -50,6 +50,9 @@ public final class OresBytes {
     /** Never expose the mutable backing buffer to guest or host consumers. */
     public byte[] copyToArray() { return data.clone(); }
 
+    /** Force a physically separate heap payload when entering a private actor. */
+    OresBytes isolateCopy() { return new OresBytes(data.clone()); }
+
     /** Trusted runtime writer copies into the detached NIO response frame. */
     void copyInto(byte[] destination, int offset) {
         Objects.requireNonNull(destination, "destination");
