@@ -1,4 +1,4 @@
-name: Atto core protocols exact-head JVM guest
+name: Atto core protocols and runtime safety exact-head JVM
 on:
   pull_request:
     paths:
@@ -6,6 +6,10 @@ on:
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/ChannelRuntimeTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresFutureTerminalAdmissionRetentionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java'
       - 'tests/fixtures/core-protocols-v1/**'
       - '.github/workflows/core-protocols-guest-jvm.yml'
   workflow_dispatch:
@@ -44,7 +48,7 @@ jobs:
       - name: Compile real parser/typechecker and execute Atto guest fixtures
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=CoreProtocolsGuestTest,ChannelRuntimeTest,OresFutureTerminalAdmissionRetentionTest,ActorReadinessLifecycleTest -DfailIfNoTests=true test
           echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
         if: always()
