@@ -863,25 +863,52 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object executeRaw(Invocation invocation) {
-            return switch (invocation.kind()) {
-                case FUNCTION -> callFunctionRaw(
-                        (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
-                case FUNCTION_BODY -> callFunctionBodyRaw(
-                        (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
-                case METHOD -> callMethodRaw(
-                        (OresObject) invocation.receiver(),
-                        (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
-                case STATIC_FUNCTION -> callStaticFunctionRaw(
-                        (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
-                case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
-                        (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
-                case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
-            };
+            // One internal entry probe for an already-checked source call.
+            // No userland telemetry import, string, clock, allocation or
+            // callback executes while the per-isolate policy remains OFF.
+            // This first slice records synchronous dispatch/admission only:
+            // async task completion must be instrumented in SourceTask.
+            dev.oreslang.runtime.AutoTraceRecorder trace = context.autoTrace();
+            long started = trace.enterCall();
+            boolean failed = false;
+            try {
+                return switch (invocation.kind()) {
+                    case FUNCTION -> callFunctionRaw(
+                            (Ast.FunctionDecl) invocation.target(),
+                            invocation.arguments());
+                    case FUNCTION_BODY -> callFunctionBodyRaw(
+                            (Ast.FunctionDecl) invocation.target(),
+                            invocation.arguments());
+                    case METHOD -> callMethodRaw(
+                            (OresObject) invocation.receiver(),
+                            (Ast.MethodDecl) invocation.target(),
+                            invocation.arguments());
+                    case STATIC_FUNCTION -> callStaticFunctionRaw(
+                            (Ast.MethodDecl) invocation.target(),
+                            invocation.arguments());
+                    case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
+                            (Ast.MethodDecl) invocation.target(),
+                            invocation.arguments());
+                    case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
+                };
+            } catch (RuntimeException | Error failure) {
+                failed = true;
+                throw failure;
+            } finally {
+                if (started != 0L) {
+                    // Site IDs are numeric and derived from compiler-owned
+                    // declarations, not strings or objects supplied by guests.
+                    Object target = invocation.target();
+                    String name = target instanceof Ast.FunctionDecl function
+                            ? function.name()
+                            : target instanceof Ast.MethodDecl method ? method.name() : null;
+                    if (name != null) {
+                        int site = dev.oreslang.runtime.AutoTraceRecorder.internalSiteId(
+                                codeUnitId.hashCode(), name, invocation.kind().ordinal() + 1);
+                        trace.exitCall(started, site, failed);
+                    }
+                }
+            }
         }
 
         private Invocation functionInvocation(Ast.FunctionDecl fn, List<?> args) {
