@@ -95,8 +95,8 @@ final class NativeTelemetryOtlpCodecGuestTest {
             ByteArrayOutputStream err = new ByteArrayOutputStream();
             LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
                     ExecutionProfile.serverJit(), out, err);
-            assertEquals("true\\ntrue\\nfalse\\nfalse\\nfalse\\nfalse\\nfalse",
-                    out.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""),
+            assertEquals("true\ntrue\nfalse\nfalse\nfalse\nfalse\nfalse",
+                    out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
                     () -> err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(guest);
