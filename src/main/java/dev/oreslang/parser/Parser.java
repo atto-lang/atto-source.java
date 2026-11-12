@@ -795,7 +795,16 @@ public final class Parser {
                 || receiverType.isBorrow()) {
             throw error(previous(), "external receiver must be a non-generic nominal actor");
         }
-        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        // The receiver is an implicit lexical capability, not a caller-visible
+        // argument. The canonical '(Worker)' form and explicit discard
+        // '(Worker _)' both bind the compiler-owned 'self'. A named alias
+        // remains valid for compatibility but never grants extra authority.
+        String receiverName = "self";
+        if (!check(RPAREN)) {
+            String writtenName = consume(IDENT,
+                    "expected actor receiver name, '_' or ')'").lexeme();
+            if (!writtenName.equals("_")) receiverName = writtenName;
+        }
         consume(RPAREN, "expected ')' after external actor receiver");
         if (receiverFirst) {
             name = consumeCallableName("expected external actor method name after receiver");
@@ -808,7 +817,8 @@ public final class Parser {
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
         if (parameters.stream().anyMatch(p -> p.structural()
-                || p.name().equals(receiverName))) {
+                || p.name().equals(receiverName)
+                || p.name().equals("self"))) {
             throw error(previous(), "external receiver methods cannot use structural parameters "
                     + "or shadow the receiver binding");
         }
