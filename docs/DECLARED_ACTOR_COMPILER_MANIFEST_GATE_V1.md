@@ -147,12 +147,45 @@ made that external method bodies run as actor code or that any backend has
 passed end-to-end guest execution. The focused CI must execute the new suite
 and produce exact-head, unskipped Surefire receipts.
 
+## Opt-in scalar external mtd body analysis (NOT executable)
+
+The new `PackageNamespaceBuild.auditScalarContractBodies()` operates on
+**one exact manifest-derived source snapshot**. It first runs the same
+`auditDeclaredActors()` contract/receiver/descriptor validation and then
+verifies one deliberately restricted subset of each contract-required external
+`mtd` body:
+
+- exactly one terminal `return` statement,
+- `void` with `return;`, or `int`/`bool`/`string` with a literal of
+  the exact declared type or a same-typed declared scalar parameter,
+- one method owner and source unit proven by the cross-file witness,
+- no actor receiver escape or duplicate source slot.
+
+Unsupported expressions fail closed with
+`EXTERNAL_MTD_SCALAR_BODY_UNSUPPORTED`. Wrong return types fail with
+`EXTERNAL_MTD_SCALAR_RETURN_TYPE_MISMATCH`; a displaced source witness fails
+with `EXTERNAL_MTD_BODY_ORIGIN_MISMATCH`.
+
+This checker intentionally rejects arithmetic, calls, actor state access,
+assignments, control flow, effects and suspension. It does **not** prove
+their safety and does not implement general Atto expression typing. It is
+not a dispatcher, an executable HIR/MIR plan, an actor capability or evidence
+of mailbox ownership. `build()` retains
+`DECLARED_ACTOR_CODEGEN_UNSUPPORTED` even after every scalar return passes.
+
+Fifteen new physical multi-file tests exercise positive int/bool/string/void
+returns, wrong literal/void types, missing names, illicit receiver or state
+access, calls, unchecked arithmetic, nontrivial control flow, source file
+revocation, source fingerprint changes, immutable reports, and overlapping
+method selectors on two independent actors.
+
 ## Test inventory
 
 PackageNamespaceBuildTest: 21 previously authored cases.
 DeclaredActorContractWitnessTest: 27 authored cases.
 DeclaredActorCompilerManifestGateTest: 17 authored cases.
 SameNamespaceDeclaredActorPackageTest: 25 authored cases.
+ExternalActorScalarBodyCheckTest: 15 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
