@@ -52,6 +52,9 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    // Only compiler-owned instance-method scopes may implicitly use self.
+    // A free callable with a parameter named "self" is not such a scope.
+    private Ast.ClassDecl currentInstanceMethodOwner;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -353,8 +356,14 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentInstanceMethodOwner = previousInstanceOwner;
+                scope.close();
+            }
         }
     }
 
@@ -1665,7 +1674,8 @@ public final class OwnershipChecker {
         // A wrong-arity method call must not fall through to an unrelated
         // global callable, and the explicit receiver path must retain its
         // mutable-loan, actor isolation, and suspension admission rules.
-        if (call.origin() == Ast.CallOrigin.DIRECT
+        if (currentInstanceMethodOwner != null
+                && call.origin() == Ast.CallOrigin.DIRECT
                 && call.callee() instanceof Ast.NameExpr implicit
                 && !isBooleanIntrinsicName(implicit.name())
                 && scope.lookup(implicit.name()) == null) {
