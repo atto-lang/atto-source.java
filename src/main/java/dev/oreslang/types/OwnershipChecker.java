@@ -1061,6 +1061,9 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && state.type.name().equals("$TelemetrySpan")) {
+                throw error("lexical telemetry span handle cannot escape via assignment, return, or ownership transfer");
+            }
             if (consuming && initializingClass != null && name.name().equals("self")) {
                 throw error("partially initialized constructor self cannot escape");
             }
@@ -1330,6 +1333,9 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            if (receiverValue.type.name().equals("$TelemetrySpan")) {
+                throw error("lexical telemetry span methods are direct-call-only; do not extract a callable");
+            }
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) concreteReceiver = receiverValue.type;
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
@@ -1658,6 +1664,36 @@ public final class OwnershipChecker {
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr spanCall
+                && spanCall.receiver() instanceof Ast.NameExpr spanName) {
+            VarState handle = scope.lookup(spanName.name());
+            if (handle != null && handle.type.name().equals("$TelemetrySpan")) {
+                requireUsable(handle, spanName.name(), false);
+                Ast.TypeRef result;
+                switch (spanCall.member()) {
+                    case "attribute" -> {
+                        if (call.arguments().size() != 2) {
+                            throw error("telemetry span attribute requires exactly two arguments");
+                        }
+                        checkExpr(call.arguments().get(0), scope, true);
+                        checkExpr(call.arguments().get(1), scope, true);
+                        result = Ast.TypeRef.simple("void");
+                    }
+                    case "recording" -> {
+                        if (!call.arguments().isEmpty()) throw error("span.recording takes no arguments");
+                        result = Ast.TypeRef.simple("bool");
+                    }
+                    case "trace_id", "span_id" -> {
+                        if (!call.arguments().isEmpty()) throw error("span IDs take no arguments");
+                        result = Ast.TypeRef.simple("String");
+                    }
+                    default -> throw error("unsupported telemetry span member: " + spanCall.member());
+                }
+                // Only a direct call may use the live span; extracting a bound
+                // callable could retain the handle after lexical scope exit.
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -3007,6 +3043,9 @@ public final class OwnershipChecker {
             }
             if (containsMutexGuardType(source.type)) {
                 throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
+            }
+            if (source.type.name().equals("$TelemetrySpan") && !deferredCleanup) {
+                throw error("lexical telemetry span handle cannot escape into a closure");
             }
 
             if (capture.write) {
