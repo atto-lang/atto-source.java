@@ -8896,7 +8896,26 @@ public final class ActorRuntime implements AutoCloseable {
                         "ores-actor-" + ref.id(),
                         1,
                         mailboxExecutor,
-                        Runnable::run);
+                        turn -> {
+                            // A SourceTask may resume after await on any carrier
+                            // in THIS actor's pool, but never on a Future
+                            // producer, ROOT_TASK, or supervisor CONTROL thread.
+                            // Check the physical lease again on every resume,
+                            // not only when the initial task is created.
+                            ActorExecutionContext entered = CURRENT_ACTOR_EXECUTION.get();
+                            if (currentActor.get() != this
+                                    || entered == null
+                                    || entered.runtime() != ActorRuntime.this
+                                    || !entered.actorId().equals(ref.id())
+                                    || entered.kind() != kind
+                                    || entered.executionDomain() != executionDomain
+                                    || !isActorCarrierThread()
+                                    || !currentThreadOwnsActorExecutionLease()) {
+                                throw new SecurityException(
+                                        "source actor task must run on its owning actor carrier");
+                            }
+                            turn.run();
+                        });
                 return sourceScheduler;
             }
         }
