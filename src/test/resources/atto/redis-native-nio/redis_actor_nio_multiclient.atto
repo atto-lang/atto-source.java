@@ -11,7 +11,7 @@ define actor FramedNioSharedKvActor as
     return;
   }
 
-  receive(ActorMail<Tuple[int,string,string,Channel<Tuple[string,string]>>> mail): void {
+  receive(ActorMail<Tuple[int,string,string,Channel<Tuple[string,string]>]> mail): void {
     const Tuple[int,string,string,Channel<Tuple[string,string]>] command = mail.value;
     const int kind = command[0];
     const string key = command[1];
