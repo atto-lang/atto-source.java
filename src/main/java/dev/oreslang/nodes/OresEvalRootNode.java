@@ -627,10 +627,23 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            // The source image and method bodies are immutable for this actor
+            // generation. Resolve the handler and its scheduling requirements
+            // once at initialization instead of repeating hierarchy lookup and
+            // AST loop/suspension scans for every Redis command.
+            // A missing receive method remains an error only on first mail,
+            // preserving the existing READY/startup contract.
+            Ast.MethodDecl receiveMethod = findMethod(
+                    klass, CallableSelector.instance("receive", 1));
+            boolean needsSourceTask = receiveMethod != null
+                    && (methodContainsPotentialSuspension(receiveMethod)
+                        || receiveMethod.body().stream().anyMatch(this::containsSourceLoop));
             return new SourceActorState(
                     actorContext.self().id(),
                     actorTypeName,
-                    object);
+                    object,
+                    receiveMethod,
+                    needsSourceTask);
         }
 
         @Override
@@ -651,17 +664,13 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor mailbox dispatch does not match actor-owned state");
             }
 
-            Ast.MethodDecl receive =
-                    findMethod(
-                            state.object().klass,
-                            CallableSelector.instance("receive", 1));
+            Ast.MethodDecl receive = state.receiveMethod();
             if (receive == null) {
                 throw new IllegalStateException(
                         "actor '" + state.object().klass.name()
                                 + "' has no receive(ActorMail<T>) handler");
             }
-            if (methodContainsPotentialSuspension(receive)
-                    || receive.body().stream().anyMatch(this::containsSourceLoop)) {
+            if (state.receiveNeedsSourceTask()) {
                 /*
                  * A synchronous receive method with a CPU-only loop also needs
                  * a heap-owned SourceTask: its loop backedges can then hand
@@ -11476,7 +11485,9 @@ public final class OresEvalRootNode extends RootNode {
     private record SourceActorState(
             ActorRuntime.ActorId ownerActorId,
             String actorTypeName,
-            OresObject object)
+            OresObject object,
+            Ast.MethodDecl receiveMethod,
+            boolean receiveNeedsSourceTask)
             implements ActorRuntime.ActorOwnedGuestState {
         private SourceActorState {
             Objects.requireNonNull(ownerActorId, "ownerActorId");
@@ -11485,6 +11496,10 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor type name cannot be blank");
             }
             Objects.requireNonNull(object, "object");
+            if (receiveMethod == null && receiveNeedsSourceTask) {
+                throw new IllegalArgumentException(
+                        "missing receive method cannot require source scheduling");
+            }
         }
     }
 
