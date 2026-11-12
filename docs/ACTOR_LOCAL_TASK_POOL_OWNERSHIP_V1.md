@@ -23,8 +23,10 @@ Every guest source-task turn now checks the runtime, actor ID, actor kind,
 incarnation execution-domain identity, actor carrier marker, and active physical
 turn lease **immediately before** executing the task. A misrouted turn fails
 closed. This guard remains applicable to nested tasks and await continuations,
-including ones awoken by foreign I/O completion threads. It does not turn a
-host-only unit test into evidence of compiler guest lowering.
+including ones awoken by foreign I/O completion threads. In addition, `SourceActorTaskExecutionTest` exercises real checked actor
+source with nested `task { }` / `await` under shared/private actors and rejects
+unsafe captures of mailbox `self` / `ActorMail`. Those authored tests still
+require executed receipts before any PASS claim.
 
 ## Verification
 
@@ -37,11 +39,13 @@ verifies actor stop and absence of actor failure.
 Run from the Java repo, with the required JDK/Graal/Maven native prerequisites:
 
 ```sh
-mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest test
+mvn -B -ntp -Dtest=ActorSourceTaskPoolIsolationTest,SourceActorTaskExecutionTest test
 ```
 
 Release gate: exact-head executed JUnit results, explicit job steps and XML
 receipts; separately run compiled guest-source `task { }` + `await` actor
 fixtures and native-image tests. Passing host-only assertions is insufficient
-to claim guest-source support or five-backend parity. No change here claims
-that Wasm or LLVM already implement the same physical-pool behavior.
+to claim guest-source support or five-backend parity. This Java change does not claim Wasm/LLVM/.NET/Forge parity. Actor `task
+scope { }` remains deliberately rejected pending a separately proved
+structured-lifetime contract; actor-local `task { }` is supported only for
+compiler-checked detached, Send-safe captures.
