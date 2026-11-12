@@ -32,9 +32,12 @@ final class ScopedTelemetryProbeTest {
         assertTrue(scope.isRecording());
         assertTrue(scope.suspend(3, 7));
         assertFalse(scope.suspend(3, 7));
-        Thread carrier = new Thread(() -> assertTrue(scope.resume(3, 7)));
-        carrier.start();
-        carrier.join();
+        // A JUnit assertion thrown on a raw Thread would be lost to the
+        // parent test; Future.get() propagates failures from that carrier.
+        try (ExecutorService carrier = Executors.newSingleThreadExecutor()) {
+            Future<Boolean> resumed = carrier.submit(() -> scope.resume(3, 7));
+            assertTrue(resumed.get(5, TimeUnit.SECONDS));
+        }
         assertTrue(scope.isRecording());
         ScopedTelemetryProbe.Completion done =
                 scope.finish(3, 7, ScopedTelemetryProbe.Outcome.OK);
