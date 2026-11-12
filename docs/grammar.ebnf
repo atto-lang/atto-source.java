@@ -58,14 +58,15 @@ actor_callable_decl
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
-(* External actor receiver methods are parsed and statically indexed only.
-   Until actor-context/ownership lowering exists, TypeChecker rejects their
-   execution. Canonical receiver-first and legacy name-first spellings have
-   the same AST identity. Neither grants runtime receiver authority. *)
+(* Actor receivers are compiler-owned lexical instance capabilities, never
+   caller-visible parameters. Canonical '(Worker)' and discard '(Worker _)'
+   normalize to implicit 'self'; '(Worker self)' and named aliases remain valid.
+   This parser/static-binder stage does not enable arbitrary state loans or
+   general namespace actor execution. *)
 external_actor_method_decl
                 = [ "define" ] visibility "mtd"
-                  ( "(" type_ref IDENT ")" callable_name
-                  | callable_name "(" type_ref IDENT ")" )
+                  ( "(" type_ref [ IDENT ] ")" callable_name
+                  | callable_name "(" type_ref [ IDENT ] ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
 
 actor_decl      = [ "define" ] visibility [ "shared" ] "actor" IDENT [ generic_params ]
