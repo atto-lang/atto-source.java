@@ -41,4 +41,95 @@ define module telemetry as
   pub fnc span(): Span {
     return new Span("span");
   }
+
+  // Immutable, low-cardinality observation record for the future native
+  // collector actor. This is NOT a live mutable Span, runtime capability,
+  // JSON string or OTLP ExportTraceServiceRequest.
+  pub define class CompletedSpan as
+    pub val String trace_id;
+    pub val String span_id;
+    pub val String parent_span_id;
+    pub val int operation_id;
+    pub val int kind;
+    pub val int start_unix_ns;
+    pub val int end_unix_ns;
+    pub val int http_status;
+    pub val bool failed;
+
+    pub constructor(
+        String trace_id, String span_id, String parent_span_id,
+        int operation_id, int kind, int start_unix_ns, int end_unix_ns,
+        int http_status, bool failed) {
+      if operation_id < 1 || kind < 1 || kind > 5 ||
+          start_unix_ns < 1 || end_unix_ns < start_unix_ns ||
+          http_status < 0 || http_status > 599; do
+        rt fail("telemetry: invalid completed span metadata");
+      fi
+      // Trusted internal bridge must validate W3C hex ID dimensions before
+      // a value enters this actor-owned class. No bearer authorization comes
+      // from these strings. No arbitrary user labels or body are stored.
+      self.trace_id = trace_id;
+      self.span_id = span_id;
+      self.parent_span_id = parent_span_id;
+      self.operation_id = operation_id;
+      self.kind = kind;
+      self.start_unix_ns = start_unix_ns;
+      self.end_unix_ns = end_unix_ns;
+      self.http_status = http_status;
+      self.failed = failed;
+    }
+  end
+
+  // Strictly actor-owned batch backing. A collector actor must own this
+  // object and serialize access through its mailbox; callers may transport
+  // immutable CompletedSpan values but NEVER share a mutable SpanBatch.
+  // A full batch drops observations without blocking the actor or expanding.
+  // This does not export, format JSON, allocate sockets or flush on shutdown.
+  pub define class SpanBatch as
+    let int capacity;
+    let mut Array<CompletedSpan> entries = new Array<CompletedSpan>();
+    let mut int dropped = 0;
+
+    pub constructor(int capacity) {
+      if capacity < 1 || capacity > 65536; do
+        rt fail("telemetry: batch capacity must be 1..65536");
+      fi
+      self.capacity = capacity;
+    }
+
+    pub offer(mut self)(CompletedSpan item): bool {
+      if self.entries.size >= self.capacity; do
+        if self.dropped < 2147483647; do
+          self.dropped = self.dropped + 1;
+        fi
+        return false;
+      fi
+      self.entries.add(item);
+      return true;
+    }
+
+    pub count(): int {
+      return self.entries.size;
+    }
+
+    pub dropped_count(): int {
+      return self.dropped;
+    }
+
+    pub at(int index): CompletedSpan {
+      return self.entries.get(index);
+    }
+  end
+
+  pub fnc completed_span(
+      String trace_id, String span_id, String parent_span_id,
+      int operation_id, int kind, int start_unix_ns, int end_unix_ns,
+      int http_status, bool failed): CompletedSpan {
+    return new CompletedSpan(trace_id, span_id, parent_span_id,
+        operation_id, kind, start_unix_ns, end_unix_ns, http_status, failed);
+  }
+
+  pub fnc span_batch(int capacity): SpanBatch {
+    return new SpanBatch(capacity);
+  }
 end
