@@ -128,7 +128,7 @@ final class UsingTelemetrySpanScopeTest {
                 define module telemetry as
                   pub define class BrokenSpan as
                   end
-                  pub fnc span(): BrokenSpan {
+                  pub fnc span(string operation): BrokenSpan {
                     return new BrokenSpan();
                   }
                 end
@@ -163,9 +163,9 @@ final class UsingTelemetrySpanScopeTest {
     @Test
     void parserRejectsInvalidScopedBinderWithoutStealingUsingIdentifiers() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(program(
-                "using telemetry.span("checkout") as _ { return; }")));
+                "using telemetry.span(\"checkout\") as _ { return; }")));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse(program(
-                "using telemetry.span("checkout") as span;")));
+                "using telemetry.span(\"checkout\") as span;")));
         Ast.FunctionDecl fn = main("pub fnc main(): void { using(1); return; }");
         assertInstanceOf(Ast.ExprStmt.class, fn.body().getFirst());
     }
