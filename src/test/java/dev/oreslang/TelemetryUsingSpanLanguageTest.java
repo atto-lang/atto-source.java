@@ -83,6 +83,54 @@ final class TelemetryUsingSpanLanguageTest {
     }
 
     @Test
+    void cancellingSuspendedChildClosesItsSpanAfterPhysicalQuiescence() throws Exception {
+        TelemetrySpanScope.enableExistingSites(100, 10_000, "cancel.");
+        try {
+            long started = TelemetrySpanScope.startedCount();
+            long ended = TelemetrySpanScope.endedCount();
+            String stdout = run("""
+                    define class Flag as
+                      pub let int value = 0;
+                    end
+                    pub async fnc main(): void {
+                      val flag = SharedMutex.new(new Flag());
+                      let Future<void> child = task {
+                        using telemetry.span("cancel.child") as span {
+                          block {
+                            val guard = flag.lock();
+                            guard.value = 1;
+                          }
+                          loop {
+                            rt cooperate;
+                          }
+                        }
+                        return;
+                      };
+                      let mut int seen = 0;
+                      while seen == 0 {
+                        rt cooperate;
+                        block {
+                          val guard = flag.lock();
+                          seen = guard.value;
+                        }
+                      }
+                      child.cancel();
+                      stdio.stdout.write(await child.get_done());
+                      return;
+                    }
+                    """);
+            assertEquals("#cancelled", stdout,
+                    "physical task completion must occur after span cleanup");
+            assertEquals(started + 1, TelemetrySpanScope.startedCount(),
+                    "child span must start exactly once");
+            assertEquals(ended + 1, TelemetrySpanScope.endedCount(),
+                    "cancellation must end the child span exactly once");
+        } finally {
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
     void noOpTraceRemainsExecutableWithoutOutputSink() throws Exception {
         TelemetrySpanScope.disableExistingSites();
         String stdout = run("""
