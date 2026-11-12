@@ -136,6 +136,22 @@ public final class TaskHandle<T> {
                 && context.token().isCancelled();
     }
 
+    /**
+     * Actor-local nested task ownership, never a guest-visible capability.
+     * Only an authenticated executing Task domain can donate its lifetime
+     * authority; unrelated actor messages and untracked scheduler turns
+     * launch independent roots owned by the actor's STOP gate instead.
+     *
+     * Parent getDone() must not publish until all nested Tasks have physically
+     * retired, even when the parent's result Future is already terminal.
+     */
+    static TaskCancellation currentParentForNestedActorTask() {
+        CancellationContext context = CURRENT_CANCELLATION.get();
+        return context != null
+                && context.taskDomain() == OresScheduler.currentTaskDomain()
+                ? context.token() : null;
+    }
+
     /** Compiler/host safepoint only: never call while holding guest locks. */
     static void checkCurrentCancellationCheckpoint() {
         if (!currentCancellationRequested()) return;
