@@ -91,6 +91,8 @@ final class NamespaceActorUnleasedSpawnV0Test {
                 original.replace("i < 1000", "i <= 1000"),
                 original.replace("i = i + 1", "i = i + 2"),
                 original.replace("i = i + 1", "i = i - 1"),
+                original.replace("for (let i = 0; i < 1000; i = i + 1)",
+                        "for (let a = 0; a < 1000; a = a + 1)"),
                 original.replace("a.send(1);", "a.send(i);"),
                 original.replace("a.send(1);", "a.send(1 + 2);"),
                 original.replace("a.send(1);", "a.send(1.0);"),
