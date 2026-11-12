@@ -22,13 +22,23 @@ future linker inadvertently combine a stale method witness with new code.
   with namespace and source-unit consistency. Structurally equal ASTs parsed
   again do not satisfy an earlier witness.
 - Failure is explicit `ACTOR_TYPED_IR_SOURCE_AST_IDENTITY_MISMATCH`.
-- Literal int denominators of 0 under `/` or `%` are rejected with
-  `ACTOR_TYPED_IR_DIVIDE_BY_ZERO`. Dynamic divisors still produce checked
-  typed expression nodes requiring future trap-aware runtime lowering.
-- `ActorTypedMethodSnapshotIdentityTest` (4 new methods) probes exact-snapshot
-  success, reparsed same-byte actor/method replacement, and a changed method
-  with unchanged source-unit ID. `ActorTypedMethodIRTest` adds 2 cases for
-  literal zero divisors and dynamic checked divisor behavior.
+- Literal **and statically computed** integer zero denominators, including
+  `x / (1 - 1)` and `x % (2 * 0)`, are rejected with
+  `ACTOR_TYPED_IR_DIVIDE_BY_ZERO`. Dynamically unknown denominators remain
+  checked nodes; integer division is not executed or constant-folded.
+- Statically provable signed 64-bit overflow in exact addition, subtraction,
+  or multiplication is rejected with `ACTOR_TYPED_IR_INTEGER_OVERFLOW`.
+  This is a conservative pre-HIR analysis, not runtime checked arithmetic.
+- Synthetic ASTs with null/blank/overlong method parameter names fail with
+  `ACTOR_TYPED_IR_PARAMETER_NAME_INVALID` rather than a null dereference.
+- `ActorTypedMethodSnapshotIdentityTest` now has 6 authored tests: original
+  exact-snapshot/stale actor or method cases plus malformed parameter names.
+  `ActorTypedMethodIRTest` adds 4 tests for zero divisors, constant overflow,
+  and checked dynamic divisors over its parent branch.
+- Focused JDK25 CI retains the exact-head non-skipped Surefire requirement
+  for both suites, and removes the optional GraalVM setup GitHub-token input.
+  Checkout still uses only its own repository's read-only ephemeral token,
+  never a cross-organization credential.
 - The exact-head GraalVM JDK25 workflow demands a positive non-skipped
   Surefire XML report for both suites.
 
@@ -59,3 +69,10 @@ typed ownership/effect-sensitive HIR/MIR, actor critical state loans,
 mailbox dispatch and five-backend parity remain UNVERIFIED/UNIMPLEMENTED.
 These changes do not lift `DECLARED_ACTOR_CODEGEN_UNSUPPORTED` or
 `DECLARED_ACTOR_MANIFEST_GATE_REQUIRED`.
+
+## Revised-head transfer rule
+
+Any independent approval must reference the **current PR #2933 exact head
+and tree**, not the original commit included in the first request. A source
+head change invalidates any old proposed mirror receipt. Verify immutable
+source identity again immediately before approved transfer.
