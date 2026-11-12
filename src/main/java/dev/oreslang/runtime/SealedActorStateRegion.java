@@ -183,7 +183,12 @@ final class SealedActorStateRegion
             currentGeneration = generation;
             // A critical block must never queue or suspend to acquire a loan.
             // ActorStateLoans(maxPending=0) returns an immediate grant/failure.
-            ticket = loans.acquireAsync(segment).join();
+            OresFuture<ActorStateLoans.ExclusiveLoan> candidate =
+                    loans.acquireAsync(segment);
+            if (!candidate.isDone() || candidate.isCompletedExceptionally()) {
+                throw new IllegalStateException("critical state loan unavailable or reentrant");
+            }
+            ticket = candidate.join();
         }
         LoanView view = new LoanView(ticket, segment, currentGeneration, mutable);
         try {
