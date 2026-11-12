@@ -2549,19 +2549,45 @@ public final class Parser {
             } finally {
                 suppressRefinementOperators = previousRefinementMode;
             }
-            if (!(resource instanceof Ast.CallExpr call)
-                    || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !member.member().equals("borrow")
-                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+            // Telemetry scopes are not transport borrows: they own an ordinary
+            // Atto resource and deterministically call end() on scope exit.
+            // Reuse the already-checked try/finally lowering (including async
+            // task cancellation) rather than hiding a new host-side guard.
+            // Only the explicit telemetry.span(...) spelling is admitted.
+            // The typechecker still resolves the actual module and end()
+            // method; this parser grants no special telemetry authority.
+            boolean telemetrySpan = resource instanceof Ast.CallExpr spanCall
+                    && spanCall.callee() instanceof Ast.MemberExpr spanMember
+                    && spanMember.member().equals("span")
+                    && spanMember.receiver() instanceof Ast.NameExpr spanNamespace
+                    && spanNamespace.name().equals("telemetry")
+                    && !spanCall.typeArgumentsPresent();
+            boolean borrowedView = resource instanceof Ast.CallExpr borrowCall
+                    && borrowCall.callee() instanceof Ast.MemberExpr borrowMember
+                    && borrowMember.member().equals("borrow")
+                    && borrowCall.arguments().isEmpty() && !borrowCall.typeArgumentsPresent();
+            if (!telemetrySpan && !borrowedView) {
                 throw error(previous(),
-                        "using borrowed scope requires a zero-argument resource.borrow() call");
+                        "using scoped resource requires telemetry.span(...) or a zero-argument resource.borrow() call");
             }
-            consume(AS, "using borrowed scope requires 'as <view>'");
-            Token name = consume(IDENT, "using borrowed scope requires a binding name");
+            consume(AS, "using scoped resource requires 'as <binding>'");
+            Token name = consume(IDENT, "using scoped resource requires a binding name");
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using borrowed scope needs a named, usable view binding");
+                throw error(name, "using scoped resource needs a named, usable binding");
             }
-            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+            List<Ast.Stmt> body = parseBlock();
+            if (telemetrySpan) {
+                // Desugar to one single-evaluation local plus an enforced
+                // finally edge. Aliases are confined to the lexical block.
+                Ast.BindingStmt binding = new Ast.BindingStmt(
+                        Ast.BindingKind.VAL, null, name.lexeme(), resource);
+                Ast.Expr end = new Ast.CallExpr(
+                        new Ast.MemberExpr(new Ast.NameExpr(name.lexeme()), "end"), List.of());
+                Ast.TryStmt scope = new Ast.TryStmt(
+                        body, null, List.of(), List.of(new Ast.ExprStmt(end)));
+                return new Ast.BlockStmt(List.of(binding, scope));
+            }
+            return new Ast.UsingBorrowStmt(resource, name.lexeme(), body);
         }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
