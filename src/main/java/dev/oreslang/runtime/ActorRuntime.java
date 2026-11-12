@@ -94,7 +94,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            SharedCodeImageStore.CodeImage codeImage,
+            String sourceActorType) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -209,6 +211,22 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object currentActorExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.executionDomain();
+    }
+
+    /**
+     * VM-internal source-code identity for a physically admitted actor turn.
+     * Only the runtime's installed execution frame can supply this image:
+     * callers cannot choose a different actor declaration or a lookalike AST.
+     */
+    static SharedCodeImageStore.CodeImage currentActorCodeImage() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.codeImage();
+    }
+
+    /** Compiler-only actor declaration name admitted for this source turn. */
+    static String currentSourceActorType() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.sourceActorType();
     }
 
     /**
@@ -9497,7 +9515,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    codeImage, codeActorType));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {
