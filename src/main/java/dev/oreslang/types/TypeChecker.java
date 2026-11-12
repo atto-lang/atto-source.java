@@ -5188,10 +5188,19 @@ public final class TypeChecker {
                             + "but physical GPU dispatch is not enabled on this backend; "
                             + "no implicit CPU fallback");
         }
-        if (currentActorKind != Ast.ActorKind.NONE) {
+        // Actor Task blocks are allowed only for ordinary owned data. Their
+        // continuations execute under the actor mailbox lease, but never gain
+        // an implicit receiver or direct sealed-state access. The ownership
+        // pass separately proves each COPY/MOVE capture.
+        boolean actorTask = currentActorKind != Ast.ActorKind.NONE;
+        if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
             throw new IllegalArgumentException(
-                    "task blocks inside actor state are not enabled until captured actor-state "
-                            + "authority is proven; launch a task from ordinary owned data instead");
+                    "untrusted actor task blocks require quota-aware tracked-child admission");
+        }
+        if (actorTask && dev.oreslang.ast.TaskCaptureNames
+                .referencedIn(task.body()).contains("self")) {
+            throw new IllegalArgumentException(
+                    "actor task cannot capture self or actor state; pass owned data instead");
         }
         validateAsyncBoundaryType(result, true, "CPU task result");
 
@@ -5204,7 +5213,8 @@ public final class TypeChecker {
             currentGenerator = false;
             currentAsyncCallable = true;
             currentMaySuspend = true;
-            checkBlock(task.body(), taskEnv, generics, result, self);
+            checkBlock(task.body(), taskEnv, generics, result,
+                    actorTask ? null : self);
             if (result != Primitive.VOID && !definitelyReturns(task.body())) {
                 throw new IllegalArgumentException(
                         "non-void CPU task must explicitly return on every path");
