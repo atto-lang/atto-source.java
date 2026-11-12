@@ -239,11 +239,10 @@ public final class AsyncNioTcp {
                 return OresFuture.failed(new IllegalStateException(
                         "closed socket or concurrent write"));
             }
-            // Async NIO is allowed to retain this buffer after the guest
-            // caller returns. Use writable private backing until an explicit
-            // runtime invariant proves the frozen read-only view is supported
-            // end-to-end by every supported NIO provider.
-            ByteBuffer buffer = ByteBuffer.wrap(bytes.toArrayCopy());
+            // Frozen backing is held strongly by this read-only view until
+            // the asynchronous completion settles. No per-byte boxing,
+            // byte-vector conversion or second outgoing data copy occurs.
+            ByteBuffer buffer = bytes.nioReadOnlyView().asReadOnlyBuffer();
             return OresFuture.fromCallback(callback -> {
                 CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
                     @Override public void completed(Integer count, Void ignored) {
@@ -266,7 +265,7 @@ public final class AsyncNioTcp {
                     }
                 };
                 try {
-                    if (buffer.hasRemaining()) {
+                    if (!buffer.hasRemaining()) {
                         writing.set(false);
                         callback.resolve(null);
                     } else {
