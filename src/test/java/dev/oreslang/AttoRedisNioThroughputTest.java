@@ -208,7 +208,8 @@ final class AttoRedisNioThroughputTest {
 
     private static void verifyFramedNioGuest(String filename, int batchSize) throws Exception {
         String code = resource(filename);
-        if ("redis_actor_nio_batch.atto".equals(filename)) {
+        if ("redis_actor_nio_batch.atto".equals(filename)
+                || "redis_actor_nio_batch_write.atto".equals(filename)) {
             assertTrue(batchSize == 1 || batchSize == 4
                     || batchSize == 16 || batchSize == 64);
             String original = "socket.read_resp2_binary_batch_async(16)";
@@ -304,6 +305,19 @@ final class AttoRedisNioThroughputTest {
             throws Exception {
         for (int batch : new int[] {1, 4, 16, 64}) {
             verifyFramedNioGuest("redis_actor_nio_batch.atto", batch);
+        }
+    }
+
+    /**
+     * Real Atto guest plus one immutable NIO2 write per reply batch.
+     * The existing read-batching suite remains the non-coalesced control.
+     */
+    @Test
+    @Timeout(value = 240, unit = TimeUnit.SECONDS)
+    void coalescedBinaryReplyBatchesPreserveWireOrderForOneFourSixteenSixtyFour()
+            throws Exception {
+        for (int batch : new int[] {1, 4, 16, 64}) {
+            verifyFramedNioGuest("redis_actor_nio_batch_write.atto", batch);
         }
     }
 
@@ -403,7 +417,8 @@ final class AttoRedisNioThroughputTest {
         assertTrue(code.contains(bind));
         code = code.replace(bind,
                 "network.listen_async(\"127.0.0.1\", " + port + ")");
-        if ("redis_actor_nio_batch.atto".equals(name)) {
+        if ("redis_actor_nio_batch.atto".equals(name)
+                || "redis_actor_nio_batch_write.atto".equals(name)) {
             String selector = "socket.read_resp2_binary_batch_async(16)";
             assertTrue(code.contains(selector));
             code = code.replace(selector,
@@ -456,6 +471,7 @@ final class AttoRedisNioThroughputTest {
         double[] baseline = new double[reps];
         double[] officialRedis = new double[reps];
         double[][] batched = new double[sizes.length][reps];
+        double[][] coalesced = new double[sizes.length][reps];
         for (int rep = 0; rep < reps; ++rep) {
             // ABBA-style alternating order. Every process starts a new store.
             if ((rep & 1) == 1) {
@@ -474,6 +490,9 @@ final class AttoRedisNioThroughputTest {
                 batched[index][rep] = executePipelinedGuest(
                         "redis_actor_nio_batch.atto", sizes[index], pipeline,
                         warm, measured, "batch_" + sizes[index] + "_rep_" + rep);
+                coalesced[index][rep] = executePipelinedGuest(
+                        "redis_actor_nio_batch_write.atto", sizes[index], pipeline,
+                        warm, measured, "coalesced_" + sizes[index] + "_rep_" + rep);
             }
             if ((rep & 1) == 1) {
                 baseline[rep] = executePipelinedGuest(
@@ -498,6 +517,15 @@ final class AttoRedisNioThroughputTest {
                     pipeline, sizes[i], reps, baselineMedian,
                     currentMedian, currentMedian / baselineMedian,
                     redisMedian, currentMedian / redisMedian);
+            double writeMedian = median(coalesced[i]);
+            System.out.printf(
+                    "ATTO_WRITE_BATCH_COMPARE pipeline=%d batch=%d repetitions=%d "
+                            + "read_only_median=%.1f coalesced_median=%.1f speedup=%.4f "
+                            + "redis_median=%.1f coalesced_over_redis=%.4f "
+                            + "oracle=PASS profiler=OFF%n",
+                    pipeline, sizes[i], reps, currentMedian,
+                    writeMedian, writeMedian / currentMedian,
+                    redisMedian, writeMedian / redisMedian);
         }
     }
 
