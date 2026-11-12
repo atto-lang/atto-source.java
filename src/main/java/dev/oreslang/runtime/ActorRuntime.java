@@ -2379,7 +2379,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 + cell.ref.id());
                 OresFuture<T> refusal = OresFuture.failed(rejected);
                 cell.fail(new IllegalStateException(
-                        "actor internal continuation queue overflow (source task admission) for "
+                        "actor internal continuation queue overflow (source task cleanup) for "
                                 + cell.ref.id(), rejected));
                 return refusal;
             }
