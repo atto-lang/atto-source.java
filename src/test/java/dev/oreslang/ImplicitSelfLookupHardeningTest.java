@@ -50,6 +50,23 @@ final class ImplicitSelfLookupHardeningTest {
     }
 
     @Test
+    void dynamicSubclassCannotHijackLexicallySelectedFreeFunction() throws Exception {
+        assertEquals("99", run("""
+                fnc helper(): int { return 99; }
+                define class Base as
+                  pub execute(): int { return helper(); }
+                end
+                define class Child extends Base as
+                  pub helper(): int { return 7; }
+                end
+                pub routine main(): void {
+                  val child = new Child();
+                  stdio.stdout.write(child.execute());
+                }
+                """));
+    }
+
+    @Test
     void unqualifiedSuspendingMethodCannotBypassCallerEffect() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
