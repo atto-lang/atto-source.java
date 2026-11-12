@@ -108,11 +108,26 @@ final class AttoRedisTwoClientBufferGuestTest {
                     throw new RuntimeException(failure);
                 }
             });
-            try (Socket first = connect(run, port);
-                 Socket second = connect(run, port)) {
-                scenario.run(first, second);
+            try {
+                try (Socket first = connect(run, port);
+                     Socket second = connect(run, port)) {
+                    scenario.run(first, second);
+                }
+                run.get(15, TimeUnit.SECONDS);
+            } catch (Exception wireFailure) {
+                // A connection reset often masks the actual failed Atto task.
+                // Keep the test fail-closed and report the guest exception.
+                try {
+                    run.get(2, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException guestFailure) {
+                    throw new AssertionError(
+                            "Real Atto two-client guest failed before completing RESP2",
+                            guestFailure.getCause());
+                } catch (java.util.concurrent.TimeoutException pending) {
+                    wireFailure.addSuppressed(pending);
+                }
+                throw wireFailure;
             }
-            run.get(15, TimeUnit.SECONDS);
         }
     }
 
