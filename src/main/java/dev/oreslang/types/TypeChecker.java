@@ -269,28 +269,67 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+
+        // The linker has already verified source unit and public declaration
+        // provenance. Compute the permitted named-parent closure from only
+        // explicitly imported roots; no arbitrary metadata map entry can mint
+        // another visible nominal declaration. Parent linkage is bounded and
+        // must preserve trait/interface kind.
+        Set<String> admittedNominals = new LinkedHashSet<>();
+        java.util.ArrayDeque<String> pendingNominals = new java.util.ArrayDeque<>();
+        for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
+            Ast.InterfaceDecl nominal = entry.getValue();
+            if (nominal == null) continue;
+            Ast.ImportKind kind = nominal.moduleContract() ? Ast.ImportKind.CONTRACT
+                    : nominal.trait() ? Ast.ImportKind.TRAIT : Ast.ImportKind.INTERFACE;
+            boolean explicitlyImported = program.imports().stream().anyMatch(use ->
+                    use.kind() == kind && !use.wildcard()
+                            && use.names().contains(nominal.name())
+                            && ImportRules.localName(use, nominal.name()).equals(entry.getKey()));
+            if (explicitlyImported && admittedNominals.add(entry.getKey())) {
+                pendingNominals.add(entry.getKey());
+            }
+        }
+        while (!pendingNominals.isEmpty()) {
+            String name = pendingNominals.removeFirst();
+            Ast.InterfaceDecl child = linkedContracts.get(name);
+            if (child == null || child.moduleContract()) continue;
+            for (Ast.TypeRef parentRef : child.parents()) {
+                Ast.InterfaceDecl parent = linkedContracts.get(parentRef.name());
+                if (parent == null || parent.moduleContract()
+                        || parent.trait() != child.trait()) {
+                    throw new IllegalArgumentException(
+                            "unproven cross-file nominal parent '" + parentRef.name()
+                                    + "' of '" + child.name() + "'");
+                }
+                if (admittedNominals.add(parentRef.name())) {
+                    if (admittedNominals.size() > 128) {
+                        throw new IllegalArgumentException("linked nominal ancestry exceeds bound");
+                    }
+                    pendingNominals.add(parentRef.name());
+                }
+            }
+        }
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
             if (localName == null || localName.isBlank() || declaration == null
-                    || !declaration.moduleContract()
                     || declaration.visibility() != Ast.Visibility.PUBLIC
-                    || !declaration.parents().isEmpty()) {
-                throw new IllegalArgumentException("invalid linked module contract metadata");
+                    || declaration.moduleContract() && !declaration.parents().isEmpty()) {
+                throw new IllegalArgumentException("invalid linked nominal metadata");
             }
-            boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
-                            && use.names().contains(declaration.name())
-                            && ImportRules.localName(use, declaration.name()).equals(localName));
-            if (!imported || checker.interfaces.containsKey(localName)
+            if (!admittedNominals.contains(localName)
+                    || checker.interfaces.containsKey(localName)
                     || checker.ambiguousInterfaces.contains(localName)) {
                 throw new IllegalArgumentException(
-                        "linked contract was not uniquely imported: " + localName);
+                        "linked nominal was not uniquely imported or inherited: " + localName);
             }
-            // Alias identity is local type-only metadata, never a runtime export.
+            // Runtime source never sees a foreign declaration body: retain a
+            // type-only nominal witness plus the original trait kind.
             Ast.InterfaceDecl local = new Ast.InterfaceDecl(
                     localName, declaration.visibility(), declaration.genericParameters(),
-                    declaration.parents(), declaration.members(), true);
+                    declaration.parents(), declaration.members(), declaration.moduleContract(),
+                    declaration.trait());
             checker.interfaces.put(localName, local);
         }
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
@@ -8279,11 +8318,11 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
+            if (iface.moduleContract() != parent.moduleContract()
+                    || iface.trait() != parent.trait()) {
                 throw new IllegalArgumentException(
-                        (iface.moduleContract() ? "module contract '" : "interface '") + iface.name()
-                                + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
-                                + parent.name() + "' across the interface/contract boundary");
+                        "trait, interface and module contract inheritance must preserve nominal declaration kind: "
+                                + iface.name() + " extends " + parent.name());
             }
             Type resolvedParent = iface.moduleContract() ? resolveModuleContractRef(parentRef, parent, generics) : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
