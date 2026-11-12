@@ -89,7 +89,7 @@ final class NamespaceActorCriticalIrCompiler {
                 || compiled.descriptor().codeImage() != compiled.codeImage()) {
             throw new SecurityException("actor output requires a verified compiler code image");
         }
-        return compiled.emitReceivedValue();
+        return compiled.outputAddend() != null;
     }
 
     private record InitialField(String name, long value) { }
@@ -285,13 +285,13 @@ final class NamespaceActorCriticalIrCompiler {
                 || end.value() != null) {
             throw reject("receive requires 1..8 critical calls, optional actor output, then return");
         }
-        // Only the exact source-owned `p.send(mail.value)` statement may
-        // emit a checked, immutable scalar output. It must follow all critical
-        // writes, so no actor state loan remains live while publishing.
+        // Only the exact source-owned p.send(mail.value) or verified
+        // p.send(mail.value + literal) may emit a checked scalar result.
+        // Every critical write loan closes before the output channel is used.
         int criticalEnd = statements.size() - 1;
-        boolean emitReceivedValue = criticalEnd > 1 && isCheckedOutput(
-                statements.get(criticalEnd - 1), receive.receiverName(), mail.name());
-        if (emitReceivedValue) criticalEnd--;
+        Long outputAddend = criticalEnd > 1 ? checkedOutputAddend(
+                statements.get(criticalEnd - 1), receive.receiverName(), mail.name()) : null;
+        if (outputAddend != null) criticalEnd--;
         if (criticalEnd < 1 || criticalEnd > 8) {
             throw reject("receive must call 1..8 checked critical methods before output");
         }
@@ -320,12 +320,12 @@ final class NamespaceActorCriticalIrCompiler {
                 image, program.namespace(), actor.name(),
                 slots, methods.keySet());
         return new Executable(image, actor.name(), initial,
-                Map.copyOf(slots), List.copyOf(calls), emitReceivedValue,
+                Map.copyOf(slots), List.copyOf(calls), outputAddend,
                 new ConcurrentHashMap<>(), descriptor);
     }
 
-    /** Exact native Atto actor output syntax, never a general method call. */
-    private static boolean isCheckedOutput(Ast.Stmt statement,
+    /** Exact source-owned scalar output; no ambient method dispatch. */
+    private static Long checkedOutputAddend(Ast.Stmt statement,
             String receiver, String mailName) {
         if (!(statement instanceof Ast.ExprStmt expression)
                 || !(expression.expression() instanceof Ast.CallExpr call)
@@ -334,13 +334,25 @@ final class NamespaceActorCriticalIrCompiler {
                 || call.arguments().size() != 1
                 || !(call.callee() instanceof Ast.MemberExpr target)
                 || !target.member().equals("send")
-                || !isName(target.receiver(), receiver)
-                || !(call.arguments().getFirst() instanceof Ast.MemberExpr message)
-                || !message.member().equals("value")
-                || !isName(message.receiver(), mailName)) {
-            return false;
+                || !isName(target.receiver(), receiver)) {
+            return null;
         }
-        return true;
+        Ast.Expr value = call.arguments().getFirst();
+        if (isOwnedMailValue(value, mailName)) return 0L;
+        if (value instanceof Ast.BinaryExpr plus
+                && plus.operator().equals("+")
+                && isOwnedMailValue(plus.left(), mailName)
+                && plus.right() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long addend) {
+            return addend;
+        }
+        return null;
+    }
+
+    private static boolean isOwnedMailValue(Ast.Expr value, String mailName) {
+        return value instanceof Ast.MemberExpr message
+                && message.member().equals("value")
+                && isName(message.receiver(), mailName);
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -453,7 +465,7 @@ final class NamespaceActorCriticalIrCompiler {
 
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
             String actorName, long[] initial, Map<String, Integer> slots,
-            List<CriticalPlan> calls, boolean emitReceivedValue,
+            List<CriticalPlan> calls, Long outputAddend,
             ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts,
             VerifiedActorDescriptor descriptor)
             implements ActorRuntime.ActorCodeExecutor {
@@ -517,7 +529,12 @@ final class NamespaceActorCriticalIrCompiler {
             // output channel. On full/closed output the actor turn fails
             // rather than blocking its carrier or fabricating success.
             // No mutable state reference or guest-held sender crosses out.
-            if (emitReceivedValue) context.runtime().emitCurrentActorOutput(input);
+            if (outputAddend != null) {
+                // Checked arithmetic prevents overflow from publishing a
+                // partial or falsely successful reply.
+                long value = Math.addExact(input, outputAddend);
+                context.runtime().emitCurrentActorOutput(value);
+            }
             StateReceipt previous = receipts.get(owned.actor.id());
             if (previous == null
                     || previous.generation() != owned.actor.generation()) {
