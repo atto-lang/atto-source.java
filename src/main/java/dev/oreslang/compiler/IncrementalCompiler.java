@@ -119,7 +119,9 @@ public final class IncrementalCompiler {
                     linkedImportedContracts(id, parsed.get(id), parsed, normalizedImportResolutions));
             for (Map.Entry<String, Ast.InterfaceDecl> trait : linkedImportedTraits(
                     id, parsed.get(id), parsed, normalizedImportResolutions).entrySet()) {
-                if (contracts.putIfAbsent(trait.getKey(), trait.getValue()) != null) {
+                Ast.InterfaceDecl previous = contracts.putIfAbsent(
+                        trait.getKey(), trait.getValue());
+                if (previous != null && previous != trait.getValue()) {
                     throw new IllegalArgumentException(
                             "ambiguous imported contract/trait nominal name '" + trait.getKey() + "'");
                 }
