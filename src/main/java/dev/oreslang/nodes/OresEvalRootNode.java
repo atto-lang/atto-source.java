@@ -7115,6 +7115,7 @@ public final class OresEvalRootNode extends RootNode {
             // that could expose subtype-only methods or imported capabilities.
             if (call.callee() instanceof Ast.NameExpr unqualified
                     && env.lexicalContainerClass() != null
+                    && env.accessClass() != null // nlex closures lose receiver authority
                     && env.lookup(unqualified.name()) == Env.MISSING
                     && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
                             "print", "task_context", "task_cancel_requested",
