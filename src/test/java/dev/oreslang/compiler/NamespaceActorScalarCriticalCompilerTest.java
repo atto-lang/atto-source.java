@@ -90,6 +90,35 @@ final class NamespaceActorScalarCriticalCompilerTest {
     }
 
     @Test
+    void retiredScalarActorCannotWriteIntoSuccessorIncarnation() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var executable = NamespaceActorScalarCriticalCompiler.compile(
+                    image(store, source(), "proof/reincarnation.atto"));
+            var retired = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            retired.ready().get(3, TimeUnit.SECONDS);
+            retired.send(17L);
+            retired.drain().get(3, TimeUnit.SECONDS);
+            retired.stop();
+            retired.done().get(3, TimeUnit.SECONDS);
+
+            var successor = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            successor.ready().get(3, TimeUnit.SECONDS);
+            assertNotEquals(retired.id(), successor.id());
+            assertThrows(RuntimeException.class, () -> retired.send(5L),
+                    "a retired actor cannot mutate a successor's scalar state");
+            successor.send(Long.MAX_VALUE);
+            successor.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(successor.failure().isEmpty(),
+                    "new incarnation starts with a fresh actor-owned count");
+            successor.stop();
+            successor.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void forgedDirectInvocationFailsWithoutAnActorTurn() throws Exception {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
