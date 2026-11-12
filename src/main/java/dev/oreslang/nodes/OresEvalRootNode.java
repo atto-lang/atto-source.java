@@ -8415,15 +8415,18 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
                     case "request" -> (Invokable) args -> {
-                        if (args.size() != 3 || !(args.get(2) instanceof List<?> headers)) {
+                        if ((args.size() != 3 && args.size() != 4)
+                                || !(args.get(2) instanceof List<?> headers)) {
                             throw new IllegalArgumentException(
-                                    "http.request requires method, URL and List<(String,String)> headers");
+                                    "http.request requires method, URL, List<(String,String)> headers"
+                                    + " and optional bounded UTF-8 String/Bytes body");
                         }
                         return OutboundHttpRequest.request(
                                 context,
                                 requireString(args.get(0), "HTTP method"),
                                 requireString(args.get(1), "HTTP URL"),
-                                headers);
+                                headers,
+                                args.size() == 4 ? args.get(3) : null);
                     };
                     case "get_text", "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
