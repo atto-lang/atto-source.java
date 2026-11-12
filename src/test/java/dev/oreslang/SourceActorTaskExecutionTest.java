@@ -4,7 +4,6 @@ import dev.oreslang.compiler.OresCompiler;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -68,7 +67,7 @@ final class SourceActorTaskExecutionTest {
                           stdio.stdout.write("parent|");
                           return;
                         };
-                      elif mail.value == "finish"; do
+                        await outer;
                         self.end();
                       fi
                       return;
@@ -79,7 +78,6 @@ final class SourceActorTaskExecutionTest {
                       val worker = spawn Worker();
                       await worker.get_ready();
                       worker.send("start");
-                      worker.send("finish");
                       await worker.get_done();
                       stdio.stdout.write("done");
                       return;
