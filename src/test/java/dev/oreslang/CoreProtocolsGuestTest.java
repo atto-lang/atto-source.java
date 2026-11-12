@@ -135,6 +135,25 @@ final class CoreProtocolsGuestTest {
     }
 
     @Test
+    void canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods() {
+        // These are negative real-linker checks for nominal conformance:
+        // Hash has fixed arity zero and Clone<T> must substitute T=int.
+        // No interface may be satisfied by a similarly named wrong method.
+        for (String fixture : new String[]{
+                "hash-missing-negative.atto",
+                "hash-wrong-arity-negative.atto",
+                "clone-wrong-generic-return-negative.atto",
+                "clone-missing-negative.atto"}) {
+            Path source = Path.of("tests", "fixtures",
+                    "core-protocols-java-execution", fixture);
+            assertTrue(Files.isRegularFile(source),
+                    "missing negative .atto guest fixture " + fixture);
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+        }
+    }
+
+    @Test
     void canonicalAttoNegativeFixturesRejectInvalidConformance() {
         for (String fixture : new String[]{
                 "eq-missing-negative.atto", "eq-wrong-signature-negative.atto",
