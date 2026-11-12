@@ -385,6 +385,19 @@ public final class ActorReceiverBinder {
                             + "' cannot implement a compiler-owned or unverified CONTROL hook");
         }
 
+        // Critical state methods are private, actor-bound and never
+        // callable through runtime activation/mailbox ingress. This static
+        // bit grants NO host state access before checked compiler lowering.
+        if (method.criticalMethod()) {
+            if (!(target instanceof Ast.StandaloneActorDecl)
+                    || method.runtimeIngress()
+                    || method.visibility() != Ast.Visibility.PRIVATE
+                    || name.equals("init") || name.equals("receive")) {
+                throw new IllegalArgumentException(
+                        "critical actor method requires a private declared actor member, not ingress");
+            }
+        }
+
         // 'external' denotes runtime-controlled ingress, NOT pub API export.
         // The static binder records the ABI only; no actor runtime can call
         // it without a compiler-issued actor identity and generation permit.
