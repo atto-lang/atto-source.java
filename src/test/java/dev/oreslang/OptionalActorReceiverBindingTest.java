@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class OptionalActorReceiverBindingTest {
     private static final String NS = "namespace workers;\n";
-    private static final String ACTOR = NS + "declare actor Worker;";
+    private static final String ACTOR = NS + "declare pub actor Worker;";
     private static final String STATE = NS
             + "define state on actor Worker as { let int v = 5; }";
 
