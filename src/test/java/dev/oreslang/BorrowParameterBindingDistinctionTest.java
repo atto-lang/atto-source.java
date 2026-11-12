@@ -173,6 +173,52 @@ final class BorrowParameterBindingDistinctionTest {
     }
 
     @Test
+    void synchronousBorrowCallbackCannotInheritSuspensionFromEnclosingFunction() {
+        IllegalArgumentException indirect = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        suspends fnc slow(): void { return; }
+                        suspends fnc invalid(): void {
+                          val Fnc<borrow mut Box, void> callback =
+                            |borrow mut s| -> void {
+                              slow();
+                              return;
+                            };
+                          return;
+                        }
+                        """)));
+        assertTrue(indirect.getMessage().contains("requires an async or suspends caller"),
+                indirect.getMessage());
+
+        admits("""
+                suspends fnc slow(): void { return; }
+                suspends fnc valid(): void {
+                  val Fnc<borrow mut Box, void> callback =
+                    |borrow mut s| -> void {
+                      s.value = 42;
+                      return;
+                    };
+                  slow();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void borrowParameterDoesNotCrossAwaitInTypedCallback() {
+        rejects("""
+                async fnc load(): int { return 1; }
+                async fnc invalid(): void {
+                  val Fnc<borrow mut Box, void> callback =
+                    |borrow mut s| -> void {
+                      s.value = await load();
+                      return;
+                    };
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void typedCallbackCanInferBorrowedReferentWithoutMakingBindingReassignable() {
         admits("""
                 fnc valid(): void {
