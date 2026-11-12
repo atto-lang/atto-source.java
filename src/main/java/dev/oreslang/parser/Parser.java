@@ -5085,6 +5085,40 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
+                if (expr instanceof Ast.MemberExpr member
+                        && member.member().equals("handle_state")) {
+                    // The native actor state loan is a compiler-only intrinsic.
+                    // Parse its critical-read/write mode without treating the
+                    // hyphen as arithmetic or granting an ordinary method call.
+                    // The opaque RuntimeCallExpr has NO executable lowering.
+                    boolean read = isAdjacentCompoundKeyword("critical", "read");
+                    boolean write = isAdjacentCompoundKeyword("critical", "write");
+                    if (!read && !write) {
+                        throw error(peek(),
+                                "actor handle_state requires critical-read or critical-write loan");
+                    }
+                    advance(); // critical
+                    advance(); // adjacent '-'
+                    advance(); // read/write
+                    if (!check(PIPE)) {
+                        throw error(peek(),
+                                "actor handle_state requires one lexical |state| -> callback");
+                    }
+                    Ast.LambdaExpr callback = parsePipeLambda(false);
+                    if (callback.parameters().size() != 1
+                            || callback.parameters().getFirst().mutable()
+                            || callback.nonLexical()) {
+                        throw error(previous(),
+                                "actor critical callback requires exactly one lexical immutable binding");
+                    }
+                    consume(RPAREN,
+                            "actor handle_state admits one critical callback and no extra arguments");
+                    expr = new Ast.CallExpr(expr, List.of(new Ast.RuntimeCallExpr(
+                            read ? "actor_state_critical_read_unlowered"
+                                    : "actor_state_critical_write_unlowered",
+                            List.of(callback))));
+                    continue;
+                }
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
