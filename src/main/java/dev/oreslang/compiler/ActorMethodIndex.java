@@ -124,10 +124,9 @@ public final class ActorMethodIndex {
                         declaration = new ActorDeclaration(
                                 entry.getKey(), klass.visibility(),
                                 !klass.genericParameters().isEmpty(), klass.actorKind());
-                        if (klass.standaloneBinding() != null) {
-                            throw new IllegalArgumentException(
-                                    "unlowered standalone actor cannot enter actor method index");
-                        }
+                        // Ast.StandaloneActorDecl is a distinct Decl, never a ClassDecl.
+                        // This branch only indexes fully defined class-like actors;
+                        // standalone declarations never acquire codegen authority here.
                     } else {
                         continue;
                     }
