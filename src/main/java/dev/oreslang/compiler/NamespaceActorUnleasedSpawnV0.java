@@ -151,7 +151,7 @@ public final class NamespaceActorUnleasedSpawnV0 {
                 actions.add(send);
                 totalMessages = Math.addExact(totalMessages, send.count());
             } else if (statement instanceof Ast.ForStmt loop) {
-                int count = verifyBoundedLoop(loop);
+                int count = verifyBoundedLoop(loop, sent);
                 if (loop.body().size() != 1
                         || !(loop.body().getFirst() instanceof Ast.ExprStmt call)) {
                     throw reject("bounded send loop needs one direct send statement");
@@ -187,9 +187,11 @@ public final class NamespaceActorUnleasedSpawnV0 {
         return new Send(receiver.name(), value, count);
     }
 
-    private static int verifyBoundedLoop(Ast.ForStmt loop) {
+    private static int verifyBoundedLoop(
+            Ast.ForStmt loop, Map<String, Long> actorBindings) {
         if (!(loop.initializer() instanceof Ast.BindingStmt start)
                 || start.kind() != Ast.BindingKind.LET
+                || actorBindings.containsKey(start.name())
                 || !simpleOrInferredInt(start.declaredType())
                 || !(start.initializer() instanceof Ast.LiteralExpr initial)
                 || !(initial.value() instanceof Long first) || first != 0L
