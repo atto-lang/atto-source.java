@@ -507,15 +507,22 @@ public final class OutboundHttpRequest {
         // Read the immutable context on the *guest admission* carrier, not
         // the later physical-I/O worker. No userland tracing call is required.
         // The same immutable header list is then carried through async I/O.
-        TraceParent activeParent =
-                context.autoTrace().enabled() ? TaskContext.traceParent() : null;
-        final List<Map.Entry<String, String>> headers =
-                withTraceparent(providedHeaders, activeParent);
-        final SemanticTraceBuffer.Scope clientSpan = activeParent == null
-                ? null : context.semanticTrace().begin(
-                        TraceParent.parse(headers.getLast().getValue()).orElseThrow(),
-                        activeParent.spanId(), SemanticTraceBuffer.HTTP_CLIENT,
-                        SemanticTraceBuffer.Kind.CLIENT);
+        final List<Map.Entry<String, String>> headers;
+        final SemanticTraceBuffer.Scope clientSpan;
+        if (context.autoTrace().enabled()) {
+            // A top-level client call without a logical parent is a genuine
+            // root span, not a synthetic child of an invisible span.
+            TraceParent activeParent = TaskContext.traceParent();
+            TraceParent outbound = activeParent == null
+                    ? TraceParent.newRoot(true) : activeParent.newChild();
+            headers = withTraceparentValue(providedHeaders, outbound);
+            clientSpan = context.semanticTrace().begin(outbound,
+                    activeParent == null ? "" : activeParent.spanId(),
+                    SemanticTraceBuffer.HTTP_CLIENT, SemanticTraceBuffer.Kind.CLIENT);
+        } else {
+            headers = providedHeaders;
+            clientSpan = null;
+        }
         // Allocated only with sampling and trusted context; otherwise the
         // CLIENT path incurs no new physical-operation bookkeeping.
         final java.util.concurrent.atomic.AtomicInteger observedStatus =
@@ -664,8 +671,16 @@ public final class OutboundHttpRequest {
     static List<Map.Entry<String, String>> withTraceparent(
             List<Map.Entry<String, String>> provided,
             TraceParent parent) {
-        Objects.requireNonNull(provided, "provided");
         if (parent == null) return provided;
+        return withTraceparentValue(provided, parent.newChild());
+    }
+
+    /** Inject an already-minted root or child span ID exactly once. */
+    private static List<Map.Entry<String, String>> withTraceparentValue(
+            List<Map.Entry<String, String>> provided,
+            TraceParent outgoing) {
+        Objects.requireNonNull(provided, "provided");
+        Objects.requireNonNull(outgoing, "outgoing");
 
         long bytes = 0L;
         for (Map.Entry<String, String> header : provided) {
@@ -681,7 +696,6 @@ public final class OutboundHttpRequest {
             throw new IllegalArgumentException(
                     "http.request trace propagation exceeds header budgets");
         }
-        TraceParent outgoing = parent.newChild();
         ArrayList<Map.Entry<String, String>> result =
                 new ArrayList<>(provided.size() + 1);
         result.addAll(provided);
