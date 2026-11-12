@@ -179,6 +179,49 @@ access, calls, unchecked arithmetic, nontrivial control flow, source file
 revocation, source fingerprint changes, immutable reports, and overlapping
 method selectors on two independent actors.
 
+## Compiler-only lexical critical-read/write callbacks (NOT executable)
+
+Parser source now recognizes the exact, context-bound forms
+
+```atto
+return c.handle_state(critical-read |s| -> s.count);
+c.handle_state(critical-write |s| -> { s.count = s.count + 1; });
+```
+
+These are *not ordinary member method calls*. The parser preserves the
+critical mode and a lexical one-parameter callback as an unlowered
+compiler-only AST wrapper. The general Java TypeChecker rejects the
+unlowered wrapper explicitly with
+`ACTOR_STATE_LOAN_LOWERING_UNSUPPORTED`. No guest can spoof an executable
+actor-state capability through `handle_state`.
+
+The opt-in manifest method `auditCriticalStateBodies()` uses the same
+complete source snapshot, nominal actor witness and immutable descriptor to
+verify a strict subset of external `mtd` bodies:
+
+- `critical-read`: one lexical callback selecting exactly one sealed field
+  on its own actor; the method return type must match that scalar field.
+- `critical-write`: one lexical callback containing exactly one assignment
+  to a mutable (`let`) field on its actor, with a correctly typed scalar
+  literal or one recognized `field + int` expression.
+- No foreign state owner, callback escape, unknown fields, extra arguments,
+  untyped mutation, write through a reader loan or write to an immutable
+  `val` field.
+
+The increment form is reported as
+`WRITE_INCREMENT_UNLOWERED`: it is **not proof of overflow-safe arithmetic**,
+and it cannot enter runtime dispatch. Method bodies outside this exact subset
+receive no checked state-loan metadata; the static audit is never executable
+authority. `build()` still rejects the entire declared-actor source package
+with `DECLARED_ACTOR_CODEGEN_UNSUPPORTED`.
+
+`ExternalActorCriticalStateCheckTest` adds **17 authored tests** using real
+five-file same-namespace source sets, valid read/write callbacks and
+representative negative cases. LLVM's separate native C11 state-gate
+tests and single-scalar namespace AOT stage are tracked by
+`oreslang-source.llvm` PR #1720. Neither backend runs this five-file
+declared actor guest yet.
+
 ## Test inventory
 
 PackageNamespaceBuildTest: 21 previously authored cases.
@@ -186,6 +229,7 @@ DeclaredActorContractWitnessTest: 27 authored cases.
 DeclaredActorCompilerManifestGateTest: 17 authored cases.
 SameNamespaceDeclaredActorPackageTest: 25 authored cases.
 ExternalActorScalarBodyCheckTest: 15 authored cases.
+ExternalActorCriticalStateCheckTest: 17 authored cases.
 ActorContractTargetCompilerIntegrationTest: 9 authored cases.
 The existing namespace actor-state, receiver and parser tests are also
 required in cross-file-actor-mtd-junit.yml with exact-head Surefire checks.
