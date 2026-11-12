@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Bytes", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -6083,10 +6083,25 @@ public final class TypeChecker {
                     default -> throw new IllegalArgumentException("unknown NioListener member " + name);
                 }
             }
+            case "Bytes" -> {
+                switch (name) {
+                    case "size" -> { result = Primitive.INT; parameters = List.of(); }
+                    case "byte_at" -> { result = Primitive.INT; parameters = List.of(Primitive.INT); }
+                    case "take" -> { result = new Named("Bytes", List.of()); parameters = List.of(); }
+                    case "close" -> { result = Primitive.VOID; parameters = List.of(); }
+                    default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+                }
+            }
             case "NioConnection" -> {
                 switch (name) {
                     case "read_bytes_async" -> {
                         result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "read_owned_bytes_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
+                    case "write_owned_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
                     }
                     case "read_resp2_hex_async" -> {
                         result = new ListType(Primitive.STRING); parameters = List.of();
@@ -10316,6 +10331,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Bytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Bytes is a non-generic linear value type");
+                }
+                yield new Named("Bytes", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
