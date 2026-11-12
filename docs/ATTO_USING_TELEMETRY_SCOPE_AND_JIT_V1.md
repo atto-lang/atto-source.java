@@ -138,16 +138,25 @@ and [shared v1 instrumentation ABI](https://github.com/ores-truffle-oreslang/ore
   `traceparent` HTTP header to an immutable list handed to the physical I/O
   worker. It rejects duplicate user-supplied tracing headers and respects the
   established 100-header/32768-byte request limits.
-- **Still missing:** HTTP SERVER automatic span creation and extraction from
-  inbound headers, semantic CLIENT/ACTOR spans, OTLP/HTTP export from a bounded
-  native Atto telemetry actor, safe `tracestate` handling, actor-tenant trust
-  policy, compiler-generated full function body probes, and actual Java/LLVM
-  executed guest trace receipts. The original Java HTTP frontend still relies
-  on a host transport rather than the proposed native `std/http` implementation.
+- `NativeHttp.Server.receive` now extracts a strictly validated incoming
+  `traceparent` once during HTTP admission, stores an immutable child/root
+  context on the internal exchange state, and `Handler.dispatch` installs
+  it around actor-mailbox admission. The sender's previous logical context
+  is restored on both success and failure. Duplicate/malformed traceparent
+  is never adopted as the parent. This does **not** yet create/export a
+  semantic HTTP SERVER span.
+- **Still missing:** HTTP SERVER **span recording**, semantic CLIENT/ACTOR spans,
+  OTLP/HTTP export from a bounded native Atto telemetry actor, safe
+  `tracestate` handling, actor-tenant trust policy, compiler-generated full
+  function body probes, and actual Java/LLVM executed guest trace receipts.
+  The Java HTTP frontend still relies on a host transport rather than the
+  proposed native `std/http` implementation.
 
 Tests authored on this branch:
 `AutomaticCallProbeGuestTest`, `AutoTraceRecorderTest`,
 `TraceParentTest`, `TraceTaskContextTest`,
 `ActorTraceContextPropagationTest`, and
-`OutboundHttpTraceInjectionTest`. None has an exact-head nonzero-step
-passing CI receipt. **Do not present a source-level match as runtime pass.**
+`OutboundHttpTraceInjectionTest`,
+`NativeHttpInboundTraceContextTest`, and
+`HostOnlyTracePathCompositionTest` (host-only W3C → real JVM actor mailbox →
+outbound header). None has an exact-head nonzero-step passing CI receipt. **Do not present a source-level match as runtime pass.**
