@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Map;
+import dev.oreslang.parser.Parser;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -134,6 +135,75 @@ final class SealedActorStateRegionTest {
             assertTrue(checked.await(5, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertNull(failure.get(), "state reclamation violated lifetime rule");
+        }
+    }
+
+    @Test
+    void sourceActorCodeExecutorRegionIsReclaimedOnRealRuntimeFinalization()
+            throws Exception {
+        // Host-provided executor is a test double; this validates the
+        // actual ActorRuntime codeActorState lifecycle, NOT the compiled guest.
+        var parsed = Parser.parse("""
+                define actor AcceptanceCounter as
+                  state { let int count = 0; }
+                end
+                """);
+        try (var store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime()) {
+            var code = store.publish("nats-sealed-region-test", parsed);
+            var retained = new AtomicReference<SealedActorStateRegion>();
+            var failure = new AtomicReference<Throwable>();
+            var delivered = new CountDownLatch(2);
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return code;
+                }
+
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String typeName, ActorRuntime.ActorContext<Object> context) {
+                    assertEquals("AcceptanceCounter", typeName);
+                    assertEquals(context.self().id(),
+                            ActorRuntime.currentActorId().orElseThrow());
+                    var region = SealedActorStateRegion.allocate(Map.of("count", 0L));
+                    retained.set(region);
+                    return region;
+                }
+
+                @Override public void receiveActor(
+                        String typeName,
+                        ActorRuntime.ActorOwnedGuestState raw,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    try {
+                        var region = (SealedActorStateRegion) raw;
+                        long before = region.read(view -> view.readInt("count"));
+                        long next = (Long) mail.value();
+                        region.write(view -> {
+                            view.writeInt("count", next);
+                            return null;
+                        });
+                        assertEquals(next - 1, before);
+                        delivered.countDown();
+                        if (next == 2L) context.self().stop();
+                    } catch (Throwable ex) {
+                        failure.compareAndSet(null, ex);
+                        delivered.countDown();
+                        context.self().stop();
+                    }
+                }
+            };
+
+            var actor = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "AcceptanceCounter");
+            actor.send(1L);
+            actor.send(2L);
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "source actor runtime bridge did not preserve state");
+            assertNotNull(retained.get(), "source actor state never initialized");
+            assertTrue(retained.get().isReclaimed(),
+                    "actual ActorRuntime finalization must reclaim state after quiescence");
+            assertEquals(0, retained.get().activeLoanCount());
         }
     }
 
