@@ -162,6 +162,12 @@ public final class TypeChecker {
         ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MailEnumDecl mailEnum) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_MAIL_ENUM_GENERAL_LOWERING_UNSUPPORTED: '"
+                                    + mailEnum.name() + "' is checked only by the opt-in "
+                                    + "namespace actor V3 exhaustive ingress compiler");
+                }
                 if (declaration instanceof Ast.ActorStateDecl state) {
                     throw new IllegalArgumentException(
                             "ATTACHED_ACTOR_STATE_CRITICAL_LOWERING_UNSUPPORTED: '"
