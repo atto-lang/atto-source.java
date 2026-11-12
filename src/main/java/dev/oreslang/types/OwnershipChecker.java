@@ -4545,18 +4545,24 @@ public final class OwnershipChecker {
                     payloadSend, false, false);
         }
 
-        // Source-written Tuple<A,B,...> is a named generic TypeRef, unlike
-        // the compiler's synthetic $tuple$ form. Both require the same
-        // recursive Send proof before a synchronized Channel<T> handle may
-        // be captured by independently scheduled tasks.
+        // Source Tuple[T1, T2] encodes its finite elements in a single
+        // $shape$ argument, NOT in generic positional arguments or the
+        // compiler's synthetic $tuple$ form. Never infer Send for arbitrary
+        // shape nodes, repetition patterns or nominal shadowing.
         if (name.equals("Tuple") && declaredClass == null) {
-            if (type.arguments().isEmpty()) return none;
+            if (type.arguments().size() != 1
+                    || !type.arguments().getFirst().isSequenceShape()) {
+                return none;
+            }
+            List<Ast.TypeRef> fields = type.arguments().getFirst().arguments();
+            if (fields.isEmpty()) return none;
             boolean send = true;
             boolean sync = true;
             boolean share = true;
-            for (Ast.TypeRef element : type.arguments()) {
+            for (Ast.TypeRef field : fields) {
+                if (field.isRepeatExact() || field.isRepeatMany()) return none;
                 AutoTraitRules.Capabilities child =
-                        taskCaptureCapabilities(element, visitingClasses);
+                        taskCaptureCapabilities(field, visitingClasses);
                 send &= child.send();
                 sync &= child.sync();
                 share &= child.share();
@@ -4619,9 +4625,19 @@ public final class OwnershipChecker {
             default -> false;
         }) {
             if (type.arguments().size() != 1) return none;
+            Ast.TypeRef elementType = type.arguments().getFirst();
+            // The source spelling List[T]/Array[T]/Vector[T]/Slice[T]
+            // wraps the element type in a single $shape$ node. Keep the
+            // existing <T> syntax, but do not admit mixed/repeating shapes.
+            if (elementType.isSequenceShape()) {
+                if (elementType.arguments().size() != 1) return none;
+                elementType = elementType.arguments().getFirst();
+                if (elementType.isRepeatExact() || elementType.isRepeatMany()) {
+                    return none;
+                }
+            }
             AutoTraitRules.Capabilities element =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(elementType, visitingClasses);
             // Mutable sequence ownership may move when elements are Send, but
             // the sequence itself is not implicitly Sync/Share.
             return new AutoTraitRules.Capabilities(
