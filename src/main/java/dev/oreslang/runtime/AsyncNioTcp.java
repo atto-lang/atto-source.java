@@ -510,6 +510,52 @@ public final class AsyncNioTcp {
             }
         }
 
+        /**
+         * Serialize 1..64 already-computed immutable Atto actor replies into
+         * one detached output buffer, then submit exactly one NIO2 write.
+         * This transport helper does not execute Redis commands or touch KV.
+         * Validation finishes before any bytes are sent; malformed entries
+         * cannot yield a partial successful response stream.
+         */
+        public OresFuture<Void> writeResp2BinaryBatchAsync(List<?> replies) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_resp2_binary_batch_async");
+            if (replies == null || replies.isEmpty() || replies.size() > 64) {
+                throw new IllegalArgumentException("binary RESP2 reply batch must contain 1..64 entries");
+            }
+            byte[][] serialized = new byte[replies.size()][];
+            int totalBytes = 0;
+            try {
+                for (int i = 0; i < replies.size(); ++i) {
+                    if (!(replies.get(i) instanceof List<?> reply)
+                            || reply.size() != 2
+                            || !(reply.get(0) instanceof String status)
+                            || !(reply.get(1) instanceof OresBytes payload)) {
+                        throw new IllegalArgumentException(
+                                "binary RESP2 batch expects Tuple<string,Bytes> entries");
+                    }
+                    // Non-bulk replies do not encode their placeholder payload,
+                    // matching write_resp2_binary_async exactly.
+                    byte[] encoded = AsyncNioResp2.encodeBinary(
+                            status, "VALUE".equals(status) ? payload : null);
+                    if ((long) totalBytes + encoded.length > MAX_BYTES) {
+                        throw new IOException("binary RESP2 reply batch exceeds 1048576 bytes");
+                    }
+                    serialized[i] = encoded;
+                    totalBytes += encoded.length;
+                }
+            } catch (IOException badReply) {
+                return OresFuture.failed(badReply);
+            }
+            byte[] detached = new byte[totalBytes];
+            int offset = 0;
+            for (byte[] part : serialized) {
+                System.arraycopy(part, 0, detached, offset, part.length);
+                offset += part.length;
+            }
+            return writeDetachedAsync(detached);
+        }
+
         /** One bounded binary RESP2 write through NIO2 completion callbacks. */
         public OresFuture<Void> writeResp2BinaryAsync(String status, OresBytes payload) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK,
