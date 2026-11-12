@@ -1,0 +1,90 @@
+name: Atto using telemetry span - exact-head guest JUnit
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java'
+      - 'src/test/java/dev/oreslang/UsingRequestBorrowScopeParserTest.java'
+      - '.github/workflows/atto-telemetry-using-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  atto-native-using-scope-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact Java source PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Verify exact committed source and record identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          printf 'ATTO_USING_JAVA_SOURCE_HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'ATTO_USING_JAVA_SOURCE_TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+      - name: Provision GraalVM Java 25 for real Atto guests
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: 'maven'
+      - name: Compile actual parser/typechecker/evaluator and execute guest JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp \
+            -DfailIfNoTests=true \
+            -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest \
+            clean test
+      - name: Verify strict nonzero real Surefire case counts and no skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          required = (
+              'dev.oreslang.UsingTelemetrySpanScopeTest',
+              'dev.oreslang.UsingRequestBorrowScopeParserTest',
+          )
+          root = Path('target/surefire-reports')
+          assert root.is_dir(), 'Surefire reports unavailable'
+          total = 0
+          for suite in required:
+              path = root / ('TEST-' + suite + '.xml')
+              assert path.is_file(), f'missing test receipt {suite}'
+              report = ET.parse(path).getroot()
+              count = int(report.attrib['tests'])
+              failures = int(report.attrib['failures'])
+              errors = int(report.attrib['errors'])
+              skipped = int(report.attrib.get('skipped', '0'))
+              assert count > 0 and failures == errors == skipped == 0, (
+                  f'{suite} must have real nonzero executed cases and no failures/skips; '
+                  f'got {count=} {failures=} {errors=} {skipped=}'
+              )
+              print(f'ATTO_USING_JAVA_VERIFIED_SUITE={suite} executed={count}')
+              total += count
+          assert total >= 13, f'Expected all twelve span tests and borrow regression: {total}'
+          print(f'ATTO_USING_JAVA_GUEST_JUNIT_PASS={total}')
+          PY
+      - name: Preserve exact-head guest proof reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-using-telemetry-exact-head-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
