@@ -310,14 +310,26 @@ pub async fnc serve_redis_session(
       if i == chunk.size then break; fi
       val int state = feed_resp2(rt mut borrow reader, chunk.get(i));
       if state == -1; do
-        await socket.write_buffer_async(Bytes.from_list([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]));
+        try {
+          await socket.write_buffer_async(Bytes.from_list([45, 69, 82, 82, 32, 112, 114, 111, 116, 111, 99, 111, 108, 13, 10]));
+        } catch (write_error) {
+          // A peer may reset or stop receiving while the NIO2 write is pending.
+          // Retire only this socket; the session's finally releases its lease.
+          return;
+        }
         await socket.close_async();
         return;
       fi
       if state == 1; do
         val int kind = command_kind(rt borrow reader.args);
         if kind == 5; do
-          await socket.write_buffer_async(Bytes.from_list([43, 79, 75, 13, 10]));
+          try {
+            await socket.write_buffer_async(Bytes.from_list([43, 79, 75, 13, 10]));
+          } catch (write_error) {
+            // A peer may reset or stop receiving while the NIO2 write is pending.
+            // Retire only this socket; the session's finally releases its lease.
+            return;
+          }
           await socket.close_async();
           return;
         fi
@@ -339,7 +351,13 @@ pub async fnc serve_redis_session(
           return;
         fi
         const Tuple[int, List[int]] reply_payload = (reply[2], reply[3]);
-        await socket.write_buffer_async(Bytes.from_list(encode_reply(reply_payload)));
+        try {
+          await socket.write_buffer_async(Bytes.from_list(encode_reply(reply_payload)));
+        } catch (write_error) {
+          // A peer may reset or stop receiving while the NIO2 write is pending.
+          // Retire only this socket; the session's finally releases its lease.
+          return;
+        }
         reset_resp2(rt mut borrow reader);
       fi
       i = i + 1;
