@@ -37,6 +37,7 @@ final class NamespaceActorScalarRegionTest {
         final AtomicInteger rejectedCrossActorReads = new AtomicInteger();
         final AtomicInteger retiredRegions = new AtomicInteger();
         final AtomicInteger forgedLiveContextsRejected = new AtomicInteger();
+        final AtomicInteger rejectedWrongPhase = new AtomicInteger();
         final AtomicReference<ExecutionContext> firstIssuedTurn = new AtomicReference<>();
         final AtomicReference<ExecutionContext> latestIssuedTurn = new AtomicReference<>();
 
@@ -54,6 +55,9 @@ final class NamespaceActorScalarRegionTest {
                 throw new SecurityException("namespace init requires image-bound activation");
             }
             var region = NamespaceActorScalarRegion.initialize(context, 0L, false, false);
+            assertThrows(SecurityException.class, () -> region.increment(context),
+                    "init must never grant mailbox write authority");
+            rejectedWrongPhase.incrementAndGet();
             firstRegion.compareAndSet(null, region);
             return new Owned(region);
         }
@@ -71,6 +75,10 @@ final class NamespaceActorScalarRegionTest {
                 throw new SecurityException("forged actor mail or owner");
             }
             var region = owned.region();
+            assertThrows(SecurityException.class,
+                    () -> NamespaceActorScalarRegion.initialize(context, 0L, false, false),
+                    "receive cannot mint actor state allocations");
+            rejectedWrongPhase.incrementAndGet();
             // The runtime, not this executor or the region, issues the
             // unique slot. Reacquiring in this callback preserves identity.
             var turn = ActorRuntime.sourceStateExecution(context, image, 1L);
@@ -112,6 +120,10 @@ final class NamespaceActorScalarRegionTest {
                 ActorRuntime.ActorContext<Object> context) {
             if (!(state instanceof Owned owned)) throw new SecurityException();
             owned.region().retire(context);
+            assertThrows(SecurityException.class,
+                    () -> NamespaceActorScalarRegion.initialize(context, 0L, false, false),
+                    "teardown cannot re-open actor state allocations");
+            rejectedWrongPhase.incrementAndGet();
             retiredRegions.incrementAndGet();
         }
     }
@@ -172,6 +184,8 @@ final class NamespaceActorScalarRegionTest {
             assertNull(b.done().get(3, TimeUnit.SECONDS));
             assertEquals(2, executor.retiredRegions.get(),
                     "both actor-owned loan managers must quiesce on STOP");
+            assertTrue(executor.rejectedWrongPhase.get() >= 6,
+                    "init, receive and teardown phase fences must all execute");
         }
     }
 
@@ -291,6 +305,12 @@ final class NamespaceActorScalarRegionTest {
             };
             assertThrows(SecurityException.class, () -> old.increment(spoofed));
             assertThrows(SecurityException.class, () -> old.retire(spoofed));
+            assertThrows(SecurityException.class, () ->
+                    ActorRuntime.sourceStateExecution(
+                            spoofed, executor.codeImage(), 1L));
+            assertThrows(SecurityException.class, () ->
+                    ActorRuntime.issueSourceStateAllocation(
+                            spoofed, executor.codeImage()));
         }
     }
 }
