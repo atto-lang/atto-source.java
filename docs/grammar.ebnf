@@ -337,7 +337,13 @@ pipeline_stage  = IDENT [ call_suffix ]
    The left operand is evaluated once, and pipeline stages associate leftwards. *)
 
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
-logic_or        = equality { "|" equality } ;
+(* Canonical bool punctuation: && > ^^ > ||, left associative.
+   && and || short-circuit. ^^ evaluates both sides once, left-to-right.
+   Bare |, bare &, single ^ and word operators are not logical syntax.
+   Historical condition-only comma/pipe notation is migration-only. *)
+logic_or        = logic_xor { "||" logic_xor } ;
+logic_xor       = logic_and { "^^" logic_and } ;
+logic_and       = equality { "&&" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
                   { ( "<" | "<=" | ">" | ">=" ) additive
