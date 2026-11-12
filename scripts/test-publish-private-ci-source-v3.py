@@ -986,14 +986,6 @@ class PrivateCiV3Test(unittest.TestCase):
             "default_branch": "main",
         }
 
-        def good_api(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/branches/main":
-                return {
-                    "name": "main",
-                    "commit": {"sha": carrier["base_sha"]},
-                }
-            raise AssertionError(route)
-
         with (
             patch.object(v3.legacy, "require_resolved_blocking_incidents"),
             patch.object(
@@ -1001,7 +993,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 return_value=(POLICY, carrier["repository_id"]),
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
-            patch.object(v3.legacy, "gh_api", side_effect=good_api),
+            patch.object(v3, "checked_carrier_main", return_value=BASE) as carrier_main,
             patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
@@ -1015,14 +1007,7 @@ class PrivateCiV3Test(unittest.TestCase):
             governance.assert_called_once_with(
                 Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
             )
-
-        def drift_api(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/branches/main":
-                return {
-                    "name": "main",
-                    "commit": {"sha": "9" * 40},
-                }
-            raise AssertionError(route)
+            carrier_main.assert_called_once_with("trusted/ci", carrier)
 
         with (
             patch.object(v3.legacy, "require_resolved_blocking_incidents"),
@@ -1031,7 +1016,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 return_value=(POLICY, carrier["repository_id"]),
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
-            patch.object(v3.legacy, "gh_api", side_effect=drift_api),
+            patch.object(
+                v3, "checked_carrier_main",
+                side_effect=v3.Denied("carrier main changed during source-bearing write"),
+            ),
             patch.object(v3, "verify_source_pr") as source_pr_check,
         ):
             with self.assertRaisesRegex(v3.Denied, "main changed"):
@@ -1040,6 +1028,43 @@ class PrivateCiV3Test(unittest.TestCase):
                     1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
                 )
             source_pr_check.assert_not_called()
+
+    def test_authorize_write_rejects_carrier_protection_revoked_without_sha_move(self):
+        # An attacker can disable protection while retaining the reviewed
+        # carrier base SHA. Rechecking that SHA alone would admit the write.
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"], "full_name": "trusted/ci",
+            "private": True, "visibility": "private", "archived": False,
+            "disabled": False, "fork": False, "default_branch": "main",
+        }
+
+        def branch_api(route, method="GET", payload=None):
+            self.assertEqual(route, "repos/trusted/ci/branches/main")
+            return {
+                "name": "main", "protected": False,
+                "commit": {"sha": carrier["base_sha"]},
+            }
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3.legacy, "gh_api", side_effect=branch_api) as gh,
+            patch.object(v3, "verify_source_pr") as source_pr,
+            patch.object(v3, "revalidate_source_governance") as governance,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED,
+                )
+            gh.assert_called_once_with("repos/trusted/ci/branches/main")
+            source_pr.assert_not_called()
+            governance.assert_not_called()
 
     def test_authorize_write_rechecks_source_pr_authorization_each_write(self):
         carrier = contract()
@@ -1053,14 +1078,6 @@ class PrivateCiV3Test(unittest.TestCase):
             "fork": False,
             "default_branch": "main",
         }
-        def api(route, method="GET", payload=None):
-            if route == "repos/trusted/ci/branches/main":
-                return {
-                    "name": "main",
-                    "commit": {"sha": carrier["base_sha"]},
-                }
-            raise AssertionError(route)
-
         with (
             patch.object(v3.legacy, "require_resolved_blocking_incidents"),
             patch.object(
@@ -1068,7 +1085,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 return_value=(POLICY, carrier["repository_id"]),
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
-            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
             patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
@@ -1093,7 +1110,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 return_value=(POLICY, carrier["repository_id"]),
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
-            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "checked_carrier_main", return_value=BASE),
             patch.object(
                 v3, "verify_source_pr",
                 side_effect=v3.Denied("source PR security owner approval is stale or revoked"),
