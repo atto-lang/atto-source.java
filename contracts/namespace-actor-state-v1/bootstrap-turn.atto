@@ -1,0 +1,14 @@
+use namespace foo;
+
+// Experimental executable *return-only* namespace actor slice.
+// No sealed state schema, no critical method, no network, no full broker.
+// Only compiler-internal runtime admission can create/dispatch this actor.
+declare actor Probe;
+
+external mtd (Probe p) init(): void {
+    return;
+}
+
+external mtd (Probe p) receive(ActorMail<int> mail): void {
+    return;
+}
