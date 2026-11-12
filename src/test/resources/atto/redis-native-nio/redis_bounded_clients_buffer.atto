@@ -361,7 +361,7 @@ pub async routine main(): void {
   val listener = await network.listen_async("127.0.0.1", 16399);
   const int max_clients = 100;
   val Channel<Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>]> requests =
-      Channel.new<Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>]>(128);
+      Channel.new<Tuple[int, int, int, List[int], List[int], Channel<Tuple[int, int, List[int]]>]>(16);
   task scope {
     let Future<void> broker = task {
       let int retired = 0;
