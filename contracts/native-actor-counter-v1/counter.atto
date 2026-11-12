@@ -1,0 +1,43 @@
+use namespace actor_counter;
+
+// Baseline native Atto actor guest fixture, NOT declared/out-of-line actor lowering.
+define actor Counter as
+  let int total;
+
+  on_start(): void {
+    self.total = 0;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    self.total = self.total + 1;
+    self.send(self.total);
+    if mail.value == "stop"; do
+      self.end();
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val counter = spawn Counter();
+  await counter.get_ready();
+
+  counter.send("tick");
+  counter.send("stop");
+
+  val first = (await counter.outputs.next()).value.unwrap();
+  val second = (await counter.outputs.next()).value.unwrap();
+
+  stdio.stdout.write(first.value);
+  stdio.stdout.write(":");
+  stdio.stdout.write(first.sequence);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.value);
+  stdio.stdout.write(":");
+  stdio.stdout.write(second.sequence);
+
+  await counter.get_done();
+  stdio.stdout.write("|done");
+  return;
+}
