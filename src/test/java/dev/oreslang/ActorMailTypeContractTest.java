@@ -206,4 +206,25 @@ final class ActorMailTypeContractTest {
         }
     }
 
+
+    @Test
+    void immediateAndAwaitableActorSendMethodsCannotEscapeTheirCheckedCallSites() {
+        for (String method : java.util.List.of("try_send", "send_async")) {
+            IllegalArgumentException rejection = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              receive(ActorMail<int> mail): void { return; }
+                            end
+                            pub routine main(): void {
+                              val worker = spawn Worker();
+                              val escaped = worker.METHOD;
+                              return;
+                            }
+                            """.replace("METHOD", method))));
+            assertTrue(rejection.getMessage().contains("direct-call-only"),
+                    rejection.getMessage());
+        }
+    }
+
 }
