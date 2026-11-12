@@ -151,6 +151,24 @@ final class TemplateLiteralContractTest {
         assertTrue(depth.getMessage().contains("brace nesting limit"), depth::getMessage);
     }
 
+    @Test
+    void interpolationBlockCommentsEnforceExactPortable128Boundary() {
+        String accepted = "`value ${" + "/*".repeat(128) + " ignored " +
+                "*/".repeat(128) + "\"x\"}`";
+        assertDoesNotThrow(() -> new Lexer(accepted).scan(),
+                "128 nested comments must remain valid source");
+        String rejected = "`value ${" + "/*".repeat(129) + " ignored " +
+                "*/".repeat(129) + "\"x\"}`";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new Lexer(rejected).scan());
+        assertTrue(error.getMessage().contains("block comment nesting limit exceeded"),
+                error::getMessage);
+        // The limit is restricted to comments actually traversed in template
+        // interpolations; quoted text or normal comments cannot grant tokens.
+        String opaque = "`/*".repeat(1) + " /*".repeat(129) + "*/`";
+        assertDoesNotThrow(() -> new Lexer(opaque).scan());
+    }
+
     private static String run(String program) throws Exception {
         TypeChecker.check(Parser.parse(program));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
