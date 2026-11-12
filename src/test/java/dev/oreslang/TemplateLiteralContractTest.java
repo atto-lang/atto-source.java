@@ -185,6 +185,17 @@ final class TemplateLiteralContractTest {
                 failure::getMessage);
     }
 
+    @Test
+    void interpolationLineCommentEndsAtCrLfAndStandaloneCr() throws Exception {
+        for (String newline : new String[] { "\n", "\r", "\r\n" }) {
+            String template = "`prefix ${// ignored }" + newline + "\"value\"} suffix`";
+            assertDoesNotThrow(() -> new Lexer(template).scan(),
+                    "interpolation must survive comment terminated by " + newline.length() + " code unit(s)");
+            String source = "pub fnc main(): void { stdio.stdout.write(" + template + "); return; }";
+            assertEquals("prefix value suffix", run(source));
+        }
+    }
+
     private static String run(String program) throws Exception {
         TypeChecker.check(Parser.parse(program));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
