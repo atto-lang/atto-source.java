@@ -141,6 +141,7 @@ final class NamespaceActorScalarTurnCompilerTest {
             for (int i = 0; i < mutations.length; i++) {
                 String source = mutations[i];
                 final int index = i;
+                assertNotEquals(SOURCE, source, "negative mutation must change original source " + i);
                 assertThrows(IllegalArgumentException.class,
                         () -> NamespaceActorScalarTurnCompiler.compile(
                                 store.publish("tests/bad-" + index + ".atto",
