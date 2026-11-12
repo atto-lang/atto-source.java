@@ -185,7 +185,7 @@ final class CaptureExpressionAuditTest {
                 define class Box as end
                 fnc ready(borrow mut Box a):bool{return true;}
                 fnc f():void {
-                  if ready(rt borrow mut (new Box() as let value)) {return;fi
+                  if ready(rt mut borrow (new Box() as let value)) {return;fi
                 }
                 """);
         rejectOwnership("""
@@ -193,7 +193,7 @@ final class CaptureExpressionAuditTest {
                 fnc ready(borrow Box a,borrow mut Box b):bool{return true;}
                 fnc f():void {
                   val Box owner=new Box();
-                  if ready((rt borrow owner) as let view, rt borrow mut owner) {return;fi
+                  if ready((rt borrow owner) as let view, rt mut borrow owner) {return;fi
                 }
                 """);
         rejectOwnership("""
