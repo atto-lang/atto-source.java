@@ -1,0 +1,22 @@
+use namespace foo;
+
+// First closed compiler-internal critical state slice (not general guest
+// lowering). State belongs to each actor incarnation, never to a host map.
+declare actor Probe;
+
+define state on actor Probe as {
+    let int count: 0;
+}
+
+external mtd (Probe p) init(): void {
+    return;
+}
+
+critical mtd (Probe p) add(int delta): void {
+    p.state.count = p.state.count + delta;
+}
+
+external mtd (Probe p) receive(ActorMail<int> mail): void {
+    p.add(mail.value);
+    return;
+}
