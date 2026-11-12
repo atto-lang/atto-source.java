@@ -201,7 +201,7 @@ public final class Ast {
             String actorName, String receiverName, String name,
             Visibility visibility, List<Param> parameters,
             TypeRef returnType, List<Stmt> body,
-            boolean runtimeIngress) implements Decl {
+            boolean runtimeIngress, boolean criticalMethod) implements Decl {
         public ExternalActorMethodDecl {
             if (actorName == null || actorName.isBlank()
                     || receiverName == null || receiverName.isBlank()
@@ -213,6 +213,19 @@ public final class Ast {
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
             body = List.copyOf(body);
+            if (runtimeIngress && criticalMethod) {
+                throw new IllegalArgumentException(
+                        "runtime-only external actor ingress cannot also be critical");
+            }
+        }
+
+        /** Preserves the previous 8-field AST constructor. */
+        public ExternalActorMethodDecl(
+                String actorName, String receiverName, String name,
+                Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body, boolean runtimeIngress) {
+            this(actorName, receiverName, name, visibility,
+                    parameters, returnType, body, runtimeIngress, false);
         }
 
         /**
@@ -225,7 +238,7 @@ public final class Ast {
                 Visibility visibility, List<Param> parameters,
                 TypeRef returnType, List<Stmt> body) {
             this(actorName, receiverName, name, visibility,
-                    parameters, returnType, body, false);
+                    parameters, returnType, body, false, false);
         }
     }
 
