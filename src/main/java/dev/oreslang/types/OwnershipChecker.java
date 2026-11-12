@@ -1565,10 +1565,10 @@ public final class OwnershipChecker {
             Ast.TypeRef valueType = witness.arguments().get(1);
             if (keyType.inferArguments() || !keyType.arguments().isEmpty()
                     || valueType.inferArguments() || !valueType.arguments().isEmpty()
-                    || !java.util.Set.of("string", "String", "Symbol")
+                    || !java.util.Set.of("string", "String", "Symbol", "Bytes")
                             .contains(keyType.name())
                     || !java.util.Set.of(
-                            "int", "bool", "Bool", "string", "String", "Symbol")
+                            "int", "bool", "Bool", "string", "String", "Symbol", "Bytes")
                             .contains(valueType.name())) {
                 throw error("nonempty Map key/value domains lack compiler-owned proof");
             }
@@ -1611,11 +1611,11 @@ public final class OwnershipChecker {
                 boolean primitiveKey = !key.inferArguments()
                         && key.arguments().isEmpty()
                         && (key.name().equals("string") || key.name().equals("String")
-                                || key.name().equals("Symbol"));
+                                || key.name().equals("Symbol") || key.name().equals("Bytes"));
                 boolean primitiveValue = !value.inferArguments()
                         && value.arguments().isEmpty()
                         && java.util.Set.of(
-                                "int", "bool", "Bool", "string", "String", "Symbol")
+                                "int", "bool", "Bool", "string", "String", "Symbol", "Bytes")
                                 .contains(value.name());
                 if (!primitiveKey || !primitiveValue) {
                     throw error("unproved typed empty Map key/value domain " + witness);
@@ -3534,7 +3534,7 @@ public final class OwnershipChecker {
                 if (type == null || type.inferArguments()
                         || !type.arguments().isEmpty()
                         || !java.util.Set.of(
-                                "int", "bool", "Bool", "string", "String", "Symbol")
+                                "int", "bool", "Bool", "string", "String", "Symbol", "Bytes")
                                 .contains(type.name())
                         || kindOfType(type) != ValueKind.COPY) {
                     throw error("record field pattern cannot capture a borrowed, "
@@ -4405,6 +4405,7 @@ public final class OwnershipChecker {
                 "complex64", "complex128", "complex",
                 "bool", "Bool", "string", "String",
                 "Symbol", "$builtin$Symbol",
+                "Bytes", "$builtin$Bytes",
                 "ActorId", "ActorKind",
                 "OptionUnwrapError").contains(name)) return none;
 
@@ -4416,6 +4417,7 @@ public final class OwnershipChecker {
                     "complex64", "complex128", "complex",
                     "bool", "Bool", "string", "String",
                     "Symbol", "$builtin$Symbol",
+                    "Bytes", "$builtin$Bytes",
                     "ActorId", "ActorKind",
                     "OptionUnwrapError" -> true;
             default -> false;
@@ -4693,9 +4695,9 @@ public final class OwnershipChecker {
             Ast.TypeRef key = concrete.arguments().get(0);
             Ast.TypeRef value = concrete.arguments().get(1);
             boolean validKey = !key.inferArguments() && key.arguments().isEmpty()
-                    && java.util.Set.of("string", "String", "Symbol").contains(key.name());
+                    && java.util.Set.of("string", "String", "Symbol", "Bytes").contains(key.name());
             boolean validValue = !value.inferArguments() && value.arguments().isEmpty()
-                    && java.util.Set.of("int", "bool", "Bool", "string", "String", "Symbol")
+                    && java.util.Set.of("int", "bool", "Bool", "string", "String", "Symbol", "Bytes")
                             .contains(value.name());
             if (!validKey || !validValue || kindOfType(value) != ValueKind.COPY) {
                 throw error("Map indexed read requires proven owned copyable scalar domains");
@@ -5028,7 +5030,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void",
+                    "bool","Bool","string","String","Bytes","$builtin$Bytes","void",
                     "SelectCase","SelectSet","OptionUnwrapError"
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
