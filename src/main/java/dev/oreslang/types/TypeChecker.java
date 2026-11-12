@@ -3051,6 +3051,35 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
+            // An unqualified direct call in a class or actor method may
+            // select an instance method using the current lexical self.
+            // Lexical values win; a method *family* wins over file/import
+            // functions irrespective of arity. Never reify a bound method
+            // value or infer self in a static/free callable.
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr implicit
+                    && !isBooleanIntrinsicName(implicit.name())
+                    && env.lookup(implicit.name()) == null) {
+                Env.Binding receiverBinding = env.lookup("self");
+                if (receiverBinding != null) {
+                    Type ownerType = receiverDispatchType(deref(receiverBinding.type()));
+                    if (ownerType instanceof Named owner) {
+                        Ast.ClassDecl ownerClass = findClass(owner.name());
+                        if (ownerClass != null
+                                && !findMethodsByName(
+                                        ownerClass, implicit.name(), new LinkedHashSet<>()).isEmpty()) {
+                            // Re-enter exactly the explicit self.method(...)
+                            // path: actor ingress, critical/suspends effects,
+                            // visibility, arity, generics and receiver loans.
+                            return typeOf(
+                                    call.rewrite(
+                                            new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                                    env, generics, self);
+                        }
+                    }
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
