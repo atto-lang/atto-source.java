@@ -4489,6 +4489,33 @@ public final class OwnershipChecker {
                     payloadSend, false, false);
         }
 
+        // A source Tuple[T1,...] uses a finite $shape$ AST argument.
+        // Channel payloads must prove each owned element Send; never accept
+        // repetition shapes, unresolved generics or nominal shadowing.
+        if (name.equals("Tuple") && declaredClass == null) {
+            if (type.arguments().size() != 1
+                    || !type.arguments().getFirst().isSequenceShape()) return none;
+            List<Ast.TypeRef> fields = type.arguments().getFirst().arguments();
+            if (fields.isEmpty()) return none;
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef field : fields) {
+                if (field.isRepeatExact() || field.isRepeatMany()) return none;
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(field, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            return new AutoTraitRules.Capabilities(send, sync, share);
+        }
+
+        if (name.equals("NioConnection") && declaredClass == null) {
+            return type.arguments().isEmpty()
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+
         if (name.equals("Channel")) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities payload =
@@ -4544,9 +4571,16 @@ public final class OwnershipChecker {
             default -> false;
         }) {
             if (type.arguments().size() != 1) return none;
+            Ast.TypeRef elementRef = type.arguments().getFirst();
+            if (elementRef.isSequenceShape()) {
+                if (elementRef.arguments().size() != 1) return none;
+                elementRef = elementRef.arguments().getFirst();
+                if (elementRef.isRepeatExact() || elementRef.isRepeatMany()) {
+                    return none;
+                }
+            }
             AutoTraitRules.Capabilities element =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(elementRef, visitingClasses);
             // Mutable sequence ownership may move when elements are Send, but
             // the sequence itself is not implicitly Sync/Share.
             return new AutoTraitRules.Capabilities(
