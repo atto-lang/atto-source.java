@@ -364,7 +364,7 @@ public final class IncrementalCompiler {
             for (String sourceName : imported.names()) {
                 collectImportedTraitAndAncestors(target, targetId, sourceName,
                         ImportRules.localName(imported, sourceName),
-                        linked, new LinkedHashSet<>(), 0);
+                        imported.kind(), linked, new LinkedHashSet<>(), 0);
             }
         }
         return Map.copyOf(linked);
@@ -372,7 +372,8 @@ public final class IncrementalCompiler {
 
     private static void collectImportedTraitAndAncestors(
             Ast.Program target, String targetId, String sourceName,
-            String localName, Map<String, Ast.InterfaceDecl> linked,
+            String localName, Ast.ImportKind expectedKind,
+            Map<String, Ast.InterfaceDecl> linked,
             Set<String> visiting, int depth) {
         if (depth > 32 || !visiting.add(sourceName)) {
             throw new IllegalArgumentException(
@@ -400,6 +401,15 @@ public final class IncrementalCompiler {
                         "imported trait '" + sourceName
                                 + "' has no public non-contract declaration in '" + targetId + "'");
             }
+            if ((expectedKind == Ast.ImportKind.TRAIT
+                            && match.declarationKind() != Ast.InterfaceKind.TRAIT)
+                    || (expectedKind == Ast.ImportKind.INTERFACE
+                            && match.declarationKind() != Ast.InterfaceKind.INTERFACE)) {
+                throw new IllegalArgumentException(
+                        "import " + expectedKind.name().toLowerCase()
+                                + " '" + sourceName + "' resolved to a mismatched declaration kind in '"
+                                + targetId + "'");
+            }
             Ast.InterfaceDecl existing = linked.putIfAbsent(localName, match);
             if (existing != null && existing != match) {
                 throw new IllegalArgumentException(
@@ -409,7 +419,7 @@ public final class IncrementalCompiler {
                 // A declared parent must be resolved from the SAME authenticated
                 // imported source unit. Never look it up by arbitrary path.
                 collectImportedTraitAndAncestors(target, targetId, parent.name(),
-                        parent.name(), linked, visiting, depth + 1);
+                        parent.name(), null, linked, visiting, depth + 1);
             }
         } finally {
             visiting.remove(sourceName);
@@ -561,7 +571,7 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.declarationKind().name().toLowerCase()).append(' ')
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
