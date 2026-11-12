@@ -242,6 +242,15 @@ public final class NamespaceActorUnleasedSpawnV0 {
         private long executeBody(OresContext context, Object[] arguments) {
             if (arguments.length != 0) throw new SecurityException(
                     "checked namespace-actor main accepts no host arguments");
+            // The current experimental root still uses bounded synchronous
+            // host waits for ready/drain/retirement. It must never be entered
+            // reentrantly from any actor carrier, including a foreign runtime
+            // or an ActorGroup Mailman execution lane.
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.inActorGroupMailmanExecution()) {
+                throw new IllegalStateException(
+                        "unleased source main cannot park an actor or Mailman carrier");
+            }
             if (context.isolatePolicy().adversarial()) throw new SecurityException(
                     "source actor spawn v0 unavailable in adversarial contexts");
             // The normal Graal root applies the full capability policy.
