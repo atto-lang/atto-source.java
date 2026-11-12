@@ -202,6 +202,7 @@ public final class OresContext implements AutoCloseable {
             // Trusted host opt-in only. Actor mail carries immutable metadata
             // independently of payload; no third-party exporter is installed.
             actors.configureTracePropagation(autoTrace.enabled());
+            if (autoTrace.enabled()) actors.configureTraceSpanBuffer(semanticTrace);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             // Install BEFORE publishing this actor runtime to any guest.
