@@ -34,6 +34,51 @@ final class NamespaceActorCriticalIrCompiler {
         return new IllegalArgumentException("NAMESPACE_ACTOR_CRITICAL_IR_UNSUPPORTED: " + reason);
     }
 
+    /**
+     * Compiler-issued, immutable descriptor. Never decoded from source or
+     * supplied by a guest as an authority. The code image is an opaque,
+     * nonforgeable SharedCodeImageStore object with exact AST identity.
+     */
+    static final class VerifiedActorDescriptor {
+        private final SharedCodeImageStore.CodeImage image;
+        private final String namespace;
+        private final String actorName;
+        private final Map<String, Integer> fields;
+        private final Set<String> criticalMethods;
+
+        private VerifiedActorDescriptor(
+                SharedCodeImageStore.CodeImage image, String namespace,
+                String actorName, Map<String, Integer> fields,
+                Set<String> criticalMethods) {
+            this.image = Objects.requireNonNull(image);
+            this.namespace = Objects.requireNonNull(namespace);
+            this.actorName = Objects.requireNonNull(actorName);
+            this.fields = Map.copyOf(fields);
+            this.criticalMethods = Set.copyOf(criticalMethods);
+            if (this.namespace.isBlank() || this.actorName.isBlank()
+                    || this.fields.isEmpty() || this.criticalMethods.isEmpty()
+                    || image.program().namespace() == null
+                    || !this.namespace.equals(image.program().namespace())) {
+                throw new SecurityException("invalid compiler-issued actor descriptor");
+            }
+        }
+
+        SharedCodeImageStore.CodeImage codeImage() { return image; }
+        String namespace() { return namespace; }
+        String actorName() { return actorName; }
+        Map<String, Integer> scalarFields() { return fields; }
+        Set<String> criticalMethods() { return criticalMethods; }
+    }
+
+    /** Read-only compiler metadata, never a guest-visible bearer capability. */
+    static VerifiedActorDescriptor descriptor(ActorRuntime.ActorCodeExecutor executor) {
+        if (!(executor instanceof Executable compiled)
+                || compiled.descriptor().codeImage() != compiled.codeImage()) {
+            throw new SecurityException("actor has no verified code-image descriptor");
+        }
+        return compiled.descriptor();
+    }
+
     private record InitialField(String name, long value) { }
 
     /**
@@ -225,8 +270,12 @@ final class NamespaceActorCriticalIrCompiler {
             throw reject("critical method call graph is not statically closed");
         }
         long[] initial = fields.stream().mapToLong(InitialField::value).toArray();
+        VerifiedActorDescriptor descriptor = new VerifiedActorDescriptor(
+                image, program.namespace(), actor.name(),
+                slots, methods.keySet());
         return new Executable(image, actor.name(), initial,
-                Map.copyOf(slots), List.copyOf(calls), new ConcurrentHashMap<>());
+                Map.copyOf(slots), List.copyOf(calls), new ConcurrentHashMap<>(),
+                descriptor);
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -340,7 +389,8 @@ final class NamespaceActorCriticalIrCompiler {
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
             String actorName, long[] initial, Map<String, Integer> slots,
             List<CriticalPlan> calls,
-            ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts)
+            ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts,
+            VerifiedActorDescriptor descriptor)
             implements ActorRuntime.ActorCodeExecutor {
         private StateReceipt snapshotOf(Owned owned, long processed) {
             Map<String, Long> frozen = new LinkedHashMap<>();
@@ -365,7 +415,10 @@ final class NamespaceActorCriticalIrCompiler {
         }
 
         private void requireTurn(String name, ActorRuntime.ActorContext<Object> context) {
-            if (!actorName.equals(name) || context.kind() != ActorRuntime.ActorKind.SHARED
+            if (descriptor.codeImage() != codeImage
+                    || !descriptor.actorName().equals(actorName)
+                    || !actorName.equals(name)
+                    || context.kind() != ActorRuntime.ActorKind.SHARED
                     || context.codeImage().orElse(null) != codeImage
                     || ActorRuntime.currentActorRuntime() != context.runtime()
                     || !context.self().id().equals(ActorRuntime.currentActorId().orElse(null))) {
