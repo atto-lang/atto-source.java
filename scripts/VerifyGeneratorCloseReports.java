@@ -95,7 +95,7 @@ public final class VerifyGeneratorCloseReports {
             throw new IllegalArgumentException("expected <new regression Surefire XML> <existing runtime Surefire XML>");
         }
         for (int i = 0; i < args.length; i++) {
-            int n = verify(Files.readAllBytes(Path.of(args[i])), i == 0 ? 3 : -1);
+            int n = verify(Files.readAllBytes(Path.of(args[i])), i == 0 ? 5 : -1);
             System.out.println("GENERATOR_EXECUTED report=" + args[i]
                     + " tests=" + n + " failures=0 errors=0 skipped=0");
         }
