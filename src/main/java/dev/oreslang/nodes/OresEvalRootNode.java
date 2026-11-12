@@ -1690,13 +1690,6 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr taskExpr,
                 Env env) {
-            if (ActorRuntime.inActorExecution()) {
-                // The type checker also rejects this today. Keep a runtime gate
-                // for host-entered/untyped execution so actor self/state cannot
-                // silently cross into an independently scheduled task.
-                throw new IllegalStateException(
-                        "task blocks cannot capture actor state until explicit actor-task capture authority is lowered");
-            }
             if (env.hasLiveMutexGuards()) {
                 throw new IllegalStateException(
                         "cannot launch task while holding a live MutexGuard");
@@ -1753,16 +1746,26 @@ public final class OresEvalRootNode extends RootNode {
                             admitted,
                             launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
-            OresScheduler current = OresScheduler.current();
-            OresScheduler scheduler =
-                    current != null ? current : context.vm().rootScheduler();
             try {
                 TaskScope structuredScope = env.structuredTaskScope();
-                // Both paths yield a TaskHandle so source code can cancel the
-                // task and await its physical-quiescence barrier (get_done).
-                TaskHandle<Object> handle = structuredScope != null
-                        ? structuredScope.startTask(task)
-                        : scheduler.startTracked(task);
+                // An actor Task must use the actor's mailbox-backed scheduler;
+                // selecting the VM root scheduler here would place ordinary
+                // guest work on the supervisor CONTROL workers.
+                TaskHandle<Object> handle;
+                if (ActorRuntime.inActorExecution()) {
+                    if (structuredScope != null) {
+                        throw new IllegalStateException(
+                                "actor task scopes require separate lifetime/quota admission");
+                    }
+                    handle = context.actors().startTrackedActorTask(task);
+                } else if (structuredScope != null) {
+                    handle = structuredScope.startTask(task);
+                } else {
+                    OresScheduler current = OresScheduler.current();
+                    handle = (current != null
+                            ? current
+                            : context.vm().rootScheduler()).startTracked(task);
+                }
                 OresFuture<Object> future = SourceTaskHandles.register(handle);
                 transfer.commit();
                 return future;
