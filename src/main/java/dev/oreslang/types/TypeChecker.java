@@ -2053,6 +2053,20 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "using telemetry scope requires the unshadowed telemetry.span factory");
         }
+        // LLVM's currently executed native-AOT subset admits exactly one
+        // nonempty literal operation of at most 256 UTF-8 bytes. Until an
+        // effect-safe dynamic-name ABI is implemented on both backends, Java
+        // must not silently execute resource factory argument expressions
+        // in a scope advertised as equivalent to that native subset.
+        if (create.arguments().size() != 1
+                || !(create.arguments().getFirst() instanceof Ast.LiteralExpr operation)
+                || !(operation.value() instanceof String operationName)
+                || operationName.isEmpty()
+                || operationName.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256) {
+            throw new IllegalArgumentException(
+                    "using telemetry.span requires one nonempty literal operation"
+                            + " name of at most 256 UTF-8 bytes (LLVM AOT subset)");
+        }
         // The scope alias is an affine capability, not an ordinary
         // shadowable binding. Reject collisions before the lexical binding
         // is introduced, including nested scopes with the same alias.
