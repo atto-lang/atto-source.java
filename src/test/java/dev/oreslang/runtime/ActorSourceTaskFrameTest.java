@@ -265,7 +265,8 @@ final class ActorSourceTaskFrameTest {
 
             var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
                 if ("stop".equals(message)) { turn.self().stop(); return; }
-                arena.set(ActorRuntime.currentActorFrameArena());
+                ActorFrameArena owner = ActorRuntime.currentActorFrameArena();
+                arena.set(owner);
                 result.set(runtime.startActorTask(resume -> {
                     ActorSourceTaskFrame taskFrame =
                             OresScheduler.currentActorSourceTaskFrame();
@@ -335,6 +336,98 @@ final class ActorSourceTaskFrameTest {
             assertEquals(0, arena.get().usedBytes());
             assertEquals(0, arena.get().liveFrames());
             assertTrue(actor.isAlive());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void twoSuccessiveAwaitsAtDifferentCallDepthsRetainOneActorFrameChain()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            OresFuture<Integer> firstGate = new OresFuture<>();
+            OresFuture<Integer> secondGate = new OresFuture<>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<ActorCallContinuation> chainRef = new AtomicReference<>();
+            AtomicReference<ExecutionContext> executionRef = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
+            AtomicInteger turns = new AtomicInteger();
+            AtomicReference<Long> firstDispatch = new AtomicReference<>();
+            AtomicReference<Long> secondDispatch = new AtomicReference<>();
+
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                if ("stop".equals(message)) { turn.self().stop(); return; }
+                ActorFrameArena owner = ActorRuntime.currentActorFrameArena();
+                arena.set(owner);
+                taskRef.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame frame =
+                            OresScheduler.currentActorSourceTaskFrame();
+                    assertNotNull(frame);
+                    ActorCallContinuation chain = frame.callContinuation();
+                    int phase = turns.getAndIncrement();
+                    if (phase == 0) {
+                        chainRef.set(chain);
+                        executionRef.set(OresScheduler.currentExecutionContext());
+                        firstDispatch.set(OresScheduler.currentDispatchId());
+                        chain.pushFrame(1, 5, 1, 1);
+                        chain.writeLocal(0, 40L);
+                        chain.setProgramCounter(7);
+                        chain.pushOperand(2L);
+                        return OresScheduler.await(firstGate);
+                    }
+                    assertSame(chainRef.get(), chain);
+                    assertSame(executionRef.get(), OresScheduler.currentExecutionContext());
+                    if (phase == 1) {
+                        secondDispatch.set(OresScheduler.currentDispatchId());
+                        assertNotEquals(firstDispatch.get(), secondDispatch.get());
+                        assertEquals(1, chain.depth());
+                        assertEquals(7, chain.programCounter());
+                        assertEquals(40L, chain.readLocal(0));
+                        chain.pushFrame(2, 8, 1, 1);
+                        chain.writeLocal(0, 9L);
+                        chain.setProgramCounter(11);
+                        chain.pushOperand(3L);
+                        return OresScheduler.await(secondGate);
+                    }
+                    assertEquals(2, phase, "late/duplicate continuation must not run");
+                    assertNotEquals(secondDispatch.get(), OresScheduler.currentDispatchId());
+                    assertEquals(2, chain.depth());
+                    assertEquals(11, chain.programCounter());
+                    assertEquals(8, chain.returnProgramCounter());
+                    assertEquals(9L, chain.readLocal(0));
+                    assertEquals(3L, chain.popOperand());
+                    chain.popFrame();
+                    assertEquals(1, chain.depth());
+                    assertEquals(7, chain.programCounter());
+                    assertEquals(5, chain.returnProgramCounter());
+                    assertEquals(40L, chain.readLocal(0));
+                    assertEquals(2L, chain.popOperand());
+                    chain.popFrame();
+                    return OresScheduler.done(42);
+                }));
+            });
+
+            actor.send("start");
+            awaitCondition(() -> chainRef.get() != null
+                    && arena.get() != null && arena.get().liveFrames() == 2);
+            assertEquals(64 + 46, arena.get().usedBytes());
+            assertThrows(SecurityException.class, () -> chainRef.get().depth(),
+                    "foreign thread must not read the suspended actor chain");
+            firstGate.completeFromRuntime(1);
+            awaitCondition(() -> turns.get() >= 2 && arena.get().liveFrames() == 3);
+            assertEquals(64 + 46 + 46, arena.get().usedBytes(),
+                    "both activations must remain owned across the second await");
+            assertThrows(SecurityException.class, () -> chainRef.get().depth());
+            assertTrue(secondGate.completeFromRuntime(2));
+            awaitCondition(() -> taskRef.get() != null && taskRef.get().isDone());
+            assertEquals(42, taskRef.get().get(3, TimeUnit.SECONDS));
+            assertEquals(3, turns.get());
+            awaitCondition(() -> arena.get().liveFrames() == 0
+                    && arena.get().usedBytes() == 0);
+            assertFalse(arena.get().isPoisoned());
+            assertTrue(actor.isAlive(), "sibling actor/CONTROL must survive frame unwind");
             actor.send("stop");
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(actor.failure().isEmpty());

@@ -106,3 +106,9 @@ This is **CALL/RET integration**, not yet suspension *inside* a callee. The
 compiler still rejects `suspends` functions in this scalar lowering. No AWAIT
 opcode, suspended callee PC, cleanup record or arbitrary reference root is
 implemented by M2.1.
+
+## M2 host continuation follow-up (not guest AWAIT lowering)
+
+- Correct the missing actor-frame owner variable in the existing nested-await JUnit test. Without this fix, the draft test class cannot compile.
+- Add a scheduler/actor integration regression for **two successive real pending Future awaits at different nested call depths**. The test asserts immutable ExecutionContext identity across three physical dispatches; activation PC, return PC, locals and operand tags across both awaits; foreign-thread inspection denial; exact frame quota charges while suspended; and complete physical retirement without poisoning the actor.
+- This still proves **only** the host continuation substrate. Actual compiler-lowered .atto AWAIT in a nested scalar actor call, AOT, and backend parity remain unimplemented and must be tested separately. Runner admission is required; code review is not test evidence.
