@@ -46,7 +46,7 @@ final class NamespaceActorBootstrapCompilerTest {
                     ActorRuntime.ActorKind.SHARED,
                     IsolatePolicy.developer(), executable, "Probe");
             assertNull(actor.ready().get(3, TimeUnit.SECONDS));
-            assertSame(image, runtime.codeImageFor(actor).orElseThrow());
+            assertSame(image, executable.codeImage());
             actor.send(17L);
             actor.send(-23L);
             assertNull(actor.drain().get(3, TimeUnit.SECONDS));
