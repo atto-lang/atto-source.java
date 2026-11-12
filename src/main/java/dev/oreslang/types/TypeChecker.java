@@ -208,11 +208,32 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * All checked entrypoints MUST reject unlowered sealed state before any
+     * macro/annotation expansion can project or rebuild an actor ClassDecl
+     * with legacy 11-parameter constructors. This is not runtime lowering.
+     */
+    private static void rejectUnloweredSealedActorState(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl actor
+                        && !actor.sealedStateFields().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
+                                    + actor.name() + "' requires compiler-sealed state ownership "
+                                    + "and handle_state lowering; not yet enabled");
+                }
+            }
+        }
+    }
+
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -254,8 +275,13 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
+            if (!linked.sealedStateFields().isEmpty())
+                throw new IllegalArgumentException(
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: linked actor '"
+                                + linked.name() + "' cannot export unlowered state");
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
@@ -264,6 +290,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();

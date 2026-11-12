@@ -38,6 +38,13 @@ final class SealedActorStateAdmissionTest {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.compiler.OresCompiler.analyze(program));
         assertTrue(failure.getMessage().contains("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED"));
+        var direct = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithDiagnostics(program));
+        assertTrue(direct.getMessage().contains("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED"));
+        var linked = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, java.util.Map.of(), java.util.Map.of(), java.util.Map.of()));
+        assertTrue(linked.getMessage().contains("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED"));
     }
 
     @Test void sealedStateRejectsDuplicateAndMixedLayouts() {
