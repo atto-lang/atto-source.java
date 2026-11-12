@@ -133,13 +133,15 @@ public final class PackageNamespaceBuild {
             ActorMethodIndex actorMethods,
             Map<String, String> sourceSha256,
             String manifestSha256,
-            List<ActorCriticalStatePreflight.CriticalOperation> criticalOperations) {
+            List<ActorCriticalStatePreflight.CriticalOperation> criticalOperations,
+            List<ActorCriticalStateMirLayoutV1.Plan> stagedCriticalStateMir) {
         public ActorAudit {
             java.util.Objects.requireNonNull(contractWitness);
             java.util.Objects.requireNonNull(actorMethods);
             sourceSha256 = java.util.Collections.unmodifiableMap(
                     new LinkedHashMap<>(sourceSha256));
             criticalOperations = List.copyOf(criticalOperations);
+            stagedCriticalStateMir = List.copyOf(stagedCriticalStateMir);
         }
     }
 
@@ -190,9 +192,11 @@ public final class PackageNamespaceBuild {
             hashes.put(source.getKey(), java.util.HexFormat.of().formatHex(
                     digest(source.getValue().getBytes(StandardCharsets.UTF_8))));
         }
+        String manifestDigest = java.util.HexFormat.of().formatHex(manifestFingerprint);
+        var stagedCriticalStateMir = ActorCriticalStateMirLayoutV1.stage(
+                snapshot.parsed(), witness, hashes, manifestDigest, criticalOperations);
         return new ActorAudit(witness, index, hashes,
-                java.util.HexFormat.of().formatHex(manifestFingerprint),
-                criticalOperations);
+                manifestDigest, criticalOperations, stagedCriticalStateMir);
     }
 
     /**

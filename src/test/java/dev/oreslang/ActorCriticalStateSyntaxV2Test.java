@@ -217,4 +217,42 @@ final class ActorCriticalStateSyntaxV2Test {
         assertTrue(nested.getMessage().contains("exactly one scalar operation"),
                 nested.getMessage());
     }
+
+    @Test
+    void criticalStateLayoutBindsAuthenticatedSchemaToDeterministicScalarSlots() throws Exception {
+        var audit = physicalBuild().auditDeclaredActors();
+        assertEquals(1, audit.stagedCriticalStateMir().size());
+        var plan = audit.stagedCriticalStateMir().getFirst();
+        assertEquals("counter", plan.namespace());
+        assertEquals("Counter", plan.actor());
+        assertEquals("src/counter/state.atto", plan.stateUnit());
+        assertTrue(plan.stateSourceSha256().matches("[0-9a-f]{64}"));
+        assertEquals(audit.manifestSha256(), plan.manifestSha256());
+        assertEquals(1, plan.slots().size());
+        var slot = plan.slots().getFirst();
+        assertEquals(0, slot.index());
+        assertEquals("total", slot.name());
+        assertEquals("int", slot.scalarType());
+        assertEquals(0L, slot.literalDefault());
+        assertTrue(slot.mutable());
+        assertEquals(2, plan.operations().size());
+        var write = plan.operations().getFirst();
+        var read = plan.operations().get(1);
+        assertEquals(0, write.fieldIndex());
+        assertEquals(0, read.fieldIndex());
+        assertEquals(dev.oreslang.compiler.ActorCriticalStateMirLayoutV1.Opcode.CHECKED_ADD_MAIL_I64,
+                write.opcode());
+        assertEquals(dev.oreslang.compiler.ActorCriticalStateMirLayoutV1.Opcode.COPY_I64_TO_ACTOR_MAILBOX,
+                read.opcode());
+        assertEquals(Ast.CriticalStateMode.WRITE, write.mode());
+        assertEquals(Ast.CriticalStateMode.READ, read.mode());
+        assertThrows(UnsupportedOperationException.class, () -> plan.slots().clear());
+        assertThrows(UnsupportedOperationException.class, () -> plan.operations().clear());
+
+        // A checked, source-bound slot inventory is NOT a state-loan capability
+        // and must not bypass the still-closed stateful guest codegen gate.
+        var blocked = assertThrows(IllegalArgumentException.class,
+                physicalBuild()::compileStatelessActorGuestV1);
+        assertTrue(blocked.getMessage().contains("sealed state/critical loans"));
+    }
 }
