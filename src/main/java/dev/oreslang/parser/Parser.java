@@ -193,6 +193,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isContextualIdentifier("enum")) {
+                    rootDeclarations.add(parseActorMailEnum(annotations, modifiers));
+                    continue;
+                }
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
                     continue;
@@ -792,6 +796,39 @@ public final class Parser {
             throw error(peek(), "external must be followed by 'mtd (Actor receiver) init/receive'");
         }
         return parseExternalActorMethod(annotations, modifiers, true);
+    }
+
+    /**
+     * Root-only closed-world actor-mail enum:
+     * define enum ConnectionMail as
+     *   FrameCredit(int bytes);
+     *   CloseRequested;
+     * end
+     */
+    private Ast.MailEnumDecl parseActorMailEnum(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "actor mail enums");
+        rejectCallableStructuralAnnotation(annotations, "actor mail enums");
+        rejectDiscardedDeclarationAnnotations(annotations, "actor mail enums");
+        consumeContextualIdentifier("enum", "expected actor mail enum");
+        String name = consume(IDENT, "expected nominal enum name").lexeme();
+        consume(AS, "actor mail enum requires 'as'");
+        List<Ast.MailEnumVariant> variants = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            String variant = consume(IDENT, "expected actor mail variant").lexeme();
+            List<Ast.Param> fields = List.of();
+            if (match(LPAREN)) {
+                fields = parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after actor mail variant scalar fields");
+            }
+            consume(SEMICOLON, "actor mail variant requires ';'");
+            variants.add(new Ast.MailEnumVariant(variant, fields));
+            if (variants.size() > 32) {
+                throw error(previous(), "actor mail enum variant budget exceeded");
+            }
+        }
+        consume(END, "actor mail enum requires 'end'");
+        return new Ast.MailEnumDecl(name, modifiers.visibility, variants);
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
