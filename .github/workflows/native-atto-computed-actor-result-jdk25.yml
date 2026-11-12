@@ -59,37 +59,41 @@ jobs:
       - name: Assert real non-skipped Surefire receipts
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          names = {
-            'dev.oreslang.NamespaceActorComputedOutputGuestTest',
-            'dev.oreslang.compiler.NamespaceActorComputedOutputRuntimeTest',
-            'dev.oreslang.NamespaceActorGuestOutputReadbackTest',
-            'dev.oreslang.compiler.NamespaceActorCheckedOutputTest',
-            'dev.oreslang.NamespaceActorUnleasedSpawnV0Test',
-            'dev.oreslang.CheckedNamespaceActorContextEvalTest',
-            'dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest',
-            'dev.oreslang.compiler.NamespaceActorBootstrapCompilerTest',
-            'dev.oreslang.compiler.NamespaceActorScalarCriticalCompilerTest',
-            'dev.oreslang.NamespaceActorHeaderAdmissionTest',
-            'dev.oreslang.NamespaceActorIngressAdmissionTest',
-            'dev.oreslang.NamespaceActorStateAdmissionTest',
-          }
-          total = 0
-          for name in sorted(names):
-              path = Path('target/surefire-reports') / ('TEST-' + name + '.xml')
-              if not path.is_file():
-                  raise SystemExit('missing exact test suite report: ' + str(path))
-              suite = ET.parse(path).getroot()
-              counts = {k: int(suite.attrib.get(k, '0')) for k in ('tests','errors','failures','skipped')}
-              if counts['tests'] < 1 or any(counts[k] for k in ('errors','failures','skipped')):
-                  raise SystemExit('test suite missing or unsafe: ' + name + ' ' + str(counts))
-              total += counts['tests']
-          if total < 99:
-              raise SystemExit('expected 99 or more real focused tests, got ' + str(total))
-          print('ATTO_NATIVE_ACTOR_EXACT_HEAD_COMPILER_AND_GUEST_TESTS=' + str(total))
-          PY
+          total=0
+          while IFS= read -r suite; do
+            test -n "$suite" || continue
+            report="target/surefire-reports/TEST-$suite.xml"
+            test -s "$report" || { echo "Missing Surefire report: $report" >&2; exit 1; }
+            header="$(grep -m1 '<testsuite' "$report")"
+            test -n "$header" || { echo "Missing testsuite root: $report" >&2; exit 1; }
+            for field in tests errors failures skipped; do
+              value="$(printf '%s\n' "$header" | sed -n -E "s/.*$field=\"([0-9]+)\".*/\1/p")"
+              [[ "$value" =~ ^[0-9]+$ ]] || { echo "Malformed $field in $report" >&2; exit 1; }
+              if [[ "$field" != tests && "$value" != 0 ]]; then
+                echo "Unsafe $field=$value in $report" >&2
+                exit 1
+              fi
+              if [[ "$field" == tests ]]; then
+                test "$value" -gt 0
+                total=$((total + value))
+              fi
+            done
+          done <<'SUITES'
+          dev.oreslang.NamespaceActorComputedOutputGuestTest
+          dev.oreslang.compiler.NamespaceActorComputedOutputRuntimeTest
+          dev.oreslang.NamespaceActorGuestOutputReadbackTest
+          dev.oreslang.compiler.NamespaceActorCheckedOutputTest
+          dev.oreslang.NamespaceActorUnleasedSpawnV0Test
+          dev.oreslang.CheckedNamespaceActorContextEvalTest
+          dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest
+          dev.oreslang.compiler.NamespaceActorBootstrapCompilerTest
+          dev.oreslang.compiler.NamespaceActorScalarCriticalCompilerTest
+          dev.oreslang.NamespaceActorHeaderAdmissionTest
+          dev.oreslang.NamespaceActorIngressAdmissionTest
+          dev.oreslang.NamespaceActorStateAdmissionTest
+          SUITES
+          test "$total" -ge 99 || { echo "Expected >=99 real focused tests, got $total" >&2; exit 1; }
+          echo "ATTO_NATIVE_ACTOR_EXACT_HEAD_COMPILER_AND_GUEST_TESTS=$total"
       - name: Explicit evidence boundary
         if: always()
         run: |
