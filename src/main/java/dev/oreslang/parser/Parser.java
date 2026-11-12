@@ -805,7 +805,15 @@ public final class Parser {
         } else if (!check(RPAREN)) {
             String writtenName = consume(IDENT,
                     "expected actor receiver name, '_', 'self' or ')'").lexeme();
-            if (!writtenName.equals("_")) receiverName = writtenName;
+            if (!writtenName.equals("_")) {
+                if (java.util.Set.of("state", "handle_state", "on_start",
+                        "on_stop", "on_panic", "on_throw", "on_raise",
+                        "on_recover", "receive", "init").contains(writtenName)) {
+                    throw error(previous(),
+                            "actor receiver alias cannot shadow sealed state or runtime ingress");
+                }
+                receiverName = writtenName;
+            }
         }
         consume(RPAREN, "expected ')' after external actor receiver");
         if (receiverFirst) {
