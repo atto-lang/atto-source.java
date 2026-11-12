@@ -2871,6 +2871,22 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Canonical bare actor state loan: syntactic sugar for the SAME
+            // checked self.handle_state entry point, not a free function or
+            // first-class callback. A lexical local shadows the intrinsic.
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr name
+                    && name.name().equals("handle_state")
+                    && currentActorKind != Ast.ActorKind.NONE
+                    && currentClassOwner != null
+                    && env.lookup("handle_state") == null
+                    && env.lookup("self") != null) {
+                return typeOf(
+                        call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "handle_state"),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
