@@ -148,6 +148,46 @@ final class ImplicitSelfLookupHardeningTest {
                         """)));
     }
 
+    @Test
+    void reservedActorReceiveCannotBeCalledUnqualified() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub receive(ActorMail<String> mail): void { return; }
+                          pub run(): void {
+                            receive();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("lifecycle"), failure.getMessage());
+    }
+
+    @Test
+    void unqualifiedHandleStateCannotInventStateAuthorityBeforeLowering() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub run(): void {
+                            handle_state();
+                            return;
+                          }
+                        end
+                        """)));
+        IllegalArgumentException gated = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define actor Worker as
+                          state { generation: int = 1; }
+                          pub run(): void {
+                            handle_state();
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(gated.getMessage().contains("state ownership and handle_state lowering"),
+                gated.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "implicit-self-lookup.ores")
