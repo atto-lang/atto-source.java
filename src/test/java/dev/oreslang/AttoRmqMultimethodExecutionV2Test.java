@@ -218,4 +218,64 @@ final class AttoRmqMultimethodExecutionV2Test {
             assertEquals(1, store.imageCount());
         }
     }
+
+    @Test
+    void differentCompiledCriticalMethodsObserveOneActorOwnedArena()
+            throws Exception {
+        String source = """
+                use namespace counter;
+                declare actor MultiCounter;
+                define state on actor MultiCounter as {
+                    let int value : 0;
+                }
+                external mtd (MultiCounter c) init(): void { return; }
+                external mtd (MultiCounter c) receive(ActorMail<int> mail): void {
+                    if mail.value eq 1 then
+                        c.send(c.increment(1));
+                    elif mail.value eq 2 then
+                        c.send(c.read_value());
+                    fi
+                    return;
+                }
+                critical mtd (MultiCounter c) increment(int delta): int {
+                    let int result = 0;
+                    using state.write(critical |s| -> {
+                        s.value = s.value + delta;
+                        result = s.value;
+                    });
+                    return result;
+                }
+                critical mtd (MultiCounter c) read_value(): int {
+                    let int result = 0;
+                    using state.write(critical |s| -> {
+                        result = s.value;
+                    });
+                    return result;
+                }
+                """;
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var plan = compile(store, "src/multi.atto", source, "MultiCounter");
+            assertEquals(2, plan.criticalMethodCount());
+            var first = plan.spawn(runtime, IsolatePolicy.developer());
+            var second = plan.spawn(runtime, IsolatePolicy.developer());
+            first.ready().get(15, TimeUnit.SECONDS);
+            second.ready().get(15, TimeUnit.SECONDS);
+            for (int i = 1; i <= 256; i++)
+                assertEquals((long) i, sendAndRead(first, 1));
+            assertEquals(256L, sendAndRead(first, 2),
+                    "second target must read same actor arena as increment target");
+            assertEquals(0L, sendAndRead(second, 2),
+                    "different actor must never inherit first actor's arena");
+            assertEquals(1L, sendAndRead(second, 1));
+            assertEquals(256L, sendAndRead(first, 2),
+                    "sibling write must not mutate first actor's state");
+            first.stop();
+            second.stop();
+            assertTrue(first.awaitTermination(15, TimeUnit.SECONDS));
+            assertTrue(second.awaitTermination(15, TimeUnit.SECONDS));
+            assertTrue(first.failure().isEmpty());
+            assertTrue(second.failure().isEmpty());
+        }
+    }
 }
