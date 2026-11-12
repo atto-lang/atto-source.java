@@ -800,9 +800,11 @@ public final class Parser {
         // '(Worker _)' both bind the compiler-owned 'self'. A named alias
         // remains valid for compatibility but never grants extra authority.
         String receiverName = "self";
-        if (!check(RPAREN)) {
+        if (match(SELF)) {
+            // 'self' is a reserved token, not IDENT; preserve the explicit form.
+        } else if (!check(RPAREN)) {
             String writtenName = consume(IDENT,
-                    "expected actor receiver name, '_' or ')'").lexeme();
+                    "expected actor receiver name, '_', 'self' or ')'").lexeme();
             if (!writtenName.equals("_")) receiverName = writtenName;
         }
         consume(RPAREN, "expected ')' after external actor receiver");
