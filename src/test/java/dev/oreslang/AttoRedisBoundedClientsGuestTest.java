@@ -134,7 +134,7 @@ final class AttoRedisBoundedClientsGuestTest {
                     sockets.get(i).getOutputStream().write(pipeline.toByteArray());
                 }
                 for (int i = 0; i < count; i++) {
-                    expect(sockets.get(i), ascii("+OK\\r\\n"));
+                    expect(sockets.get(i), ascii("+OK\r\n"));
                     expect(sockets.get(i), bulk(values[i]));
                 }
                 for (int i = 0; i < count; i++) {
