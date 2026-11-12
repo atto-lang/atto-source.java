@@ -130,6 +130,49 @@ final class AttoAsyncNioBufferGuestTest {
     }
 
     @Test
+    void movedNioSocketCannotBeUsedOrCapturedTwice() {
+        String doubleCapture = """
+                pub async routine main(): void {
+                  val listener = await network.listen_async("127.0.0.1", 16398);
+                  val socket = await listener.accept_async();
+                  task scope {
+                    let Future<void> first = task {
+                      await socket.close_async();
+                      return;
+                    };
+                    let Future<void> second = task {
+                      await socket.close_async();
+                      return;
+                    };
+                  }
+                  await listener.close_async();
+                  return;
+                }
+                """;
+        assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck(doubleCapture),
+                "unique socket owner must not be captured into two tasks");
+        String useAfterMove = """
+                pub async routine main(): void {
+                  val listener = await network.listen_async("127.0.0.1", 16398);
+                  val socket = await listener.accept_async();
+                  task scope {
+                    let Future<void> child = task {
+                      await socket.close_async();
+                      return;
+                    };
+                    await socket.close_async();
+                  }
+                  await listener.close_async();
+                  return;
+                }
+                """;
+        assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck(useAfterMove),
+                "socket must be unusable in parent after task transfer");
+    }
+
+    @Test
     void writeBufferRejectsStringAndLegacySynchronousRead() {
         assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub async routine main(): void {
