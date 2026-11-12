@@ -1210,6 +1210,11 @@ public final class OresEvalRootNode extends RootNode {
             /** Independent Task launch authority is one-shot even if a scheduler mis-dispatches it. */
             private boolean taskLaunchConsumed;
 
+            // Direct suspends calls share this Task's continuation and identity.
+            // Bound same-turn nesting before a real await; no host stack overflow.
+            private static final int MAX_INLINE_SUSPENDS_DEPTH = 64;
+            private int inlineSuspendsDepth;
+
             private SourceValueCont awaitingContinuation;
             // Heap-owned cancellation unwind state survives suspension and
             // never exposes the internal cancellation marker to catch/trap.
@@ -5176,6 +5181,86 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Compiler-backed SourceTask CPS for direct suspends function calls.
+         * Unlike async functions and explicit task blocks, this MUST NOT
+         * allocate a new Task or logical ExecutionContext. runBlock retains
+         * the callee's lexical frame, cleanup/defer stack and return callback
+         * as heap-owned continuations through scheduler Await/Cooperate.
+         *
+         * Indirect/instance-method, actor scalar and native backends need
+         * separate lowering. This path does not fabricate their support.
+         */
+        private void runInlineSuspendsFunction(
+                SourceTask task,
+                Ast.FunctionDecl function,
+                List<Object> supplied,
+                SourceValueCont continuation) {
+            if (OresScheduler.currentExecutionContext() == null) {
+                continuation.accept(task, null, new SecurityException(
+                        "suspends direct call requires an admitted Task execution context"));
+                return;
+            }
+            if (task.inlineSuspendsDepth >= SourceTask.MAX_INLINE_SUSPENDS_DEPTH) {
+                continuation.accept(task, null, new IllegalStateException(
+                        "suspends function continuation nesting exceeds "
+                                + SourceTask.MAX_INLINE_SUSPENDS_DEPTH));
+                return;
+            }
+
+            final Env params;
+            try {
+                List<Object> arguments = normalizeFunctionArguments(function, supplied);
+                params = new Env(null, function.nonLexical(), null, null,
+                        declarationModules.get(function));
+                bindCallableArguments(params, function.parameters(), arguments,
+                        "function " + function.name());
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+
+            task.inlineSuspendsDepth++;
+            final boolean[] delivered = { false };
+            try {
+                runBlock(task, function.body(), params, (owner, flow) -> {
+                    if (owner != task) {
+                        throw new SecurityException(
+                                "suspends continuation resumed on a different SourceTask");
+                    }
+                    if (delivered[0]) {
+                        throw new IllegalStateException(
+                                "suspends function continuation delivered twice");
+                    }
+                    delivered[0] = true;
+                    task.inlineSuspendsDepth--;
+                    switch (flow.kind()) {
+                        case NORMAL, RETURN -> {
+                            Object result;
+                            try {
+                                Object raw = flow.kind() == SourceFlowKind.RETURN
+                                        ? flow.value() : null;
+                                result = shapeReturnedValue(function.returnType(), raw,
+                                        "function " + function.name());
+                            } catch (RuntimeException | Error failure) {
+                                continuation.accept(task, null, failure);
+                                return;
+                            }
+                            continuation.accept(task, result, null);
+                        }
+                        case THROW -> continuation.accept(task, null, flow.failure());
+                        case BREAK, CONTINUE -> continuation.accept(task, null,
+                                new IllegalStateException(
+                                        "loop control escaped a suspends function boundary"));
+                    }
+                });
+            } catch (RuntimeException | Error failure) {
+                if (delivered[0]) throw failure;
+                task.inlineSuspendsDepth--;
+                continuation.accept(task, null, failure);
+            }
+        }
+
         private void evalSuspendableCall(
                 SourceTask task,
                 Ast.CallExpr call,
@@ -5193,6 +5278,16 @@ public final class OresEvalRootNode extends RootNode {
                             (t, values, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                // A suspends function is a *call in the same
+                                // logical execution*, not a new Task/Future.
+                                // Keep its live source continuation in the
+                                // caller's heap-owned SourceTask across await.
+                                if (direct.suspends()
+                                        && direct.actorKind() == Ast.ActorKind.NONE) {
+                                    runInlineSuspendsFunction(
+                                            t, direct, values, continuation);
                                     return;
                                 }
                                 try {
