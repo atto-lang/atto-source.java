@@ -1,0 +1,98 @@
+name: Native Atto computed actor result complete-source JVM gate
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/NamespaceActorCriticalIrCompiler.java'
+      - 'src/main/java/dev/oreslang/compiler/NamespaceActorUnleasedSpawnV0.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorComputedOutputGuestTest.java'
+      - 'src/test/java/dev/oreslang/compiler/NamespaceActorComputedOutputRuntimeTest.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorGuestOutputReadbackTest.java'
+      - 'src/test/java/dev/oreslang/compiler/NamespaceActorCheckedOutputTest.java'
+      - 'contracts/namespace-actor-state-v1/checked-computed-output-readback.atto'
+      - 'contracts/namespace-actor-state-v1/unleased-source-output-readback.atto'
+      - '.github/workflows/native-atto-computed-actor-result-jdk25.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compiler-native-atto-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable original repository head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Authenticate original source tree and output fixtures
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          test -s contracts/namespace-actor-state-v1/checked-computed-output-readback.atto
+          test -s contracts/namespace-actor-state-v1/unleased-source-output-readback.atto
+          printf 'SOURCE_HEAD=%s\nSOURCE_TREE=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+          for f in src/main/java/dev/oreslang/compiler/NamespaceActorCriticalIrCompiler.java src/main/java/dev/oreslang/compiler/NamespaceActorUnleasedSpawnV0.java src/test/java/dev/oreslang/NamespaceActorComputedOutputGuestTest.java src/test/java/dev/oreslang/compiler/NamespaceActorComputedOutputRuntimeTest.java contracts/namespace-actor-state-v1/checked-computed-output-readback.atto; do
+            printf '%s %s\n' "$(git hash-object "$f")" "$f"
+          done
+      - name: Setup exact GraalVM 25 runtime
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Build original compiler and execute native Atto actor guest suites
+        env:
+          MAVEN_OPTS: -Xmx4g
+        run: |
+          set -euo pipefail
+          java -version
+          java -version 2>&1 | head -n 1 | grep -q '25'
+          mvn -B -ntp '-P!native-thread-unix' '-Dtest=NamespaceActorComputedOutputRuntimeTest,NamespaceActorComputedOutputGuestTest,NamespaceActorGuestOutputReadbackTest,NamespaceActorCheckedOutputTest,NamespaceActorUnleasedSpawnV0Test,CheckedNamespaceActorContextEvalTest,NamespaceActorCriticalIrCompilerTest,NamespaceActorBootstrapCompilerTest,NamespaceActorScalarCriticalCompilerTest,NamespaceActorHeaderAdmissionTest,NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest' -DfailIfNoTests=true test 2>&1 | tee /tmp/native-atto-actor-result.log
+          if grep -Eiq 'interpreter[ -]only|fallback interpreter|does not support runtime compilation' /tmp/native-atto-actor-result.log; then
+            echo 'Fail closed: interpreter fallback detected in GraalVM actor guest gate' >&2
+            exit 1
+          fi
+      - name: Assert real non-skipped Surefire receipts
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          names = {
+            'dev.oreslang.NamespaceActorComputedOutputGuestTest',
+            'dev.oreslang.compiler.NamespaceActorComputedOutputRuntimeTest',
+            'dev.oreslang.NamespaceActorGuestOutputReadbackTest',
+            'dev.oreslang.compiler.NamespaceActorCheckedOutputTest',
+            'dev.oreslang.NamespaceActorUnleasedSpawnV0Test',
+            'dev.oreslang.CheckedNamespaceActorContextEvalTest',
+            'dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest',
+            'dev.oreslang.compiler.NamespaceActorBootstrapCompilerTest',
+            'dev.oreslang.compiler.NamespaceActorScalarCriticalCompilerTest',
+            'dev.oreslang.NamespaceActorHeaderAdmissionTest',
+            'dev.oreslang.NamespaceActorIngressAdmissionTest',
+            'dev.oreslang.NamespaceActorStateAdmissionTest',
+          }
+          total = 0
+          for name in sorted(names):
+              path = Path('target/surefire-reports') / ('TEST-' + name + '.xml')
+              if not path.is_file():
+                  raise SystemExit('missing exact test suite report: ' + str(path))
+              suite = ET.parse(path).getroot()
+              counts = {k: int(suite.attrib.get(k, '0')) for k in ('tests','errors','failures','skipped')}
+              if counts['tests'] < 1 or any(counts[k] for k in ('errors','failures','skipped')):
+                  raise SystemExit('test suite missing or unsafe: ' + name + ' ' + str(counts))
+              total += counts['tests']
+          if total < 99:
+              raise SystemExit('expected 99 or more real focused tests, got ' + str(total))
+          print('ATTO_NATIVE_ACTOR_EXACT_HEAD_COMPILER_AND_GUEST_TESTS=' + str(total))
+          PY
+      - name: Explicit evidence boundary
+        if: always()
+        run: |
+          echo 'This exact original source-tree JVM workflow is distinct from earlier private selected-blob carrier runs.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No Native Image, LLVM, Wasm, Forge, .NET, general guest async await, source SupervisorActor or typed ServiceActor is proven by JVM success.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A GitHub job that fails with zero executed steps is NOT_EXECUTED, not a compiler failure or test pass.' >> "$GITHUB_STEP_SUMMARY"
