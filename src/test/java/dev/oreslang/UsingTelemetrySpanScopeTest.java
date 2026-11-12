@@ -358,4 +358,37 @@ final class UsingTelemetrySpanScopeTest {
                 () -> TypeChecker.check(Parser.parse(code)));
         assertTrue(denied.getMessage().contains("cannot escape"), denied::getMessage);
     }
+
+    @Test
+    void scopeSuspensionAndTaskSyntaxFailClosedPendingContinuationFrames() {
+        for (String body : new String[] {
+                "await some_future();",
+                "yield 1;",
+                "task scope { return; }",
+                "task { return; };"
+        }) {
+            String code = program("using telemetry.span(\"checkout\") as span { "
+                    + body + " }");
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(code));
+            assertTrue(denied.getMessage().contains("non-suspending"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test
+    void typedExceptionalEffectsRemainExplicitlyRejectedUntilUnwindProof() {
+        for (String statement : new String[] {
+                "throw some_error;",
+                "raise some_error;",
+                "panic some_error;"
+        }) {
+            String code = program("using telemetry.span(\"checkout\") as span { "
+                    + statement + " }");
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(code));
+            assertTrue(denied.getMessage().contains("typed exceptional effect"),
+                    denied::getMessage);
+        }
+    }
 }
