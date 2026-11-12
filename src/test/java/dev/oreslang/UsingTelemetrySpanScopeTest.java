@@ -27,6 +27,9 @@ final class UsingTelemetrySpanScopeTest {
                   stdio.stdout.write("C");
                   return;
                 }
+                pub set_attribute(string key, string value): void {
+                  return;
+                }
               end
               pub fnc span(string operation): SpanScope {
                 stdio.stdout.write("F");
@@ -70,6 +73,7 @@ final class UsingTelemetrySpanScopeTest {
                 return;
                 """));
         Ast.BlockStmt using = assertInstanceOf(Ast.BlockStmt.class, fn.body().getFirst());
+        assertTrue(using.usingTelemetryScope(), "using origin must survive lowering");
         assertEquals(2, using.body().size());
         Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, using.body().getFirst());
         assertEquals("span", binding.name());
@@ -84,6 +88,7 @@ final class UsingTelemetrySpanScopeTest {
     void guestNormalScopeExitClosesAfterBody() throws Exception {
         String code = program("""
                 using telemetry.span("checkout") as span {
+                  span.set_attribute("order.type", "digital");
                   stdio.stdout.write("B");
                 }
                 stdio.stdout.write("A");
@@ -140,6 +145,89 @@ final class UsingTelemetrySpanScopeTest {
                 """;
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(code)));
+    }
+
+    @Test
+    void nominalSpanScopeAdmissionRejectsLookalikeWithMatchingCloseMethod() {
+        String code = """
+                define module telemetry as
+                  pub define class Lookalike as
+                    pub close_scope(): void { return; }
+                  end
+                  pub fnc span(string operation): Lookalike {
+                    return new Lookalike();
+                  }
+                end
+                pub fnc main(): void {
+                  using telemetry.span("checkout") as span {
+                    return;
+                  }
+                }
+                """;
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("nominal SpanScope"), denied::getMessage);
+    }
+
+    @Test
+    void cleanupSignatureMustBePublicSynchronousZeroArgumentVoid() {
+        String code = """
+                define module telemetry as
+                  pub define class SpanScope as
+                    pub close_scope(): int { return 1; }
+                  end
+                  pub fnc span(string operation): SpanScope {
+                    return new SpanScope();
+                  }
+                end
+                pub fnc main(): void {
+                  using telemetry.span("checkout") as span {
+                    return;
+                  }
+                }
+                """;
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("zero-argument")
+                || denied.getMessage().contains("void"), denied::getMessage);
+    }
+
+    @Test
+    void borrowedScopeHandleCannotEscapeThroughBinding() {
+        String code = program("""
+                using telemetry.span("checkout") as span {
+                    val escaped = span;
+                    return;
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("cannot escape"),
+                denied::getMessage);
+    }
+
+    @Test
+    void scopeHandleCannotBePassedToUnrelatedFunction() {
+        String code = program("""
+                using telemetry.span("checkout") as span {
+                    stdio.stdout.write(span);
+                    return;
+                }
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("cannot escape"),
+                denied::getMessage);
+    }
+
+    @Test
+    void rejectsUnrelatedSpanFactoryBeforeLowering() {
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program("""
+                        using impostor.span("checkout") as span { return; }
+                        """)));
+        assertTrue(denied.getMessage().contains("telemetry.span"),
+                denied::getMessage);
     }
 
     @Test
