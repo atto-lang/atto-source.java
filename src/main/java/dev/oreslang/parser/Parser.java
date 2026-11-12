@@ -1,6 +1,7 @@
 package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -290,7 +291,7 @@ public final class Parser {
         // until a typed builtin resolver is actually available.
         return new Ast.ImportDecl(
                 Ast.ImportKind.MODULE, List.of("telemetry"), false,
-                alias.lexeme(), "std.telemetry");
+                alias.lexeme(), ImportRules.TELEMETRY_USE_SYNTAX_PATH);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -339,6 +340,10 @@ public final class Parser {
         consume(FROM, "expected 'from' in import");
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+        if (ImportRules.TELEMETRY_USE_SYNTAX_PATH.equals(path)) {
+            throw error(previous(), "compiler-reserved builtin import path cannot be used "
+                    + "with generic 'import'; use std.telemetry syntax is required");
+        }
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
     }
