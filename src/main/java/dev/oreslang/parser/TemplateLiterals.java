@@ -13,6 +13,7 @@ import java.util.List;
 final class TemplateLiterals {
     private static final int MAX_NESTING = 32;
     private static final int MAX_BRACE_NESTING = 256;
+    private static final int MAX_BLOCK_COMMENT_NESTING = 128;
     private static final int MAX_INTERPOLATIONS = 1024;
 
     private TemplateLiterals() { }
@@ -88,7 +89,12 @@ final class TemplateLiterals {
         int nesting = 1;
         int at = from;
         while (at < source.length()) {
-            if (source.startsWith("/*", at)) { nesting++; at += 2; }
+            if (source.startsWith("/*", at)) {
+                if (++nesting > MAX_BLOCK_COMMENT_NESTING) {
+                    throw syntax("template block comment nesting limit exceeded (128)");
+                }
+                at += 2;
+            }
             else if (source.startsWith("*/", at)) {
                 at += 2;
                 if (--nesting == 0) return at;
