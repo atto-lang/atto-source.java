@@ -279,10 +279,11 @@ public final class TypeChecker {
             }
             boolean imported = program.imports().stream().anyMatch(use ->
                     !use.wildcard()
-                            && (declaration.moduleContract()
-                                    ? use.kind() == Ast.ImportKind.CONTRACT
-                                    : use.kind() == Ast.ImportKind.TRAIT
-                                            || use.kind() == Ast.ImportKind.INTERFACE)
+                            && switch (declaration.declarationKind()) {
+                                case CONTRACT -> use.kind() == Ast.ImportKind.CONTRACT;
+                                case TRAIT -> use.kind() == Ast.ImportKind.TRAIT;
+                                case INTERFACE -> use.kind() == Ast.ImportKind.INTERFACE;
+                            }
                             && use.names().contains(declaration.name())
                             && ImportRules.localName(use, declaration.name()).equals(localName));
             // Inherited interface metadata may be carried from the same
@@ -302,7 +303,8 @@ public final class TypeChecker {
             }
             Ast.InterfaceDecl local = new Ast.InterfaceDecl(
                     localName, declaration.visibility(), declaration.genericParameters(),
-                    declaration.parents(), declaration.members(), declaration.moduleContract());
+                    declaration.parents(), declaration.members(),
+                    declaration.moduleContract(), declaration.declarationKind());
             checker.interfaces.put(localName, local);
         }
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
