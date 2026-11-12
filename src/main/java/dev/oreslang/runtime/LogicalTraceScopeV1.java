@@ -18,10 +18,13 @@ final class LogicalTraceScopeV1 {
     static final int MAX_DEPTH = 256;
 
     static final class Scope {
-        private final LogicalTraceScopeV1 owner;
-        private final Scope parent;
+        // Detach references at terminalization: callers may retain stale
+        // Scope handles, but they must not pin the owning actor or ancestors.
+        // Mutations are serialized on the enclosing LogicalTraceScopeV1 lock.
+        private LogicalTraceScopeV1 owner;
+        private Scope parent;
         private final TraceContextV1 context;
-        private final ScopedTelemetryProbe probe;
+        private ScopedTelemetryProbe probe;
         private boolean finished;
 
         private Scope(LogicalTraceScopeV1 owner, Scope parent,
@@ -30,6 +33,18 @@ final class LogicalTraceScopeV1 {
             this.parent = parent;
             this.context = context;
             this.probe = probe;
+        }
+
+        /** Package-private witness for deterministic cleanup tests only. */
+        boolean detached() {
+            return finished && owner == null && parent == null && probe == null;
+        }
+
+        private void detach() {
+            finished = true;
+            owner = null;
+            parent = null;
+            probe = null;
         }
     }
 
@@ -147,10 +162,15 @@ final class LogicalTraceScopeV1 {
         if (suspended) throw new IllegalStateException("cannot exit a suspended trace scope");
         if (top != scope) throw new IllegalStateException("non-LIFO trace scope cleanup");
         Objects.requireNonNull(outcome, "outcome");
-        scope.finished = true;
         top = scope.parent;
         depth--;
-        return scope.probe.finish(executionId, generation, outcome);
+        // The scope may be retained by stale external code after lexical exit.
+        // Clear ownership links even if a diagnostic clock fails unexpectedly.
+        try {
+            return scope.probe.finish(executionId, generation, outcome);
+        } finally {
+            scope.detach();
+        }
     }
 
     /**
@@ -175,11 +195,16 @@ final class LogicalTraceScopeV1 {
         while (top != null) {
             Scope item = top;
             top = item.parent;
-            item.finished = true;
             depth--;
-            ScopedTelemetryProbe.Completion receipt =
-                    item.probe.finish(executionId, generation, outcome);
-            if (receipt != null) receipts.add(receipt);
+            try {
+                ScopedTelemetryProbe.Completion receipt =
+                        item.probe.finish(executionId, generation, outcome);
+                if (receipt != null) receipts.add(receipt);
+            } finally {
+                // Don't pin the entire older actor-generation scope chain
+                // through an outside reference to a retired inner handle.
+                item.detach();
+            }
         }
         return List.copyOf(receipts);
     }
