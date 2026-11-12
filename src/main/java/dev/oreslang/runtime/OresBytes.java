@@ -15,6 +15,9 @@ import java.util.Objects;
  */
 public final class OresBytes {
     public static final int MAX_LENGTH = 1024 * 1024;
+    private static final OresBytes EMPTY = new OresBytes(new byte[0]);
+
+    public static OresBytes empty() { return EMPTY; }
     private final byte[] data;
     private final int hash;
 
