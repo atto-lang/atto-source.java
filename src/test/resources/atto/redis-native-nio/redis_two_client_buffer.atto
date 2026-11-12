@@ -355,8 +355,8 @@ pub async routine main(): void {
   val first = await listener.accept_async();
   val second = await listener.accept_async();
 
-  val Channel<Tuple[int, int, List[int], List[int]>> requests =
-      Channel.new<Tuple[int, int, List[int], List[int]>>(8);
+  val Channel<Tuple[int, int, List[int], List[int]]> requests =
+      Channel.new<Tuple[int, int, List[int], List[int]]>(8);
   val Channel<Tuple[int, List[int]]> reply_one =
       Channel.new<Tuple[int, List[int]]>(2);
   val Channel<Tuple[int, List[int]]> reply_two =
@@ -366,7 +366,7 @@ pub async routine main(): void {
       let int retired = 0;
       loop {
         if retired == 2 then break; fi
-        val Option<Tuple[int, int, List[int], List[int]>> maybe =
+        val Option<Tuple[int, int, List[int], List[int]]> maybe =
             await (nb readch requests);
         if maybe.is_none() then break; fi
         const Tuple[int, int, List[int], List[int]] request = maybe.unwrap();
