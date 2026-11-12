@@ -104,7 +104,14 @@ public final class CriticalActorTruffleV1 {
         public OwnedState initializeActor(ActorRuntime.ActorContext<Object> context) {
             Objects.requireNonNull(context, "actor context");
             requireContext(context, null, false);
-            ActorLinearArena arena = new ActorLinearArena(
+            // The runtime, not this compiler node, owns the region lifetime.
+            // ActorMemorySlice registers the arena for quota accounting and
+            // zeroing after physical STOP, even on exceptional failure paths
+            // where guest teardown callbacks must be revoked.
+            ActorRuntime.ActorMemorySlice slice = context.privateMemory()
+                    .orElseThrow(() -> new SecurityException(
+                            "critical scalar actor requires a private owned memory slice"));
+            ActorRuntime.PrivateLinearArena arena = slice.allocateLinearArena(
                     Math.multiplyExact(layout.initial.length, Long.BYTES),
                     layout.initial.length);
             try {
@@ -178,14 +185,14 @@ public final class CriticalActorTruffleV1 {
             implements ActorRuntime.ActorOwnedGuestState, AutoCloseable {
         private final ActorRuntime.ActorId owner;
         private final SharedCodeImageStore.CodeImage image;
-        private final ActorLinearArena arena;
+        private final ActorRuntime.PrivateLinearArena arena;
         private final long[] handles;
         private final ActorStateLoans loans = new ActorStateLoans(0);
         private volatile boolean retired;
 
         private OwnedState(ActorRuntime.ActorId owner,
                            SharedCodeImageStore.CodeImage image,
-                           ActorLinearArena arena, long[] handles) {
+                           ActorRuntime.PrivateLinearArena arena, long[] handles) {
             this.owner = Objects.requireNonNull(owner);
             this.image = image;
             this.arena = arena;
