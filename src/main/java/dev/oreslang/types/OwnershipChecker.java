@@ -382,6 +382,10 @@ public final class OwnershipChecker {
     }
 
     private VarState stateForParam(Ast.Param param) {
+        if (param.type().isBorrow() && param.mutable()) {
+            throw error("borrowed parameter '" + param.name()
+                    + "' cannot rebind its loan; use 'borrow mut T name' for exclusive referent mutation");
+        }
         if (param.structural() && param.mutable()) {
             throw error("structural parameter '" + param.name()
                     + "' is a read-only borrowed view and cannot be declared mut");
