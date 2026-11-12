@@ -37,13 +37,13 @@ final class SealedActorStateRegionTest {
                     try {
                         if (message == 1) {
                             region.write(view -> {
-                                assertEquals(0, view.readInt("count"));
+                                assertEquals(0L, view.readInt("count"));
                                 view.writeInt("count", 1);
                                 view.writeBool("ready", true);
                                 escaped.set(view);
                                 return null;
                             });
-                            assertEquals(1, region.read(view -> view.readInt("count")));
+                            assertEquals(1L, region.read(view -> view.readInt("count")).longValue());
                             written.countDown();
                         } else if (message == 2) {
                             assertThrows(IllegalStateException.class,
@@ -152,7 +152,7 @@ final class SealedActorStateRegionTest {
                                 () -> region.write(view ->
                                         region.write(nested -> null)),
                                 "reentrant critical loan must be rejected");
-                        assertEquals(7, region.read(view -> view.readInt("count")));
+                        assertEquals(7L, region.read(view -> view.readInt("count")).longValue());
                         assertThrows(IllegalArgumentException.class,
                                 () -> region.read(view -> view.readInt("open")));
                         assertThrows(IllegalArgumentException.class,
@@ -160,7 +160,7 @@ final class SealedActorStateRegionTest {
                         assertThrows(IllegalStateException.class,
                                 () -> region.write(view -> OresFuture.completed("async")),
                                 "critical callbacks cannot return an async Future");
-                        assertEquals(0, regionStateLoansForTest(region),
+                        assertEquals(0, region.activeLoanCount(),
                                 "callback cleanup must release every loan");
                     } catch (Throwable error) {
                         failure.set(error);
@@ -178,11 +178,4 @@ final class SealedActorStateRegionTest {
         }
     }
 
-    // Observes only the arbiter's count; never exposes region data/authority.
-    private static int regionStateLoansForTest(SealedActorStateRegion region)
-            throws Exception {
-        var field = SealedActorStateRegion.class.getDeclaredField("loans");
-        field.setAccessible(true);
-        return ((ActorStateLoans) field.get(region)).activeCount();
-    }
 }
