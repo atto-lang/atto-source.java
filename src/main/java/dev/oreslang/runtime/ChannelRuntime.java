@@ -111,11 +111,15 @@ public final class ChannelRuntime {
         CLOSED
     }
 
-    public record OwnedTryWriteResult<T>(
-            OwnedWriteOutcome outcome,
-            T returnedPayload) {
-        public OwnedTryWriteResult {
-            Objects.requireNonNull(outcome, "outcome");
+    public static final class OwnedTryWriteResult<T> {
+        // Only this runtime can mint admission receipts. Do not expose a
+        // publicly constructible record to a future guest ownership bridge.
+        private final OwnedWriteOutcome outcome;
+        private final T returnedPayload;
+
+        private OwnedTryWriteResult(
+                OwnedWriteOutcome outcome, T returnedPayload) {
+            this.outcome = Objects.requireNonNull(outcome, "outcome");
             if (outcome == OwnedWriteOutcome.COMMITTED) {
                 if (returnedPayload != null) {
                     throw new IllegalArgumentException(
@@ -125,6 +129,15 @@ public final class ChannelRuntime {
                 Objects.requireNonNull(returnedPayload,
                         "a rejected send must return its original payload");
             }
+            this.returnedPayload = returnedPayload;
+        }
+
+        public OwnedWriteOutcome outcome() {
+            return outcome;
+        }
+
+        public T returnedPayload() {
+            return returnedPayload;
         }
 
         public boolean committed() {
