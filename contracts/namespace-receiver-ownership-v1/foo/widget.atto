@@ -1,0 +1,2 @@
+use namespace foo;
+pub define class Widget as end

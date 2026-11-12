@@ -140,6 +140,14 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            // A source unit has one package-owned namespace header, not
+            // ambient mutable namespace state between declarations.
+            if ((isContextualIdentifier("use") && checkNext(NAMESPACE))
+                    || check(NAMESPACE)) {
+                throw error(peek(), "namespace header must occur once at the beginning of a source file; "
+                        + "put declarations for another namespace in a separate .atto file");
+            }
+
             if (isDeclaredActorHead()) {
                 rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
                 continue;
@@ -795,7 +803,10 @@ public final class Parser {
                 || receiverType.isBorrow()) {
             throw error(previous(), "external receiver must be a non-generic nominal actor");
         }
-        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        // "self" is the canonical receiver binder spelling in out-of-line
+        // mtd declarations, not an ordinary value argument or a namespace grant.
+        String receiverName = match(SELF) ? "self"
+                : consume(IDENT, "expected external receiver binding name").lexeme();
         consume(RPAREN, "expected ')' after external actor receiver");
         if (receiverFirst) {
             name = consumeCallableName("expected external actor method name after receiver");
