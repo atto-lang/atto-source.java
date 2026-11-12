@@ -327,6 +327,7 @@ final class AttoRedisNioThroughputTest {
         client.setSoTimeout(20_000);
         Map<Integer, byte[]> oracle = new HashMap<>();
         int total = warm + measured;
+        long[] responseNanos = new long[measured];
         int next = 0;
         long begin = 0L;
         while (next < total) {
@@ -358,18 +359,23 @@ final class AttoRedisNioThroughputTest {
                             ? ":0\r\n" : ":1\r\n"));
                 }
             }
+            long submittedAt = System.nanoTime();
             client.getOutputStream().write(pipelined.toByteArray());
             for (int k = 0; k < count; k++) {
                 byte[] expected = responses.get(k);
                 byte[] got = client.getInputStream().readNBytes(expected.length);
                 assertArrayEquals(expected, got, "RESP batch oracle " + label
                         + " request=" + (next + k));
+                if (next + k >= warm) {
+                    responseNanos[next + k - warm] = System.nanoTime() - submittedAt;
+                }
             }
             next += count;
         }
         double seconds = (System.nanoTime() - begin) * 1e-9;
         assertTrue(seconds > 0.0 && Double.isFinite(seconds));
         double throughput = measured / seconds;
+        Arrays.sort(responseNanos);
         // Cleanup runs after timing so all new test invocations leave an empty
         // Map, preserving the previous strict oracle and no-WAL contract.
         for (int keySlot : oracle.keySet()) {
@@ -378,8 +384,13 @@ final class AttoRedisNioThroughputTest {
                     label + "_cleanup", 0, keySlot);
         }
         System.out.printf("ATTO_BATCH_PIPELINE_RATE label=%s pipeline=%d "
-                        + "warm=%d measured=%d ops_per_sec=%.1f oracle=PASS%n",
-                label, pipeline, warm, measured, throughput);
+                        + "warm=%d measured=%d ops_per_sec=%.1f "
+                        + "p50_us=%d p95_us=%d p99_us=%d "
+                        + "latency=window_submit_to_reply oracle=PASS%n",
+                label, pipeline, warm, measured, throughput,
+                responseNanos[measured * 50 / 100] / 1000,
+                responseNanos[measured * 95 / 100] / 1000,
+                responseNanos[measured * 99 / 100] / 1000);
         return throughput;
     }
 
@@ -443,9 +454,16 @@ final class AttoRedisNioThroughputTest {
         int reps = batchBenchCount("atto.redis.batch.repetitions", 5, 5, 5);
         int[] sizes = {1, 4, 16, 64};
         double[] baseline = new double[reps];
+        double[] officialRedis = new double[reps];
         double[][] batched = new double[sizes.length][reps];
         for (int rep = 0; rep < reps; ++rep) {
             // ABBA-style alternating order. Every process starts a new store.
+            if ((rep & 1) == 1) {
+                try (Socket reference = new Socket("127.0.0.1", REDIS_PORT)) {
+                    officialRedis[rep] = measuredPipelinedRequests(
+                            reference, pipeline, warm, measured, "official_redis_" + rep);
+                }
+            }
             if ((rep & 1) == 0) {
                 baseline[rep] = executePipelinedGuest(
                         "redis_actor_nio_owned_bytes.atto", 1, pipeline,
@@ -461,17 +479,25 @@ final class AttoRedisNioThroughputTest {
                 baseline[rep] = executePipelinedGuest(
                         "redis_actor_nio_owned_bytes.atto", 1, pipeline,
                         warm, measured, "baseline_" + rep);
+            } else {
+                try (Socket reference = new Socket("127.0.0.1", REDIS_PORT)) {
+                    officialRedis[rep] = measuredPipelinedRequests(
+                            reference, pipeline, warm, measured, "official_redis_" + rep);
+                }
             }
         }
         double baselineMedian = median(baseline);
+        double redisMedian = median(officialRedis);
         for (int i = 0; i < sizes.length; ++i) {
             double currentMedian = median(batched[i]);
             System.out.printf(
                     "ATTO_BATCH_COMPARE pipeline=%d batch=%d repetitions=%d "
                             + "baseline_median=%.1f batch_median=%.1f speedup=%.4f "
+                            + "redis_median=%.1f batch_over_redis=%.4f "
                             + "oracle=PASS profiler=OFF%n",
                     pipeline, sizes[i], reps, baselineMedian,
-                    currentMedian, currentMedian / baselineMedian);
+                    currentMedian, currentMedian / baselineMedian,
+                    redisMedian, currentMedian / redisMedian);
         }
     }
 
