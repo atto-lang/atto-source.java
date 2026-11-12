@@ -42,6 +42,70 @@ define module telemetry as
     return new Span("span");
   }
 
+  // OTLP JSON fixed64 Unix timestamps must be quoted decimal strings.
+  // Negative accumulation also supports the signed int64 minimum safely.
+  pub fnc int_text(int value): String {
+    val digits = arr["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    if value == 0; do return "0"; fi
+    val powers = arr[
+      -1000000000000000000, -100000000000000000,
+      -10000000000000000, -1000000000000000,
+      -100000000000000, -10000000000000, -1000000000000,
+      -100000000000, -10000000000, -1000000000,
+      -100000000, -10000000, -1000000, -100000,
+      -10000, -1000, -100, -10, -1
+    ];
+    let int remaining = value > 0 ? -value : value;
+    let String result = "";
+    for (const power of powers) {
+      let int digit = 0;
+      if remaining <= power; do
+        if remaining <= power * 8; do
+          remaining = remaining - power * 8;
+          digit = digit + 8;
+        fi
+        if remaining <= power * 4; do
+          remaining = remaining - power * 4;
+          digit = digit + 4;
+        fi
+        if remaining <= power * 2; do
+          remaining = remaining - power * 2;
+          digit = digit + 2;
+        fi
+        if remaining <= power; do
+          remaining = remaining - power;
+          digit = digit + 1;
+        fi
+      fi
+      if digit > 0 || result != ""; do
+        result = result + digits.get(digit);
+      fi
+    }
+    return value < 0 ? "-" + result : result;
+  }
+
+  // Reject any JSON metacharacters or non-hex ID characters without
+  // arbitrary string escaping. The internal bridge separately enforces
+  // exact W3C 32/16 hex character lengths and nonzero IDs.
+  pub fnc is_lower_hex(String input): bool {
+    if input == ""; do return false; fi
+    let String rest = input;
+    for (const digit of arr[
+        "0", "1", "2", "3", "4", "5", "6", "7",
+        "8", "9", "a", "b", "c", "d", "e", "f"]) {
+      rest = rest.replace_literal(digit, "");
+    }
+    return rest == "";
+  }
+
+  pub fnc operation_name(int operation_id): String {
+    if operation_id == 100; do return "atto.function"; fi
+    if operation_id == 200; do return "HTTP CLIENT"; fi
+    if operation_id == 201; do return "HTTP SERVER"; fi
+    if operation_id == 501; do return "Actor.receive"; fi
+    return "atto.operation";
+  }
+
   // Immutable, low-cardinality observation record for the future native
   // collector actor. This is NOT a live mutable Span, runtime capability,
   // JSON string or OTLP ExportTraceServiceRequest.
@@ -62,7 +126,9 @@ define module telemetry as
         int http_status, bool failed) {
       if operation_id < 1 || kind < 1 || kind > 5 ||
           start_unix_ns < 1 || end_unix_ns < start_unix_ns ||
-          http_status < 0 || http_status > 599; do
+          http_status < 0 || http_status > 599 ||
+          !is_lower_hex(trace_id) || !is_lower_hex(span_id) ||
+          (parent_span_id != "" && !is_lower_hex(parent_span_id)); do
         rt fail("telemetry: invalid completed span metadata");
       fi
       // Trusted internal bridge must validate W3C hex ID dimensions before
