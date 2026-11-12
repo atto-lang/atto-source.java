@@ -75,6 +75,7 @@ final class HttpRouterGenerationAuthority implements AutoCloseable {
         private final Generation generation;
         private final HttpGenerationDrainV1.Exchange exchange;
         private boolean responseClaimed;
+        private boolean headersCommitted;
         private boolean cancelled;
         private boolean handlerDone;
         private boolean transportDone;
@@ -161,6 +162,22 @@ final class HttpRouterGenerationAuthority implements AutoCloseable {
                 || ticket.handlerDone || ticket.transportDone || ticket.exchange.finished())
             return false;
         ticket.responseClaimed = true;
+        return true;
+    }
+
+    /**
+     * Separate irreversible success-header commit from response claiming.
+     * An owner replacement and success-header authorization serialize under
+     * this monitor; no stale generation can commit new success headers.
+     * If a replacement happens AFTER this succeeds, the transport must abort
+     * an already-started response rather than attempting another status line.
+     */
+    synchronized boolean commitHeaders(Owner owner, Snapshot snapshot, Ticket ticket) {
+        checkTicket(owner, snapshot, ticket);
+        if (!ticket.responseClaimed || ticket.headersCommitted || ticket.cancelled
+                || ticket.generation.revoked || ticket.transportDone
+                || ticket.exchange.finished()) return false;
+        ticket.headersCommitted = true;
         return true;
     }
 
