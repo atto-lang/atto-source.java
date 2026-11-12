@@ -160,6 +160,25 @@ final class NamespaceActorCriticalIrCompilerTest {
     }
 
     @Test
+    void multipleVerifiedWritesWithinOneCriticalMethodAreAllowed() throws Exception {
+        String multi = source().replace(
+                "p.state.budget = p.state.budget - delta;",
+                "p.state.budget = p.state.budget - delta;\n"
+                        + "    p.state.received = p.state.received + 1;");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var exec = compile(store, multi, "ir/multiple-checked-writes.atto");
+            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, exec, "Probe");
+            actor.ready().get(3, TimeUnit.SECONDS);
+            actor.send(3L);
+            actor.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(actor.failure().isEmpty());
+            actor.stop();
+            actor.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void mutationCorpusRejectsNoncriticalWritesAndLoanEscapes() throws Exception {
         String s = source();
         String[] invalid = {
@@ -174,7 +193,7 @@ final class NamespaceActorCriticalIrCompilerTest {
                           "p.state.received = get_delta(delta)"),
                 s.replace("p.state.budget - delta", "p.state.budget * delta"),
                 s.replace("p.state.budget - delta", "await delta"),
-                s.replace("p.state.budget - delta", "p.state.received - delta; p.state.budget = p.state.budget - delta"),
+                s.replace("p.state.budget - delta", "p.state.budget - delta; unsafe()"),
                 s.replace("let int budget: 10000", "let int budget: call()"),
                 s.replace("ActorMail<int>", "ActorMail<borrow int>"),
                 s.replace("declare actor Probe;", "declare actor Probe implements Unknown;"),
