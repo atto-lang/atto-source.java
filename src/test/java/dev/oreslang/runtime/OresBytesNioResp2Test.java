@@ -109,7 +109,26 @@ final class OresBytesNioResp2Test {
         assertThrows(IOException.class, () -> AsyncNioResp2.parseBinary(
                 ByteBuffer.wrap(ascii("*4\r\n"))));
         assertThrows(IOException.class, () -> AsyncNioResp2.parseBinary(
-                ByteBuffer.wrap(ascii("*1\r\n$2\r\n\u0000G\r\n"))));
+                ByteBuffer.wrap(new byte[]{'*', '1', '\r', '\n', '));
+    }
+
+    @Test
+    void failsClosedOnSpoofedRepliesAndNonValuePayloads() throws Exception {
+        assertArrayEquals(ascii("+OK\r\n"),
+                AsyncNioResp2.encodeBinary("OK", null));
+        assertArrayEquals(ascii("$-1\r\n"),
+                AsyncNioResp2.encodeBinary("NIL", null));
+        assertThrows(IOException.class,
+                () -> AsyncNioResp2.encodeBinary("VALUE", null));
+        assertThrows(IOException.class,
+                () -> AsyncNioResp2.encodeBinary("OK", OresBytes.copyOf(new byte[]{1})));
+        assertThrows(IOException.class,
+                () -> AsyncNioResp2.encodeBinary("VALUE:00", OresBytes.copyOf(new byte[]{0})));
+        assertThrows(IOException.class,
+                () -> AsyncNioResp2.encodeBinary("VALUE\r\n+OK", OresBytes.copyOf(new byte[]{0})));
+    }
+}
+, '2', '\r', '\n', 0, 'G', '\r', '\n'})));
     }
 
     @Test
