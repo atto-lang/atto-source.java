@@ -5188,10 +5188,11 @@ public final class TypeChecker {
                             + "but physical GPU dispatch is not enabled on this backend; "
                             + "no implicit CPU fallback");
         }
-        if (currentActorKind != Ast.ActorKind.NONE) {
+        if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+            // Untrusted logical Tasks require the actor's timed/fuel quota
+            // cohort; a tracked TaskHandle cannot bypass that admission.
             throw new IllegalArgumentException(
-                    "task blocks inside actor state are not enabled until captured actor-state "
-                            + "authority is proven; launch a task from ordinary owned data instead");
+                    "untrusted actor task blocks require quota-aware tracked task admission");
         }
         validateAsyncBoundaryType(result, true, "CPU task result");
 
@@ -5199,8 +5200,13 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousMaySuspend = currentMaySuspend;
+        Ast.ActorKind previousActorKind = currentActorKind;
         try {
             Env taskEnv = new Env(env, env.descendantsNonLexical(), true);
+            // A task spawned by an actor runs on its actor carrier, but it is
+            // NOT another mailbox turn with implicit actor-state authority.
+            // Only independently checked Send/COPY/MOVE captures may enter.
+            currentActorKind = Ast.ActorKind.NONE;
             currentGenerator = false;
             currentAsyncCallable = true;
             currentMaySuspend = true;
@@ -5211,6 +5217,7 @@ public final class TypeChecker {
             }
         } finally {
             env.restoreInitialization(before);
+            currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
