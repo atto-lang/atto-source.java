@@ -202,6 +202,32 @@ define module telemetry as
     pub at(int index): CompletedSpan {
       return self.entries.get(index);
     }
+
+    // Pure bounded proto3 JSON ExportTraceServiceRequest encoder.
+    // Large actor queues must split batches into <=64 spans; this avoids
+    // unbounded string construction before the POST byte budget admission.
+    // Keep records until *validated* OTLP acceptance, not merely HTTP 200.
+    pub fnc to_otlp_json(): String {
+      if self.entries.size < 1 || self.entries.size > 64; do
+        rt fail("telemetry: OTLP batch must contain 1..64 spans");
+      fi
+      let String encoded = "";
+      for (const item of self.entries) {
+        if encoded != ""; do encoded = encoded + ","; fi
+        encoded = encoded + item.to_otlp_span_json();
+      }
+      return "{\"resourceSpans\":[{\"resource\":{\"attributes\":["
+          + "{\"key\":\"service.name\",\"value\":{\"stringValue\":\"atto\"}}"
+          + "]},\"scopeSpans\":[{\"scope\":{\"name\":\"ores.std/telemetry\"},"
+          + "\"spans\":[" + encoded + "]}]}]}";
+    }
+
+    // Collector-owned acknowledgement. Only invoke after a verified reply
+    // with no rejected spans/partialSuccess. Counter remains cumulative.
+    pub fnc clear_acked(mut self)(): void {
+      self.entries = new Array<CompletedSpan>();
+      return;
+    }
   end
 
   pub fnc completed_span(
@@ -214,5 +240,18 @@ define module telemetry as
 
   pub fnc span_batch(int capacity): SpanBatch {
     return new SpanBatch(capacity);
+  }
+
+  // Native Atto async HTTP POST building block; not a collector by itself.
+  // This returns only the HTTP status. OTLP partialSuccess must be parsed
+  // by a collector before it acknowledges or drops a buffered batch.
+  // Network policy/NET permission/cancellation are enforced by the same
+  // pinned http.request runtime used by ordinary Atto services.
+  pub async fnc post_otlp_json_async(String endpoint, String json): int {
+    val response = await http.request("POST", endpoint,
+        [("Content-Type", "application/json")], json);
+    val int status = response.status;
+    await response.close();
+    return status;
   }
 end
