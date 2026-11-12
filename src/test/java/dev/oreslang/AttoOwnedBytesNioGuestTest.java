@@ -31,7 +31,6 @@ final class AttoOwnedBytesNioGuestTest {
                       await socket.write_owned_bytes_async(data);
                     fi
                   fi
-                  data.close();
                   await socket.close_async();
                   await listener.close_async();
                   return;
@@ -93,4 +92,18 @@ final class AttoOwnedBytesNioGuestTest {
                 """;
         assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(source));
     }
+    @Test void staticallyRejectsUseAfterOwnedSocketWrite() {
+        String source = """
+                pub async routine main(): void {
+                  val listener = await network.listen_async("127.0.0.1", 16397);
+                  val socket = await listener.accept_async();
+                  val Bytes data = await socket.read_owned_bytes_async(8);
+                  await socket.write_owned_bytes_async(data);
+                  val int illegal = data.byte_at(0);
+                  return;
+                }
+                """;
+        assertThrows(RuntimeException.class, () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
 }
