@@ -191,6 +191,34 @@ final class TelemetryUsingSpanLanguageTest {
         });
     }
 
+    @Test
+    void spanHandleCannotEscapeAsValueBoundMethodClosureOrArgument() {
+        String prefix = """
+                pub async fnc main(): void {
+                  using telemetry.span("guarded") as span {
+                """;
+        String suffix = """
+                  }
+                  return;
+                }
+                """;
+        String[] forbidden = {
+                "const escaped = span;",
+                "const escaped_method = span.trace_id;",
+                "const escaped_closure = |int n| -> span.trace_id();",
+                "span.attribute(\"attempt\", span);"
+        };
+        for (String statement : forbidden) {
+            RuntimeException rejected = assertThrows(RuntimeException.class, () -> {
+                Ast.Program program = TypeChecker.check(
+                        Parser.parse(prefix + statement + "\\n" + suffix));
+                OwnershipChecker.check(program);
+            }, "must reject borrowed lexical span handle through: " + statement);
+            assertTrue(rejected.getMessage().contains("telemetry span"),
+                    () -> statement + ": " + rejected.getMessage());
+        }
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, "using-telemetry-span.atto")
