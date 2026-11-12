@@ -4844,6 +4844,10 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            // A synchronous lambda does not inherit suspension authority
+            // from its enclosing async/suspends function.
+            boolean previousMaySuspend = currentMaySuspend;
+            currentMaySuspend = false;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -4886,6 +4890,7 @@ public final class TypeChecker {
                 // assignments inside a closure establish definite-init facts
                 // for the enclosing flow merely because the closure exists.
                 env.restoreInitialization(outerInitialization);
+                currentMaySuspend = previousMaySuspend;
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
             }
@@ -5676,6 +5681,10 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        // Callback signatures are synchronous even inside suspends callers.
+        // A borrowed state view cannot authorize an indirect suspending call.
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = false;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -5687,6 +5696,7 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
             }
         } finally {
+            currentMaySuspend = previousMaySuspend;
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
@@ -5750,6 +5760,10 @@ public final class TypeChecker {
         Type bodyReturn = declaredLambdaResult == null ? expected.result() : declaredLambdaResult;
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        // Callback signatures are synchronous even inside suspends callers.
+        // A borrowed state view cannot authorize an indirect suspending call.
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = false;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -5765,6 +5779,7 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, bodyReturn, self);
             }
         } finally {
+            currentMaySuspend = previousMaySuspend;
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
