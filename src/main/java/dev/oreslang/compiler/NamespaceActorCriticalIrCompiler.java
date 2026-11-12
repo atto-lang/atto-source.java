@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * First typed, immutable and multi-field critical-method IR for declared actors.
@@ -34,6 +35,36 @@ final class NamespaceActorCriticalIrCompiler {
     }
 
     private record InitialField(String name, long value) { }
+
+    /**
+     * Immutable diagnostic record of actor-owned state after an admitted turn.
+     * This is never a state alias, borrow permit, persistence record or
+     * source-visible field accessor; state itself remains actor-owned.
+     */
+    record StateReceipt(ActorRuntime.ActorId actorId, long generation,
+                        long processed, Map<String, Long> fields) {
+        StateReceipt {
+            Objects.requireNonNull(actorId, "actor identity");
+            fields = Map.copyOf(fields);
+            if (processed < 0) throw new IllegalArgumentException("negative processed count");
+        }
+        long require(String name) {
+            Long value = fields.get(name);
+            if (value == null) throw new IllegalArgumentException(
+                    "checked actor has no scalar field '" + name + "'");
+            return value;
+        }
+    }
+
+    /** Read-only host diagnostic after drain; not available in .atto source. */
+    static StateReceipt receiptAfterDrain(ActorRuntime.ActorCodeExecutor executor,
+            ActorRuntime.ActorRef<Object> ref) {
+        Objects.requireNonNull(ref, "actor ref");
+        if (!(executor instanceof Executable compiled)) {
+            throw new SecurityException("unverified actor compiler cannot mint a state receipt");
+        }
+        return compiled.readReceipt(ref);
+    }
     private record Write(int slot, IntValue value) { }
     private record CriticalPlan(String name, List<Write> writes) {
         private CriticalPlan { writes = List.copyOf(writes); }
@@ -194,7 +225,8 @@ final class NamespaceActorCriticalIrCompiler {
             throw reject("critical method call graph is not statically closed");
         }
         long[] initial = fields.stream().mapToLong(InitialField::value).toArray();
-        return new Executable(image, actor.name(), initial, List.copyOf(calls));
+        return new Executable(image, actor.name(), initial,
+                Map.copyOf(slots), List.copyOf(calls), new ConcurrentHashMap<>());
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -306,8 +338,32 @@ final class NamespaceActorCriticalIrCompiler {
     }
 
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
-            String actorName, long[] initial, List<CriticalPlan> calls)
+            String actorName, long[] initial, Map<String, Integer> slots,
+            List<CriticalPlan> calls,
+            ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts)
             implements ActorRuntime.ActorCodeExecutor {
+        private StateReceipt snapshotOf(Owned owned, long processed) {
+            Map<String, Long> frozen = new LinkedHashMap<>();
+            for (var entry : slots.entrySet()) {
+                frozen.put(entry.getKey(), owned.values[entry.getValue()]);
+            }
+            return new StateReceipt(owned.actor.id(), owned.actor.generation(),
+                    processed, frozen);
+        }
+
+        private StateReceipt readReceipt(ActorRuntime.ActorRef<Object> ref) {
+            StateReceipt receipt = receipts.get(ref.id());
+            if (receipt == null
+                    || !receipt.actorId().equals(ref.id())
+                    || receipt.generation() != ref.generation()
+                    || ref.kind() != ActorRuntime.ActorKind.SHARED
+                    || !ref.isAlive()) {
+                throw new SecurityException(
+                        "state receipt requires same live actor incarnation");
+            }
+            return receipt;
+        }
+
         private void requireTurn(String name, ActorRuntime.ActorContext<Object> context) {
             if (!actorName.equals(name) || context.kind() != ActorRuntime.ActorKind.SHARED
                     || context.codeImage().orElse(null) != codeImage
@@ -320,7 +376,13 @@ final class NamespaceActorCriticalIrCompiler {
                 String name, ActorRuntime.ActorContext<Object> context) {
             requireTurn(name, context);
             if (context.currentMail().isPresent()) throw new SecurityException("init is activation only");
-            return new Owned(context.self(), initial);
+            Owned owned = new Owned(context.self(), initial);
+            StateReceipt prior = receipts.putIfAbsent(
+                    owned.actor.id(), snapshotOf(owned, 0L));
+            if (prior != null) {
+                throw new SecurityException("actor state receipt identity reused");
+            }
+            return owned;
         }
         @Override public void receiveActor(String name, ActorRuntime.ActorOwnedGuestState state,
                 ActorRuntime.ActorInboxMail<Object> mail,
@@ -333,6 +395,24 @@ final class NamespaceActorCriticalIrCompiler {
                 throw new SecurityException("mail must be a current owned ActorMail<int>");
             }
             for (CriticalPlan plan : calls) owned.apply(plan, input, context);
+            StateReceipt previous = receipts.get(owned.actor.id());
+            if (previous == null
+                    || previous.generation() != owned.actor.generation()) {
+                throw new SecurityException("actor state receipt generation changed");
+            }
+            long next = Math.addExact(previous.processed(), 1L);
+            receipts.put(owned.actor.id(), snapshotOf(owned, next));
+        }
+
+        @Override
+        public void tearDownActor(String name,
+                ActorRuntime.ActorOwnedGuestState state,
+                ActorRuntime.ActorContext<Object> context) {
+            requireTurn(name, context);
+            if (!(state instanceof Owned owned) || owned.actor != context.self()) {
+                throw new SecurityException("actor state retirement identity mismatch");
+            }
+            receipts.remove(owned.actor.id());
         }
     }
 }
