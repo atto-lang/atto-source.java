@@ -15,6 +15,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java'
       - 'src/main/java/dev/oreslang/runtime/ExecutionContext.java'
       - 'src/main/java/dev/oreslang/runtime/NamespaceActorScalarRegion.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/compiler/NamespaceActorScalarTurnCompilerTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateRwLoansCarrierMatrixTest.java'
