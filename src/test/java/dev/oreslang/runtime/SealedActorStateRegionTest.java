@@ -111,16 +111,19 @@ final class SealedActorStateRegionTest {
                     try {
                         region.write(view -> {
                             view.writeInt("count", 6);
-                            region.close();
+                            region.sealOnStop();
                             assertFalse(region.isReclaimed(),
-                                    "active lexical loan physically pins the region");
+                                    "STOP must not reclaim while a lexical loan is active");
                             assertThrows(IllegalStateException.class,
                                     () -> view.readInt("count"),
                                     "STOP must fence previously admitted views immediately");
                             return null;
                         });
+                        assertFalse(region.isReclaimed(),
+                                "loan release alone cannot reclaim before task quiescence");
+                        region.close(); // Simulates runtime's post-quiescence phase.
                         assertTrue(region.isReclaimed(),
-                                "last finally release must reclaim after STOP");
+                                "physical finalization after last loan must reclaim");
                         assertThrows(IllegalStateException.class,
                                 () -> region.write(view -> null));
                     } catch (Throwable error) {
