@@ -390,15 +390,20 @@ public final class ActorTypedMethodIR {
             if (!left.typeName().equals("int") || !right.typeName().equals("int")) {
                 throw unsupported(key, "integer arithmetic requires exactly int operands");
             }
+            // Analyze only fully constant integer subtrees. Never execute
+            // dynamic arithmetic or rely on Java's unchecked overflow.
+            // Checking the divisor after recursive exact-folding detects
+            // constants such as 1 - 1, not just literal 0.
+            Long denominator = constantInt(right, key);
             if ((binary.operator().equals("/") || binary.operator().equals("%"))
-                    && right instanceof ScalarLiteral constant
-                    && constant.value() instanceof Long integer
-                    && integer == 0L) {
+                    && denominator != null && denominator == 0L) {
                 throw new IllegalArgumentException(
                         "ACTOR_TYPED_IR_DIVIDE_BY_ZERO: " + key
                                 + " has a provably zero integer divisor");
             }
-            return new CheckedIntBinary(binary.operator(), left, right);
+            var typed = new CheckedIntBinary(binary.operator(), left, right);
+            constantInt(typed, key); // rejects statically provable overflow
+            return typed;
         }
         // In particular, never infer effect/ownership semantics of CallExpr,
         // MemberExpr, AwaitExpr, AssignExpr, LambdaExpr or state access from
@@ -406,6 +411,50 @@ public final class ActorTypedMethodIR {
         throw unsupported(key,
                 "expression node requires checked ownership/effect/critical lowering: "
                         + expr.getClass().getSimpleName());
+    }
+
+    /**
+     * Exact, bounded constant analysis for checked int operations. A null
+     * result means runtime-dependent; it NEVER licenses execution or
+     * unwraps actor/ownership values. Nested division is deliberately left
+     * dynamic because backend integer division semantics require MIR proof.
+     */
+    private static Long constantInt(Value value, ActorMethodIndex.MethodKey key) {
+        if (value instanceof ScalarLiteral literal) {
+            return literal.typeName().equals("int") && literal.value() instanceof Long integer
+                    ? integer : null;
+        }
+        if (!(value instanceof CheckedIntBinary expr)) return null;
+        Long left = constantInt(expr.left(), key);
+        Long right = constantInt(expr.right(), key);
+        if ((expr.operator().equals("/") || expr.operator().equals("%"))
+                && right != null && right == 0L) {
+            throw new IllegalArgumentException(
+                    "ACTOR_TYPED_IR_DIVIDE_BY_ZERO: " + key
+                            + " has a provably zero integer divisor");
+        }
+        if (left == null || right == null) return null;
+        try {
+            return switch (expr.operator()) {
+                case "+" -> Math.addExact(left, right);
+                case "-" -> Math.subtractExact(left, right);
+                case "*" -> Math.multiplyExact(left, right);
+                // Do not fold until compiler-owned checked division is
+                // defined in MIR, including Long.MIN_VALUE / -1.
+                case "/", "%" -> {
+                    if (left == Long.MIN_VALUE && right == -1L) {
+                        throw new ArithmeticException("signed division overflow");
+                    }
+                    yield null;
+                }
+                default -> throw new IllegalStateException(
+                        "unexpected pre-HIR integer operator");
+            };
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "ACTOR_TYPED_IR_INTEGER_OVERFLOW: " + key
+                            + " has statically overflowing checked arithmetic", overflow);
+        }
     }
 
     private static IllegalArgumentException unsupported(
