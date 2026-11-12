@@ -5256,6 +5256,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) return true;
             if (stmt instanceof Ast.BlockStmt block && taskHasValueReturn(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && taskHasValueReturn(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && taskHasValueReturn(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && taskHasValueReturn(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
@@ -9062,6 +9064,9 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
                 rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.UsingTelemetrySpanStmt scope) {
+                rejectStaticClassGenericReferences(scope.name(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(scope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -10599,6 +10604,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -10629,6 +10636,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope
+                    && containsBreakForCurrentLoop(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
                     && containsBreakForCurrentLoop(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
