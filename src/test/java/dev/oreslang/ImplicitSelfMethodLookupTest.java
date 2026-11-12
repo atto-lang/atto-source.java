@@ -38,6 +38,20 @@ final class ImplicitSelfMethodLookupTest {
     }
 
     @Test
+    void privateLexicalHelperIsInvokedViaCheckedSelfDispatch() throws Exception {
+        String program = guest("private-helper.atto");
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "private-helper.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void actorMayInvokeItsOwnDeclaredHelperWithoutSelfPrefix() throws Exception {
         assertDoesNotThrow(() ->
                 TypeChecker.check(Parser.parse(guest("actor-helper.atto"))));
