@@ -200,4 +200,47 @@ final class ActorTrySendAtomicAdmissionTest {
         }
     }
 
+    @Test
+    void actorPanicWithFullUserMailboxFailsWaiterAndPreservesControlProgress()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        List<Integer> received = Collections.synchronizedList(new ArrayList<>());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (mail, context) -> {
+                if (mail == 1) {
+                    entered.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("panic gate never released");
+                    }
+                    throw new IllegalStateException("intentional-mailbox-panic");
+                }
+                received.add(mail);
+            });
+            actor.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            actor.send(2); // Saturate the sole USER credit.
+            assertFalse(actor.trySend(3), "USER saturation must not become a CONTROL admission");
+            OresFuture<Void> pending = actor.sendAsync(4);
+            assertFalse(pending.isDone());
+
+            release.countDown(); // Fail the active handler while USER is full.
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "panic must fail-stop despite a saturated USER mailbox");
+            assertTrue(actor.failure().isPresent(),
+                    "panic must retain its failure rather than appear as clean STOP");
+            assertTrue(String.valueOf(actor.failure().orElseThrow())
+                            .contains("intentional-mailbox-panic"),
+                    () -> "unexpected panic cause " + actor.failure());
+            assertThrows(ExecutionException.class,
+                    () -> pending.get(5, TimeUnit.SECONDS),
+                    "pending producer must fail on panic rather than wait for a USER credit");
+            assertFalse(received.contains(2), "queued USER mail must not execute after panic");
+            assertFalse(received.contains(3), "rejected immediate probe must not arrive");
+            assertFalse(received.contains(4), "failed async producer must never arrive");
+        } finally {
+            release.countDown();
+        }
+    }
+
 }
