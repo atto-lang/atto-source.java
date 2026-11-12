@@ -78,9 +78,8 @@ public class GeneratorCancellationInterruptionTest {
             assertEquals("producer interruption without close", interrupted.getMessage());
             ExecutionException second = assertThrows(ExecutionException.class,
                     () -> generator.nextStep().get(3, TimeUnit.SECONDS));
-            RuntimeException repeated = assertInstanceOf(RuntimeException.class, second.getCause());
-            assertSame(interrupted, repeated.getCause(),
-                    "the original terminal interruption must remain sticky");
+            assertSame(interrupted, second.getCause(),
+                    "terminal pulls retain the original checked interruption cause");
         }
     }
 }
