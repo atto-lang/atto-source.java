@@ -3056,7 +3056,8 @@ public final class TypeChecker {
             // Lexical values win; a method *family* wins over file/import
             // functions irrespective of arity. Never reify a bound method
             // value or infer self in a static/free callable.
-            if (call.origin() == Ast.CallOrigin.DIRECT
+            if (currentClassOwner != null
+                    && call.origin() == Ast.CallOrigin.DIRECT
                     && call.callee() instanceof Ast.NameExpr implicit
                     && !isBooleanIntrinsicName(implicit.name())
                     && env.lookup(implicit.name()) == null) {
