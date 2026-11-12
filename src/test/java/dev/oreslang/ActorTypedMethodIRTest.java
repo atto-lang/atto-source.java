@@ -74,6 +74,33 @@ final class ActorTypedMethodIRTest {
     }
 
     @Test
+    void typedActorPlanLinksDescriptorStateAndMethodWithoutCapabilities()
+            throws IOException {
+        var result = packageBuild().typecheckDeclaredActorMethods();
+        var actorKey = new ActorMethodIndex.ActorKey("typed-demo@0.1.0", "foo", "Foo");
+        var plan = result.actor(actorKey);
+        assertNotNull(plan);
+        assertFalse(plan.executable());
+        assertEquals("SEALED_STATE_LOANS_UNLOWERED", plan.stateLoanStatus());
+        assertEquals("MAILBOX_DISPATCH_UNLOWERED", plan.mailboxDispatchStatus());
+        assertEquals("Foo", plan.descriptor().key().actorName());
+        assertEquals("src/foo/state.atto", plan.descriptor().stateUnit());
+        assertEquals("count", plan.descriptor().state().getFirst().name());
+        assertEquals(1, plan.checkedMethods().size());
+        assertEquals(slot(), plan.checkedMethods().getFirst().key());
+        assertThrows(UnsupportedOperationException.class,
+                () -> result.actors().clear());
+        assertThrows(UnsupportedOperationException.class,
+                () -> plan.checkedMethods().clear());
+    }
+
+    @Test
+    void actorPlanCannotBeForgedThroughPublicConstructor() {
+        assertEquals(0, ActorTypedMethodIR.ActorPlan.class.getConstructors().length);
+        assertEquals(0, ActorTypedMethodIR.Result.class.getConstructors().length);
+    }
+
+    @Test
     void validParameterReturnIsTypedWithNominalActorIdentity() throws IOException {
         var result = packageBuild().typecheckDeclaredActorMethods();
         assertEquals(1, result.methods().size());
