@@ -190,8 +190,8 @@ final class AttoRedisMultiClientNioGuestTest {
 
     @Test void gatewayRefusesActorWithoutTaggedBinaryStreamOperator() {
         String invalid = """
-                define actor Untagged implements StreamOperator<Tuple<int,Bytes,Bytes>,Tuple<string,Bytes>> as
-                  receive(ActorMail<Tuple<int,Bytes,Bytes>> mail): void {
+                define actor Untagged implements StreamOperator<Tuple[int,Bytes,Bytes],Tuple[string,Bytes]> as
+                  receive(ActorMail<Tuple[int,Bytes,Bytes]> mail): void {
                     self.send(("OK", mail.value[2]));
                     return;
                   }
@@ -203,8 +203,10 @@ final class AttoRedisMultiClientNioGuestTest {
                   return;
                 }
                 """;
-        assertThrows(RuntimeException.class,
+        RuntimeException error = assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(invalid),
                 "gateway cannot reinterpret an untagged actor output stream");
+        assertTrue(error.getMessage().contains(
+                "serve_resp2_async requires StreamOperator"), error::getMessage);
     }
 }
