@@ -137,6 +137,30 @@ public final class ActorReplyCorrelation implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Resolve one typed output from the trusted actor's single output reader.
+     * The destination session is looked up from a host-reserved request ID;
+     * an actor never supplies a separately forgeable client destination.
+     */
+    public boolean replyFromActor(int requestId, long generation,
+                                  String status, OresBytes payload) {
+        final Slot slot;
+        final Reply response;
+        synchronized (gate) {
+            slot = pending.get(requestId);
+            if (slot == null || slot.session.generation != generation
+                    || !slot.session.active
+                    || sessions.get(slot.session.id) != slot.session)
+                return false;
+            // Validate the status and immutable payload BEFORE consuming credit.
+            response = new Reply(requestId, slot.session.id, generation, status, payload);
+            removeLocked(requestId, slot);
+        }
+        if (!slot.result.completeFromRuntime(response))
+            throw new IllegalStateException("actor reply/Future settlement invariant");
+        return true;
+    }
+
     /** Future cancellation removes ticket before the Future's cancelled CAS.
      * Do NOT settle the Future in this admission callback. */
     private boolean cancelForFuture(Session session, int requestId) {
