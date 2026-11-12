@@ -170,4 +170,43 @@ final class AttoRedisNativeMulticlientTaggedTest {
             }
         }
     }
+
+    @Test
+    void rejectsWrongTypedMailboxAndBlockingSocketMutation() throws Exception {
+        String program;
+        try (InputStream stream = getClass().getResourceAsStream(
+                "/atto/redis-native-nio/redis_native_multiclient_tagged.atto")) {
+            assertNotNull(stream);
+            program = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        String admitted = "writech requests, (client_id, next_id, kind, frame[2], frame[3]);";
+        assertTrue(program.contains(admitted));
+        String wrongType = program.replace(admitted, "writech requests, \"invalid\";");
+        assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck(wrongType),
+                "typed Channel<Tuple<int,int,int,Bytes,Bytes>> must reject String");
+        String selector = "socket.read_resp2_binary_batch_async(16)";
+        assertTrue(program.contains(selector));
+        String blocking = program.replace(selector, "socket.read_line()");
+        assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck(blocking),
+                "native Atto session must reject synchronous socket APIs");
+    }
+
+    @Test
+    void rejectsReuseOfAlreadyCapturedAffineSocket() throws Exception {
+        String program;
+        try (InputStream stream = getClass().getResourceAsStream(
+                "/atto/redis-native-nio/redis_native_multiclient_tagged.atto")) {
+            assertNotNull(stream);
+            program = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        String original = "await serve_tagged_session(socket_2, 2, requests, reply_2);";
+        assertTrue(program.contains(original));
+        String duplicate = program.replace(original,
+                "await serve_tagged_session(first, 2, requests, reply_2);");
+        assertThrows(RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck(duplicate),
+                "same owned NIO socket must not be captured by two independent tasks");
+    }
 }
