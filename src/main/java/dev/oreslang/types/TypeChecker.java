@@ -4825,6 +4825,18 @@ public final class TypeChecker {
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
+                if (param.type().isBorrow()
+                        && param.type().borrowedTarget().name().equals("$infer$")) {
+                    throw new IllegalArgumentException(
+                            "inferred borrow parameter '" + param.name()
+                                    + "' requires a proven typed callable contract; "
+                                    + "use '|borrow mut T name|' when standalone");
+                }
+                if (param.mutable() && param.type().name().equals("$infer$")) {
+                    throw new IllegalArgumentException(
+                            "inferred mutable binding '" + param.name()
+                                    + "' requires a typed callable contract");
+                }
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -5693,7 +5705,8 @@ public final class TypeChecker {
         if (param.type().isBorrow()
                 && param.type().borrowedTarget().name().equals("$infer$")) {
             if (!(expected instanceof Borrow borrow)
-                    || borrow.mutable() != param.type().mutableBorrow()) {
+                    || borrow.mutable() != param.type().mutableBorrow()
+                    || borrow.target() == Unknown.INSTANCE) {
                 throw new IllegalArgumentException(
                         "lambda parameter '" + param.name()
                                 + "' requires an explicit matching borrowed callable parameter type");
