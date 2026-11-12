@@ -907,7 +907,10 @@ public final class OwnershipChecker {
                     ownershipRoot(place.owner()),
                     true);
         } else if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
-            value = checkLambda(lambda, scope, binding.name());
+            // A typed function binding is a proven contextual lambda signature.
+            // Ownership must resolve the same inferred loan as TypeChecker;
+            // treating borrow<$infer$> as a real owner would lose field checks.
+            value = checkLambda(lambda, scope, binding.name(), binding.declaredType());
         } else {
             value = checkExpr(binding.initializer(), scope, true);
         }
@@ -2957,6 +2960,11 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda, Scope outer, String recursiveBinding, Ast.TypeRef expectedCallback) {
+        return checkLambda(lambda, outer, recursiveBinding, false, false, expectedCallback);
+    }
+
+    private ValueInfo checkLambda(
             Ast.LambdaExpr lambda,
             Scope outer,
             String recursiveBinding,
@@ -2970,6 +2978,16 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(lambda, outer, recursiveBinding, allowActorSelfCapture, deferredCleanup, null);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            Ast.TypeRef expectedCallback) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -3017,8 +3035,34 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
-        defineImplicitArguments(closure, lambda.parameters());
+        List<Ast.Param> checkedParams = new ArrayList<>(lambda.parameters().size());
+        for (int i = 0; i < lambda.parameters().size(); i++) {
+            Ast.Param param = lambda.parameters().get(i);
+            if (param.type().isBorrow()
+                    && param.type().borrowedTarget().name().equals("$infer$")) {
+                // Inferred loans are never accepted from an untyped closure,
+                // unknown call, or speculative receiver. The declared
+                // signature must explicitly attest the exclusive loan type.
+                if (expectedCallback == null
+                        || !(expectedCallback.name().equals("Fnc")
+                            || expectedCallback.name().equals("Function"))
+                        || expectedCallback.arguments().size() != lambda.parameters().size() + 1) {
+                    throw error("inferred mutable borrow parameter '" + param.name()
+                            + "' needs an explicit, typed Fnc callback contract");
+                }
+                Ast.TypeRef proven = expectedCallback.arguments().get(i);
+                if (!proven.isBorrow()
+                        || proven.mutableBorrow() != param.type().mutableBorrow()
+                        || proven.borrowedTarget().name().equals("$infer$")) {
+                    throw error("inferred mutable borrow parameter '" + param.name()
+                            + "' cannot upgrade shared or unknown callback loans");
+                }
+                param = new Ast.Param(proven, param.name(), param.structural(), param.mutable());
+            }
+            checkedParams.add(param);
+            closure.define(param.name(), stateForParam(param));
+        }
+        defineImplicitArguments(closure, checkedParams);
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
         Ast.ClassDecl previousInitializingClass = initializingClass;
