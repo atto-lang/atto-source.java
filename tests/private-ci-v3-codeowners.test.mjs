@@ -281,3 +281,30 @@ test('weakening carrier protected-main check fails regression', () => {
       'return contract["base_sha"]'),
   ]) assert.throws(() => assertCarrierGate(broken));
 });
+
+test('per-write destination protection is re-attested without relying on SHA alone', () => {
+  const publisher = readFileSync(path.join(ROOT,
+    'scripts/publish-private-ci-source-v3.py'), 'utf8');
+  const start = publisher.indexOf('def authorize_write(');
+  const end = publisher.indexOf('\n\ndef trusted_github_cli(', start);
+  assert.ok(start >= 0 && end > start, 'per-write publisher guard is missing');
+  const body = publisher.slice(start, end);
+  const check = (candidate) => {
+    assert.match(candidate,
+      /checked_carrier_main\(repository, contract\) != contract\["base_sha"\]/u,
+      'write admission must revalidate live carrier protection, not only main SHA');
+    assert.match(candidate, /legacy\.require_resolved_blocking_incidents\(\)/u);
+    assert.match(candidate, /verify_source_pr\(source_pr, source_commit, authority_sha\)/u);
+    assert.match(candidate, /revalidate_source_governance\(/u);
+    assert.doesNotMatch(candidate,
+      /branch = legacy\.gh_api\(f"repos\/\{repository\}\/branches\/main"\)/u,
+      'a bare branch-SHA lookup is insufficient after protection revocation');
+  };
+  check(body);
+  for (const changed of [
+    body.replace('checked_carrier_main(repository, contract)', 'contract["base_sha"]'),
+    body.replace('legacy.require_resolved_blocking_incidents()', 'pass'),
+    body.replace('revalidate_source_governance(', 'pass('),
+    body.replace('verify_source_pr(source_pr, source_commit, authority_sha)', '123'),
+  ]) assert.throws(() => check(changed));
+});
