@@ -57,6 +57,37 @@ final class NamespaceActorBootstrapCompilerTest {
         }
     }
 
+
+    @Test
+    void stoppedActorGenerationCannotImpersonateAnotherActorWithSameCodeImage()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = publish(store, source());
+            var executable = NamespaceActorBootstrapCompiler.compile(image);
+            var retired = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            retired.ready().get(3, TimeUnit.SECONDS);
+            retired.send(9L);
+            retired.drain().get(3, TimeUnit.SECONDS);
+            retired.stop();
+            retired.done().get(3, TimeUnit.SECONDS);
+
+            var successor = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executable, "Probe");
+            successor.ready().get(3, TimeUnit.SECONDS);
+            assertNotEquals(retired.id(), successor.id(),
+                    "an actor generation must never reuse the retired actor identity");
+            assertThrows(RuntimeException.class, () -> retired.send(10L),
+                    "retired ActorRef must never admit mail to the successor");
+            successor.send(11L);
+            successor.drain().get(3, TimeUnit.SECONDS);
+            assertTrue(successor.failure().isEmpty());
+            successor.stop();
+            successor.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
     @Test
     void malformedTypedMailFailsTheActualRunningActor()
             throws Exception {
