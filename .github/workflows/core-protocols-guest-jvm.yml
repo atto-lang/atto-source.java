@@ -5,6 +5,7 @@ on:
       - 'src/main/resources/dev/oreslang/core/protocols.atto'
       - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/compiler/ImportGraph.java'
       - 'src/test/java/dev/oreslang/CoreProtocolsGuestTest.java'
       - 'src/main/java/dev/oreslang/runtime/ChannelRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/ChannelRuntimeTest.java'
