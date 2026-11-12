@@ -116,6 +116,63 @@ final class BorrowParameterBindingDistinctionTest {
     }
 
     @Test
+    void inferredLoansAndMutableBindingsNeedTypedCallbackContext() {
+        IllegalArgumentException loan = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        fnc invalid(): void {
+                          val callback = |borrow mut s| -> void { return; };
+                          return;
+                        }
+                        """)));
+        assertTrue(loan.getMessage().contains("proven typed callable contract"),
+                loan.getMessage());
+
+        IllegalArgumentException binding = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        fnc invalid(): void {
+                          val callback = |mut s| -> void { return; };
+                          return;
+                        }
+                        """)));
+        assertTrue(binding.getMessage().contains("typed callable contract"),
+                binding.getMessage());
+    }
+
+    @Test
+    void borrowedParametersCannotBeMovedOrReturnedAsOwners() {
+        rejects("""
+                fnc invalid(borrow mut Box s): Box {
+                  return rt take(s);
+                }
+                """);
+        rejects("""
+                fnc invalid(borrow mut Box s): Box {
+                  return s;
+                }
+                """);
+    }
+
+    @Test
+    void actorStateIsStillFailClosedUntilSealedLoweringExists() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define actor Writer as
+                          state {
+                            let int generation = 1;
+                          }
+                          critical seal(): void {
+                            self.handle_state(|borrow mut s| -> {
+                              s.generation = 2;
+                            });
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("handle_state lowering"),
+                failure.getMessage());
+    }
+
+    @Test
     void typedCallbackCanInferBorrowedReferentWithoutMakingBindingReassignable() {
         admits("""
                 fnc valid(): void {
