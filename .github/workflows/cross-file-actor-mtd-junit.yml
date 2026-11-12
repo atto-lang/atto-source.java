@@ -22,6 +22,7 @@ on:
       - 'src/test/java/dev/oreslang/ActorContractTargetCompilerIntegrationTest.java'
       - 'src/test/java/dev/oreslang/PackageNamespaceBuildTest.java'
       - 'src/test/java/dev/oreslang/ActorDescriptorIndexTest.java'
+      - 'src/test/java/dev/oreslang/compiler/ActorDescriptorProvenanceTest.java'
       - 'contracts/declared-actor-witness-v1/**'
       - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
@@ -86,7 +87,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorDescriptorIndexTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorDescriptorIndexTest,ActorDescriptorProvenanceTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -101,9 +102,14 @@ jobs:
               ActorContractTargetCompilerIntegrationTest \
               PackageNamespaceBuildTest \
               ActorDescriptorIndexTest \
+              ActorDescriptorProvenanceTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
-            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            if [[ "$suite" == ActorDescriptorProvenanceTest ]]; then
+              report="target/surefire-reports/TEST-dev.oreslang.compiler.${suite}.xml"
+            else
+              report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            fi
             test -s "$report"
             grep -q '<testcase ' "$report"
             grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
