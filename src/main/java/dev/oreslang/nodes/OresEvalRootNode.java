@@ -5181,6 +5181,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) {
+                evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
@@ -7098,7 +7103,27 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        // Resolve only a direct invocation, never a method value.
+        // The explicit-receiver invocation path owns the subsequent actor,
+        // visibility, suspension and concrete overload checks. The method
+        // family is selected before a same-named file-level function.
+        private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || isBooleanIntrinsicName(name.name())
+                    || env.lookup(name.name()) != Env.MISSING) return null;
+            Object receiver = env.lookup("self");
+            if (!(receiver instanceof OresObject object)
+                    || !object.owner.hasInstanceMethodNamed(
+                            object.klass, name.name(), classVisitSet())) return null;
+            return call.rewrite(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), name.name()),
+                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            if (implicit != null) return prepareInvocation(implicit, env);
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
