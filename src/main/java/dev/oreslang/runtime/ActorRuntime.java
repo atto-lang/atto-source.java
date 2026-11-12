@@ -8467,14 +8467,14 @@ public final class ActorRuntime implements AutoCloseable {
                 new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS + 1);
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.Channel.runtimePrivateMailbox(INTERNAL_CONTINUATION_SLOTS);
         /**
          * Runtime-minted SourceTask commands, isolated from ordinary Future
          * continuations so actor STOP can discard the latter while retaining
          * the former for authenticated lexical cleanup.
          */
         private final ChannelRuntime.Channel<MessageEnvelope> sourceTaskMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.Channel.runtimePrivateMailbox(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -8561,7 +8561,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.parent = parent;
             // USER mail and runtime continuations are physically distinct
             // channels. Do not inflate the USER channel with CONTROL headroom.
-            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
+            this.mailbox = ChannelRuntime.Channel.runtimePrivateMailbox(policy.maxMailboxMessages());
             // Producer-waiter retention is a separate resource from queued
             // mailbox depth. Payload byte accounting still constrains the
             // retained message snapshots themselves.
