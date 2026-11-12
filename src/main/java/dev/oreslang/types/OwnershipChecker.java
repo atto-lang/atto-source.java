@@ -1534,6 +1534,22 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // Only an actor-confined self loan can authorize the sealed intrinsic.
+        // Preserve the original syntactic callee through parsing; this
+        // dispatch is checked again by the explicit receiver ownership path.
+        if (call.origin() == Ast.CallOrigin.DIRECT
+                && call.callee() instanceof Ast.NameExpr bare
+                && bare.name().equals("handle_state")
+                && scope.lookup("handle_state") == null) {
+            VarState self = scope.lookup("self");
+            if (self != null && isActorConfinedBorrow(self)) {
+                return checkCall(
+                        call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "handle_state"),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        scope);
+            }
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -1689,11 +1705,21 @@ public final class OwnershipChecker {
                 if (actorSelf == null || !isActorConfinedBorrow(actorSelf)) {
                     throw error("self.handle_state is only available on an actor-owned self borrow");
                 }
-                if (call.arguments().size() != 1
-                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
-                    throw error("self.handle_state expects exactly one inline lexical lambda");
+                boolean mutableLoan = true;
+                Ast.LambdaExpr lambda;
+                if (call.arguments().size() == 2
+                        && call.arguments().getFirst() instanceof Ast.CriticalStateModeExpr mode
+                        && call.arguments().get(1) instanceof Ast.LambdaExpr scoped) {
+                    mutableLoan = mode.mode() == Ast.StateLoanMode.WRITE;
+                    lambda = scoped;
+                } else if (call.arguments().size() == 1
+                        && call.arguments().getFirst() instanceof Ast.LambdaExpr legacy) {
+                    lambda = legacy;
+                } else {
+                    throw error("self.handle_state expects exactly one inline lexical lambda "
+                            + "and optional compiler-owned critical[read|write] mode");
                 }
-                checkActorStateLoanLambda(lambda, scope);
+                checkActorStateLoanLambda(lambda, scope, mutableLoan);
                 return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
             }
 
@@ -2818,7 +2844,8 @@ public final class OwnershipChecker {
                 + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
     }
 
-    private void checkActorStateLoanLambda(Ast.LambdaExpr lambda, Scope outer) {
+    private void checkActorStateLoanLambda(
+            Ast.LambdaExpr lambda, Scope outer, boolean writable) {
         if (lambda.nonLexical()) {
             throw error("self.handle_state callback must be lexical");
         }
@@ -2827,7 +2854,7 @@ public final class OwnershipChecker {
         }
         Ast.Param original = lambda.parameters().getFirst();
         Ast.Param loanParam = new Ast.Param(
-                Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), true),
+                Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), writable),
                 original.name(),
                 false,
                 false);
