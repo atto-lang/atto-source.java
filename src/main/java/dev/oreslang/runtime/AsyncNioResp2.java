@@ -135,64 +135,28 @@ final class AsyncNioResp2 {
         };
     }
 
-    /** Complete, validated binary RESP frame without hex or boxed byte lists. */
+    /** Binary RESP2 frame; argument arrays are immutable owned Bytes, not hex. */
     record BinaryParsed(String opcode, List<OresBytes> arguments, int consumed) { }
     private record BinaryRange(int offset, int size) { }
 
     /**
-     * Parse one RESP2 command directly from a reused NIO2 ByteBuffer.
-     * Incomplete input returns null without advancing the original buffer.
-     * No payload array is copied until the ENTIRE frame has been verified.
-     * Each accepted key/value is copied exactly once into immutable Bytes.
+     * Parse RESP2 on a reused NIO receive buffer without changing position.
+     * Defer key/value array copies until the entire frame validates.
      */
     static BinaryParsed parseBinary(ByteBuffer bytes) throws IOException {
-        int start = bytes.position();
-        int pos = start;
+        int start = bytes.position(), pos = start;
         int line = endOfLine(bytes, pos);
         if (line < 0) return null;
         if (bytes.get(pos) != '*') throw new IOException("expected RESP2 array");
         int argc = positiveDecimal(bytes, pos + 1, line, MAX_ARGS);
         if (argc < 1) throw new IOException("empty RESP2 array");
         pos = line + 2;
-
         String opcode = null;
         ArrayList<BinaryRange> ranges = new ArrayList<>(Math.max(0, argc - 1));
         for (int arg = 0; arg < argc; arg++) {
             line = endOfLine(bytes, pos);
             if (line < 0) return null;
-            if (bytes.get(pos) != '
-        if (status == null) throw new IOException("missing RESP status");
-        if (hexPayload == null) hexPayload = "";
-        return switch (status) {
-            case "OK" -> "+OK\r\n".getBytes(StandardCharsets.US_ASCII);
-            case "PONG" -> "+PONG\r\n".getBytes(StandardCharsets.US_ASCII);
-            case "NIL" -> "$-1\r\n".getBytes(StandardCharsets.US_ASCII);
-            case "ONE" -> ":1\r\n".getBytes(StandardCharsets.US_ASCII);
-            case "ZERO" -> ":0\r\n".getBytes(StandardCharsets.US_ASCII);
-            case "ERR" -> "-ERR unsupported command\r\n".getBytes(StandardCharsets.US_ASCII);
-            case "VALUE" -> {
-                if ((hexPayload.length() & 1) != 0 || hexPayload.length() > MAX_VALUE * 2) {
-                    throw new IOException("invalid value hex size");
-                }
-                byte[] raw;
-                try {
-                    raw = HEX.parseHex(hexPayload);
-                } catch (IllegalArgumentException badHex) {
-                    throw new IOException("invalid value hex", badHex);
-                }
-                byte[] head = ("$" + raw.length + "\r\n").getBytes(StandardCharsets.US_ASCII);
-                byte[] frame = new byte[head.length + raw.length + 2];
-                System.arraycopy(head, 0, frame, 0, head.length);
-                System.arraycopy(raw, 0, frame, head.length, raw.length);
-                frame[frame.length - 2] = '\r';
-                frame[frame.length - 1] = '\n';
-                yield frame;
-            }
-            default -> throw new IOException("unsupported RESP reply status");
-        };
-    }
-}
-) throw new IOException("expected RESP2 bulk");
+            if (bytes.get(pos) != '$') throw new IOException("expected RESP2 bulk");
             int max = arg == 0 ? 16
                     : (arg == 1 && ("SET".equals(opcode) || "GET".equals(opcode)
                         || "DEL".equals(opcode))) ? MAX_KEY : MAX_VALUE;
@@ -222,29 +186,26 @@ final class AsyncNioResp2 {
             }
             pos += len + 2;
         }
-
-        // Hold all ranges until validation finishes. ByteBuffer storage must
-        // not escape: it is reused on the very next async socket read.
         ArrayList<OresBytes> args = new ArrayList<>(ranges.size());
         for (BinaryRange range : ranges) {
             byte[] owned = new byte[range.size()];
-            ByteBuffer part = bytes.duplicate();
-            part.position(range.offset());
-            part.get(owned);
+            ByteBuffer view = bytes.duplicate();
+            view.position(range.offset());
+            view.get(owned);
             args.add(OresBytes.fromParserOwned(owned));
         }
         return new BinaryParsed(opcode, List.copyOf(args), pos);
     }
 
-    /** One frame allocation for RESP2 binary bulk replies, without hex. */
+    /** Encode binary RESP2 in one detached response frame allocation. */
     static byte[] encodeBinary(String status, OresBytes payload) throws IOException {
         if (!"VALUE".equals(status)) {
             if (payload != null && payload.size() != 0) {
-                throw new IOException("non-VALUE RESP reply cannot carry bytes");
+                throw new IOException("non-VALUE reply cannot contain binary data");
             }
             return encode(status, "");
         }
-        if (payload == null) throw new IOException("VALUE reply missing binary payload");
+        if (payload == null) throw new IOException("missing binary reply value");
         if (payload.size() > MAX_VALUE) throw new IOException("RESP value exceeds bound");
         byte[] head = ("$" + payload.size() + "\r\n").getBytes(StandardCharsets.US_ASCII);
         byte[] result = new byte[head.length + payload.size() + 2];
