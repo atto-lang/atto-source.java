@@ -136,6 +136,23 @@ final class CheckedNamespaceActorContextEvalTest {
     }
 
     @Test
+    void ordinaryGuestSpawnOfNamespaceActorIsStillBlockedUntilRealLowering() throws Exception {
+        String program = source() + """
+                pub fnc main(): int {
+                    let actor = spawn Probe();
+                    actor.send(1);
+                    return 1;
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertThrows(RuntimeException.class,
+                    () -> context.eval(guestSource(program, "blocked-guest-spawn.atto")),
+                    "source-level spawn must remain rejected without actor guest lowering");
+        }
+    }
+
+    @Test
     void wrongSourceBytesPermanentlyConsumeOneShotLease() throws Exception {
         String program = source();
         try (var proof = CheckedNamespaceActorGuestProof.compile(
