@@ -117,7 +117,12 @@ public final class Parser {
                 }
             }
         }
+        // Both package headers select one identical flat namespace. "use" is
+        // contextual here: it does not grant import or filesystem authority.
         String namespace = null;
+        if (isContextualIdentifier("use") && checkNext(NAMESPACE)) {
+            advance();
+        }
         if (match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
