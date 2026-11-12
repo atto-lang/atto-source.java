@@ -487,9 +487,33 @@ public final class OutboundHttpRequest {
             String method,
             String url,
             List<?> rawHeaders) {
+        return request(context, method, url, rawHeaders, null);
+    }
+
+    /**
+     * Fourth argument is an immutable String (UTF-8) or list of 0..255
+     * integers (Bytes-compatible portable bootstrap). Copy the entire
+     * body before asynchronous admission; no live guest Array or mutable
+     * alias crosses the source Task to physical I/O worker.
+     */
+    public static OresFuture<Response> request(
+            OresContext context,
+            String method,
+            String url,
+            List<?> rawHeaders,
+            Object rawBody) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
+        final byte[] requestBody = requestBodyBytes(rawBody);
+        if (!method.equals("POST") && requestBody.length != 0) {
+            throw new IllegalArgumentException(
+                    "only POST may carry a request body");
+        }
+        if (!method.equals("GET") && !method.equals("HEAD")
+                && !method.equals("POST")) {
+            throw new IllegalArgumentException("http.request supports GET, HEAD or POST");
+        }
         List<Map.Entry<String, String>> providedHeaders = requestHeaders(rawHeaders);
         URI target;
         try {
@@ -499,7 +523,11 @@ public final class OutboundHttpRequest {
                     "http.request requires a canonical absolute URL", invalid));
         }
 
-        ProxyOutboundLoopback.validateTarget(target, method);
+        // Preserve the GET/HEAD proof harness public contract. A POST has
+        // exactly the same canonical loopback authority/path admission; its
+        // method and bounded body are checked independently above.
+        ProxyOutboundLoopback.validateTarget(
+                target, method.equals("POST") ? "GET" : method);
         String endpoint = "127.0.0.1:" + target.getPort();
         context.requirePermission(
                 RuntimePermissions.Permission.NET, endpoint, "http.request");
@@ -549,6 +577,7 @@ public final class OutboundHttpRequest {
                             target,
                             method,
                             headers,
+                            requestBody,
                             owner,
                             revocation,
                             exposed,
@@ -587,6 +616,7 @@ public final class OutboundHttpRequest {
             URI target,
             String method,
             List<Map.Entry<String, String>> headers,
+            byte[] requestBody,
             Owner owner,
             Revocation revocation,
             OresFuture<Response> exposed,
@@ -608,7 +638,7 @@ public final class OutboundHttpRequest {
         BodyPipe pipe = null;
         try (transport) {
             PinnedHttpTransport.Response upstream =
-                    transport.request(target, method, headers);
+                    transport.request(target, method, headers, requestBody);
             if (observedStatus != null) observedStatus.set(upstream.status());
             try (upstream) {
                 if (revocation.requested()) {
@@ -702,6 +732,47 @@ public final class OutboundHttpRequest {
         result.addAll(provided);
         result.add(Map.entry("traceparent", outgoing.toHeader()));
         return List.copyOf(result);
+    }
+
+    private static byte[] requestBodyBytes(Object value) {
+        if (value == null) return new byte[0];
+        final int max = PinnedHttpTransport.MAX_REQUEST_BODY_BYTES;
+        if (value instanceof String text) {
+            if (text.length() > max) {
+                throw new IllegalArgumentException(
+                        "HTTP UTF-8 request body exceeds 1 MiB limit");
+            }
+            byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+            if (utf8.length > max) {
+                throw new IllegalArgumentException(
+                        "HTTP UTF-8 request body exceeds 1 MiB limit");
+            }
+            return utf8;
+        }
+        if (value instanceof List<?> bytes) {
+            if (bytes.size() > max) {
+                throw new IllegalArgumentException(
+                        "HTTP request body exceeds 1 MiB limit");
+            }
+            byte[] data = new byte[bytes.size()];
+            for (int i = 0; i < bytes.size(); i++) {
+                Object item = bytes.get(i);
+                if (!(item instanceof Byte || item instanceof Short
+                        || item instanceof Integer || item instanceof Long)) {
+                    throw new IllegalArgumentException(
+                            "HTTP Bytes require integral octets, index " + i);
+                }
+                long octet = ((Number) item).longValue();
+                if (octet < 0 || octet > 255) {
+                    throw new IllegalArgumentException(
+                            "HTTP Bytes octet outside 0..255, index " + i);
+                }
+                data[i] = (byte) octet;
+            }
+            return data;
+        }
+        throw new IllegalArgumentException(
+                "HTTP request body must be UTF-8 String or List<int> Bytes");
     }
 
     private static List<Map.Entry<String, String>> requestHeaders(List<?> raw) {
