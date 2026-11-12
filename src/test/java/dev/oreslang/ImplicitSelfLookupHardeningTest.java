@@ -117,6 +117,34 @@ final class ImplicitSelfLookupHardeningTest {
     }
 
     @Test
+    void executableClassMethodFamilyWinsOverSameArityFreeFunction() throws Exception {
+        assertEquals("42", run("""
+                fnc value(): int { return 99; }
+                define class Box as
+                  pub value(): int { return 40; }
+                  pub answer(): int { return value() + 2; }
+                end
+                pub routine main(): void {
+                  val box = new Box();
+                  stdio.stdout.write(box.answer());
+                }
+                """));
+    }
+
+    @Test
+    void wrongArityClassMethodCannotFallThroughToExactRootFunction() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc value(): int { return 99; }
+                        define class Box as
+                          pub value(int n): int { return n; }
+                          pub answer(): int { return value(); }
+                        end
+                        """)));
+        assertNotNull(failure.getMessage());
+    }
+
+    @Test
     void wrongArityCannotFallThroughToGlobalFunction() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
