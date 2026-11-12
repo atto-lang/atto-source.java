@@ -48,7 +48,7 @@ final class AttoNamespaceActorIngressExecutionV1Test {
             SharedCodeImageStore store, String id, String source) {
         Ast.Program sourceAst = Parser.parse(source);
         var image = store.publish(id, sourceAst);
-        return NamespaceActorIngressV1.compile(image, "counter@1", "CounterActor");
+        return dev.oreslang.compiler.OresCompiler.compileNamespaceActorIngressV1(image, "counter@1", "CounterActor");
     }
 
     private static long sendAndRead(ActorRuntime.ActorRef<Object> actor, long delta)
@@ -70,7 +70,7 @@ final class AttoNamespaceActorIngressExecutionV1Test {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var image = store.publish("src/counter.atto", ast);
-            var compiled = NamespaceActorIngressV1.compile(
+            var compiled = dev.oreslang.compiler.OresCompiler.compileNamespaceActorIngressV1(
                     image, "counter@1", "CounterActor");
             var actor = compiled.spawn(runtime, IsolatePolicy.developer());
             actor.ready().get(30, TimeUnit.SECONDS);
@@ -155,6 +155,10 @@ final class AttoNamespaceActorIngressExecutionV1Test {
                 SOURCE.replace("c.send(c.add(mail.value))", "c.add(mail.value)"),
                 SOURCE.replace("c.send(c.add(mail.value))", "c.send(c.unknown(mail.value))"),
                 SOURCE.replace("c.send(c.add(mail.value))", "c.send(c.add(mail.value + 1))"),
+                SOURCE.replace("c.send(c.add(mail.value))", "c.send(super.add(mail.value))"),
+                SOURCE.replace("c.send(c.add(mail.value))", "c.send(c.add)"),
+                SOURCE.replace("c.send(c.add(mail.value))", "c.send(c.add(c.value))"),
+                SOURCE.replace("c.send(c.add(mail.value))", "c.init()"),
                 SOURCE.replace("c.send(c.add(mail.value))", "c.send(c.add(mail.value)); c.send(9)"),
                 SOURCE.replace("ActorMail<int> mail", "ActorMail<bool> mail"),
                 SOURCE.replace("ActorMail<int> mail", "ActorMail<borrow int> mail"),
@@ -178,9 +182,9 @@ final class AttoNamespaceActorIngressExecutionV1Test {
             Ast.Program parsed = Parser.parse(SOURCE);
             var image = store.publish("src/counter.atto", parsed);
             assertThrows(IllegalArgumentException.class,
-                    () -> NamespaceActorIngressV1.compile(image, "counter@1", "OtherActor"));
+                    () -> dev.oreslang.compiler.OresCompiler.compileNamespaceActorIngressV1(image, "counter@1", "OtherActor"));
             assertThrows(IllegalArgumentException.class,
-                    () -> NamespaceActorIngressV1.compile(image, "", "CounterActor"));
+                    () -> dev.oreslang.compiler.OresCompiler.compileNamespaceActorIngressV1(image, "", "CounterActor"));
         }
     }
 }
