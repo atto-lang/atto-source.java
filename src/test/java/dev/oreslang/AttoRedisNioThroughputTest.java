@@ -487,12 +487,24 @@ final class AttoRedisNioThroughputTest {
             }
             for (int i = 0; i < sizes.length; ++i) {
                 int index = (rep & 1) == 0 ? i : sizes.length - 1 - i;
-                batched[index][rep] = executePipelinedGuest(
-                        "redis_actor_nio_batch.atto", sizes[index], pipeline,
-                        warm, measured, "batch_" + sizes[index] + "_rep_" + rep);
-                coalesced[index][rep] = executePipelinedGuest(
-                        "redis_actor_nio_batch_write.atto", sizes[index], pipeline,
-                        warm, measured, "coalesced_" + sizes[index] + "_rep_" + rep);
+                // Alternate read-only versus coalesced order across pairs.
+                // Avoid systematically rewarding the second variant with
+                // warmed GraalVM code or a quieter hosted runner.
+                if ((rep & 1) == 0) {
+                    batched[index][rep] = executePipelinedGuest(
+                            "redis_actor_nio_batch.atto", sizes[index], pipeline,
+                            warm, measured, "batch_" + sizes[index] + "_rep_" + rep);
+                    coalesced[index][rep] = executePipelinedGuest(
+                            "redis_actor_nio_batch_write.atto", sizes[index], pipeline,
+                            warm, measured, "coalesced_" + sizes[index] + "_rep_" + rep);
+                } else {
+                    coalesced[index][rep] = executePipelinedGuest(
+                            "redis_actor_nio_batch_write.atto", sizes[index], pipeline,
+                            warm, measured, "coalesced_" + sizes[index] + "_rep_" + rep);
+                    batched[index][rep] = executePipelinedGuest(
+                            "redis_actor_nio_batch.atto", sizes[index], pipeline,
+                            warm, measured, "batch_" + sizes[index] + "_rep_" + rep);
+                }
             }
             if ((rep & 1) == 1) {
                 baseline[rep] = executePipelinedGuest(
