@@ -84,6 +84,49 @@ final class AttoOwnedBytesMapGuestTest {
     }
 
     @Test
+    void tenThousandDeterministicBinaryMapOperationsMatchIndependentOracle() {
+        OresKeyedMap<OresBytes, OresBytes> subject =
+                OresKeyedMap.byteKeys(OresKeyedMap.ValueDomain.BYTES);
+        java.util.HashMap<OresBytes, OresBytes> oracle = new java.util.HashMap<>();
+        java.util.Random rng = new java.util.Random(0xA770B17EL);
+        for (int operation = 0; operation < 10_000; operation++) {
+            int token = rng.nextInt(96);
+            OresBytes key = OresBytes.fromList(
+                    List.of(token, 255 - token, 0, 255, 13, 10));
+            int choice = rng.nextInt(3);
+            if (choice == 0) {
+                OresBytes value = OresBytes.fromList(List.of(
+                        operation & 255, (operation >> 8) & 255, 0, 255));
+                subject.put(key, value);
+                oracle.put(key, value);
+            } else if (choice == 1) {
+                OresKeyedMap.Lookup<OresBytes> actual = subject.lookup(key);
+                assertEquals(oracle.containsKey(key), actual.present(),
+                        "presence at op " + operation);
+                assertEquals(oracle.get(key), actual.value(),
+                        "value at op " + operation);
+            } else {
+                OresKeyedMap.Lookup<OresBytes> removed = subject.take(key);
+                OresBytes expected = oracle.remove(key);
+                assertEquals(expected != null, removed.present(),
+                        "delete presence at op " + operation);
+                assertEquals(expected, removed.value(),
+                        "delete value at op " + operation);
+            }
+            assertEquals(oracle.size(), subject.size(), "size after op " + operation);
+        }
+        // Distinct arrays can collide under the same array-content hash.
+        OresBytes collisionA = OresBytes.fromList(List.of(0, 31));
+        OresBytes collisionB = OresBytes.fromList(List.of(1, 0));
+        assertEquals(collisionA.hashCode(), collisionB.hashCode());
+        assertNotEquals(collisionA, collisionB);
+        subject.put(collisionA, OresBytes.fromList(List.of(1)));
+        subject.put(collisionB, OresBytes.fromList(List.of(2)));
+        assertEquals(1L, subject.lookup(collisionA).value().get(0));
+        assertEquals(2L, subject.lookup(collisionB).value().get(0));
+    }
+
+    @Test
     void compiledGuestBytesSnapshotsAndBinaryMapCRUD() throws Exception {
         String guest = """
                 pub fnc main(): int {
