@@ -391,4 +391,24 @@ final class UsingTelemetrySpanScopeTest {
                     denied::getMessage);
         }
     }
+
+    @Test
+    void asyncAndSuspendingCallablesCannotOwnThreadLocalTelemetryScopes() {
+        for (String declaration : new String[] {
+                "pub async fnc do_work(): void",
+                "pub suspends fnc do_work(): void"
+        }) {
+            String code = declaration + """
+                     {
+                       using telemetry.span("unchecked-carrier") as span {
+                         return;
+                       }
+                     }
+                     """;
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)));
+            assertTrue(denied.getMessage().contains("continuation-owned span frames"),
+                    denied::getMessage);
+        }
+    }
 }
