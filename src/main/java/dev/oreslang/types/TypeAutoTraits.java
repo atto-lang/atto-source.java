@@ -85,8 +85,14 @@ public final class TypeAutoTraits {
         if (!(type instanceof Named named)) return Optional.of(NONE);
 
         return switch (named.name()) {
-            case "$builtin$Symbol", "ActorId", "ActorKind" ->
+            case "$builtin$Symbol", "Bytes", "$builtin$Bytes", "ActorId", "ActorKind" ->
                     Optional.of(named.arguments().isEmpty() ? SCALAR : NONE);
+            // The accepted NIO2 socket is affine: owned MOVE into a single
+            // task is allowed, but it is never Copy, Sync or Share.
+            // NioListener remains non-Send and stays in the accept task.
+            case "NioConnection" ->
+                    Optional.of(named.arguments().isEmpty()
+                            ? new Capabilities(true, false, false) : NONE);
             case "ActorRef" ->
                     Optional.of(named.arguments().size() == 1 ? SCALAR : NONE);
             case "OptionUnwrapError" ->
