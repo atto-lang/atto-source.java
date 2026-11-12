@@ -71,6 +71,22 @@ final class ActorGeneratorPoolAdmissionTest {
                                     assertTrue(failure.getCause().getMessage()
                                             .contains("ACTOR_GENERATOR_UNSUPPORTED"));
 
+                                    // A foreign actor must not cancel a
+                                    // root-owned producer through the async
+                                    // close receipt or its sync close bridge.
+                                    var deniedClose = outside.closeAsync();
+                                    assertTrue(deniedClose.isDone());
+                                    var closeFailure = assertThrows(
+                                            ExecutionException.class,
+                                            () -> deniedClose.get(2, TimeUnit.SECONDS));
+                                    assertTrue(closeFailure.getCause() instanceof IllegalStateException);
+                                    assertTrue(closeFailure.getCause().getMessage()
+                                            .contains("ACTOR_GENERATOR_UNSUPPORTED"));
+                                    var closeBlocking = assertThrows(
+                                            IllegalStateException.class, outside::close);
+                                    assertTrue(closeBlocking.getMessage()
+                                            .contains("ACTOR_GENERATOR_UNSUPPORTED"));
+
                                     // Both sync pulls and sync close are
                                     // forbidden on the actor carrier. The
                                     // root owner can still resume/retire it.
