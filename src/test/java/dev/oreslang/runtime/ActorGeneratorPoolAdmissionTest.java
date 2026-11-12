@@ -18,6 +18,7 @@ final class ActorGeneratorPoolAdmissionTest {
     void actorCannotCreateOrPullGeneratorUsingRootAsyncPool() {
         assertTimeoutPreemptively(Duration.ofSeconds(15), () -> {
             AtomicInteger rootProducerRuns = new AtomicInteger();
+            AtomicInteger rootSyncProducerRuns = new AtomicInteger();
             AtomicInteger actorProducerRuns = new AtomicInteger();
             AtomicInteger actorSyncProducerRuns = new AtomicInteger();
             AtomicReference<Throwable> actorFailure = new AtomicReference<>();
@@ -27,6 +28,10 @@ final class ActorGeneratorPoolAdmissionTest {
                 var outside = GeneratorRuntime.<Integer>asyncGenerator(root, emitter -> {
                     rootProducerRuns.incrementAndGet();
                     emitter.emit(42);
+                });
+                var syncOutside = GeneratorRuntime.<Integer>generator(root, emitter -> {
+                    rootSyncProducerRuns.incrementAndGet();
+                    emitter.emit(43);
                 });
 
                 try {
@@ -65,6 +70,16 @@ final class ActorGeneratorPoolAdmissionTest {
                                     assertTrue(failure.getCause() instanceof IllegalStateException);
                                     assertTrue(failure.getCause().getMessage()
                                             .contains("ACTOR_GENERATOR_UNSUPPORTED"));
+
+                                    // Both sync pulls and sync close are
+                                    // forbidden on the actor carrier. The
+                                    // root owner can still resume/retire it.
+                                    assertThrows(IllegalStateException.class,
+                                            syncOutside::nextStep);
+                                    var closeRejected = assertThrows(
+                                            IllegalStateException.class, syncOutside::close);
+                                    assertTrue(closeRejected.getMessage()
+                                            .contains("ACTOR_GENERATOR_UNSUPPORTED"));
                                 } catch (Throwable failure) {
                                     actorFailure.compareAndSet(null, failure);
                                 } finally {
@@ -81,14 +96,20 @@ final class ActorGeneratorPoolAdmissionTest {
                     assertEquals(0, actorSyncProducerRuns.get());
                     assertEquals(0, rootProducerRuns.get(),
                             "actor pull must not have started process/root producer");
+                    assertEquals(0, rootSyncProducerRuns.get(),
+                            "actor sync pull/close must not start the producer");
 
                     // The originating root owner retains valid pull authority
                     // after the actor's denied attempt.
                     assertEquals(42, outside.nextStep().get(2, TimeUnit.SECONDS).value());
                     assertTrue(outside.nextStep().get(2, TimeUnit.SECONDS).done());
                     assertEquals(1, rootProducerRuns.get());
+                    assertEquals(43, syncOutside.nextStep().value());
+                    assertTrue(syncOutside.nextStep().done());
+                    assertEquals(1, rootSyncProducerRuns.get());
                 } finally {
                     outside.closeAsync().get(2, TimeUnit.SECONDS);
+                    syncOutside.close();
                 }
             }
         });
