@@ -9,20 +9,24 @@ channel admission. Never expose a raw actor inbox channel to guest code.
 
 | Source expression | Immediate completion | When full or no rendezvous reader | Result |
 | --- | --- | --- | --- |
-| `writech channel, value` | yes if ready | Logical suspension **target**; current Java actor/root interpreter fails closed on pending write until resumable-task lowering | `void` |
+| `writech channel, value` | yes if ready | A resumable `SourceTask` suspends cooperatively; legacy direct evaluation fails closed when pending on a scheduler carrier | `void` |
 | `nb writech channel, value` | yes | Register a bounded writer; return without suspending caller | `Future<void>` |
 | `try writech channel, value` | yes | Return `false`; register **nothing** | `bool` |
 | `readch channel` | yes | Suspend logical task until a value arrives | `T` |
 | `nb readch channel` | yes | Return a bounded pending read Future | `Future<T>` |
 | `try readch channel` | yes | Return `None`; register **nothing** | `Option<T>` |
 
-"Blocking" must ultimately mean **cooperative actor suspension**, not OS-thread
-parking, spin-waiting or blocking I/O. **Current Java limitation:** a pending
-plain `writech` / `readch` on an actor/root scheduler turn raises a diagnostic
-instead of suspending, because its interpreter stack is not yet lowered into
-a resumable task. The `nb` Future path and immediate `try` probe are the
-supported nonparking mechanisms today. The transitional host/embedder path
-may join a Future outside scheduler turns. Carrier threads stay available.
+"Blocking" means **cooperative SourceTask suspension**, not OS-thread
+parking, spin-waiting or blocking I/O. Java already has
+`OresEvalRootNode.evalSuspendableChannel()` which calls `task.suspend(...)`
+for a pending `readch` or `writech`; its AST suspension scan routes compatible
+source callable/task paths through `SourceTask`. **Remaining Java limitation:**
+`awaitBlockingChannelFuture()` still fails closed if a pending channel operation
+reaches the older direct evaluator on a scheduler-owned actor/root turn.
+That path must either be lowered into a resumable task or remain a diagnostic;
+it must never park an actor carrier. The `nb` Future and immediate `try` paths
+remain available in all supported execution contexts. The transitional
+host/embedder path may join a Future outside scheduler turns.
 Capacity 0 is a rendezvous channel, not an unbounded channel.
 
 ## ActorRef messaging
@@ -77,7 +81,9 @@ path.
 
 ## Release gates
 
-- Exact-source parse/typecheck/guest execution for both ActorRef send modes.
+- Exact-source parse/typecheck/guest execution for both ActorRef send modes,
+  plus source-level pending `writech`/`readch` tests in the `SourceTask` path
+  and fail-closed coverage for legacy direct-evaluation contexts.
 - Saturated bounded channel and mailbox: immediate false, no phantom mail,
   `nb`/async waiter later commits with proper FIFO and quota accounting.
 - Concurrent try-send races: at most capacity credits; no duplicate deliveries.
@@ -88,5 +94,6 @@ path.
   scenarios. A standalone byte queue or codec is not proof of source parity.
 
 This Java draft intentionally does not claim that the native/backend
-implementations, pending plain `writech` interpreter suspension, or MessagePack
-source paths have passed those gates.
+implementations, all legacy direct-evaluator suspension cases, or MessagePack
+source paths have passed those gates. SourceTask cooperative suspension exists
+in Java but still requires exact-head executable evidence for this PR.
