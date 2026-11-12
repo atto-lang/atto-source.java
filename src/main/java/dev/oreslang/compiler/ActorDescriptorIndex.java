@@ -75,29 +75,63 @@ public final class ActorDescriptorIndex {
         }
     }
 
-    public record Descriptor(
-            ActorMethodIndex.ActorKey key,
-            String actorUnit, Ast.Visibility visibility, Ast.ActorKind actorKind,
-            List<Contract> contracts, String stateUnit, List<StateField> state,
-            List<Method> methods, String manifestSha256,
-            String abiSha256, String sourceSha256) {
-        public Descriptor {
-            Objects.requireNonNull(key, "actor key");
+    /**
+     * No public constructor: only the package-owned manifest linker can mint
+     * a descriptor. Even this value is NOT an executable actor capability.
+     */
+    public static final class Descriptor {
+        private final ActorMethodIndex.ActorKey key;
+        private final String actorUnit;
+        private final Ast.Visibility visibility;
+        private final Ast.ActorKind actorKind;
+        private final List<Contract> contracts;
+        private final String stateUnit;
+        private final List<StateField> state;
+        private final List<Method> methods;
+        private final String manifestSha256;
+        private final String abiSha256;
+        private final String sourceSha256;
+
+        private Descriptor(
+                ActorMethodIndex.ActorKey key,
+                String actorUnit, Ast.Visibility visibility, Ast.ActorKind actorKind,
+                List<Contract> contracts, String stateUnit, List<StateField> state,
+                List<Method> methods, String manifestSha256,
+                String abiSha256, String sourceSha256) {
+            this.key = Objects.requireNonNull(key, "actor key");
             nonblank(actorUnit, "actor declaration unit");
-            Objects.requireNonNull(visibility, "actor visibility");
+            this.actorUnit = actorUnit;
+            this.visibility = Objects.requireNonNull(visibility, "actor visibility");
             if (actorKind != Ast.ActorKind.SHARED) {
                 throw new IllegalArgumentException("v1 only supports shared declared actors");
             }
-            contracts = List.copyOf(contracts);
-            state = List.copyOf(state);
-            methods = List.copyOf(methods);
+            this.actorKind = actorKind;
+            this.contracts = List.copyOf(contracts);
+            this.stateUnit = stateUnit;
+            this.state = List.copyOf(state);
+            this.methods = List.copyOf(methods);
             if (stateUnit == null && !state.isEmpty()) {
                 throw new IllegalArgumentException("state fields without attached state unit");
             }
             sha(manifestSha256, "manifest hash");
             sha(abiSha256, "actor ABI hash");
             sha(sourceSha256, "actor source hash");
+            this.manifestSha256 = manifestSha256;
+            this.abiSha256 = abiSha256;
+            this.sourceSha256 = sourceSha256;
         }
+
+        public ActorMethodIndex.ActorKey key() { return key; }
+        public String actorUnit() { return actorUnit; }
+        public Ast.Visibility visibility() { return visibility; }
+        public Ast.ActorKind actorKind() { return actorKind; }
+        public List<Contract> contracts() { return contracts; }
+        public String stateUnit() { return stateUnit; }
+        public List<StateField> state() { return state; }
+        public List<Method> methods() { return methods; }
+        public String manifestSha256() { return manifestSha256; }
+        public String abiSha256() { return abiSha256; }
+        public String sourceSha256() { return sourceSha256; }
     }
 
     private final Map<ActorMethodIndex.ActorKey, Descriptor> actors;
