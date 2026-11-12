@@ -161,12 +161,17 @@ final class SealedActorStateRegionTest {
         // Host-provided executor is a test double; this validates the
         // actual ActorRuntime codeActorState lifecycle, NOT the compiled guest.
         var parsed = Parser.parse("""
+                define actor DecoyCounter as
+                  state { let int count = 100; }
+                end
                 define actor AcceptanceCounter as
                   state { let int count = 0; }
                 end
                 """);
-        var actorSchema = (dev.oreslang.ast.Ast.ClassDecl)
+        var decoySchema = (dev.oreslang.ast.Ast.ClassDecl)
                 parsed.modules().getFirst().declarations().getFirst();
+        var actorSchema = (dev.oreslang.ast.Ast.ClassDecl)
+                parsed.modules().getFirst().declarations().get(1);
         assertThrows(SecurityException.class,
                 () -> SealedActorStateRegion.allocateFromSealedDeclaration(actorSchema),
                 "host code cannot allocate a sealed actor region outside a source turn");
@@ -200,6 +205,10 @@ final class SealedActorStateRegionTest {
                             () -> SealedActorStateRegion.allocateFromSealedDeclaration(
                                     forgedSchema),
                             "a separately parsed actor AST must never mint region authority");
+                    assertThrows(SecurityException.class,
+                            () -> SealedActorStateRegion.allocateFromSealedDeclaration(
+                                    decoySchema),
+                            "a different actor declaration in the same image cannot mint this actor state");
                     var region = SealedActorStateRegion.allocateFromSealedDeclaration(
                             actorSchema);
                     retained.set(region);
