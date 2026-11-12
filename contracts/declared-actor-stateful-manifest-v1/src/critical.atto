@@ -1,0 +1,11 @@
+namespace counter;
+critical mtd (CounterActor c) add(int delta): int {
+    let int answer = 0;
+    using state.write(critical |s| -> {
+        if s.enabled then
+            s.value = s.value + delta;
+            answer = s.value;
+        fi
+    });
+    return answer;
+}

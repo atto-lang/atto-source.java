@@ -1,0 +1,4 @@
+namespace counter;
+external mtd (CounterActor c) init(): void {
+    return;
+}

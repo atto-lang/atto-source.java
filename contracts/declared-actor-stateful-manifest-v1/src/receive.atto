@@ -1,0 +1,5 @@
+use namespace counter;
+external mtd (CounterActor c) receive(ActorMail<int> mail): void {
+    c.send(c.add(mail.value));
+    return;
+}

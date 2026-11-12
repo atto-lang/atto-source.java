@@ -25,6 +25,18 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in physical .atto.pkg.toml source-set admission for the restricted
+     * stateful namespace actor. Never accepts an unauthenticated source Map.
+     * General guest TypeChecker admission remains fail closed.
+     */
+    public static NamespaceActorManifestV1.Verified compileNamespaceActorManifestV1(
+            java.nio.file.Path manifest,
+            dev.oreslang.runtime.SharedCodeImageStore store,
+            String actorName) throws java.io.IOException {
+        return NamespaceActorManifestV1.compile(manifest, store, actorName);
+    }
+
+    /**
      * Opt-in first protected-state MIR slice. This executes the production
      * parser first, then admits only one verified i64 state-root region.
      * It does NOT bypass or relax ordinary TypeChecker/OwnershipChecker
