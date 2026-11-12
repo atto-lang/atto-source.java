@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Runtime-only safety gate; does not assert production multi-client networking. */
 final class ActorReplyRouterTest {
-    @Test void saturatesPerClientGlobalAndClientQuotasWithoutCreatingPendingReplies() {
+    @Test void saturatesPerClientGlobalAndClientQuotasWithoutCreatingPendingReplies() throws Exception {
         try (ActorReplyRouter<String> router = new ActorReplyRouter<>(2, 2, 3)) {
             var a = router.tryOpenClient().orElseThrow();
             var b = router.tryOpenClient().orElseThrow();
