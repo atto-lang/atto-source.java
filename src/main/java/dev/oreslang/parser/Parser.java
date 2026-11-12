@@ -2551,17 +2551,38 @@ public final class Parser {
             }
             if (!(resource instanceof Ast.CallExpr call)
                     || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !member.member().equals("borrow")
-                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+                    || call.typeArgumentsPresent()) {
                 throw error(previous(),
-                        "using borrowed scope requires a zero-argument resource.borrow() call");
+                        "using requires resource.borrow() or telemetry.span([name])");
             }
-            consume(AS, "using borrowed scope requires 'as <view>'");
-            Token name = consume(IDENT, "using borrowed scope requires a binding name");
+            boolean telemetrySpan = member.member().equals("span")
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("telemetry");
+            boolean borrowedView = member.member().equals("borrow")
+                    && call.arguments().isEmpty();
+            if (!telemetrySpan && !borrowedView) {
+                throw error(previous(),
+                        "using requires resource.borrow() or telemetry.span([name])");
+            }
+            if (telemetrySpan && call.arguments().size() > 1) {
+                throw error(previous(),
+                        "using telemetry.span accepts zero or one span-name argument");
+            }
+            consume(AS, "using scope requires 'as <alias>'");
+            Token name = consume(IDENT, "using scope requires a binding name");
             if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using borrowed scope needs a named, usable view binding");
+                throw error(name, "using scope needs a named, usable alias");
             }
-            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+            List<Ast.Stmt> body = parseBlock();
+            if (telemetrySpan) {
+                // Contextual intrinsic; bypass ordinary call evaluation so a
+                // guest binding named telemetry cannot spoof runtime authority.
+                Ast.Expr spanName = call.arguments().isEmpty()
+                        ? new Ast.LiteralExpr("span")
+                        : call.arguments().getFirst();
+                return new Ast.UsingTelemetrySpanStmt(spanName, name.lexeme(), body);
+            }
+            return new Ast.UsingBorrowStmt(resource, name.lexeme(), body);
         }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
@@ -4145,6 +4166,8 @@ public final class Parser {
             }
             if (stmt instanceof Ast.UsingBorrowStmt loan
                     && valueArmPrefixContainsReturn(loan.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && valueArmPrefixContainsReturn(scope.body())) return true;
         }
         return false;
     }
