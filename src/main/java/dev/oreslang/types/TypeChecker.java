@@ -5188,11 +5188,10 @@ public final class TypeChecker {
                             + "but physical GPU dispatch is not enabled on this backend; "
                             + "no implicit CPU fallback");
         }
-        if (currentActorKind != Ast.ActorKind.NONE) {
-            throw new IllegalArgumentException(
-                    "task blocks inside actor state are not enabled until captured actor-state "
-                            + "authority is proven; launch a task from ordinary owned data instead");
-        }
+        // Actor-local tasks are allowed only with a checked detached capture
+        // set. OwnershipChecker rejects actor self, actor mail, live borrows,
+        // guards and other non-Send capabilities. The runtime enqueues every
+        // resulting turn back into the owning actor's mailbox scheduler.
         validateAsyncBoundaryType(result, true, "CPU task result");
 
         Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
