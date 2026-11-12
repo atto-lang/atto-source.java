@@ -64,7 +64,7 @@ final class AttoRedisNativeActorMultiBatchPerfTest {
         return out.toByteArray();
     }
 
-    /** One bounded window, exactly eight mutations/reads, no key overlap. */
+    /** One bounded window, 16 mutation/read commands, no key overlap. */
     private static byte[][] window(int clientId, int index) throws Exception {
         byte[] key = {(byte) clientId, 0, (byte) 0xff, 13, 10};
         byte[] value = new byte[64];
@@ -138,7 +138,7 @@ final class AttoRedisNativeActorMultiBatchPerfTest {
             assertTrue(startNanos.get() > 0 && ended > startNanos.get());
             long requests = (long) clients.length * MEASURED_WINDOWS * REQUESTS_PER_WINDOW;
             double rate = requests / ((ended - startNanos.get()) * 1e-9);
-            System.out.printf("ATTO_MULTI_PIPELINE label=%s clients=%d depth=8 "
+            System.out.printf("ATTO_MULTI_PIPELINE label=%s clients=%d depth=16 "
                             + "warm_per_client=%d measured_per_client=%d rate=%.1f "
                             + "oracle=PASS profiler=OFF%n",
                     label, clients.length, WARM_WINDOWS * REQUESTS_PER_WINDOW,

@@ -225,4 +225,63 @@ final class AttoRedisNativeActorBatchEightGuestTest {
                 () -> OresCompiler.parseAndTypeCheck(invalid),
                 "mailbox must never contain stack borrows or unleased pointers");
     }
+    @Test
+    @Timeout(value = 150, unit = TimeUnit.SECONDS)
+    void peerTcpResetRetiresOnlyItsOwnAffineSession() throws Exception {
+        String fixture = "/atto/redis-native-nio/redis_native_multiclient_actor_batches_8.atto";
+        String program;
+        try (InputStream stream = getClass().getResourceAsStream(fixture)) {
+            assertNotNull(stream);
+            program = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        String bind = "network.listen_async(\"127.0.0.1\", 16399)";
+        int port = freePort();
+        assertTrue(program.contains(bind));
+        program = program.replace(bind,
+                "network.listen_async(\"127.0.0.1\", " + port + ")");
+        OresCompiler.parseAndTypeCheck(program);
+        final String guestCode = program;
+        try (ExecutorService guestExecutor = Executors.newSingleThreadExecutor()) {
+            Future<?> guest = guestExecutor.submit(() -> {
+                try (Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .arguments(OresLanguage.ID,
+                                new String[]{"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
+                        .build()) {
+                    context.eval(Source.newBuilder(OresLanguage.ID, guestCode, fixture)
+                            .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failed) {
+                    throw new RuntimeException(failed);
+                }
+            });
+            Socket[] sessions = new Socket[8];
+            try {
+                for (int i = 0; i < sessions.length; i++) {
+                    sessions[i] = connect(guest, port);
+                }
+                byte[] key = {42, 0, (byte) 0xff, 13, 10};
+                byte[] value = {0, 7, 13, 10, (byte) 0xfe};
+                roundTrip(sessions[0], resp(ascii("SET"), key, value),
+                        ascii("+OK\r\n"));
+                // Abort client zero while seven independently owned sockets
+                // remain alive. Its lease must retire in finally, once.
+                sessions[0].setSoLinger(true, 0);
+                sessions[0].close();
+                for (int i = 1; i < sessions.length; i++) {
+                    roundTrip(sessions[i], resp(ascii("GET"), key), bulk(value));
+                }
+                roundTrip(sessions[7], resp(ascii("DEL"), key), ascii(":1\r\n"));
+                roundTrip(sessions[1], resp(ascii("GET"), key), ascii("$-1\r\n"));
+                for (int i = 1; i < sessions.length; i++) {
+                    roundTrip(sessions[i], resp(ascii("QUIT")), ascii("+OK\r\n"));
+                    assertEquals(-1, sessions[i].getInputStream().read());
+                }
+                guest.get(20, TimeUnit.SECONDS);
+                System.out.println("ATTO_NATIVE_8_CLIENTS_ACTOR_BATCH_RST_ISOLATION=PASS");
+            } finally {
+                for (Socket session : sessions) if (session != null) session.close();
+            }
+        }
+    }
+
 }
