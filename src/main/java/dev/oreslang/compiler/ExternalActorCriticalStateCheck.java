@@ -68,7 +68,8 @@ public final class ExternalActorCriticalStateCheck {
                 }
                 var checkedLoan = verifyCall(method, call, selector,
                         descriptor, proof.actorUnit(), proof.stateUnit(), required.methodUnit());
-                if (checked.putIfAbsent(selector, checkedLoan) != null) {
+                if (checkedLoan != null
+                        && checked.putIfAbsent(selector, checkedLoan) != null) {
                     throw new IllegalArgumentException(
                             "ACTOR_STATE_LOAN_DUPLICATE_METHOD: " + selector);
                 }
