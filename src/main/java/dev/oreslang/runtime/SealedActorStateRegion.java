@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.Ast;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -45,6 +46,38 @@ final class SealedActorStateRegion
 
     // Values must remain region-owned; never expose this mutable array.
     private final Object[] values;
+
+    /**
+     * Translate only a compiler-owned actor declaration's distinct sealed
+     * schema into runtime scalar slots. No ordinary ClassDecl.fields layout
+     * is allowed. This does not turn off TypeChecker admission: the checked
+     * critical HIR/MIR access path is still unimplemented.
+     */
+    static SealedActorStateRegion allocateFromSealedDeclaration(Ast.ClassDecl declaration) {
+        Objects.requireNonNull(declaration, "sealed actor declaration");
+        if (declaration.actorKind() == Ast.ActorKind.NONE
+                || !declaration.fields().isEmpty()
+                || declaration.sealedStateFields().isEmpty()
+                || declaration.sealedStateFields().size() > 64) {
+            throw new IllegalArgumentException("not a valid compiler-sealed actor schema");
+        }
+        Map<String, Object> initialized = new LinkedHashMap<>();
+        for (Ast.ProtectedStateField field : declaration.sealedStateFields()) {
+            if (!(field.initializer() instanceof Ast.LiteralExpr literal)) {
+                throw new IllegalArgumentException("sealed initializer must be literal");
+            }
+            Object value = literal.value();
+            boolean typed = (field.type().name().equals("int") && value instanceof Long)
+                    || (field.type().name().equals("bool") && value instanceof Boolean);
+            if (!typed || !field.type().arguments().isEmpty()) {
+                throw new IllegalArgumentException("sealed schema initializer type mismatch");
+            }
+            if (initialized.putIfAbsent(field.name(), value) != null) {
+                throw new IllegalArgumentException("duplicate compiler-sealed state field");
+            }
+        }
+        return allocate(initialized);
+    }
 
     static SealedActorStateRegion allocate(Map<String, ?> literalInitializers) {
         ActorRuntime current = ActorRuntime.currentActorRuntime();
