@@ -58,7 +58,10 @@ final class SupervisorStorageActorIngressTest {
                         gate::activate, "new durable epoch cannot overlap executing old ActorCell");
                 assertFalse(gate.physicallyQuiescent());
                 release.countDown();
-                var second = gate.activate(); // may still be unwinding: retry below if needed
+                for (int i = 0; i < 100 && !gate.physicallyQuiescent(); i++)
+                    Thread.sleep(10);
+                assertTrue(gate.physicallyQuiescent(), "old ActorCell must retire its carrier");
+                var second = gate.activate();
                 assertEquals(2L, second.generation());
                 assertEquals(0, oldUnexpected.get(),
                         "revoked queued ordinary actor mail must not mutate state");
