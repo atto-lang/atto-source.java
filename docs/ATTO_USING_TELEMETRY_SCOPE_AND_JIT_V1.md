@@ -76,8 +76,8 @@ ceilings, independent domain policies, sealed profiles and no-op updates.
 These are **host policy unit tests**, not a full Truffle optimizing-JIT or real
 compiler instrumentation proof. The gate is now **wired to the checked callable dispatcher**, which records
 numeric call admission durations in a fixed-size, per-isolate
-`AutoTraceRecorder`. It does **not** yet trace async task completion,
-emit OTel spans, or provide a trusted, externally accessible runtime
+`AutoTraceRecorder`. It does **not** yet trace async *source function completion*,
+export OTLP, or provide a trusted, externally accessible runtime
 reconfiguration service. The numeric recording gate is controlled by trusted
 `--ores-telemetry=calls` at startup. An explicitly requested
 `--ores-telemetry-receipt=stderr` emits a **cold shutdown-only diagnostic
@@ -134,7 +134,7 @@ and [shared v1 instrumentation ABI](https://github.com/ores-truffle-oreslang/ore
   Propagation is disabled by default and excluded for untrusted recipients.
   This has not been proven on the exact Java compiler branch.
 - `OutboundHttpRequest.request()` captures the parent at guest admission,
-  after the existing network permission check, and adds a new valid child
+  after the existing network permission check, and adds a new valid child (or parentless root)
   `traceparent` HTTP header to an immutable list handed to the physical I/O
   worker. It rejects duplicate user-supplied tracing headers and respects the
   established 100-header/32768-byte request limits.
@@ -143,10 +143,23 @@ and [shared v1 instrumentation ABI](https://github.com/ores-truffle-oreslang/ore
   context on the internal exchange state, and `Handler.dispatch` installs
   it around actor-mailbox admission. The sender's previous logical context
   is restored on both success and failure. Duplicate/malformed traceparent
-  is never adopted as the parent. This does **not** yet create/export a
-  semantic HTTP SERVER span.
-- **Still missing:** HTTP SERVER **span recording**, semantic CLIENT/ACTOR spans,
-  OTLP/HTTP export from a bounded native Atto telemetry actor, safe
+  is never adopted as the parent. A sampled semantic HTTP SERVER span
+  now starts at admission and completes at physical exchange retirement.
+  This does **not** yet export an OTLP span.
+- `SemanticTraceBuffer` now stages sampled SERVER, actor dispatch-turn
+  INTERNAL, and outbound CLIENT spans with explicit W3C parents, numeric
+  names, status and Unix nanosecond timestamps. Completion is idempotent,
+  and the client span ends only when physical asynchronous I/O settles.
+  This is a bounded, nonblocking **host staging** data structure, not an
+  OTLP exporter. A suspended Atto source Task's full lifecycle still needs
+  an independently correct completion span.
+- `stdlib/telemetry.atto` now contains a native `CompletedSpan` value
+  and an actor-owned bounded `SpanBatch` with overflow accounting. The
+  guest batch test is authored but NOT_EXECUTED. This class is **not yet a
+  collector actor**; no runtime→Atto handoff or OTLP export exists.
+- **Still missing:** native Atto collector actor, the source-owned
+  permission-checked OTLP/HTTP POST exporter and runtime-to-guest span
+  delivery/draining, safe
   `tracestate` handling, actor-tenant trust policy, compiler-generated full
   function body probes, and actual Java/LLVM executed guest trace receipts.
   The Java HTTP frontend still relies on a host transport rather than the
@@ -160,3 +173,39 @@ Tests authored on this branch:
 `NativeHttpInboundTraceContextTest`, and
 `HostOnlyTracePathCompositionTest` (host-only W3C → real JVM actor mailbox →
 outbound header). None has an exact-head nonzero-step passing CI receipt. **Do not present a source-level match as runtime pass.**
+
+
+## Local exact-blob smoke receipts (not full backend CI)
+
+- Exact GitHub blob `38315cf30146d587fff795aeb5538793f8a765a1`
+  (`TraceParent.java`) compiled with local `javac --release 21` and
+  passed a standalone 2,000-root/child W3C parse/format/random-ID smoke.
+  **This is not JDK 25/Graal compiled guest evidence.**
+- Exact Java blob SHAs `410c17cc51b140a6835b344460d191617b0f4c86`
+  (`TraceProbeEpoch`), `b9b5c25bd169614fb4b4d84d5ab4a148b456aac1`
+  (`AutoTraceRecorder`), and
+  `6f5a391bc6a4060a6421648274add60d8f6e4673`
+  (`SemanticTraceBuffer`) compiled locally using JDK 21 and **minimal
+  Truffle API stubs** (actual deopt/reopt NOT tested). A standalone
+  concurrent recording smoke passed: one SERVER→ACTOR→CLIENT parent chain,
+  800 concurrent observations, capacity 64, exactly 736 dropped.
+- `OutboundHttpAutoTraceGuestTest` now proposes a real Atto guest and
+  loopback HTTP socket oracle for OFF vs ON root-header propagation. It has
+  NOT_EXECUTED.
+- C++ W3C header + native test at exact blob SHAs
+  `643e7e3a5ac826a516ae8cbbee0f7f19274163dd` and
+  `f6c1e612e9493ceb1b99b50681e9e05783da5c85`
+  passed standalone GCC 14 and Clang 17 C++17 with ASan/UBSan. These are
+  host-only, **not LLVM-compiled Atto source**.
+
+## Exporter blocking dependency
+
+The existing guest `http.request` / pinned transport supports GET and
+HEAD only; it cannot send an OTLP/HTTP `POST /v1/traces` JSON body.
+Do not add a Java-only synchronous exporter on the actor carrier or
+mislabel the source-free Node receiver as an Atto exporter. The next
+trusted cross-backend transport slice must add bounded asynchronous request
+body support, explicit NET capability and URL/payload admission, cancellation
+and physical retirement receipts, and actual test-network evidence.
+Then a native `.atto` actor can own `SpanBatch`, serialize bounded OTLP
+batches and await export without blocking the application actor.
