@@ -26,7 +26,7 @@ or near-zero-GC solution.
   require the write view; read-only views cannot write.
 - Views are lexical. An escaped view, stale turn, wrong actor, duplicate
   critical acquisition, wrong type or unknown field fails closed. Async
-  Futures returned by a critical callback are rejected. Compiler effect
+  Futures/CompletionStages returned by a critical callback are rejected. Compiler effect
   analysis must still forbid any suspend or alias escape **before** runtime.
 - STOP revokes new admissions and active view authority outside the lifecycle
   lock; existing lexical loans physically retain their backing scalars until
@@ -39,16 +39,18 @@ or near-zero-GC solution.
 
 ## Executable tests and their evidence boundary
 
-`SealedActorStateRegionTest` contains 5 JVM tests, including a real
+`SealedActorStateRegionTest` contains 6 JVM tests, including a real
 `ActorRuntime.spawnCodeActor` dispatch path with a **host-provided test
 executor** bound to a parsed immutable code image and allocating its state
-from the same actor declaration's sealed AST schema. The test checks persistent
-state through two mailbox turns and automatic retirement on actor
-finalization. Its Java test executor is **not compiled Atto guest code**.
+from the same actor declaration's sealed AST schema. The tests check persistent
+state through two mailbox turns, a concurrent actor STOP while a sealed
+loan is active, and automatic retirement only after physical actor
+finalization. Behavior-owned host test regions must be sealed in a turn
+and reclaimed after task quiescence, not directly from a message handler. Its Java test executor is **not compiled Atto guest code**.
 
 The exact-head workflow also runs `SealedActorStateAdmissionTest` (6 tests)
 and `ActorStateLoansTest` (7 tests) and rejects skipped/missing Surefire
-reports. It must run all **18** tests with zero errors, failures and skips
+reports. It must run all **19** tests with zero errors, failures and skips
 before calling this stage tested. A GitHub job with empty/null steps is only
 runner admission failure.
 
