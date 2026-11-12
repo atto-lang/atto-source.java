@@ -106,6 +106,35 @@ final class DeclaredActorNativeGuestV1Test {
     }
 
     @Test
+    void allCanonicalUseNamespaceHeadersExecuteTheManifestLinkedAttoActor() throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        for (String file : new String[] {
+                "contract.atto", "actor.atto", "method.atto", "start.atto",
+                "receive.atto", "main.atto" }) {
+            Path source = root.resolve("src/counter/" + file);
+            String contents = Files.readString(source);
+            assertTrue(contents.startsWith("namespace counter;")
+                    || contents.startsWith("use namespace counter;"), file);
+            Files.writeString(source,
+                    contents.replace("namespace counter;", "use namespace counter;"));
+        }
+        Ast.Program verified = packageBuild.compileStatelessActorGuestV1();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String sourceText = "manifest-owned all-use-namespace actor guest";
+        String codeUnit = "declared-actor-use-namespace-v1.atto";
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnit)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            try (var lease = OresLanguage.openPrecheckedProgram(
+                    codeUnit, sourceText, verified)) {
+                context.eval(source);
+            }
+        }
+        assertEquals("1|7", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void attachedStateCannotBeRecastAsLegacyActorFields() throws Exception {
         PackageNamespaceBuild packageBuild = build();
         write("src/counter/state.atto", NS
