@@ -125,6 +125,64 @@ final class SameNamespaceDeclaredActorPackageTest {
     }
 
     @Test
+    void contextualUseNamespaceAndBareNamespaceProduceTheSameAstIdentity() {
+        var bare = Parser.parse(NAMESPACE
+                + "declare pub actor Counter;");
+        var contextual = Parser.parse("use namespace foo;\n"
+                + "declare pub actor Counter;");
+        assertEquals("foo", bare.namespace());
+        assertEquals(bare.namespace(), contextual.namespace());
+        assertEquals(bare.modules(), contextual.modules(),
+                "namespace spelling must not affect actor AST identity");
+        assertNotNull(Parser.parse(NAMESPACE
+                + "pub fnc use(): int { return 1; }"),
+                "contextual 'use' must not reserve an unrelated identifier");
+    }
+
+    @Test
+    void differentNamespaceHeaderSpellingsLinkAcrossRealFiles()
+            throws IOException {
+        baseSources();
+        write(ACTOR_PATH, ACTOR.replaceFirst("namespace foo;",
+                "use namespace foo;"));
+        write(GET_COUNT_PATH, GET_COUNT.replaceFirst("namespace foo;",
+                "use namespace foo;"));
+        write(STATE_PATH, STATE.replaceFirst("namespace foo;",
+                "use namespace foo;"));
+        var result = audit();
+        assertEquals(1, result.descriptors().size());
+        var descriptor = result.descriptors().get(key("foo", "Counter"));
+        assertNotNull(descriptor);
+        assertEquals(ACTOR_PATH, descriptor.actorUnit());
+        assertEquals(GET_COUNT_PATH, result.actorMethods().method(
+                new ActorMethodIndex.MethodKey(key("foo", "Counter"), "get_count", 0))
+                .declaringUnit());
+        assertEquals(2, descriptor.sealedFields().size());
+    }
+
+    @Test
+    void useNamespaceCannotBorrowAnActorFromAnotherNamespace()
+            throws IOException {
+        baseSources();
+        write(INCREMENT_PATH, INCREMENT.replaceFirst("namespace foo;",
+                "use namespace other;"));
+        assertRejected(assertThrows(IllegalArgumentException.class, this::audit),
+                "has no nominal actor");
+    }
+
+    @Test
+    void useNamespacePreservesFlatNameAndSemicolonGrammar() {
+        var dotted = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("use namespace foo.bar;\n"
+                        + "declare pub actor Counter;"));
+        assertRejected(dotted, "namespaces cannot be nested or dotted");
+        var missingSemicolon = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("use namespace foo\n"
+                        + "declare pub actor Counter;"));
+        assertRejected(missingSemicolon, "namespace declaration must end with");
+    }
+
+    @Test
     void sevenPhysicalFilesShareOneNominalActorWithoutSourceCoLocation()
             throws IOException {
         baseSources();
