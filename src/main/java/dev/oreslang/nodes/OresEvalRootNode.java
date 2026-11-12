@@ -8043,17 +8043,29 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object member(Object receiver, String name, Env env) {
             if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
-                if (!name.equals("attribute")) {
-                    throw new IllegalArgumentException(
-                            "telemetry span supports only attribute(key, scalar)");
-                }
-                return (Invokable) args -> {
-                    if (args.size() != 2 || !(args.get(0) instanceof String key)) {
-                        throw new IllegalArgumentException(
-                                "span.attribute requires (string key, scalar value)");
-                    }
-                    scope.attribute(key, args.get(1));
-                    return null;
+                return switch (name) {
+                    case "attribute" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.get(0) instanceof String key)) {
+                            throw new IllegalArgumentException(
+                                    "span.attribute requires (string key, scalar value)");
+                        }
+                        scope.attribute(key, args.get(1));
+                        return null;
+                    };
+                    case "trace_id" -> (Invokable) args -> {
+                        requireZero(args, "span.trace_id");
+                        return scope.traceId();
+                    };
+                    case "span_id" -> (Invokable) args -> {
+                        requireZero(args, "span.span_id");
+                        return scope.spanId();
+                    };
+                    case "recording" -> (Invokable) args -> {
+                        requireZero(args, "span.recording");
+                        return scope.recording();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown telemetry span member " + name);
                 };
             }
             if (receiver instanceof String text) {
