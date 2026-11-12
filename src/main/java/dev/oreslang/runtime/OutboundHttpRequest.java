@@ -507,9 +507,19 @@ public final class OutboundHttpRequest {
         // Read the immutable context on the *guest admission* carrier, not
         // the later physical-I/O worker. No userland tracing call is required.
         // The same immutable header list is then carried through async I/O.
+        TraceParent activeParent =
+                context.autoTrace().enabled() ? TaskContext.traceParent() : null;
         final List<Map.Entry<String, String>> headers =
-                withTraceparent(providedHeaders,
-                        context.autoTrace().enabled() ? TaskContext.traceParent() : null);
+                withTraceparent(providedHeaders, activeParent);
+        final SemanticTraceBuffer.Scope clientSpan = activeParent == null
+                ? null : context.semanticTrace().begin(
+                        TraceParent.parse(headers.getLast().getValue()).orElseThrow(),
+                        activeParent.spanId(), SemanticTraceBuffer.HTTP_CLIENT,
+                        SemanticTraceBuffer.Kind.CLIENT);
+        // Allocated only with sampling and trusted context; otherwise the
+        // CLIENT path incurs no new physical-operation bookkeeping.
+        final java.util.concurrent.atomic.AtomicInteger observedStatus =
+                clientSpan == null ? null : new java.util.concurrent.atomic.AtomicInteger();
 
         Owner owner = Owner.capture(context);
         Revocation revocation = new Revocation(context);
@@ -535,11 +545,17 @@ public final class OutboundHttpRequest {
                             owner,
                             revocation,
                             exposed,
-                            lifetime);
+                            lifetime,
+                            observedStatus);
                     return null;
                 });
 
         physical.whenCompleteRuntime((ignored, failure) -> {
+            // An async CLIENT span follows actual physical network operation
+            // retirement, not the Future returned at source admission.
+            SemanticTraceBuffer.finish(clientSpan,
+                    observedStatus == null ? 0 : observedStatus.get(),
+                    failure != null);
             if (failure == null) {
                 if (!lifetime.isDone()) lifetime.completeFromRuntime(null);
                 return;
@@ -567,7 +583,8 @@ public final class OutboundHttpRequest {
             Owner owner,
             Revocation revocation,
             OresFuture<Response> exposed,
-            OresFuture<Void> lifetime) throws IOException {
+            OresFuture<Void> lifetime,
+            java.util.concurrent.atomic.AtomicInteger observedStatus) throws IOException {
         if (revocation.requested()) {
             throw new CancellationException(
                     "http.request revoked before native acquisition");
@@ -585,6 +602,7 @@ public final class OutboundHttpRequest {
         try (transport) {
             PinnedHttpTransport.Response upstream =
                     transport.request(target, method, headers);
+            if (observedStatus != null) observedStatus.set(upstream.status());
             try (upstream) {
                 if (revocation.requested()) {
                     throw new CancellationException(
