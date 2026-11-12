@@ -2369,10 +2369,7 @@ public final class ActorRuntime implements AutoCloseable {
      * No independent scheduler or supervisor control authority is created.
      */
     public <T> TaskHandle<T> startTrackedActorTask(OresScheduler.Task<T> task) {
-        if (currentActor.get() == null || !currentThreadOwnsActorExecutionLease()) {
-            throw new IllegalStateException(
-                    "tracked actor task requires an admitted actor carrier");
-        }
+        requireCurrentActorTaskAdmission();
         // A nested source Task must be physically joined by its parent even
         // if the parent's result Future settles first. The parent token is
         // available only within the matching tracked Task execution domain;
@@ -2381,15 +2378,33 @@ public final class ActorRuntime implements AutoCloseable {
                 task, TaskHandle.currentParentForNestedActorTask(), this::startActorTask);
     }
 
+    /**
+     * A physical actor lease alone is not sufficient authority to mint an
+     * actor Task. An unrelated scheduler may execute a synchronous nested
+     * callback while the actor carrier's ThreadLocal context is still set.
+     * Such a task must not inherit a foreign cancellation domain or consume
+     * actor mailbox/source quota. Ordinary actor receives have no current
+     * OresScheduler; resumed actor Tasks have only this cell's facade.
+     */
+    private ActorCell<?> requireCurrentActorTaskAdmission() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || !currentThreadOwnsActorExecutionLease()) {
+            throw new IllegalStateException(
+                    "source actor task requires an admitted actor carrier");
+        }
+        OresScheduler executingScheduler = OresScheduler.current();
+        if (executingScheduler != null && executingScheduler != cell.sourceScheduler()) {
+            throw new SecurityException(
+                    "actor Task may not be launched from a foreign scheduler domain");
+        }
+        return cell;
+    }
+
     private <T> OresFuture<T> startActorTask(
             OresScheduler.Task<T> task, Runnable onQuiescent) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
-        ActorCell<?> cell = currentActor.get();
-        if (cell == null) {
-            throw new IllegalStateException(
-                    "source actor task requires an executing actor turn");
-        }
+        ActorCell<?> cell = requireCurrentActorTaskAdmission();
         if (cell.kind != ActorKind.UNTRUSTED) {
             return cell.sourceScheduler().start(task, onQuiescent);
         }
