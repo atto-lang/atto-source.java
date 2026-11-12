@@ -184,9 +184,10 @@ class NativeHttpTest {
                 pub async routine main(): void {
                   val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
                   stdio.println(server.port);
+                  val handler = http.handler("Worker");
                   val request = await server.accept();
                   val completed = request.completion;
-                  http.handler("Worker").dispatch(rt mut borrow request);
+                  handler.dispatch(rt mut borrow request);
                   await completed;
                   await server.shutdown(0);
                   stdio.println("unpooled-drain-complete");
