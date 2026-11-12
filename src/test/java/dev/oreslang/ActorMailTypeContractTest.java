@@ -227,4 +227,23 @@ final class ActorMailTypeContractTest {
         }
     }
 
+
+    @Test
+    void builtinMailboxMetadataIsCopyButMutableNonCopyPayloadAliasesRemainRejected() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<List<int>> mail): void {
+                            val List<int> leaked_mutable_alias = mail.value;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("mutable projected alias")
+                        || failure.getMessage().contains("actor-boundary")
+                        || failure.getMessage().contains("sendable"),
+                failure.getMessage());
+    }
+
 }
