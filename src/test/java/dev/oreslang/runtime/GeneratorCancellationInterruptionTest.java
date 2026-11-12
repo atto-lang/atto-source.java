@@ -178,9 +178,20 @@ public class GeneratorCancellationInterruptionTest {
                     "pull turn must finish engine.next before cancellation");
             assertFalse(pull.isDone(),
                     "backing turn is held after yield and before Future settlement");
+            var beforeSettlement = generator.nextStep();
+            ExecutionException premature = assertThrows(ExecutionException.class,
+                    () -> beforeSettlement.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, premature.getCause(),
+                    "a yielded value is not claimed until its Future settles");
+
             assertTrue(pull.cancel(true));
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> pull.get(3, TimeUnit.SECONDS));
+            var beforePhysicalExit = generator.nextStep();
+            ExecutionException overlapping = assertThrows(ExecutionException.class,
+                    () -> beforePhysicalExit.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, overlapping.getCause(),
+                    "cancelling an admitted pull must retain its gate through physical exit");
 
             OresFuture<Void> close = generator.closeAsync();
             assertNull(close.get(3, TimeUnit.SECONDS));
