@@ -166,6 +166,10 @@ final class GeneratorRuntimeTest {
             }
             closing.get(2, TimeUnit.SECONDS);
             closer.join();
+            // The pull admitted while the producer physically retired still
+            // owns the single-flight ticket. A fresh pull cannot skip it just
+            // because close() has completed; await its Future settlement first.
+            assertTrue(pull.get(2, TimeUnit.SECONDS).done());
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         } finally {
             // Release before closing even if the first pull/assertion fails.
