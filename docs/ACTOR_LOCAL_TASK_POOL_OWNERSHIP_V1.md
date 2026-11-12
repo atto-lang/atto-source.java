@@ -39,10 +39,12 @@ mailbox-backed `sourceScheduler()`. Ordinary actor receive turns can admit
 actor roots with no current Task scheduler. An executing actor Task can admit
 children only through its exact owning scheduler.
 
-`ActorForeignSchedulerAdmissionTest` uses a foreign inline scheduler nested
-within a real SHARED actor physical carrier and asserts that both admission
-entry points reject it without invoking CONTROL. Passing source-level code
-review is not a substitute for executed JVM tests.
+`ActorForeignSchedulerAdmissionTest` uses real source-code actor fixtures
+in PRIVATE, SHARED and UNTRUSTED modes. It nests a foreign inline scheduler
+on each actor's physical carrier and asserts that both actor-task admission
+paths reject it, do not initialize the actor-owned scheduler, preserve
+legitimate actor-root task admission, and never invoke supervisor CONTROL.
+Passing source-level code review is not a substitute for executed JVM tests.
 
 ## Nested task ownership and physical lifetime
 
