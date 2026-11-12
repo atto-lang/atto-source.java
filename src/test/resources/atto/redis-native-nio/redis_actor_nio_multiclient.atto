@@ -55,7 +55,7 @@ pub async routine main(): void {
   val worker = spawn FramedNioSharedKvActor();
   await worker.get_ready();
   val listener = await network.listen_async("127.0.0.1", 16401);
-  let Array<Channel<Tuple[string,string]>> reply_channels = new Array<Channel<Tuple[string,string]>>();
+  val Array<Channel<Tuple[string,string]>> reply_channels = new Array<Channel<Tuple[string,string]>>();
   for (let int i = 0; i < client_count; i = i + 1) {
     reply_channels.add(Channel.new<Tuple[string,string]>(32));
   }
@@ -72,7 +72,7 @@ pub async routine main(): void {
     }
   };
 
-  let Array<Future<void>> sessions = new Array<Future<void>>();
+  val Array<Future<void>> sessions = new Array<Future<void>>();
   for (let int i = 0; i < client_count; i = i + 1) {
     val socket = await listener.accept_async();
     const int client_id = i;
