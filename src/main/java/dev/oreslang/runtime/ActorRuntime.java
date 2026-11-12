@@ -2392,10 +2392,20 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an admitted actor carrier");
         }
-        OresScheduler executingScheduler = OresScheduler.current();
-        if (executingScheduler != null && executingScheduler != cell.sourceScheduler()) {
-            throw new SecurityException(
-                    "actor Task may not be launched from a foreign scheduler domain");
+        // STOP also seals admission from a previously initialized scheduler.
+        // A cleanup-only SourceTask turn still has an actor carrier/lease, but
+        // must never mint fresh guest Tasks after STOP took its task snapshot.
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.forceKillFenced
+                    || closed.get()) {
+                throw terminated(cell.ref);
+            }
+            OresScheduler executingScheduler = OresScheduler.current();
+            if (executingScheduler != null
+                    && executingScheduler != cell.sourceScheduler()) {
+                throw new SecurityException(
+                        "actor Task may not be launched from a foreign scheduler domain");
+            }
         }
         return cell;
     }
@@ -2406,7 +2416,16 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(onQuiescent, "onQuiescent");
         ActorCell<?> cell = requireCurrentActorTaskAdmission();
         if (cell.kind != ActorKind.UNTRUSTED) {
-            return cell.sourceScheduler().start(task, onQuiescent);
+            // Linearize scheduler admission with STOP's lifecycle monitor.
+            // A mere pre-check is insufficient: STOP could snapshot the live
+            // scheduler before a concurrent start() registers its Task.
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || cell.forceKillFenced
+                        || closed.get()) {
+                    throw terminated(cell.ref);
+                }
+                return cell.sourceScheduler().start(task, onQuiescent);
+            }
         }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
@@ -2527,20 +2546,30 @@ public final class ActorRuntime implements AutoCloseable {
                         : quotaTurn;
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(
-                    quotaChecked,
-                    () -> {
-                        try {
-                            retireOnce.run();
-                        } finally {
-                            onQuiescent.run();
-                        }
-                    },
-                    quota.remainingWallNanos(),
-                    new UntrustedActorQuotaExceededException(
-                            UntrustedActorQuotaExceededException.Resource.WALL_TIME,
-                            "untrusted logical task exceeded wall-time budget while suspended"),
-                    notificationsDrained);
+            // The untrusted quota slots above are reservations, not Task
+            // admission receipts. STOP may win after reservation. Only the
+            // actual scheduler registration under the same lifecycle monitor
+            // makes the Task eligible for STOP's cancellation snapshot.
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || cell.forceKillFenced
+                        || closed.get()) {
+                    throw terminated(cell.ref);
+                }
+                future = cell.sourceScheduler().startWithWallDeadline(
+                        quotaChecked,
+                        () -> {
+                            try {
+                                retireOnce.run();
+                            } finally {
+                                onQuiescent.run();
+                            }
+                        },
+                        quota.remainingWallNanos(),
+                        new UntrustedActorQuotaExceededException(
+                                UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                                "untrusted logical task exceeded wall-time budget while suspended"),
+                        notificationsDrained);
+            }
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this
