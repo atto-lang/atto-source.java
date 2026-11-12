@@ -2562,7 +2562,7 @@ public final class Parser {
                     && !call.typeArgumentsPresent() && call.arguments().size() <= 2;
             if (!borrowed && !telemetrySpan) {
                 throw error(previous(),
-                        "using scope requires resource.borrow() with no arguments or telemetry.span(...)");
+                        "using borrowed scope requires a zero-argument resource.borrow() call, or telemetry.span(...) with at most two arguments");
             }
             consume(AS, borrowed
                     ? "using borrowed scope requires 'as <view>'"
