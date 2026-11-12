@@ -5135,7 +5135,29 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                // Bare 'mut s' changes the local parameter binding, whereas
+                // 'borrow mut s' is a fixed, exclusive mutable-borrow view.
+                // Both shorthand forms need a contextual callable signature to
+                // infer the referent type; typed forms remain unambiguous.
+                if (match(MUT)) {
+                    String name = consume(IDENT, "expected mutable lambda parameter name").lexeme();
+                    if (!check(COMMA) && !check(PIPE)) {
+                        throw error(peek(), "mutable shorthand must be '|mut name|' or '|mut name, ...|'");
+                    }
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, true));
+                } else if (check(IDENT) && peek().lexeme().equals("borrow")
+                        && checkNext(MUT)
+                        && current + 3 < tokens.size()
+                        && (tokens.get(current + 3).type() == COMMA
+                            || (tokens.get(current + 3).type() == PIPE
+                                && current + 4 < tokens.size()
+                                && tokens.get(current + 4).type() == ARROW))) {
+                    advance(); // contextual 'borrow'
+                    advance(); // 'mut' belongs to the referent, not the binding
+                    String name = consume(IDENT, "expected borrowed lambda parameter name").lexeme();
+                    params.add(new Ast.Param(
+                            Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), true), name, false, false));
+                } else if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else if (check(IDENT) && checkNext(COLON)) {
