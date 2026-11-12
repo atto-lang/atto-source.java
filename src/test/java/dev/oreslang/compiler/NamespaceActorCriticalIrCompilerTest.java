@@ -66,6 +66,29 @@ final class NamespaceActorCriticalIrCompilerTest {
     }
 
     @Test
+    void verifiedDescriptorBindsCodeImageActorNameAndImmutableCriticalLayout() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore()) {
+            var first = compile(store, source(), "ir/descriptor-a.atto");
+            var other = compile(store, source(), "ir/descriptor-b.atto");
+            var a = NamespaceActorCriticalIrCompiler.descriptor(first);
+            var b = NamespaceActorCriticalIrCompiler.descriptor(other);
+            assertSame(first.codeImage(), a.codeImage());
+            assertNotSame(a.codeImage(), b.codeImage(),
+                    "equal source bytes in separate code units are not the same executable identity");
+            assertEquals("foo", a.namespace());
+            assertEquals("Probe", a.actorName());
+            assertEquals(2, a.scalarFields().size());
+            assertTrue(a.scalarFields().containsKey("received"));
+            assertTrue(a.scalarFields().containsKey("budget"));
+            assertEquals(java.util.Set.of("add", "debit"), a.criticalMethods());
+            assertThrows(UnsupportedOperationException.class,
+                    () -> a.scalarFields().put("forged", 123));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> a.criticalMethods().add("direct_receive"));
+        }
+    }
+
+    @Test
     void immutableStateReceiptsProveRealFieldsAndSiblingIsolation() throws Exception {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
