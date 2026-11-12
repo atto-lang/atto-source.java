@@ -203,7 +203,19 @@ final class AttoRedisNioThroughputTest {
     }
 
     private static void verifyFramedNioGuest(String filename) throws Exception {
+        verifyFramedNioGuest(filename, 16);
+    }
+
+    private static void verifyFramedNioGuest(String filename, int batchSize) throws Exception {
         String code = resource(filename);
+        if ("redis_actor_nio_batch.atto".equals(filename)) {
+            assertTrue(batchSize == 1 || batchSize == 4
+                    || batchSize == 16 || batchSize == 64);
+            String original = "socket.read_resp2_binary_batch_async(16)";
+            assertTrue(code.contains(original), "batch fixture must contain exact selector");
+            code = code.replace(original,
+                    "socket.read_resp2_binary_batch_async(" + batchSize + ")");
+        }
         int port = freePort();
         String bind = "network.listen_async(\"127.0.0.1\", 16399)";
         assertTrue(code.contains(bind));
@@ -278,6 +290,21 @@ final class AttoRedisNioThroughputTest {
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     void ownedBytesNioActorPreservesBinaryEmptyNilAndPipelining() throws Exception {
         verifyFramedNioGuest("redis_actor_nio_owned_bytes.atto");
+    }
+
+    /**
+     * Real compiled guest, one TCP socket, ten pipelined binary-safe commands.
+     * Mixed PING, GET, SET, DEL and QUIT must preserve full reply ordering.
+     * The batch reader must also make progress when fewer than max frames
+     * are available; otherwise this test hangs on the final lone QUIT.
+     */
+    @Test
+    @Timeout(value = 240, unit = TimeUnit.SECONDS)
+    void bufferedBinaryBatchesPreserveOrderingForOneFourSixteenSixtyFour()
+            throws Exception {
+        for (int batch : new int[] {1, 4, 16, 64}) {
+            verifyFramedNioGuest("redis_actor_nio_batch.atto", batch);
+        }
     }
 
     @Test
