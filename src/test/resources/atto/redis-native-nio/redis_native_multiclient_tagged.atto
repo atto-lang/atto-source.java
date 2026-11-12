@@ -124,7 +124,7 @@ pub async routine main(): void {
       Channel.new<Tuple[int, string, Bytes]>(1);
   val Channel<Tuple[int, string, Bytes]> reply_8 =
       Channel.new<Tuple[int, string, Bytes]>(1);
-  const first = await listener.accept_async();
+  val NioConnection first = await listener.accept_async();
   task scope {
     let Future<void> broker = task {
       let int retired = 0;
@@ -196,43 +196,43 @@ pub async routine main(): void {
       return;
     };
     // Client 1 remains independently scheduled while this accept suspends.
-    const socket_2 = await listener.accept_async();
+    val NioConnection socket_2 = await listener.accept_async();
     let Future<void> client_2 = task {
       await serve_tagged_session(socket_2, 2, requests, reply_2);
       return;
     };
     // Client 2 remains independently scheduled while this accept suspends.
-    const socket_3 = await listener.accept_async();
+    val NioConnection socket_3 = await listener.accept_async();
     let Future<void> client_3 = task {
       await serve_tagged_session(socket_3, 3, requests, reply_3);
       return;
     };
     // Client 3 remains independently scheduled while this accept suspends.
-    const socket_4 = await listener.accept_async();
+    val NioConnection socket_4 = await listener.accept_async();
     let Future<void> client_4 = task {
       await serve_tagged_session(socket_4, 4, requests, reply_4);
       return;
     };
     // Client 4 remains independently scheduled while this accept suspends.
-    const socket_5 = await listener.accept_async();
+    val NioConnection socket_5 = await listener.accept_async();
     let Future<void> client_5 = task {
       await serve_tagged_session(socket_5, 5, requests, reply_5);
       return;
     };
     // Client 5 remains independently scheduled while this accept suspends.
-    const socket_6 = await listener.accept_async();
+    val NioConnection socket_6 = await listener.accept_async();
     let Future<void> client_6 = task {
       await serve_tagged_session(socket_6, 6, requests, reply_6);
       return;
     };
     // Client 6 remains independently scheduled while this accept suspends.
-    const socket_7 = await listener.accept_async();
+    val NioConnection socket_7 = await listener.accept_async();
     let Future<void> client_7 = task {
       await serve_tagged_session(socket_7, 7, requests, reply_7);
       return;
     };
     // Client 7 remains independently scheduled while this accept suspends.
-    const socket_8 = await listener.accept_async();
+    val NioConnection socket_8 = await listener.accept_async();
     let Future<void> client_8 = task {
       await serve_tagged_session(socket_8, 8, requests, reply_8);
       return;
