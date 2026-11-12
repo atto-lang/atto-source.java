@@ -219,20 +219,27 @@ public final class AsyncNioTcp {
             if (closed.get() || !writing.compareAndSet(false, true)) {
                 return OresFuture.failed(new IllegalStateException("closed socket or concurrent owned write"));
             }
-            OresBytes.ReadLease lease;
+            // Function admission consumes a linear Bytes argument.  Mirror
+            // that static ownership transfer in the runtime before kernel IO.
+            OresBytes transferred;
             try {
-                lease = owned.readLease();
+                transferred = owned.take();
             } catch (RuntimeException failure) {
                 writing.set(false);
                 return OresFuture.failed(failure);
             }
+            OresBytes.ReadLease lease = transferred.readLease();
+            Runnable retire = () -> {
+                lease.close();
+                transferred.close();
+            };
             ByteBuffer buffer = lease.buffer();
             return OresFuture.fromCallback(callback -> {
                 CompletionHandler<Integer, Void> handler = new CompletionHandler<>() {
                     @Override public void completed(Integer count, Void ignored) {
                         if (closed.get() || count == null || count < 0) {
                             writing.set(false);
-                            lease.close();
+                            retire.run();
                             callback.reject(new IOException("socket retired during owned write"));
                             return;
                         }
@@ -242,36 +249,36 @@ public final class AsyncNioTcp {
                                         TimeUnit.SECONDS, null, this);
                             } catch (RuntimeException failure) {
                                 writing.set(false);
-                                lease.close();
+                                retire.run();
                                 callback.reject(failure);
                             }
                         } else {
                             writing.set(false);
-                            lease.close();
+                            retire.run();
                             callback.resolve(null);
                         }
                     }
                     @Override public void failed(Throwable failure, Void ignored) {
                         writing.set(false);
-                        lease.close();
+                        retire.run();
                         callback.reject(failure);
                     }
                 };
                 try {
                     if (!buffer.hasRemaining()) {
                         writing.set(false);
-                        lease.close();
+                        retire.run();
                         callback.resolve(null);
                     } else {
                         channel.write(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
                     }
                 } catch (RuntimeException failure) {
                     writing.set(false);
-                    lease.close();
+                    retire.run();
                     callback.reject(failure);
                 }
             }, () -> {
-                lease.close();
+                retire.run();
                 closeQuietly();
             });
         }
