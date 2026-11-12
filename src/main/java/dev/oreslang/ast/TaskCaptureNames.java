@@ -72,6 +72,21 @@ public final class TaskCaptureNames {
             visitBody(s.body(), locals, names);
         } else if (stmt instanceof Ast.TaskScopeStmt s) {
             visitBody(s.body(), locals, names);
+        } else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+            // Resource initializer executes OUTSIDE the scoped binding. The
+            // span alias is local only to its body and may not be mistaken
+            // for a captured parent variable by nested tasks/closures.
+            visitExpr(s.resource(), locals, names);
+            Set<String> scoped = new HashSet<>(locals);
+            scoped.add(s.binding());
+            visitBody(s.body(), scoped, names);
+        } else if (stmt instanceof Ast.UsingBorrowStmt s) {
+            // Transport views remain fail-closed at type checking, but an
+            // ownership inventory must never silently omit their body.
+            visitExpr(s.resource(), locals, names);
+            Set<String> scoped = new HashSet<>(locals);
+            scoped.add(s.binding());
+            visitBody(s.body(), scoped, names);
         } else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch branch : s.branches()) {
                 visitConditionExpr(branch.condition(), locals, names);
