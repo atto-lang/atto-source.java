@@ -116,6 +116,41 @@ final class OptionalActorReceiverBindingTest {
     }
 
     @Test
+    void reservedActorCapabilityAliasesAreRejectedBeforeBinderAdmission() {
+        for (String alias : new String[]{
+                "state", "handle_state", "on_start", "on_stop", "on_panic",
+                "on_throw", "on_raise", "on_recover", "receive", "init"}) {
+            String body = NS + "pub mtd (Worker " + alias
+                    + ") helper(): void { return; }";
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(body), alias);
+            assertTrue(error.getMessage().contains("receiver alias"), alias);
+        }
+    }
+
+    @Test
+    void receiverTypeCannotBypassNominalActorConstraints() {
+        for (String receiver : new String[]{
+                "(borrow Worker)", "(Worker<int>)", "(Worker, Other)",
+                "(Worker named extra)", "(Worker self extra)"}) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                    NS + "pub mtd " + receiver + " helper(): void { return; }"),
+                    receiver);
+        }
+    }
+
+    @Test
+    void cannotExposePrivateActorWithPublicUnnamedReceiverMethod() {
+        Map<String, Ast.Program> units = new LinkedHashMap<>();
+        units.put("src/workers/actor.atto",
+                Parser.parse(NS + "declare actor Worker;"));
+        units.put("src/workers/method.atto",
+                Parser.parse(NS + "pub mtd (Worker) expose(): void { return; }"));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+    }
+
+    @Test
     void declaredActorContractHeaderAcceptsAnonymousReceiverMethodsAtParseTime() {
         Ast.Program program = Parser.parse(NS + """
                 declare actor Worker implements Actor;
