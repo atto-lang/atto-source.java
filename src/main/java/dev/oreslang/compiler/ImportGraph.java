@@ -169,7 +169,15 @@ final class ImportGraph {
                             || (decl instanceof Ast.TypeAliasDecl alias
                                     && alias.visibility() == Ast.Visibility.PUBLIC
                                     && alias.name().equals(name));
-                    case TRAIT, STRUCT -> false;
+                    // The parser currently represents a source trait as an
+                    // InterfaceDecl; rejecting every TRAIT selector here made
+                    // the compiler-owned ores.core/protocols module unlinkable.
+                    // Do not admit module contracts or private declarations.
+                    case TRAIT -> decl instanceof Ast.InterfaceDecl iface
+                            && !iface.moduleContract()
+                            && iface.visibility() == Ast.Visibility.PUBLIC
+                            && iface.name().equals(name);
+                    case STRUCT -> false;
                     case ALL -> (decl instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                                     && fn.name().equals(name))
