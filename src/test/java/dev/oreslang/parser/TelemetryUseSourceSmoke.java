@@ -111,6 +111,7 @@ public final class TelemetryUseSourceSmoke {
                         .body().getFirst() instanceof Ast.UsingTelemetrySpanStmt,
                 "parser alone never grants trusted builtin authority");
         check(assertions == 26, "smoke expectation must be updated with assertions");
+        // The self-accounting assertion above is also an executed check.
         System.out.println("ATTO_TRACE_USE_IMPORT_CAPTURE_PASS assertions=" + assertions);
     }
 }
