@@ -77,9 +77,9 @@ final class VerifiedStatelessActorGuestV1 {
             throw unsupported("v1 requires exactly one private receive(ActorMail<T>) handler");
         }
 
-        List<Ast.Decl> linked = new ArrayList<>();
-        boolean foundActor = false;
-        int entryCount = 0;
+        List<Ast.Decl> contracts = new ArrayList<>();
+        Ast.ClassDecl linkedActor = null;
+        Ast.FunctionDecl mainEntry = null;
         String namespace = actorKey.namespace();
         for (var source : new TreeMap<>(sourceUnits).entrySet()) {
             Ast.Program program = source.getValue();
@@ -94,33 +94,39 @@ final class VerifiedStatelessActorGuestV1 {
                 }
                 for (Ast.Decl declaration : module.declarations()) {
                     if (declaration instanceof Ast.DeclaredActorDecl actor) {
-                        if (foundActor || !actor.name().equals(actorKey.actor())
+                        if (linkedActor != null || !actor.name().equals(actorKey.actor())
                                 || !source.getKey().equals(proof.actorUnit())) {
                             throw unsupported("actor declaration identity changed during lowering");
                         }
-                        foundActor = true;
-                        linked.add(new Ast.ClassDecl(
+                        linkedActor = new Ast.ClassDecl(
                                 actor.name(), actor.visibility(), false,
                                 actor.actorKind(), List.of(), List.of(),
-                                actor.contracts(), List.of(), null, methods));
+                                actor.contracts(), List.of(), null, methods);
                     } else if (declaration instanceof Ast.ExternalActorMethodDecl) {
                         // Attached body is inserted above only from the verified binding.
                     } else if (declaration instanceof Ast.InterfaceDecl iface
                             && iface.actorContract()) {
-                        linked.add(iface);
+                        contracts.add(iface);
                     } else if (declaration instanceof Ast.FunctionDecl fn
                             && fn.name().equals("main")) {
-                        entryCount++;
-                        linked.add(fn);
+                        if (mainEntry != null) {
+                            throw unsupported("duplicate Atto main entry");
+                        }
+                        mainEntry = fn;
                     } else {
                         throw unsupported("v1 admits only actor contracts, methods and a main entry");
                     }
                 }
             }
         }
-        if (!foundActor || entryCount != 1) {
+        if (linkedActor == null || mainEntry == null) {
             throw unsupported("v1 requires the declared actor and one Atto main entry");
         }
+        // Resolve nominal contracts before the synthetic actor regardless
+        // of physical file traversal order; execute main only after linking.
+        List<Ast.Decl> linked = new ArrayList<>(contracts);
+        linked.add(linkedActor);
+        linked.add(mainEntry);
 
         // Real compiler and ownership checks are mandatory before any caller
         // receives a guest program. No program text or checked flag from a
