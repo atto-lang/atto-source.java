@@ -256,12 +256,11 @@ public final class IncrementalCompiler {
     }
 
     /**
-     * Resolves named cross-file contract imports into type-only linker metadata.
-     *
-     * This deliberately does not splice foreign declarations into the local AST.
-     * The first linked slice supports direct exported contracts. Inherited
-     * cross-file contracts fail closed until parent-type provenance/substitution
-     * is represented explicitly by the linker rather than guessed by name.
+     * Resolve verified public trait/interface/contract imports into type-only
+     * metadata, keeping their source kind and nominal generic signatures.
+     * Parent traits/interfaces are inherited only from the SAME canonical
+     * source module as an explicitly imported child. Module-contract
+     * inheritance remains closed until independently proven.
      */
     private static Map<String, Ast.InterfaceDecl> linkedImportedContracts(
             String unitId,
@@ -270,7 +269,9 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.InterfaceDecl> result = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.kind() != Ast.ImportKind.CONTRACT) continue;
+            if (imported.kind() != Ast.ImportKind.CONTRACT
+                    && imported.kind() != Ast.ImportKind.TRAIT
+                    && imported.kind() != Ast.ImportKind.INTERFACE) continue;
             if (imported.wildcard()) {
                 // Namespace-qualified contract references need a first-class
                 // qualified nominal metadata model; do not manufacture one by
@@ -288,12 +289,14 @@ public final class IncrementalCompiler {
                 for (Ast.ModuleDecl module : target.modules()) {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.InterfaceDecl iface
-                                && iface.moduleContract()
+                                && iface.moduleContract() == (imported.kind() == Ast.ImportKind.CONTRACT)
+                                && iface.trait() == (imported.kind() == Ast.ImportKind.TRAIT)
                                 && iface.visibility() == Ast.Visibility.PUBLIC
                                 && iface.name().equals(sourceName)) {
                             if (match != null) {
                                 throw new IllegalArgumentException(
-                                        "import contract '" + sourceName + "' from '" + imported.path()
+                                        "import " + imported.kind().name().toLowerCase() + " '" + sourceName
+                                                + "' from '" + imported.path()
                                                 + "' is ambiguous in '" + targetId + "'");
                             }
                             match = iface;
@@ -304,10 +307,11 @@ public final class IncrementalCompiler {
                     // ImportGraph.validateLinkedImports should already diagnose
                     // this, but keep this boundary independently fail-closed.
                     throw new IllegalArgumentException(
-                            "import contract '" + sourceName + "' from '" + imported.path()
-                                    + "' does not resolve to an exported module contract");
+                            "import " + imported.kind().name().toLowerCase() + " '" + sourceName
+                                    + "' from '" + imported.path()
+                                    + "' does not resolve to an exported declaration of that kind");
                 }
-                if (!match.parents().isEmpty()) {
+                if (match.moduleContract() && !match.parents().isEmpty()) {
                     throw new IllegalArgumentException(
                             "imported module contract '" + sourceName
                                     + "' extends another contract; cross-file inherited contract metadata "
@@ -319,15 +323,73 @@ public final class IncrementalCompiler {
                 Ast.InterfaceDecl previous = result.putIfAbsent(localName, match);
                 if (previous != null && previous != match) {
                     throw new IllegalArgumentException(
-                            "duplicate imported contract metadata for local name '" + localName + "'");
+                            "duplicate imported nominal metadata for local name '" + localName + "'");
+                }
+                if (!match.moduleContract()) {
+                    // A child trait carries its parent method obligations.
+                    // Importing Ord<T> must link Eq<T> from that exact module
+                    // without probing another package, namespace or filesystem.
+                    linkPublicNominalParents(match, target, targetId, result,
+                            new LinkedHashSet<>(), 0);
                 }
             }
         }
         return Map.copyOf(result);
     }
 
+    private static void linkPublicNominalParents(
+            Ast.InterfaceDecl child,
+            Ast.Program source,
+            String sourceId,
+            Map<String, Ast.InterfaceDecl> linked,
+            Set<String> visiting,
+            int depth) {
+        if (depth >= 32 || !visiting.add(child.name())) {
+            throw new IllegalArgumentException(
+                    "linked trait/interface ancestry cycle or depth limit: " + child.name());
+        }
+        try {
+            for (Ast.TypeRef parentRef : child.parents()) {
+                Ast.InterfaceDecl parent = null;
+                for (Ast.ModuleDecl module : source.modules()) {
+                    // A parent of an imported trait must remain within the
+                    // same source module as its child, not merely the file.
+                    if (module.declarations().stream().noneMatch(d -> d == child)) continue;
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.InterfaceDecl candidate
+                                && candidate.name().equals(parentRef.name())
+                                && candidate.visibility() == Ast.Visibility.PUBLIC
+                                && !candidate.moduleContract()
+                                && candidate.trait() == child.trait()) {
+                            if (parent != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous nominal parent '" + parentRef.name() + "'");
+                            }
+                            parent = candidate;
+                        }
+                    }
+                }
+                if (parent == null) {
+                    throw new IllegalArgumentException(
+                            "parent of imported trait/interface '" + child.name()
+                                    + "' is not a public same-module declaration: " + parentRef.name());
+                }
+                validatePortableImportedContract(parent, sourceId);
+                Ast.InterfaceDecl previous = linked.putIfAbsent(parent.name(), parent);
+                if (previous != null && previous != parent) {
+                    throw new IllegalArgumentException(
+                            "imported nominal parent collides with another source: " + parent.name());
+                }
+                linkPublicNominalParents(parent, source, sourceId, linked, visiting, depth + 1);
+            }
+        } finally {
+            visiting.remove(child.name());
+        }
+    }
+
     private static final Set<String> LINKABLE_CONTRACT_TYPES = Set.of(
             "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
+            "u8", "Array",
             "Object", "List", "Map", "Tuple", "FixedArray", "Option", "Result", "Future",
             "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
             "Channel", "SelectCase", "SelectSet", "SelectResult", "Fnc");
@@ -471,7 +533,7 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.moduleContract() ? "contract " : iface.trait() ? "trait " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
