@@ -419,6 +419,7 @@ final class ChannelRuntimeTest {
         assertEquals(29, output.tryRead().orElseThrow());
     }
 
+    @Test
     void priorityWriteSelectPublishesOnlyTheWinningPayload() {
         ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
         ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
