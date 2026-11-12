@@ -2366,7 +2366,25 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            // Initial actor-task admission runs under the actor's single-writer
+            // mailbox turn. When the reserved continuation lane is already
+            // exhausted, settle THIS task with the precise capacity failure
+            // before fail-stop cancels the existing admitted scheduler tasks.
+            // Otherwise termination can race scheduler admission and replace
+            // the rejected Future's outcome with generic cancellation.
+            if (cell.sourceContinuationQuotaExhausted()) {
+                RejectedExecutionException rejected = new RejectedExecutionException(
+                        "actor source continuation mailbox capacity exhausted for "
+                                + cell.ref.id());
+                OresFuture<T> refusal = OresFuture.failed(rejected);
+                cell.fail(new IllegalStateException(
+                        "actor internal continuation queue overflow (source task admission) for "
+                                + cell.ref.id(), rejected));
+                return refusal;
+            }
+            return cell.sourceScheduler().start(task);
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -8772,6 +8790,19 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor transferred mailbox-slot invariant violation for " + ref.id());
                 }
+            }
+        }
+
+        /**
+         * A fail-closed preflight for source-task admission from a running
+         * actor turn. It does not reserve a slot: the canonical reservation
+         * remains in enqueueSourceTaskContinuation(), which also handles
+         * external Future completions racing this initial admission.
+         */
+        private boolean sourceContinuationQuotaExhausted() {
+            synchronized (mailboxAccountingLock) {
+                return queuedContinuations >= INTERNAL_CONTINUATION_SLOTS
+                        || queuedMessages >= mailboxCapacityWithControlHeadroom();
             }
         }
 
