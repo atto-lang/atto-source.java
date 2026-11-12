@@ -153,7 +153,7 @@ final class ImportGraph {
                             && klass.actorKind() == Ast.ActorKind.NONE
                             && klass.name().equals(name);
                     case INTERFACE -> decl instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
+                            && iface.declarationKind() == Ast.InterfaceKind.INTERFACE
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case CONTRACT -> decl instanceof Ast.InterfaceDecl iface
@@ -169,12 +169,10 @@ final class ImportGraph {
                             || (decl instanceof Ast.TypeAliasDecl alias
                                     && alias.visibility() == Ast.Visibility.PUBLIC
                                     && alias.name().equals(name));
-                    // The parser currently represents a source trait as an
-                    // InterfaceDecl; rejecting every TRAIT selector here made
-                    // the compiler-owned ores.core/protocols module unlinkable.
-                    // Do not admit module contracts or private declarations.
+                    // Traits and interfaces share an AST record but never
+                    // nominal declaration kind or import authority.
                     case TRAIT -> decl instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
+                            && iface.declarationKind() == Ast.InterfaceKind.TRAIT
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case STRUCT -> false;
