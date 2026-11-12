@@ -3083,6 +3083,10 @@ public final class TypeChecker {
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
+            String integerIntrinsic = integerIntrinsicName(call, env);
+            if (integerIntrinsic != null) {
+                return typeIntegerIntrinsicCall(integerIntrinsic, call, env, generics, self);
+            }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
@@ -5085,6 +5089,52 @@ public final class TypeChecker {
             return member.member();
         }
         return null;
+    }
+
+    /**
+     * Guest named arithmetic is a sealed intrinsic namespace, not Java interop.
+     * A lexical binding, user class/module or explicit import named Integer
+     * takes precedence, so the compiler cannot capture a user-provided value.
+     */
+    private String integerIntrinsicName(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Integer")
+                || env.lookup("Integer") != null
+                || importedNames.contains("Integer")
+                || modules.containsKey("Integer")
+                || findClass("Integer") != null) return null;
+        return switch (member.member()) {
+            case "rem", "mod", "pow", "bitXor" -> member.member();
+            default -> null;
+        };
+    }
+
+    private Type typeIntegerIntrinsicCall(
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "Integer." + name + " does not accept type arguments");
+        }
+        if (call.arguments().size() != 2) {
+            throw new IllegalArgumentException(
+                    "Integer." + name + " expects exactly two int arguments");
+        }
+        for (int i = 0; i < 2; i++) {
+            Ast.Expr argument = call.arguments().get(i);
+            if (argument instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "Integer." + name + " does not admit spreads");
+            }
+            requireInteger(
+                    deref(typeOf(argument, env, generics, self)),
+                    "Integer." + name + " argument " + (i + 1));
+        }
+        return Primitive.INT;
     }
 
     private Type typeBooleanIntrinsicCall(

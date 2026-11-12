@@ -5181,6 +5181,28 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            String integerIntrinsic = integerIntrinsicName(call, env);
+            if (integerIntrinsic != null) {
+                if (call.typeArgumentsPresent()) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "Integer." + integerIntrinsic + " does not accept type arguments"));
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, arguments, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(t,
+                                        applyIntegerIntrinsic(integerIntrinsic, arguments), null);
+                            } catch (RuntimeException | Error invalid) {
+                                continuation.accept(t, null, invalid);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -7077,6 +7099,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            String integerIntrinsic = integerIntrinsicName(call, env);
+            if (integerIntrinsic != null) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Integer." + integerIntrinsic + " does not accept type arguments");
+                }
+                List<Object> values = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(
+                        arguments -> applyIntegerIntrinsic(integerIntrinsic, arguments),
+                        values);
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -7265,6 +7298,41 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        /** A sealed guest intrinsic, never host Java's Integer class. */
+        private String integerIntrinsicName(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr owner)
+                    || !owner.name().equals("Integer")
+                    || env.lookup("Integer") != Env.MISSING
+                    || namedImports.containsKey("Integer")
+                    || namespaceImports.containsKey("Integer")
+                    || modules.containsKey("Integer")
+                    || findClass("Integer") != null
+                    || hostClasses.containsKey("Integer")
+                    || hostFunctions.containsKey("Integer")) return null;
+            return switch (member.member()) {
+                case "rem", "mod", "pow", "bitXor" -> member.member();
+                default -> null;
+            };
+        }
+
+        private long applyIntegerIntrinsic(String operation, List<Object> values) {
+            if (values.size() != 2) {
+                throw new IllegalArgumentException(
+                        "Integer." + operation + " expects exactly two int arguments");
+            }
+            long left = integralLong(values.get(0));
+            long right = integralLong(values.get(1));
+            return switch (operation) {
+                case "rem" -> dev.oreslang.runtime.StrictIntegerArithmetic.rem(left, right);
+                case "mod" -> dev.oreslang.runtime.StrictIntegerArithmetic.mod(left, right);
+                case "pow" -> dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
+                case "bitXor" -> dev.oreslang.runtime.StrictIntegerArithmetic.bitXor(left, right);
+                default -> throw new IllegalArgumentException(
+                        "unknown Integer intrinsic: " + operation);
+            };
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {

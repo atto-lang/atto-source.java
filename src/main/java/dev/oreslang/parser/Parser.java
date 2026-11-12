@@ -4435,7 +4435,8 @@ public final class Parser {
 
     private Ast.Expr parseLogicalXor() {
         Ast.Expr expr = parseLogicalAnd();
-        while (matchAdjacentPair(CARET)) expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
+        if (matchAdjacentPair(CARET)) throw error(previous(),
+                "'^^' is reserved and is not AttoLang source syntax; use Xor(a, b)");
         return expr;
     }
 
@@ -4455,7 +4456,8 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseXor() {
         Ast.Expr expr = parseBitwiseAnd();
-        while (matchSingleOperator(CARET)) expr = new Ast.BinaryExpr("^", expr, parseBitwiseAnd());
+        if (matchSingleOperator(CARET)) throw error(previous(),
+                "'^' is reserved and is not AttoLang source syntax; use Integer.bitXor(a, b)");
         return expr;
     }
 
@@ -4538,6 +4540,8 @@ public final class Parser {
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseUnary();
         while (match(STAR, SLASH, PERCENT)) {
+            if (previous().type() == PERCENT) throw error(previous(),
+                    "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
             expr = new Ast.BinaryExpr(op, expr, parseUnary());
         }
