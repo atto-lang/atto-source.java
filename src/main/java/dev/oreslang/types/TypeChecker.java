@@ -4133,9 +4133,17 @@ public final class TypeChecker {
                     case "ready", "done" ->
                             throw new IllegalArgumentException(
                                     "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
-                    case "outputs" -> new Named(
-                            "ActorOutputStream",
-                            List.of(Unknown.INSTANCE));
+                    case "outputs" -> {
+                        // Explicit StreamOperator<I,O> is the only proof of an
+                        // output payload type; do not guess from the actor body
+                        // or reinterpret an untyped mailbox response.
+                        Ast.ClassDecl actorType = actorClassForRef(actorRef);
+                        StreamPorts ports = streamPortsForClass(
+                                actorType, actorRef.arguments().getFirst());
+                        yield new Named("ActorOutputStream",
+                                List.of(ports == null
+                                        ? Unknown.INSTANCE : ports.output()));
+                    }
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
                     case "send", "stop", "cancel", "kill" ->
