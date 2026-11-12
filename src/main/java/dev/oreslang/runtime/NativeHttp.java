@@ -191,6 +191,10 @@ public final class NativeHttp implements AutoCloseable {
             this.code = code; this.type = type; this.kind = kind;
         }
         private Worker[] workers;
+        // Replaced incarnations can outlive their pool slot while serving
+        // other listeners. Keep every generation until physical retirement.
+        private final HttpPooledWorkerGenerationRegistry<Worker> generations =
+                new HttpPooledWorkerGenerationRegistry<>();
         private int cursor;
         private long created, reused;
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
@@ -211,7 +215,9 @@ public final class NativeHttp implements AutoCloseable {
         public synchronized long created() { supervisor(); return created; }
         public synchronized long reused() { supervisor(); return reused; }
         private synchronized Worker worker() {
-            if (closed) throw new IllegalStateException("HTTP runtime closed");
+            if (closed || generations.stopping()) {
+                throw new IllegalStateException("HTTP runtime or worker pool closed");
+            }
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
@@ -235,6 +241,14 @@ public final class NativeHttp implements AutoCloseable {
             worker = new Worker(context.actors().spawnCodeActor(kind, code, type));
             if (!worker.admission.tryReserve()) {
                 throw new IllegalStateException("new HTTP worker was unexpectedly sealed");
+            }
+            // Registration precedes publishing the replacement slot. stopPool
+            // takes the Handler monitor before closing the registry; a worker
+            // cannot spawn after its final-generation snapshot.
+            if (!generations.register(worker)) {
+                worker.admission.seal();
+                worker.actor.cancel();
+                throw new RejectedExecutionException("HTTP worker pool stopping");
             }
             workers[slot] = worker;
             created++;
@@ -292,12 +306,27 @@ public final class NativeHttp implements AutoCloseable {
                 attached.served.remove(server);
             }
             attached.requests.clear();
+            // Only now may the retired generation disappear from global
+            // pool accounting. It is no longer a live physical carrier.
+            generations.retire(attached);
         }
 
         private void stopPool() {
-            Worker[] snapshot;
-            synchronized (this) { snapshot = workers.clone(); }
-            for (Worker worker : snapshot) if (worker != null) worker.actor.cancel();
+            List<Worker> snapshot;
+            synchronized (this) {
+                snapshot = generations.stopAndSnapshot();
+            }
+            RuntimeException failure = null;
+            for (Worker worker : snapshot) {
+                try {
+                    worker.admission.seal();
+                    worker.actor.cancel();
+                } catch (RuntimeException cancelFailure) {
+                    if (failure == null) failure = cancelFailure;
+                    else failure.addSuppressed(cancelFailure);
+                }
+            }
+            if (failure != null) throw failure;
         }
         private final class Worker {
             final ActorRuntime.ActorRef<Object> actor;
