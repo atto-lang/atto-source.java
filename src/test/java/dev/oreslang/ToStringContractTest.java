@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,6 +25,18 @@ final class ToStringContractTest {
             context.eval(OresLanguage.ID, source);
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void physicalAttoFixturesAreExecutableAndFailClosed() throws Exception {
+        Path root = Path.of("tests", "fixtures", "atto-to-string-v1");
+        assertEquals("i:-42 f:false s:é😀中", run(Files.readString(root.resolve("main.atto"))));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                Files.readString(root.resolve("non-string-template-reject.atto")))));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(
+                        Files.readString(root.resolve("class-implicit-conversion-reject.atto")))));
+        assertTrue(rejected.getMessage().contains("to_string requires"), rejected::getMessage);
     }
 
     @Test
