@@ -1,7 +1,13 @@
 package dev.oreslang.compiler;
 
+import com.oracle.truffle.api.RootCallTarget;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.nodes.RootNode;
+import dev.oreslang.OresLanguage;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.SharedCodeImageStore;
 
 import java.util.Objects;
@@ -47,19 +53,16 @@ public final class CheckedNamespaceActorGuestProof implements AutoCloseable {
     public String sourceText() { return sourceText; }
 
     /**
-     * Executed only from the dedicated Graal RootNode after the exact-source
-     * lease is consumed. Host tests cannot call this before a live guest turn:
-     * the RootNode passes a private dispatch token that only it can obtain.
+     * Executed only from the private nested Graal RootNode after the
+     * exact-source lease is consumed. There is no public Java token or
+     * host-callable execution method to bypass this root boundary.
      *
      * <p>Demonstrates source-bound actor creation and 1,000 actual mailbox
      * turns without exposing any ActorRef or mutable state to guest code.
      * Returns the number of admitted, drained messages, not state contents.
      */
-    public long executeGuestProof(ActorRuntime runtime, Object guestRootPermit) {
+    private long executeCheckedActorTurns(ActorRuntime runtime) {
         Objects.requireNonNull(runtime, "context-owned actor runtime");
-        if (guestRootPermit != dev.oreslang.nodes.CheckedActorGuestRootNode.permit()) {
-            throw new SecurityException("only a checked Graal guest root may run actor proof");
-        }
         if (closed.get() || !executed.compareAndSet(false, true)) {
             throw new IllegalStateException("checked actor guest proof is closed or already executed");
         }
@@ -90,6 +93,47 @@ public final class CheckedNamespaceActorGuestProof implements AutoCloseable {
             // No guest-visible actor handle escapes this narrow bridge.
             if (first != null) first.stop();
             if (sibling != null) sibling.stop();
+        }
+    }
+
+    /**
+     * Returns a Truffle root target only for the checked, source-bound
+     * internal admission path. Host JVM code may assemble the target,
+     * but Atto guest source cannot import or forge this object.
+     */
+    public RootCallTarget guestRootTarget(OresLanguage language) {
+        if (closed.get()) {
+            throw new IllegalStateException("checked actor proof is closed");
+        }
+        return new CheckedRoot(language, this).getCallTarget();
+    }
+
+    private static final class CheckedRoot extends RootNode {
+        private final CheckedNamespaceActorGuestProof proof;
+
+        private CheckedRoot(OresLanguage language, CheckedNamespaceActorGuestProof proof) {
+            super(language);
+            this.proof = Objects.requireNonNull(proof);
+        }
+
+        @Override public String getName() { return "ores-checked-actor-guest-probe"; }
+        @Override public boolean isInternal() { return true; }
+
+        @Override
+        public Object execute(VirtualFrame frame) {
+            return executeBoundary(OresContext.get(this), frame.getArguments());
+        }
+
+        @TruffleBoundary
+        private long executeBoundary(OresContext context, Object[] arguments) {
+            if (arguments.length != 0) {
+                throw new SecurityException("checked guest actor root accepts no arguments");
+            }
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "checked actor IR bridge unavailable in adversarial contexts");
+            }
+            return proof.executeCheckedActorTurns(context.actors());
         }
     }
 
