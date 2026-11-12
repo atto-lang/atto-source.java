@@ -37,4 +37,8 @@ define module telemetry as
   pub fnc span(String name): Span {
     return new Span(name);
   }
+
+  pub fnc span(): Span {
+    return new Span("span");
+  }
 end
