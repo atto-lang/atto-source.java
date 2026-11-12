@@ -190,8 +190,7 @@ public final class AsyncNioTcp {
                         byte[] result = count == owned.length
                                 ? owned : java.util.Arrays.copyOf(owned, count);
                         OresBytes value = OresBytes.fromDetached(result);
-                        if (callback.isDone()) value.close();
-                        else callback.resolve(value);
+                        if (!callback.tryResolve(value)) value.close();
                     }
                     @Override public void failed(Throwable failure, Void ignored) {
                         reading.set(false);
