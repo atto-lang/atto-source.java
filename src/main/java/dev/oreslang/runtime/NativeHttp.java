@@ -140,6 +140,40 @@ public final class NativeHttp implements AutoCloseable {
         return new Handler(code, type, kind);
     }
 
+    /**
+     * Extract one strict v00 W3C parent at the HTTP admission boundary.
+     * Multiple/malformed/untrusted headers are not followed as parents.
+     * A new recording root is created only in explicitly enabled contexts.
+     * This is context propagation only; SERVER span export is not implemented.
+     */
+    static TraceParent admittedServerTraceContext(
+            List<String> incoming, boolean tracingEnabled) {
+        if (!tracingEnabled) return null;
+        if (incoming != null && incoming.size() == 1) {
+            Optional<TraceParent> remote = TraceParent.parse(incoming.getFirst());
+            if (remote.isPresent()) return remote.orElseThrow().newChild();
+        }
+        return TraceParent.newRoot(true);
+    }
+
+    private void sendHttpExchangeWithContext(
+            ActorRuntime.ActorRef<Object> actor, Exchange exchange) {
+        TraceParent requestContext = exchange.state.traceParent;
+        if (requestContext == null) {
+            actor.send(exchange.moveTo(actor));
+            return;
+        }
+        // Dispatch executes on a supervisor/host turn. Never borrow a
+        // possibly stale carrier thread-local context or transfer a live Span.
+        TaskContext previous = TaskContext.install(null);
+        try {
+            TaskContext.pushTraceParent(requestContext);
+            actor.send(exchange.moveTo(actor));
+        } finally {
+            TaskContext.install(previous);
+        }
+    }
+
     /** Supervisor-owned code registration and optional bounded reusable worker pool. */
     public final class Handler {
         private final ActorRuntime.ActorCodeExecutor code;
@@ -210,7 +244,7 @@ public final class NativeHttp implements AutoCloseable {
                         // one actor.done callback per completed request.
                         exchange.state.readyNanos = exchange.state.spawnNanos;
                     }
-                    worker.actor.send(exchange.moveTo(worker.actor));
+                    sendHttpExchangeWithContext(worker.actor, exchange);
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
@@ -233,7 +267,7 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                actor.send(exchange.moveTo(actor));
+                sendHttpExchangeWithContext(actor, exchange);
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 exchange.state.abort(500);
@@ -396,6 +430,8 @@ public final class NativeHttp implements AutoCloseable {
         final Server server;
         final HttpExchange raw;
         final List<String> path;
+        // Immutable, HTTP-authorized request trace context. Never guest payload.
+        final TraceParent traceParent;
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
@@ -419,7 +455,15 @@ public final class NativeHttp implements AutoCloseable {
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
         State(Server server, HttpExchange raw) {
-            this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
+            this.server = server;
+            this.raw = raw;
+            this.path = segments(raw.getRequestURI().getRawPath());
+            this.owner = context;
+            // Admission already validated raw header count/size. Unknown,
+            // malformed or duplicate traceparent is never trusted.
+            this.traceParent = admittedServerTraceContext(
+                    raw.getRequestHeaders().get("traceparent"),
+                    context.autoTrace().enabled());
         }
         // Linearize cancellation against success header emission. Never
         // hold this monitor while performing blocking socket I/O.
