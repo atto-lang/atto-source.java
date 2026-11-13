@@ -3127,6 +3127,42 @@ public final class TypeChecker {
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr bytesCall
+                    && bytesCall.receiver() instanceof Ast.NameExpr bytesFactory
+                    && bytesFactory.name().equals("Bytes")
+                    && env.lookup("Bytes") == null
+                    && findClass("Bytes") == null) {
+                // Bytes v1 constructors (spec chapter 26). Each returns a
+                // fresh immutable owned value.
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("Bytes constructors take no type arguments");
+                }
+                switch (bytesCall.member()) {
+                    case "empty" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException("Bytes.empty() takes no arguments");
+                        }
+                    }
+                    case "from_list" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("Bytes.from_list expects one List<int>");
+                        }
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                new ListType(Primitive.INT), "Bytes.from_list argument");
+                    }
+                    case "from_string" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("Bytes.from_string expects one string");
+                        }
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.STRING, "Bytes.from_string argument");
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "unknown Bytes constructor " + bytesCall.member()
+                                    + "; use Bytes.empty(), Bytes.from_list(List<int>) or Bytes.from_string(string)");
+                }
+                return new Named("Bytes", List.of());
+            }
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("Channel")
@@ -4391,7 +4427,7 @@ public final class TypeChecker {
                 Type mapValue = typedMap.arguments().get(1);
                 if (!closedScalarMapDomains(typedMap)) {
                     throw new IllegalArgumentException(
-                            "Map indexed read requires a proven String/Symbol key and copyable scalar value");
+                            "Map indexed read requires a proven String/Symbol/Bytes key and copyable scalar value");
                 }
                 requireAssignable(index, mapKey, "typed Map index key");
                 return mapValue;
@@ -4840,8 +4876,8 @@ public final class TypeChecker {
                 if (!isAdmittedEmptyMapScalarKey(key)
                         || !isAdmittedEmptyMapScalarValue(value)) {
                     throw new IllegalArgumentException(
-                            "typed empty Map is currently limited to String/Symbol keys "
-                                    + "and primitive int/bool/string/Symbol values; "
+                            "typed empty Map is currently limited to String/Symbol/Bytes keys "
+                                    + "and primitive int/bool/string/Symbol/Bytes values; "
                                     + "unverified key/value domain " + witness);
                 }
                 Type map = resolve(witness, generics, self);
@@ -5369,14 +5405,15 @@ public final class TypeChecker {
     private static boolean isAdmittedEmptyMapScalarKey(Ast.TypeRef type) {
         return !type.inferArguments() && type.arguments().isEmpty()
                 && (type.name().equals("string") || type.name().equals("String")
-                        || type.name().equals("Symbol"));
+                        || type.name().equals("Symbol") || type.name().equals("Bytes"));
     }
 
     private static boolean isAdmittedEmptyMapScalarValue(Ast.TypeRef type) {
         return !type.inferArguments() && type.arguments().isEmpty()
                 && (type.name().equals("int") || type.name().equals("bool")
                         || type.name().equals("Bool") || type.name().equals("string")
-                        || type.name().equals("String") || type.name().equals("Symbol"));
+                        || type.name().equals("String") || type.name().equals("Symbol")
+                        || type.name().equals("Bytes"));
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -6070,6 +6107,18 @@ public final class TypeChecker {
                 case "size" -> new Function(List.of(), Primitive.INT);
                 case "byte_at" -> new Function(List.of(Primitive.INT), Primitive.INT);
                 case "take" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "slice" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT), new Named("Bytes", List.of()));
+                case "index_of" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT), Primitive.INT);
+                case "concat" -> new Function(
+                        List.of(new Named("Bytes", List.of())), new Named("Bytes", List.of()));
+                case "equals" -> new Function(
+                        List.of(new Named("Bytes", List.of())), Primitive.BOOL);
+                case "copy" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "to_list" -> new Function(List.of(), new ListType(Primitive.INT));
+                case "to_utf8" -> new Function(
+                        List.of(), new Named("Option", List.of(Primitive.STRING)));
                 case "close" -> new Function(List.of(), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown Bytes member " + name);
             };
@@ -8242,6 +8291,12 @@ public final class TypeChecker {
      * A mere nominal Map<K,V> annotation does not prove a safe guest Map:
      * otherwise unreachable generic parameters could open mutable host paths.
      */
+    /** Built-in immutable, move-only Bytes (not a user class named Bytes). */
+    private boolean isBuiltinBytes(Type type) {
+        return type instanceof Named bytes && bytes.name().equals("Bytes")
+                && bytes.arguments().isEmpty() && findClass("Bytes") == null;
+    }
+
     private boolean closedScalarMapDomains(Named mapType) {
         if (!mapType.name().equals("Map") || mapType.arguments().size() != 2
                 || findClass("Map") != null) return false;
@@ -8250,12 +8305,14 @@ public final class TypeChecker {
         boolean keyOk = key == Primitive.STRING
                 || key instanceof Named symbol
                         && symbol.name().equals("$builtin$Symbol")
-                        && symbol.arguments().isEmpty();
+                        && symbol.arguments().isEmpty()
+                || isBuiltinBytes(key);
         boolean valueOk = value == Primitive.INT || value == Primitive.BOOL
                 || value == Primitive.STRING
                 || value instanceof Named symbol
                         && symbol.name().equals("$builtin$Symbol")
-                        && symbol.arguments().isEmpty();
+                        && symbol.arguments().isEmpty()
+                || isBuiltinBytes(value);
         return keyOk && valueOk;
     }
 
@@ -8291,7 +8348,7 @@ public final class TypeChecker {
                 && named.arguments().size() == 2 && findClass("Map") == null) {
             if (!closedScalarMapDomains(named)) {
                 throw new IllegalArgumentException(
-                        "Map member requires a proven String/Symbol key "
+                        "Map member requires a proven String/Symbol/Bytes key "
                                 + "and copyable scalar value domain");
             }
             // Restrict all Map methods to the same closed witness as reads.

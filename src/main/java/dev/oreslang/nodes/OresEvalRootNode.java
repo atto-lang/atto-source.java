@@ -7548,6 +7548,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("Bytes")) return BytesFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this, false);
@@ -8004,12 +8005,14 @@ public final class OresEvalRootNode extends RootNode {
                         case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
                         case "string", "String" -> OresKeyedMap.ValueDomain.STRING;
                         case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                        case "Bytes" -> OresKeyedMap.ValueDomain.BYTES;
                         default -> throw new IllegalArgumentException(
                                 "unverified Map<K,V> value domain " + value);
                     };
                     return switch (key.name()) {
                         case "string", "String" -> OresKeyedMap.stringKeys(valueDomain);
                         case "Symbol" -> OresKeyedMap.symbolKeys(valueDomain);
+                        case "Bytes" -> OresKeyedMap.bytesKeys(valueDomain);
                         default -> throw new IllegalArgumentException(
                                 "unverified Map<K,V> key domain " + key);
                     };
@@ -8106,6 +8109,43 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "Bytes.close");
                         bytes.close();
                         return null;
+                    };
+                    case "slice" -> (Invokable) args -> {
+                        requireTwo(args, "Bytes.slice");
+                        return bytes.slice(bytesIndex(args.get(0), "Bytes.slice start"),
+                                bytesIndex(args.get(1), "Bytes.slice end"));
+                    };
+                    case "index_of" -> (Invokable) args -> {
+                        requireTwo(args, "Bytes.index_of");
+                        return (long) bytes.indexOf(bytesIndex(args.get(0), "Bytes.index_of value"),
+                                bytesIndex(args.get(1), "Bytes.index_of start"));
+                    };
+                    case "concat" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.concat");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes other)) {
+                            throw new IllegalArgumentException("Bytes.concat requires Bytes");
+                        }
+                        return bytes.concat(other);
+                    };
+                    case "equals" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.equals");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes other)) {
+                            throw new IllegalArgumentException("Bytes.equals requires Bytes");
+                        }
+                        return bytes.equals(other);
+                    };
+                    case "copy" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.copy");
+                        return dev.oreslang.runtime.OresBytes.copyOf(bytes.toArrayCopy());
+                    };
+                    case "to_list" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.to_list");
+                        return bytes.toList();
+                    };
+                    case "to_utf8" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.to_utf8");
+                        String decoded = bytes.toUtf8OrNull();
+                        return decoded == null ? new OptionValue(false, null) : new OptionValue(true, decoded);
                     };
                     default -> throw new IllegalArgumentException("unknown Bytes member " + name);
                 };
@@ -8657,6 +8697,27 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
+                };
+            }
+            if (receiver == BytesFactory.INSTANCE) {
+                return switch (name) {
+                    case "empty" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.empty");
+                        return dev.oreslang.runtime.OresBytes.empty();
+                    };
+                    case "from_list" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.from_list");
+                        if (!(args.getFirst() instanceof List<?> values)) {
+                            throw new IllegalArgumentException("Bytes.from_list requires List<int>");
+                        }
+                        return dev.oreslang.runtime.OresBytes.fromList(values);
+                    };
+                    case "from_string" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.from_string");
+                        return dev.oreslang.runtime.OresBytes.fromString(
+                                requireString(args.getFirst(), "Bytes.from_string"));
+                    };
+                    default -> throw new IllegalArgumentException("unknown Bytes constructor " + name);
                 };
             }
             if (receiver instanceof ChannelFactory factory) {
@@ -11747,6 +11808,19 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    /** Static receiver for the Bytes v1 constructors. */
+    private static final class BytesFactory {
+        static final BytesFactory INSTANCE = new BytesFactory();
+        private BytesFactory() { }
+    }
+
+    private static int bytesIndex(Object value, String what) {
+        if (!(value instanceof Number n) || n.doubleValue() != Math.rint(n.doubleValue())) {
+            throw new IllegalArgumentException(what + " must be an integer");
+        }
+        return Math.toIntExact(n.longValue());
+    }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");
