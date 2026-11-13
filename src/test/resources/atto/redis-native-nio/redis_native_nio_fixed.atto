@@ -30,7 +30,7 @@ define actor NativeNioKvActor as
   }
 end
 
-pub fnc byte_prefix(List<int> partial, List<int> candidate): bool {
+pub fnc byte_prefix(borrow List<int> partial, borrow List<int> candidate): bool {
   if partial.size > candidate.size then return false; fi
   let int i = 0;
   loop {
@@ -40,20 +40,20 @@ pub fnc byte_prefix(List<int> partial, List<int> candidate): bool {
   }
 }
 
-pub fnc command_code(List<int> frame): int {
+pub fnc command_code(borrow List<int> frame): int {
   val ping = [42, 49, 13, 10, 36, 52, 13, 10, 80, 73, 78, 71, 13, 10];
   val get = [42, 50, 13, 10, 36, 51, 13, 10, 71, 69, 84, 13, 10, 36, 54, 13, 10, 97, 110, 115, 119, 101, 114, 13, 10];
   val set = [42, 51, 13, 10, 36, 51, 13, 10, 83, 69, 84, 13, 10, 36, 54, 13, 10, 97, 110, 115, 119, 101, 114, 13, 10, 36, 50, 13, 10, 52, 49, 13, 10];
   val del = [42, 50, 13, 10, 36, 51, 13, 10, 68, 69, 76, 13, 10, 36, 54, 13, 10, 97, 110, 115, 119, 101, 114, 13, 10];
   val quit = [42, 49, 13, 10, 36, 52, 13, 10, 81, 85, 73, 84, 13, 10];
   if frame.size > 128 then return -1; fi
-  if frame.size == ping.size && byte_prefix(frame, ping) then return 1; fi
-  if frame.size == get.size && byte_prefix(frame, get) then return 2; fi
-  if frame.size == set.size && byte_prefix(frame, set) then return 3; fi
-  if frame.size == del.size && byte_prefix(frame, del) then return 4; fi
-  if frame.size == quit.size && byte_prefix(frame, quit) then return 5; fi
-  if byte_prefix(frame, ping) || byte_prefix(frame, get) || byte_prefix(frame, set)
-      || byte_prefix(frame, del) || byte_prefix(frame, quit) then return 0; fi
+  if frame.size == ping.size && byte_prefix(rt borrow frame, rt borrow ping) then return 1; fi
+  if frame.size == get.size && byte_prefix(rt borrow frame, rt borrow get) then return 2; fi
+  if frame.size == set.size && byte_prefix(rt borrow frame, rt borrow set) then return 3; fi
+  if frame.size == del.size && byte_prefix(rt borrow frame, rt borrow del) then return 4; fi
+  if frame.size == quit.size && byte_prefix(rt borrow frame, rt borrow quit) then return 5; fi
+  if byte_prefix(rt borrow frame, rt borrow ping) || byte_prefix(rt borrow frame, rt borrow get) || byte_prefix(rt borrow frame, rt borrow set)
+      || byte_prefix(rt borrow frame, rt borrow del) || byte_prefix(rt borrow frame, rt borrow quit) then return 0; fi
   return -1;
 }
 
@@ -62,7 +62,7 @@ pub async routine main(): void {
   await worker.get_ready();
   val listener = await network.listen_async("127.0.0.1", 16398);
   val socket = await listener.accept_async();
-  let List<int> frame = [];
+  let mut List<int> frame = [];
   loop {
     val bytes = await socket.read_bytes_async(1024);
     if bytes.size == 0; do
@@ -76,7 +76,7 @@ pub async routine main(): void {
     loop {
       if i == bytes.size then break; fi
       frame.add(bytes.get(i));
-      val int op = command_code(frame);
+      val int op = command_code(rt borrow frame);
       if op == -1; do
         await socket.close_async();
         await listener.close_async();

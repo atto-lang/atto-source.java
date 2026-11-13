@@ -36,11 +36,13 @@ final class AttoRedisNativeNioFixedGuestTest {
                 try (Context context = Context.newBuilder(OresLanguage.ID)
                         .allowAllAccess(false)
                         .arguments(OresLanguage.ID,
-                                new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN"})
+                                new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
                         .build()) {
                     context.eval(Source.newBuilder(OresLanguage.ID, code,
                                     "redis_native_nio_fixed.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
                 }
                 return null;
             });
