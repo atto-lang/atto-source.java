@@ -5,10 +5,12 @@ on:
       - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
       - "src/main/java/dev/oreslang/runtime/HttpPooledWorkerAdmissionFence.java"
       - "src/main/java/dev/oreslang/runtime/HttpPooledWorkerGenerationRegistry.java"
+      - "src/main/java/dev/oreslang/runtime/HttpPooledWorkerListenerSlots.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
       - "src/test/java/dev/oreslang/runtime/HttpPooledWorkerAdmissionFenceTest.java"
       - "src/test/java/dev/oreslang/runtime/HttpPooledWorkerGenerationRegistryTest.java"
+      - "src/test/java/dev/oreslang/runtime/HttpPooledWorkerListenerSlotsTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorCarrierQuiescencePollingTest.java"
       - "tools/ci/HttpWorkerLifetimeSmoke.java"
       - "tools/test-http-worker-lifetime-smoke.sh"
@@ -46,7 +48,7 @@ jobs:
           bash tools/test-http-worker-lifetime-smoke.sh
       - name: Execute native HTTP host and actor handoff regressions
         run: |
-          mvn -B -ntp -Dtest=NativeHttpTest,ActorCarrierQuiescencePollingTest,HttpPooledWorkerAdmissionFenceTest,HttpPooledWorkerGenerationRegistryTest test
+          mvn -B -ntp -Dtest=NativeHttpTest,ActorCarrierQuiescencePollingTest,HttpPooledWorkerAdmissionFenceTest,HttpPooledWorkerGenerationRegistryTest,HttpPooledWorkerListenerSlotsTest test
       - name: Print Surefire result inventory (never synthesize success)
         if: always()
         run: |
