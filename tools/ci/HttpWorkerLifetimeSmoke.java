@@ -101,11 +101,46 @@ public final class HttpWorkerLifetimeSmoke {
         }
     }
 
+    private static final class EqualListener {
+        @Override public boolean equals(Object other) { return other instanceof EqualListener; }
+        @Override public int hashCode() { return 1; }
+    }
+
+    private static void isolatedListenerSlots() {
+        var slots = new HttpPooledWorkerListenerSlots<EqualListener, Object>(2);
+        var a = new EqualListener();
+        var b = new EqualListener();
+        Object a0 = new Object();
+        Object b0 = new Object();
+        var firstA = slots.next(a);
+        var firstB = slots.next(b);
+        require(firstA.previous() == null && firstB.previous() == null,
+                "listener B inherited listener A's slot");
+        slots.replace(a, firstA, a0);
+        slots.replace(b, firstB, b0);
+        require(slots.listenerCount() == 2, "identity collision merged two listeners");
+        var secondA = slots.next(a);
+        var secondB = slots.next(b);
+        require(secondA.previous() == null && secondB.previous() == null,
+                "listener slot rotation leaked a worker");
+        slots.replace(a, secondA, new Object());
+        slots.replace(b, secondB, new Object());
+        require(slots.next(a).previous() == a0, "listener A cannot reuse its actor");
+        require(slots.next(b).previous() == b0, "listener B cannot reuse its actor");
+        slots.forget(a);
+        require(slots.listenerCount() == 1, "closed listener slots still retained");
+        require(slots.next(a).previous() == null,
+                "closed listener inherited its retired actor generation");
+        require(slots.next(b).previous() != null,
+                "closing A destroyed B's live worker");
+    }
+
     public static void main(String[] args) throws Exception {
         for (int round = 0; round < 100; round++) {
             admissionFence();
             historicalGenerations();
             concurrentGenerationStop();
+            isolatedListenerSlots();
         }
         System.out.printf(
                 "PASS: %,d assertions; 100 concurrent rounds x 96 virtual-thread producers (JDK %s)%n",
