@@ -117,8 +117,16 @@ public final class Parser {
                 }
             }
         }
+        // Atto's canonical first-line header is "use namespace foo;".
+        // "use" is intentionally contextual (IDENT), not a new global keyword.
+        // Preserve the older "namespace foo;" header with identical AST identity.
         String namespace = null;
-        if (match(NAMESPACE)) {
+        boolean useNamespaceHeader = isContextualIdentifier("use");
+        if (useNamespaceHeader) {
+            advance();
+            consume(NAMESPACE, "expected 'namespace' after file-root 'use'");
+        }
+        if (useNamespaceHeader || match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
             consume(SEMICOLON, "namespace declaration must end with ';'");
