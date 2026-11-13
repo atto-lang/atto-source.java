@@ -149,4 +149,36 @@ final class ActorSealedStateAtomicCommitTest {
         assertEquals(Map.of("revision", 0L, "epoch", 1L), h.state());
         h.revoke.invoke(loan);
     }
+
+    @Test
+    void writableLoanCannotReadPublishedMutableCompositeByAlias() throws Exception {
+        Harness h = new Harness();
+        h.state().put("revision", new java.util.ArrayList<>(java.util.List.of(1L)));
+        Object writable = h.loan(true);
+        assertInstanceOf(IllegalArgumentException.class,
+                Harness.runtimeFailure(h.get, writable, "revision"));
+        h.revoke.invoke(writable);
+        Object readonly = h.loan(false);
+        assertInstanceOf(IllegalArgumentException.class,
+                Harness.runtimeFailure(h.get, readonly, "revision"));
+        h.revoke.invoke(readonly);
+    }
+
+    @Test
+    void mutationCannotCommitWrongTypedOrCompositePayloads() throws Exception {
+        Harness h = new Harness();
+        Object loan = h.loan(true);
+        assertInstanceOf(IllegalArgumentException.class,
+                Harness.runtimeFailure(h.set, loan, "revision", "wrong"));
+        assertInstanceOf(IllegalArgumentException.class,
+                Harness.runtimeFailure(h.set, loan, "revision",
+                        new java.util.ArrayList<>(java.util.List.of(3L))));
+        assertInstanceOf(IllegalArgumentException.class,
+                Harness.runtimeFailure(h.set, loan, "epoch", true));
+        assertInstanceOf(IllegalArgumentException.class,
+                Harness.runtimeFailure(h.set, loan, "epoch", new java.math.BigInteger("9223372036854775808")));
+        h.commit.invoke(loan);
+        assertEquals(Map.of("revision", 0L, "epoch", 1L), h.state());
+        h.revoke.invoke(loan);
+    }
 }
