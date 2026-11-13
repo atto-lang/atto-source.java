@@ -9016,7 +9016,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
-                    case "size" -> (long) rawList.size();
+                    // TypeChecker admits length as a read-only scalar property.
+                    // Keep its runtime value identical to the canonical size.
+                    case "size", "length" -> (long) rawList.size();
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
