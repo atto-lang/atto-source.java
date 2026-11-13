@@ -91,6 +91,15 @@ public final class ActorCriticalStatePreflight {
             Ast.ExternalActorMethodDecl method,
             Ast.ActorStateAccessStmt access,
             Map<String, Ast.AttachedActorStateField> fields) {
+        // Critical callbacks create a new *lexical* state-view binding. If it
+        // shadows a receiver or mailbox parameter, expression lowering could
+        // read the state view where the preflight proved a message operand.
+        // Reject before emitting any typed operation descriptor.
+        if (access.viewName().equals(method.receiverName())
+                || method.parameters().stream().anyMatch(
+                        param -> param.name().equals(access.viewName()))) {
+            throw deny("critical view may not shadow actor receiver or message parameter");
+        }
         if (access.body().size() != 1
                 || !(access.body().getFirst() instanceof Ast.ExprStmt stmt)) {
             throw deny("critical scope must contain exactly one scalar operation");
