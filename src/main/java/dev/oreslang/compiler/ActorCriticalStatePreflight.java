@@ -71,10 +71,17 @@ public final class ActorCriticalStatePreflight {
                                 aliases.add(access.viewName());
                                 operations.add(validateScope(
                                         unit.getKey(), key, method, access, fields));
+                            } else if (statement instanceof Ast.BindingStmt binding
+                                    && binding.initializer() instanceof Ast.ActorStateSnapshotExpr snapshot) {
+                                aliases.add(snapshot.viewName());
+                                operations.add(validateSnapshot(
+                                        unit.getKey(), key, method, binding, snapshot, fields));
                             }
                         }
                         for (var statement : method.body()) {
-                            if (!(statement instanceof Ast.ActorStateAccessStmt)) {
+                            if (!(statement instanceof Ast.ActorStateAccessStmt)
+                                    && !(statement instanceof Ast.BindingStmt binding
+                                         && binding.initializer() instanceof Ast.ActorStateSnapshotExpr)) {
                                 verifyOutside(statement, aliases, fields.keySet());
                             }
                         }
@@ -126,24 +133,51 @@ public final class ActorCriticalStatePreflight {
                 throw deny("critical-write requires 'view.field = view.field + int_message'");
             }
         } else {
-            if (!(expr instanceof Ast.CallExpr call)
-                    || call.typeArgumentsPresent() || call.arguments().size() != 1
-                    || !(call.callee() instanceof Ast.MemberExpr send)
-                    || !send.member().equals("send")
-                    || !(send.receiver() instanceof Ast.NameExpr owner)
-                    || !owner.name().equals("self")) {
-                throw deny("critical-read permits only a copy-only self.send(view.field)");
-            }
-            fieldName = viewField(call.arguments().getFirst(), access.viewName());
-            var field = fields.get(fieldName);
-            if (field == null) throw deny("critical-read names undeclared state field");
-            if (!field.type().name().equals("int")) {
-                throw deny("v2 critical-read permits only copied int fields");
-            }
+            // Publishing from inside a live read loan is not permitted, even
+            // when the value appears scalar. Require the separate checked
+            // snapshot expression followed by mailbox admission after exit.
+            throw deny("critical-read cannot publish during a live state loan; "
+                    + "bind a detached scalar snapshot before self.send");
         }
         return new CriticalOperation(
                 sourceUnit, key.namespace(), key.actor(), method.name(),
                 access.mode(), fieldName, "int");
+    }
+
+    private static CriticalOperation validateSnapshot(
+            String sourceUnit,
+            ActorContractWitness.ActorKey key,
+            Ast.ExternalActorMethodDecl method,
+            Ast.BindingStmt binding,
+            Ast.ActorStateSnapshotExpr snapshot,
+            Map<String, Ast.AttachedActorStateField> fields) {
+        if (snapshot.viewName().equals(method.receiverName())
+                || method.parameters().stream().anyMatch(
+                        param -> param.name().equals(snapshot.viewName()))) {
+            throw deny("critical view may not shadow actor receiver or message parameter");
+        }
+        if (binding.kind() != Ast.BindingKind.VAL
+                || binding.declaredType() == null
+                || !binding.declaredType().name().equals("int")
+                || binding.declaredType().isBorrow()
+                || binding.declaredType().inferArguments()
+                || !binding.declaredType().arguments().isEmpty()
+                || binding.inferredTypeName() != null
+                || binding.name().equals(snapshot.viewName())
+                || binding.name().equals(method.receiverName())
+                || method.parameters().stream().anyMatch(
+                        param -> param.name().equals(binding.name()))) {
+            throw deny("critical-read snapshot must bind a fresh val int scalar");
+        }
+        Ast.AttachedActorStateField field = fields.get(snapshot.fieldName());
+        if (field == null) throw deny("critical-read names undeclared state field");
+        if (!field.type().name().equals("int") || field.type().isBorrow()
+                || field.type().inferArguments() || !field.type().arguments().isEmpty()) {
+            throw deny("critical-read snapshot permits only checked int fields");
+        }
+        return new CriticalOperation(
+                sourceUnit, key.namespace(), key.actor(), method.name(),
+                Ast.CriticalStateMode.READ, snapshot.fieldName(), "int");
     }
 
     private static boolean validScalarMessage(
