@@ -24,20 +24,20 @@ final class ExternalActorRuntimeIngressSyntaxTest {
 
     @Test
     void onlyExplicitPrivateRuntimeHooksCarryIngressMetadata() {
-        var receive = method("external mtd (Counter self) receive(ActorMail<int> mail): void { return; }");
+        var receive = method("external mtd (Counter c) receive(ActorMail<int> mail): void { return; }");
         assertEquals("receive", receive.name());
         assertEquals(Ast.Visibility.PRIVATE, receive.visibility());
         assertTrue(receive.runtimeOnly());
 
-        var init = method("external mtd (Counter self) init(): void { return; }");
+        var init = method("external mtd (Counter c) init(): void { return; }");
         assertTrue(init.runtimeOnly());
         assertTrue(init.parameters().isEmpty());
 
-        var ordinary = method("mtd (Counter self) receive(ActorMail<int> mail): void { return; }");
+        var ordinary = method("mtd (Counter c) receive(ActorMail<int> mail): void { return; }");
         assertFalse(ordinary.runtimeOnly(), "ordinary mtd must not mint runtime ingress");
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(NS
-                        + "external mtd (Counter self) receive(ActorMail<int> mail): void { return; }")));
+                        + "external mtd (Counter c) receive(ActorMail<int> mail): void { return; }")));
     }
 
     @Test
@@ -48,6 +48,15 @@ final class ExternalActorRuntimeIngressSyntaxTest {
                 external mtd (Counter c) receive(ActorMail<int> mail): void { return; }
                 pub mtd (Counter c) echo(int value): int { return value; }
                 """);
+        var declaredReceive = assertInstanceOf(Ast.ExternalActorMethodDecl.class,
+                legal.modules().getFirst().declarations().get(2));
+        assertEquals(Ast.Visibility.PRIVATE, declaredReceive.visibility());
+        assertTrue(declaredReceive.runtimeOnly());
+        assertEquals("ActorMail", declaredReceive.parameters().getFirst().type().name());
+        assertEquals(1, declaredReceive.parameters().getFirst().type().arguments().size());
+        assertEquals("int",
+                declaredReceive.parameters().getFirst().type().arguments().getFirst().name());
+        assertEquals("void", declaredReceive.returnType().name());
         var bound = ActorReceiverBinder.bind(legal);
         assertEquals(3, bound.size());
         assertTrue(bound.get(new ActorReceiverBinder.Slot(
