@@ -1731,8 +1731,13 @@ public final class OwnershipChecker {
                 && findClass("Bytes") == null
                 && (bytesCtor.member().equals("empty")
                         || bytesCtor.member().equals("from_list")
-                        || bytesCtor.member().equals("from_string"))) {
-            for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, false);
+                        || bytesCtor.member().equals("from_string")
+                        || java.util.Set.of("from_u8", "from_u16_be", "from_i16_be", "from_u32_be",
+                                "from_i32_be", "from_i64_be", "from_uvarint", "from_zigzag_varint", "join")
+                                .contains(bytesCtor.member()))) {
+            // join moves its List<Bytes> in; every other constructor reads scalars.
+            boolean consumes = bytesCtor.member().equals("join");
+            for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, consumes);
             return new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.MOVE_ONLY, null);
         }
         // Exact built-in NIO2 provenance, independently rechecked in
@@ -2039,10 +2044,16 @@ public final class OwnershipChecker {
                     && concreteReceiver.arguments().isEmpty()
                     && findClass("Bytes") == null) {
                 ValueInfo bytesResult = switch (member.member()) {
-                    case "size", "byte_at", "index_of" ->
+                    case "size", "byte_at", "index_of",
+                            "read_u16_be", "read_i16_be", "read_u32_be", "read_i32_be", "read_i64_be",
+                            "crc32c", "crc32" ->
                             new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
                     case "equals" ->
                             new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    case "read_uvarint", "read_zigzag_varint" -> new ValueInfo(
+                            Ast.TypeRef.tupleType(List.of(
+                                    Ast.TypeRef.simple("int"), Ast.TypeRef.simple("int"))),
+                            ValueKind.COPY, null);
                     case "slice", "concat", "copy" ->
                             new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.MOVE_ONLY, null);
                     case "to_list" -> new ValueInfo(

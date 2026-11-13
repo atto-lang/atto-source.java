@@ -8189,6 +8189,31 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return bytes.equals(other);
                     };
+                    case "read_u16_be", "read_i16_be", "read_u32_be", "read_i32_be", "read_i64_be" ->
+                            (Invokable) args -> {
+                        requireOne(args, "Bytes." + name);
+                        int at = bytesIndex(args.getFirst(), "Bytes." + name + " offset");
+                        return switch (name) {
+                            case "read_u16_be" -> bytes.readU16Be(at);
+                            case "read_i16_be" -> bytes.readI16Be(at);
+                            case "read_u32_be" -> bytes.readU32Be(at);
+                            case "read_i32_be" -> bytes.readI32Be(at);
+                            default -> bytes.readI64Be(at);
+                        };
+                    };
+                    case "read_uvarint", "read_zigzag_varint" -> (Invokable) args -> {
+                        requireOne(args, "Bytes." + name);
+                        int at = bytesIndex(args.getFirst(), "Bytes." + name + " offset");
+                        long[] decoded = name.equals("read_uvarint")
+                                ? bytes.readUvarint(at) : bytes.readZigzagVarint(at);
+                        return List.of(decoded[0], decoded[1]);
+                    };
+                    case "crc32c", "crc32" -> (Invokable) args -> {
+                        requireTwo(args, "Bytes." + name);
+                        int start = bytesIndex(args.get(0), "Bytes." + name + " start");
+                        int end = bytesIndex(args.get(1), "Bytes." + name + " end");
+                        return name.equals("crc32c") ? bytes.crc32c(start, end) : bytes.crc32(start, end);
+                    };
                     case "copy" -> (Invokable) args -> {
                         requireZero(args, "Bytes.copy");
                         return dev.oreslang.runtime.OresBytes.copyOf(bytes.toArrayCopy());
@@ -8771,6 +8796,32 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Bytes.from_string");
                         return dev.oreslang.runtime.OresBytes.fromString(
                                 requireString(args.getFirst(), "Bytes.from_string"));
+                    };
+                    case "from_u8", "from_u16_be", "from_i16_be", "from_u32_be", "from_i32_be",
+                            "from_i64_be", "from_uvarint", "from_zigzag_varint" -> (Invokable) args -> {
+                        requireOne(args, "Bytes." + name);
+                        if (!(args.getFirst() instanceof Number number)
+                                || number.doubleValue() != Math.rint(number.doubleValue())) {
+                            throw new IllegalArgumentException("Bytes." + name + " needs an integer");
+                        }
+                        long v = number.longValue();
+                        return switch (name) {
+                            case "from_u8" -> dev.oreslang.runtime.OresBytes.fromU8(v);
+                            case "from_u16_be" -> dev.oreslang.runtime.OresBytes.fromU16Be(v);
+                            case "from_i16_be" -> dev.oreslang.runtime.OresBytes.fromI16Be(v);
+                            case "from_u32_be" -> dev.oreslang.runtime.OresBytes.fromU32Be(v);
+                            case "from_i32_be" -> dev.oreslang.runtime.OresBytes.fromI32Be(v);
+                            case "from_i64_be" -> dev.oreslang.runtime.OresBytes.fromI64Be(v);
+                            case "from_uvarint" -> dev.oreslang.runtime.OresBytes.fromUvarint(v);
+                            default -> dev.oreslang.runtime.OresBytes.fromZigzagVarint(v);
+                        };
+                    };
+                    case "join" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.join");
+                        if (!(args.getFirst() instanceof List<?> parts)) {
+                            throw new IllegalArgumentException("Bytes.join requires List<Bytes>");
+                        }
+                        return dev.oreslang.runtime.OresBytes.join(parts);
                     };
                     default -> throw new IllegalArgumentException("unknown Bytes constructor " + name);
                 };
