@@ -50,6 +50,52 @@ final class ImplicitSelfLookupHardeningTest {
     }
 
     @Test
+    void moduleQualifiedSubclassPreservesImplicitVirtualDispatch() throws Exception {
+        assertEquals("42", run("""
+                define module m as
+                  define class Base as
+                    pub answer(int value): int { return value + 1; }
+                    pub via_implicit_self(int value): int { return answer(value); }
+                  end
+                  define class Child extends Base as
+                    pub answer(int value): int { return value + 2; }
+                  end
+                end
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.via_implicit_self(40));
+                }
+                """));
+    }
+
+    @Test
+    void modulePrivateMethodCanBeCalledOnlyThroughItsLexicalSelf() throws Exception {
+        assertEquals("42", run("""
+                define module m as
+                  define class Box as
+                    read_value(): int { return 40; }
+                    pub answer(): int { return read_value() + 2; }
+                  end
+                end
+                pub routine main(): void {
+                  val box = new m.Box();
+                  stdio.stdout.write(box.answer());
+                }
+                """));
+    }
+
+    @Test
+    void shadowingMethodWithNonCallableParameterFailsClosed() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub compute(int value): int { return value + 1; }
+                          pub shadow(int compute): int { return compute(3); }
+                        end
+                        """)));
+    }
+
+    @Test
     void dynamicSubclassCannotHijackLexicallySelectedFreeFunction() throws Exception {
         assertEquals("99", run("""
                 fnc helper(): int { return 99; }
