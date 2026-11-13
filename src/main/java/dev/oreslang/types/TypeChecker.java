@@ -4591,6 +4591,13 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            // Await always yields the logical execution, including ActorRef
+            // readiness. A synchronous fnc/mtd/lambda cannot inherit this
+            // authority from its caller or from a surrounding actor turn.
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "await requires an async or suspends callable/task; synchronous callbacks cannot suspend");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
