@@ -6312,6 +6312,17 @@ public final class OresEvalRootNode extends RootNode {
             if (scope.body().size() != 2
                     || !(scope.body().get(0) instanceof Ast.BindingStmt acquired)
                     || !(scope.body().get(1) instanceof Ast.TryStmt protectedBody)
+                    || acquired.kind() != Ast.BindingKind.VAL
+                    || !(protectedBody.finallyBody().size() == 1
+                            && protectedBody.finallyBody().getFirst() instanceof Ast.ExprStmt finalizer
+                            && finalizer.expression() instanceof Ast.CallExpr cleanup
+                            && cleanup.callee() instanceof Ast.MemberExpr close
+                            && close.member().equals("close_scope")
+                            && close.receiver() instanceof Ast.NameExpr name
+                            && name.name().equals(acquired.name())
+                            && cleanup.arguments().isEmpty()
+                            && !cleanup.typeArgumentsPresent())
+                    || !protectedBody.catchBody().isEmpty()
                     || !(acquired.initializer() instanceof Ast.CallExpr create)
                     || create.arguments().size() != 1
                     || !(create.arguments().getFirst() instanceof Ast.LiteralExpr literal)
@@ -6320,8 +6331,8 @@ public final class OresEvalRootNode extends RootNode {
                     || !factory.member().equals("span")
                     || !(factory.receiver() instanceof Ast.NameExpr namespace)
                     || !namespace.name().equals("telemetry")
-                    || protectedBody.hasCatch()
-                    || protectedBody.finallyBody().size() != 1) {
+                    || create.typeArgumentsPresent()
+                    || protectedBody.hasCatch()) {
                 throw new IllegalStateException("invalid compiler-owned telemetry scope AST");
             }
             NativeTelemetryScopes.validateOperationLiteral(operation);
