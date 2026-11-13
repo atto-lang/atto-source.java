@@ -8157,6 +8157,79 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        /**
+         * No Java implementation of map/filter/reduce lives here: invoke the
+         * original compiler-owned .atto function AST in the guest evaluator.
+         * Member dispatch is just a checked adapter for the receiver argument.
+         */
+        private Object invokeNativeAttoCollectionMethod(
+                String operation, List<?> receiver, List<Object> arguments) {
+            int count = operation.equals("reduce") ? 2 : 1;
+            if (arguments.size() != count) {
+                throw new IllegalArgumentException(
+                        "collection." + operation + " expects " + count + " argument(s)");
+            }
+            Object callback = arguments.get(count - 1);
+            if (!(callback instanceof Invokable)) {
+                throw new IllegalArgumentException(
+                        "collection." + operation + " requires an Atto callback");
+            }
+            Ast.FunctionDecl nativeFunction =
+                    NativeAttoCollectionModule.function(operation + "_array");
+            ArrayList<Object> inputs = new ArrayList<>(1 + count);
+            inputs.add(receiver);
+            inputs.addAll(arguments);
+            // The guest function owns the fresh result, evaluation and
+            // callback ordering, including every checked get/add call.
+            return callFunction(nativeFunction, inputs);
+        }
+
+        private static final class NativeAttoCollectionModule {
+            private static final Map<String, Ast.FunctionDecl> FUNCTIONS = load();
+
+            private static Map<String, Ast.FunctionDecl> load() {
+                final String code;
+                try {
+                    code = dev.oreslang.stdlib.CoreLibrarySources.oresCoreSource(
+                            "ores.core/collections");
+                } catch (java.io.IOException failure) {
+                    throw new IllegalStateException(
+                            "trusted native Atto collection source cannot be loaded", failure);
+                }
+                Ast.Program parsed = Parser.parse(code);
+                // The same parser/type checker must admit the actual native
+                // source before its functions become evaluator targets.
+                dev.oreslang.types.TypeChecker.check(parsed);
+                Map<String, Ast.FunctionDecl> result = new LinkedHashMap<>();
+                for (Ast.ModuleDecl module : parsed.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.FunctionDecl fn
+                                && fn.name().endsWith("_array")) {
+                            if (result.putIfAbsent(fn.name(), fn) != null) {
+                                throw new IllegalStateException(
+                                        "duplicate native Atto collection function: " + fn.name());
+                            }
+                        }
+                    }
+                }
+                if (!result.keySet().containsAll(
+                        Set.of("map_array", "filter_array", "reduce_array"))) {
+                    throw new IllegalStateException(
+                            "trusted Atto collections module is missing required functions");
+                }
+                return Map.copyOf(result);
+            }
+
+            private static Ast.FunctionDecl function(String name) {
+                Ast.FunctionDecl fn = FUNCTIONS.get(name);
+                if (fn == null) {
+                    throw new IllegalArgumentException(
+                            "unknown native Atto collection operation " + name);
+                }
+                return fn;
+            }
+        }
+
         private Object member(Object receiver, String name, Env env) {
             if (receiver instanceof dev.oreslang.runtime.OresBytes bytes) {
                 return switch (name) {
@@ -9136,6 +9209,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
+                    // The algorithms are interpreted directly from trusted,
+                    // compiler-owned collections.atto, never host Java loops.
+                    case "map", "filter", "reduce" -> (Invokable) args ->
+                            invokeNativeAttoCollectionMethod(name, rawList, args);
                     case "size" -> (long) rawList.size();
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
