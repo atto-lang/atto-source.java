@@ -1195,9 +1195,15 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            // A declaration-only source actor is a SHARED *actor kind* but
+            // still has sealed, actor-owned guest state. Its compiler-owned
+            // executor is the only exception to PRIVATE-kind allocation:
+            // it may allocate in its own slice, never another actor's.
+            if (cell == null
+                    || !(isPrivateKind(cell.kind) || cell.codeExecutor != null)
+                    || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "actor-owned source memory may only be reserved by its owning actor");
             }
         }
 
@@ -8572,7 +8578,11 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = isPrivateKind(kind)
+            // SHARED source actors are still mailbox/dispatch SHARED, but
+            // compiled sealed state must never occupy a shared JVM field.
+            // Only source-code executor actors receive an actor-private slice
+            // in addition to the existing PRIVATE/UNTRUSTED kinds.
+            this.memorySlice = (isPrivateKind(kind) || codeExecutor != null)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
         }
