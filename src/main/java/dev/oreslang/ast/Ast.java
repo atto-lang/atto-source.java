@@ -1344,7 +1344,8 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
+            ActorStateSnapshotExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1366,6 +1367,22 @@ public final class Ast {
                 if (!names.add(field.name())) {
                     throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
                 }
+            }
+        }
+    }
+
+    /**
+     * Compiler-recognized, nonescaping scalar snapshot from one critical-read
+     * scope. This is not a closure, raw ref or guest-mintable access permit.
+     * State schemas and effect safety require a separate manifest-bound MIR.
+     */
+    public record ActorStateSnapshotExpr(String viewName, String fieldName) implements Expr {
+        public ActorStateSnapshotExpr {
+            if (viewName == null || viewName.isBlank()
+                    || viewName.equals("_") || viewName.equals("self")
+                    || fieldName == null || fieldName.isBlank()) {
+                throw new IllegalArgumentException(
+                        "critical-read snapshot needs a named view and scalar field");
             }
         }
     }
