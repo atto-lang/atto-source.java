@@ -159,9 +159,15 @@ public final class NativeTelemetryScopes {
             throw new IllegalArgumentException("invalid native SpanScope observer");
         }
         for (Object value : values) {
-            if (!(value instanceof String text) || text.length() > 1024) {
+            if (!(value instanceof String text)) {
                 rejected.incrementAndGet();
-                throw new IllegalArgumentException("native SpanScope observer requires bounded strings");
+                throw new IllegalArgumentException("native SpanScope observer requires strings");
+            }
+            if (text.length() > 1024) {
+                // Oversized telemetry metadata must never affect the guest's
+                // ordinary result, whether recording is on or off.
+                dropped.incrementAndGet();
+                return;
             }
         }
         synchronized (carrier) {
