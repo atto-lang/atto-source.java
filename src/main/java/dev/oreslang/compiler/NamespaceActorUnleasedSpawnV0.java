@@ -347,6 +347,14 @@ public final class NamespaceActorUnleasedSpawnV0 {
                     "checked namespace-actor main accepts no host arguments");
             if (context.isolatePolicy().adversarial()) throw new SecurityException(
                     "source actor spawn v0 unavailable in adversarial contexts");
+            // This closed-world v1 still uses host lifecycle waits. Refuse to
+            // execute it on a physical actor carrier or an owned actor turn;
+            // general scheduler-aware await lowering is a separate gate.
+            if (ActorRuntime.isActorCarrierThread()
+                    || ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "checked actor guest lifecycle may not block an actor carrier");
+            }
             // The normal Graal root applies the full capability policy.
             // Special source admission must not silently skip that boundary.
             CapabilityChecker.check(
