@@ -1626,6 +1626,9 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr observer
                 && observer.receiver() instanceof Ast.NameExpr alias
                 && activeTelemetryAliases.contains(alias.name())) {
+            if (scope.lookup(alias.name()) != null) {
+                throw error("native SpanScope observer alias must not shadow a guest local");
+            }
             int expected = observer.member().equals("set_attribute") ? 2 : 1;
             if (!Set.of("set_attribute", "add_event", "record_error", "set_status")
                     .contains(observer.member())
