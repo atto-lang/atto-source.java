@@ -196,9 +196,24 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "external actor method requires nominal actor, receiver and method names");
             }
+            // Normalize manually constructed AST nodes as well as parser output:
+            // an underscore is a discard spelling, never an actor-local name.
+            if (receiverName.equals("_")) receiverName = "self";
+            if (java.util.Set.of("state", "handle_state", "on_start", "on_stop",
+                    "on_panic", "on_throw", "on_throws", "on_raise",
+                    "on_recover", "on_restart", "tear_down", "receive",
+                    "init").contains(receiverName)) {
+                throw new IllegalArgumentException(
+                        "actor receiver alias cannot impersonate a sealed or lifecycle binding");
+            }
             java.util.Objects.requireNonNull(visibility, "external method visibility");
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(p -> p.name().equals(receiverName)
+                    || p.name().equals("self"))) {
+                throw new IllegalArgumentException(
+                        "actor method formal cannot shadow its implicit receiver");
+            }
             body = List.copyOf(body);
         }
     }
