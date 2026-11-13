@@ -24,6 +24,9 @@ public final class NativeTelemetryScopes {
 
     public static final class Carrier {
         private final ArrayDeque<SpanToken> stack = new ArrayDeque<>();
+        // Preallocated at continuation creation: the disabled fast path
+        // reuses this carrier-bound singleton without token allocation.
+        private final SpanToken disabledToken = new SpanToken(this, 0L, null, true);
         private volatile boolean retired;
 
         private Carrier() { }
@@ -31,8 +34,6 @@ public final class NativeTelemetryScopes {
 
     /** Opaque compiler-owned token; guest code must never receive it. */
     public static final class SpanToken {
-        private static final SpanToken DISABLED =
-                new SpanToken(null, 0L, null, true);
         private final Carrier carrier;
         private final long startNanos;
         private final String operation;
@@ -88,7 +89,7 @@ public final class NativeTelemetryScopes {
             throw new IllegalStateException("retired telemetry continuation");
         }
         if (!enabled.get()) {
-            return SpanToken.DISABLED;
+            return carrier.disabledToken;
         }
         synchronized (carrier) {
             if (carrier.retired || carrier.stack.size() >= MAX_DEPTH) {
@@ -111,7 +112,7 @@ public final class NativeTelemetryScopes {
         Objects.requireNonNull(carrier, "continuation carrier");
         Objects.requireNonNull(token, "opaque span token");
         if (token.disabled) {
-            if (carrier.retired) {
+            if (token.carrier != carrier || carrier.retired) {
                 rejected.incrementAndGet();
                 throw new IllegalStateException("retired telemetry continuation");
             }
