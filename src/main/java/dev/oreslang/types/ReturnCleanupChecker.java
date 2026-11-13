@@ -168,6 +168,21 @@ public final class ReturnCleanupChecker {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
                 statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt using) {
+                // Resource initialization precedes lexical alias binding.
+                // A return/raise/defer inside this body must pass the same
+                // compiler cleanup and control-flow checks as a nested block.
+                expression(using.resource(), scope, inDefer, state);
+                Scope scoped = new Scope(scope);
+                scoped.define(using.binding());
+                statements(using.body(), scoped, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.UsingBorrowStmt using) {
+                // A transport loan must not evade return/finally checks just
+                // because execution is still fail-closed in the type checker.
+                expression(using.resource(), scope, inDefer, state);
+                Scope scoped = new Scope(scope);
+                scoped.define(using.binding());
+                statements(using.body(), scoped, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     expression(branch.condition(), scope, inDefer, state);
