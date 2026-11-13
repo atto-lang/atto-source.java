@@ -97,6 +97,15 @@ logging on the benchmark path. Compare equivalent request bytes, connection
 counts, compression/TLS settings and offered concurrency against a baseline
 before claiming performance improvement.
 
+## Listener-identity pooled worker ownership
+
+Java HTTP draft #2884 now uses listener-scoped worker slots. Sharing a Handler
+configuration does **not** share a pooled actor incarnation. Therefore
+`pooled(size)` is a per-listener actor cap, not a global cross-listener
+cap. Historical generations stay in the handler-wide registry until their
+actual physical carrier exit, even after a listener's slot map is released.
+Live loopback and full GraalVM verification remain outstanding.
+
 ## Current security and execution restrictions
 
 The source organization has experienced GitHub Actions failures before
