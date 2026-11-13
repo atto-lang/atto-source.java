@@ -31,6 +31,27 @@ final class NativeTelemetryScopesTest {
     }
 
     @Test
+    void disabledScopesAreBoundToTheirContinuationWithoutPerStartAllocation() {
+        NativeTelemetryScopes runtime = new NativeTelemetryScopes();
+        NativeTelemetryScopes.Carrier first = runtime.createCarrierForTrustedRuntime();
+        NativeTelemetryScopes.Carrier second = runtime.createCarrierForTrustedRuntime();
+        NativeTelemetryScopes.SpanToken one =
+                runtime.beginFromTrustedRuntime(first, "disabled");
+        NativeTelemetryScopes.SpanToken oneAgain =
+                runtime.beginFromTrustedRuntime(first, "disabled");
+        NativeTelemetryScopes.SpanToken other =
+                runtime.beginFromTrustedRuntime(second, "disabled");
+        assertSame(one, oneAgain);
+        assertNotSame(one, other);
+        assertThrows(IllegalStateException.class,
+                () -> runtime.endFromTrustedRuntime(second, one));
+        runtime.endFromTrustedRuntime(first, one);
+        runtime.endFromTrustedRuntime(second, other);
+        assertEquals(1, runtime.snapshotForTrustedHost().rejected());
+        assertEquals(0, runtime.snapshotForTrustedHost().started());
+    }
+
+    @Test
     void enabledScopeClosesExactlyOnce() {
         NativeTelemetryScopes runtime = new NativeTelemetryScopes();
         NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
