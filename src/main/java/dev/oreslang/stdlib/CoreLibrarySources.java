@@ -132,15 +132,27 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException(
                     "canonical core imports must start with 'ores.core/': " + importPath);
         }
-        // Native .atto sources take precedence; preserve existing .ores numeric
-        // identity and the closed registry so project files cannot shadow core.
+        // The same canonical source may be imported without a suffix,
+        // but explicit extensions must match the actual registered bytes.
+        // Never reinterpret an explicitly requested .atto module as .ores.
+        String pathBody = importPath.substring(CORE_IMPORT_PREFIX.length());
+        boolean explicitlyAtto = pathBody.endsWith(".atto");
+        boolean explicitlyOres = pathBody.endsWith(".ores");
         String legacy = canonicalPathBody(importPath, CORE_IMPORT_PREFIX);
         String stem = legacy.substring(0, legacy.length() - ".ores".length());
         if (stem.endsWith(".atto")) {
             stem = stem.substring(0, stem.length() - ".atto".length());
         }
         String nativeSource = stem + ".atto";
-        return CORE_SOURCES.contains(nativeSource) ? nativeSource : stem + ".ores";
+        String resolved = CORE_SOURCES.contains(nativeSource)
+                ? nativeSource : stem + ".ores";
+        if ((explicitlyAtto && !resolved.endsWith(".atto"))
+                || (explicitlyOres && !resolved.endsWith(".ores"))) {
+            throw new IllegalArgumentException(
+                    "requested core source suffix does not match compiler-owned module: "
+                            + importPath);
+        }
+        return resolved;
     }
 
     private static String canonicalStdRelativePath(String importPath) {
