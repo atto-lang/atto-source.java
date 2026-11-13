@@ -6539,6 +6539,10 @@ public final class OresEvalRootNode extends RootNode {
                     NativeTelemetryScopes.SpanToken token =
                             env.lookupNativeTelemetryAlias(name.name());
                     if (token != null) {
+                        if (env.lookupSlot(name.name()) != null) {
+                            throw new IllegalStateException(
+                                    "native SpanScope alias shadows guest lexical value");
+                        }
                         nativeScopes.observeFromTrustedRuntime(
                                 env.telemetryCarrier, token, observer.member(),
                                 evaluateArguments(call.arguments(), env));
