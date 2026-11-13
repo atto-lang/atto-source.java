@@ -7,7 +7,7 @@ import java.util.Set;
 
 /**
  * Host-only lifetime registry for all incarnations of a reusable HTTP
- * actor pool, including those replaced after another listener sealed them.
+ * actor pool, including generations displaced during listener shutdown.
  *
  * A pool slot describes only the *current* incarnation. Physical shutdown
  * must cancel every generation, including one no longer reachable from
