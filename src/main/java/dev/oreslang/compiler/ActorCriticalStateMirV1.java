@@ -172,10 +172,11 @@ public final class ActorCriticalStateMirV1 {
         var branch = stop.branches().getFirst();
         if (!(branch.condition() instanceof Ast.BinaryExpr eq)
                 || !(eq.operator().equals("==") || eq.operator().equals("eq"))
-                || !mailValue(eq.left(), mail)
-                || !(eq.right() instanceof Ast.LiteralExpr stopValue)
-                || !(stopValue.value() instanceof Long limit))
+                || !mailValue(eq.left(), mail))
             throw deny("stop condition must compare owned mail.value to an int literal");
+        Long stopValue = signedI64Literal(eq.right());
+        if (stopValue == null)
+            throw deny("stop condition requires one checked signed int literal");
         if (branch.body().size() != 1
                 || !(branch.body().getFirst() instanceof Ast.ExprStmt stopStatement)
                 || !(stopStatement.expression() instanceof Ast.CallExpr endCall)
@@ -207,11 +208,24 @@ public final class ActorCriticalStateMirV1 {
 
         return new Plan(packageIdentity, actorKey.namespace(), actorKey.actor(),
                 actorProof.stateUnit(), ingress.methodUnit(), field.name(),
-                (Long) initial.value(), mail, limit,
+                (Long) initial.value(), mail, stopValue,
                 List.of(new Operation(Opcode.CHECKED_ADD_MAIL_I64, field.name(), ingress.methodUnit()),
                         new Operation(Opcode.COPY_I64_TO_ACTOR_OUTPUT, field.name(), ingress.methodUnit()),
                         new Operation(Opcode.STOP_ON_MAIL_I64, field.name(), ingress.methodUnit())),
                 audit.manifestSha256(), audit.sourceSha256());
+    }
+
+    private static Long signedI64Literal(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long number)
+            return number;
+        if (expr instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long number
+                && number != Long.MIN_VALUE)
+            return -number;
+        return null;
     }
 
     private static boolean mailValue(Ast.Expr expr, String mail) {
