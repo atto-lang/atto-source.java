@@ -266,11 +266,12 @@ final class NamespaceActorCriticalIrCompiler {
         }
 
         List<CriticalPlan> calls = new ArrayList<>();
+        int outputFieldSlot = -1;
         List<Ast.Stmt> statements = receive.body();
-        if (statements.size() < 2 || statements.size() > 9
+        if (statements.size() < 2 || statements.size() > 10
                 || !(statements.getLast() instanceof Ast.ReturnStmt end)
                 || end.value() != null) {
-            throw reject("receive must call 1..8 own critical methods, then return");
+            throw reject("receive requires 1..8 checked critical calls, optional final self.send(state.field), then return");
         }
         for (int i = 0; i < statements.size() - 1; i++) {
             if (!(statements.get(i) instanceof Ast.ExprStmt exprStmt)
@@ -279,16 +280,31 @@ final class NamespaceActorCriticalIrCompiler {
                     || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
                     || call.arguments().size() != 1
                     || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !isName(member.receiver(), receive.receiverName())
-                    || !(call.arguments().getFirst() instanceof Ast.MemberExpr value)
-                    || !isName(value.receiver(), mail.name()) || !value.member().equals("value")) {
-                throw reject("receive may only invoke own critical method(mail.value)");
+                    || !isName(member.receiver(), receive.receiverName())) {
+                throw reject("receive may only invoke own checked critical methods or final owned scalar output");
+            }
+            if (member.member().equals("send")) {
+                // This is the actor's own output stream, not an ActorRef
+                // mailbox send. Only its private physical turn can emit.
+                // Never expose Owned, a state alias, or a diagnostic receipt.
+                if (i != statements.size() - 2 || calls.isEmpty()) {
+                    throw reject("source actor output must follow critical calls and precede return");
+                }
+                outputFieldSlot = fieldSlot(
+                        call.arguments().getFirst(), receive.receiverName(), slots);
+                continue;
+            }
+            if (!(call.arguments().getFirst() instanceof Ast.MemberExpr value)
+                    || !isName(value.receiver(), mail.name())
+                    || !value.member().equals("value")) {
+                throw reject("critical method argument must be owned ActorMail<int>.value");
             }
             CriticalPlan plan = methods.get(member.member());
             if (plan == null) throw reject("receive calls an unverified method");
+            if (calls.size() >= 8) throw reject("receive critical call budget exceeded");
             calls.add(plan);
         }
-        if (!new HashSet<>(methods.keySet()).containsAll(
+        if (calls.isEmpty() || !new HashSet<>(methods.keySet()).containsAll(
                 calls.stream().map(CriticalPlan::name).toList())) {
             throw reject("critical method call graph is not statically closed");
         }
@@ -297,8 +313,8 @@ final class NamespaceActorCriticalIrCompiler {
                 image, program.namespace(), actor.name(),
                 slots, methods.keySet());
         return new Executable(image, actor.name(), initial,
-                Map.copyOf(slots), List.copyOf(calls), new ConcurrentHashMap<>(),
-                descriptor);
+                Map.copyOf(slots), List.copyOf(calls), outputFieldSlot,
+                new ConcurrentHashMap<>(), descriptor);
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -411,7 +427,7 @@ final class NamespaceActorCriticalIrCompiler {
 
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
             String actorName, long[] initial, Map<String, Integer> slots,
-            List<CriticalPlan> calls,
+            List<CriticalPlan> calls, int outputFieldSlot,
             ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts,
             VerifiedActorDescriptor descriptor)
             implements ActorRuntime.ActorCodeExecutor {
@@ -471,6 +487,12 @@ final class NamespaceActorCriticalIrCompiler {
                 throw new SecurityException("mail must be a current owned ActorMail<int>");
             }
             for (CriticalPlan plan : calls) owned.apply(plan, input, context);
+            // Emit only an immutable scalar computed on the physical actor
+            // turn, after all checked state writes have committed.
+            // Runtime validates output admission and owns the frozen transport.
+            if (outputFieldSlot >= 0) {
+                context.runtime().emitCurrentActorOutput(owned.values[outputFieldSlot]);
+            }
             StateReceipt previous = receipts.get(owned.actor.id());
             if (previous == null
                     || previous.generation() != owned.actor.generation()) {
