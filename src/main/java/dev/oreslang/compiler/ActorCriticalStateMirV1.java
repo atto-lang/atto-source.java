@@ -174,16 +174,17 @@ public final class ActorCriticalStateMirV1 {
             throw deny("receive requires one immutable owned ActorMail<int> -> void");
 
         String mail = receive.parameters().getFirst().name();
-        if (receive.body().size() != 4)
-            throw deny("scalar ingress requires write, read, stop-if, return only");
+        if (receive.body().size() != 5)
+            throw deny("scalar ingress requires write, snapshot, send, stop-if, return only");
         if (!(receive.body().get(0) instanceof Ast.ActorStateAccessStmt writer)
                 || writer.mode() != Ast.CriticalStateMode.WRITE
-                || !(receive.body().get(1) instanceof Ast.ActorStateAccessStmt reader)
-                || reader.mode() != Ast.CriticalStateMode.READ
-                || !(receive.body().get(3) instanceof Ast.ReturnStmt last)
+                || !(receive.body().get(1) instanceof Ast.BindingStmt snapshot)
+                || !(snapshot.initializer() instanceof Ast.ActorStateSnapshotExpr reader)
+                || !(receive.body().get(2) instanceof Ast.ExprStmt send)
+                || !(receive.body().get(4) instanceof Ast.ReturnStmt last)
                 || last.value() != null)
-            throw deny("scalar ingress must contain ordered nonescaping loans and void return");
-        if (!(receive.body().get(2) instanceof Ast.IfStmt stop)
+            throw deny("scalar ingress must copy under read loan, exit, then send");
+        if (!(receive.body().get(3) instanceof Ast.IfStmt stop)
                 || stop.branches().size() != 1 || !stop.elseBody().isEmpty())
             throw deny("scalar ingress needs one explicit stop-on-message branch");
         var branch = stop.branches().getFirst();
@@ -220,8 +221,8 @@ public final class ActorCriticalStateMirV1 {
         // Re-inspect both operands: the existing preflight also admits an
         // integer literal; this MIR insists on the actual owned mail input.
         if (!writerIncrement(writer, field.name(), mail)
-                || !readerCopySend(reader, field.name()))
-            throw deny("critical MIR requires checked mail increment and copy-only output");
+                || !readerCopySend(snapshot, reader, send, field.name()))
+            throw deny("critical MIR requires checked mail increment and detached scalar output");
 
         return new Plan(packageIdentity, actorKey.namespace(), actorKey.actor(),
                 actorProof.stateUnit(), ingress.methodUnit(), field.name(),
@@ -272,17 +273,27 @@ public final class ActorCriticalStateMirV1 {
                 && mailValue(add.right(), mail);
     }
 
-    private static boolean readerCopySend(Ast.ActorStateAccessStmt reader, String field) {
-        if (reader.body().size() != 1
-                || !(reader.body().getFirst() instanceof Ast.ExprStmt stmt)
-                || !(stmt.expression() instanceof Ast.CallExpr call)
+    private static boolean readerCopySend(
+            Ast.BindingStmt snapshot,
+            Ast.ActorStateSnapshotExpr reader,
+            Ast.ExprStmt send,
+            String field) {
+        if (snapshot.kind() != Ast.BindingKind.VAL
+                || snapshot.declaredType() == null
+                || !snapshot.declaredType().name().equals("int")
+                || snapshot.declaredType().isBorrow()
+                || snapshot.declaredType().inferArguments()
+                || !snapshot.declaredType().arguments().isEmpty()
+                || !reader.fieldName().equals(field)
+                || !(send.expression() instanceof Ast.CallExpr call)
                 || call.typeArgumentsPresent() || call.arguments().size() != 1
                 || !(call.callee() instanceof Ast.MemberExpr member)
                 || !member.member().equals("send")
                 || !(member.receiver() instanceof Ast.NameExpr owner)
-                || !owner.name().equals("self"))
+                || !owner.name().equals("self")
+                || !(call.arguments().getFirst() instanceof Ast.NameExpr argument))
             return false;
-        return stateField(call.arguments().getFirst(), reader.viewName(), field);
+        return argument.name().equals(snapshot.name());
     }
 
     private static IllegalArgumentException deny(String reason) {
