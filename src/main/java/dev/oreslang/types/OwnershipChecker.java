@@ -4535,6 +4535,47 @@ public final class OwnershipChecker {
                     ? new AutoTraitRules.Capabilities(true, false, false) : none;
         }
 
+        // Bytes v1 is an immutable, move-only owned byte string.
+        if (name.equals("Bytes") && declaredClass == null) {
+            return type.arguments().isEmpty() && !type.inferArguments()
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+
+        // A typed Map owns its keys and values: moving the map moves them.
+        if (name.equals("Map") && declaredClass == null) {
+            if (type.arguments().size() != 2) return none;
+            boolean send = taskCaptureCapabilities(
+                            type.arguments().get(0), visitingClasses).send()
+                    && taskCaptureCapabilities(
+                            type.arguments().get(1), visitingClasses).send();
+            return new AutoTraitRules.Capabilities(send, false, false);
+        }
+
+        // Source Tuple[T1, T2, ...] encodes its finite elements in a single
+        // $shape$ argument (not generic positional arguments). Send/Sync/Share
+        // hold only if every element has them; repetition shapes fail closed.
+        // (Recursive tuple Send, as proposed in #2930.)
+        if (name.equals("Tuple") && declaredClass == null) {
+            if (type.arguments().size() != 1
+                    || !type.arguments().getFirst().isSequenceShape()) {
+                return none;
+            }
+            List<Ast.TypeRef> fields = type.arguments().getFirst().arguments();
+            if (fields.isEmpty()) return none;
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef field : fields) {
+                if (field.isRepeatExact() || field.isRepeatMany()) return none;
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(field, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            return new AutoTraitRules.Capabilities(send, sync, share);
+        }
+
         // Task-owned authority and actor-turn/foreign capabilities do not
         // become Send merely by being wrapped in an owned binding.
         if (switch (name) {
