@@ -1,0 +1,79 @@
+name: Namespace actor output exact-head full-tree verification
+on:
+  pull_request:
+    branches: [feat/namespace-actor-unleased-spawn-v0-20261112]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-source-head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact PR head (not synthetic merge SHA)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prove complete source-head identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          echo SOURCE_HEAD_SHA="$(git rev-parse HEAD)"
+          echo SOURCE_TREE_SHA="$(git rev-parse HEAD^{tree})"
+          echo ATTO_ACTOR_SOURCE_FULL_TREE_IDENTITY=EXACT_CHECKOUT
+
+      - name: Install JDK25 GraalVM without leaking credentials
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: graalvm
+          java-version: '25'
+          cache: maven
+          cache-read-only: true
+
+      - name: Verify actual JDK25 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          javac -version
+          native-image --version
+          test "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -1)" = "25"
+
+      - name: Compile complete source tree and execute all default Maven JUnit tests
+        shell: bash
+        env:
+          MAVEN_OPTS: -Xmx4g
+        run: |
+          set -euo pipefail
+          mvn -B -ntp '-P!native-thread-unix' -DfailIfNoTests=true clean test
+          test -s target/surefire-reports/TEST-dev.oreslang.compiler.NamespaceActorCriticalOutputTest.xml
+          test -s target/surefire-reports/TEST-dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest.xml
+          test -s target/surefire-reports/TEST-dev.oreslang.NamespaceActorUnleasedSpawnV0Test.xml
+          for spec in \
+            dev.oreslang.compiler.NamespaceActorCriticalOutputTest:3 \
+            dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest:11 \
+            dev.oreslang.NamespaceActorUnleasedSpawnV0Test:7; do
+            clazz="${spec%%:*}"
+            expected="${spec#*:}"
+            report="target/surefire-reports/TEST-${clazz}.xml"
+            test -s "$report"
+            grep -q "tests=\"$expected\"" "$report"
+            grep -q 'errors="0"' "$report"
+            grep -q 'failures="0"' "$report"
+            grep -q 'skipped="0"' "$report"
+          done
+          echo ATTO_ACTOR_SOURCE_FULL_TREE_JUNIT=PASS
+          echo ATTO_ACTOR_GENERAL_GUEST_LOWERING=NOT_PROVEN
+          echo ATTO_ACTOR_NATIVE_IMAGE_AOT=NOT_EXECUTED
+          echo ATTO_ACTOR_LLVM_NET_PARITY=NOT_EXECUTED
