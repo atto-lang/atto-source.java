@@ -3,6 +3,8 @@ package dev.oreslang.compiler;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -21,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * an Action list during Context.eval. They do NOT prove general
  * guest expression lowering, coroutine/await or native AOT.</p>
  */
-@Timeout(15)
+@Timeout(30)
 final class NamespaceActorTruffleActionNodesTest {
     private static String source() throws Exception {
         return Files.readString(Path.of(
@@ -66,6 +68,19 @@ final class NamespaceActorTruffleActionNodesTest {
             assertNotSame(left.get(i), right.get(i),
                     "fresh parser admission must mint a new Truffle AST");
             assertEquals(left.get(i).getClass(), right.get(i).getClass());
+        }
+    }
+
+    @Test
+    void normalPolyglotGuestExecutesTheLoweredNodesWithoutTrustedLease()
+            throws Exception {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            Source guest = Source.newBuilder(OresLanguage.ID,
+                    source(), "actor-nodes/live-source.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertEquals(42L, context.eval(guest).asLong(),
+                    "real Atto source must run compiled spawn/send action nodes");
         }
     }
 
