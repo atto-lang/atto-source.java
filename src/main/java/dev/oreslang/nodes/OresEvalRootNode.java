@@ -1985,6 +1985,23 @@ public final class OresEvalRootNode extends RootNode {
                 // Scope exit always waits for physical child quiescence.
                 return true;
             }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt using) {
+                // The resource initializer is evaluated before alias binding;
+                // its nested body may suspend. Never let the source-task
+                // trampoline silently choose the synchronous statement path
+                // and skip compiler-owned cleanup on an awaited child.
+                return expressionContainsPotentialSuspension(using.resource(), seen)
+                        || using.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
+            }
+            if (stmt instanceof Ast.UsingBorrowStmt using) {
+                // Keep future transport-loan lowering conservative as well.
+                // A borrow whose body suspends must be checked against the
+                // lexical loan lifetime, never executed as an opaque statement.
+                return expressionContainsPotentialSuspension(using.resource(), seen)
+                        || using.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
+            }
             if (stmt instanceof Ast.IfStmt conditional) {
                 return conditional.branches().stream().anyMatch(
                                 branch ->
