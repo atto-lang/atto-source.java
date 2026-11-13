@@ -52,6 +52,21 @@ final class NativeTelemetryScopesTest {
     }
 
     @Test
+    void opaqueCapabilityAndCarrierExposeNoPublicConstructors() {
+        assertTrue(java.util.Arrays.stream(
+                NativeTelemetryScopes.SpanToken.class.getDeclaredConstructors())
+                .noneMatch(ctor -> java.lang.reflect.Modifier.isPublic(ctor.getModifiers())));
+        assertTrue(java.util.Arrays.stream(
+                NativeTelemetryScopes.Carrier.class.getDeclaredConstructors())
+                .noneMatch(ctor -> java.lang.reflect.Modifier.isPublic(ctor.getModifiers())));
+        assertTrue(java.util.Arrays.stream(
+                NativeTelemetryScopes.SpanToken.class.getDeclaredMethods())
+                .noneMatch(method -> method.getName().equals("close")
+                        || method.getName().equals("close_scope")
+                        || method.getName().equals("begin")));
+    }
+
+    @Test
     void enabledScopeClosesExactlyOnce() {
         NativeTelemetryScopes runtime = new NativeTelemetryScopes();
         NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
