@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -80,6 +83,134 @@ final class ActorGuestStackCurrentRuntimeTest {
             assertTrue(sibling.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(sibling.failure().isEmpty(),
                     "the next actor on the same SHARED carrier must survive");
+        }
+    }
+
+    @Test
+    void hostSupervisorReplacementFencesStaleGenerationAndPreservesSiblingAndControl()
+            throws Exception {
+        // This is host-triggered replacement under one supervisor, NOT a
+        // source-level automatic restart policy or native JVM SOE recovery.
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ExecutorService control = Executors.newSingleThreadExecutor(
+                    runnable -> new Thread(runnable, "actor-stack-test-control"))) {
+            ActorRuntime.ControlDispatcher controlDispatcher =
+                    turn -> OresFuture.fromCallback(done -> control.execute(() -> {
+                        try {
+                            turn.run();
+                            done.resolve(null);
+                        } catch (Throwable failed) {
+                            done.reject(failed);
+                        }
+                    }));
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                    config, ActorRuntime.TurnExecutor.direct(), controlDispatcher)) {
+                var supervisor = runtime.createSupervisor();
+                var group = runtime.createActorGroup(supervisor);
+                assertEquals(supervisor.id(), group.supervisorId());
+
+                // Failure A: a stateless actor behavior catches the controlled
+                // budget error, but the runtime must still fail-stop that cell.
+                var exhausted = supervisor.<String>startChildHost(
+                        group, ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), factory -> (message, turn) -> {
+                            assertEquals("exhaust", message);
+                            ActorGuestStack owner = ActorRuntime.currentActorGuestStack();
+                            assertNotNull(owner);
+                            assertEquals(0, owner.highWaterFrames());
+                            int depth = 0;
+                            try {
+                                for (int i = 0;
+                                        i < GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS;
+                                        i++) {
+                                    depth = GuestCallDepthGuard.enter();
+                                }
+                                assertThrows(GuestCallDepthExceededException.class,
+                                        GuestCallDepthGuard::enter);
+                            } finally {
+                                while (depth > 0) GuestCallDepthGuard.leave(depth--);
+                            }
+                            assertTrue(owner.isPoisoned());
+                        });
+                var sibling = supervisor.<String>startChildHost(
+                        group, ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), factory -> (message, turn) -> {
+                            assertEquals("alive", message);
+                            ActorGuestStack owner = ActorRuntime.currentActorGuestStack();
+                            assertNotNull(owner);
+                            assertFalse(owner.isPoisoned());
+                            int depth = GuestCallDepthGuard.enter();
+                            try {
+                                assertEquals(1, depth);
+                            } finally {
+                                GuestCallDepthGuard.leave(depth);
+                            }
+                            turn.self().stop();
+                        });
+
+                exhausted.send("exhaust");
+                assertTrue(exhausted.awaitTermination(5, TimeUnit.SECONDS));
+                assertInstanceOf(GuestCallDepthExceededException.class,
+                        exhausted.failure().orElseThrow());
+                assertThrows(ActorRuntime.ActorTerminatedException.class,
+                        () -> exhausted.send("stale-old-incarnation"),
+                        "stale handles cannot revive a finalized actor");
+                assertThrows(IllegalArgumentException.class,
+                        () -> runtime.controlHandle(exhausted.id()),
+                        "a finalized old actor must not confer new lifecycle control");
+
+                sibling.send("alive");
+                assertTrue(sibling.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(sibling.failure().isEmpty(),
+                        "the one-carrier SHARED pool must keep running after A");
+
+                // A distinct injected CONTROL worker must still dispatch after
+                // actor A failed. This is not proof of the real VM CONTROL lane.
+                AtomicInteger controlTurns = new AtomicInteger();
+                runtime.dispatchSupervisorObservationControl(() -> {
+                    assertFalse(ActorRuntime.inActorExecution());
+                    assertTrue(Thread.currentThread().getName()
+                            .contains("actor-stack-test-control"));
+                    controlTurns.incrementAndGet();
+                }).get(5, TimeUnit.SECONDS);
+                assertEquals(1, controlTurns.get());
+                assertEquals(supervisor.id(), group.supervisorId());
+
+                // Host/supervisor elects to start a NEW incarnation in the same
+                // advisory domain; the old poisoned frame budget is not reused.
+                var replacement = supervisor.<String>startChildHost(
+                        group, ActorRuntime.ActorKind.SHARED,
+                        IsolatePolicy.developer(), factory -> (message, turn) -> {
+                            assertEquals("replacement", message);
+                            ActorGuestStack owner = ActorRuntime.currentActorGuestStack();
+                            assertNotNull(owner);
+                            assertEquals(0, owner.highWaterFrames(),
+                                    "new incarnation must not inherit poisoned depth");
+                            assertEquals(0, owner.activeFrames());
+                            assertFalse(owner.isPoisoned());
+                            int depth = GuestCallDepthGuard.enter();
+                            try {
+                                assertEquals(1, depth);
+                            } finally {
+                                GuestCallDepthGuard.leave(depth);
+                            }
+                            turn.self().stop();
+                        });
+                assertNotEquals(exhausted.id(), replacement.id());
+                assertTrue(replacement.generation() > exhausted.generation(),
+                        "new actor incarnation must mint a strictly newer generation");
+                assertNotEquals(exhausted.address(), replacement.address());
+                assertThrows(ActorRuntime.ActorTerminatedException.class,
+                        () -> exhausted.send("stale-after-replacement"));
+                replacement.send("replacement");
+                assertTrue(replacement.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(replacement.failure().isEmpty());
+                assertEquals(0, group.workerCount(),
+                        "both failed and healthy workers must leave the registry");
+                assertEquals(0, runtime.actorCount(),
+                        "the test must not leak live actor cells");
+                group.close();
+            }
         }
     }
 
