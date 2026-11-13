@@ -97,6 +97,9 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // An ordinary class scope is not sufficient authority for implicit self:
+    // static methods, constructors and field initializers also have a class.
+    private Ast.ClassDecl currentInstanceMethodOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
     // absent class field. Class methods never inherit constructor privileges.
     private Ast.ClassDecl currentConstructorOwner;
@@ -1718,9 +1721,11 @@ public final class TypeChecker {
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousInstanceMethodOwner = currentInstanceMethodOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
             currentMaySuspend = method.async() || method.suspends();
@@ -1729,6 +1734,7 @@ public final class TypeChecker {
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentInstanceMethodOwner = previousInstanceMethodOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
             }
@@ -3057,6 +3063,7 @@ public final class TypeChecker {
             // functions irrespective of arity. Never reify a bound method
             // value or infer self in a static/free callable.
             if (currentClassOwner != null
+                    && currentInstanceMethodOwner == currentClassOwner
                     && call.origin() == Ast.CallOrigin.DIRECT
                     && call.callee() instanceof Ast.NameExpr implicit
                     && !isBooleanIntrinsicName(implicit.name())
