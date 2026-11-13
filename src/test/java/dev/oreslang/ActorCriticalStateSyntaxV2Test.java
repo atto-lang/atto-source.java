@@ -212,6 +212,8 @@ final class ActorCriticalStateSyntaxV2Test {
         Path state = root.resolve("src/counter/state.atto");
         String source = Files.readString(receive);
         String schema = Files.readString(state);
+        String originalStateSha = build.auditDeclaredActors().sourceSha256().get(
+                "src/counter/state.atto");
         for (long stopOn : new long[] {-3, 1, 9}) {
             Files.writeString(receive, source.replace(
                     "if mail.value == 4; do", "if mail.value == " + stopOn + "; do"));
@@ -227,9 +229,9 @@ final class ActorCriticalStateSyntaxV2Test {
         assertEquals("count", plan.operations().get(1).field());
         // Every variant also re-checks source digests rather than reusing the
         // original canonical witness from another manifest snapshot.
-        assertNotEquals(build.auditDeclaredActors().sourceSha256().get(
-                "src/counter/state.atto"),
-                dev.oreslang.compiler.PackageNamespaceBuild.class.getName());
+        assertNotEquals(originalStateSha,
+                plan.sourceSha256().get("src/counter/state.atto"));
+        assertEquals(build.auditDeclaredActors().sourceSha256(), plan.sourceSha256());
     }
 
     @Test
