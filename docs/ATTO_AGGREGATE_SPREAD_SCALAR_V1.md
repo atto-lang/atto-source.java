@@ -47,6 +47,15 @@ borrowed references, MutexGuards, callbacks and unknown/generic source field
 types must not be spread until an independent field-wise copy/move and
 exception-cleanup proof is implemented.
 
+**Exact row provenance:** Structural record aliases may hide additional
+runtime keys by width compatibility. This v1 implementation therefore
+admits record spreads only from directly constructed aggregate expressions
+or a lexical binding whose exact field-key set was proved from an initializer
+without row narrowing. A rebindable name loses that proof after assignment.
+Spreading a structurally widened/narrowed parameter, method result or alias
+without such provenance fails closed; spell out selected keys explicitly.
+Structs retain their exact-shape type contract.
+
 Explicit `struct{schema}{...initializer}` spreads remain unsupported, because
 each declared member's definite initialization must be proved separately.
 
@@ -64,3 +73,22 @@ GitHub Actions run, or a source-free smoke is not evidence of guest execution
 or cross-backend parity. Keep the rollout candidate-only until the actual
 Java/Graal guest test succeeds, then address native AOT, LLVM, .NET, Wasm
 and Forge separately.
+
+## Evidence and runner security
+
+- A local **isolated JDK 21** compile-and-run smoke of the scalar spread helper
+  (not the production AttoLang compiler) passed snapshot, override, internal
+  closed-aggregate admission and non-scalar rejection checks with
+  `javac --release 21 -Xlint:all -Werror`.
+- Source-org GitHub Actions for the PR returned failures with
+  `runner_id=null` and **zero executed steps**. These are runner-admission
+  failures, not compiler test results.
+- Private cross-org mirroring is **not authorized** by this record. The
+  source repository's issue #962 still tracks protected-source provenance
+  and independently reviewed numeric destination approval. The proposed
+  `beamscale/bmscl-compiler` entry is specifically review-gated; neither
+  its private visibility nor the user's wish to test establishes the
+  independent approval required by the repository's publication policy.
+- `AggregateScalarSpreadTest` is committed but has **not executed** against
+  the exact compiler head. Keep PR draft until compiler/runtime guest tests
+  and required code-owner/security reviews are available.
