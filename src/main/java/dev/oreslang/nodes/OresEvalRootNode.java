@@ -1969,8 +1969,25 @@ public final class OresEvalRootNode extends RootNode {
                             || !(block.body().get(1) instanceof Ast.TryStmt body)) {
                         return true; // malformed compiler marker fails closed
                     }
-                    return body.body().stream().anyMatch(
-                            nested -> statementContainsPotentialSuspension(nested, seen));
+                    String alias = ((Ast.BindingStmt) block.body().get(0)).name();
+                    for (Ast.Stmt nested : body.body()) {
+                        if (nested instanceof Ast.ExprStmt expression
+                                && expression.expression() instanceof Ast.CallExpr call
+                                && call.callee() instanceof Ast.MemberExpr observer
+                                && observer.receiver() instanceof Ast.NameExpr receiver
+                                && receiver.name().equals(alias)
+                                && Set.of("set_attribute", "add_event", "record_error", "set_status")
+                                        .contains(observer.member())) {
+                            // The observer is compiler-owned; only its argument
+                            // expressions can possibly suspend.
+                            if (call.arguments().stream().anyMatch(
+                                    argument -> expressionContainsPotentialSuspension(
+                                            argument, seen))) return true;
+                        } else if (statementContainsPotentialSuspension(nested, seen)) {
+                            return true;
+                        }
+                    }
+                    return false;
                 }
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
