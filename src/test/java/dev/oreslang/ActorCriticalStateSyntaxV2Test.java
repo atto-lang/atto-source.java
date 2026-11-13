@@ -206,6 +206,33 @@ final class ActorCriticalStateSyntaxV2Test {
     }
 
     @Test
+    void typedMirReflectsActualSourceValuesAndFieldNamesNotCounterConstants() throws Exception {
+        var build = physicalBuild();
+        Path receive = root.resolve("src/counter/receive.atto");
+        Path state = root.resolve("src/counter/state.atto");
+        String source = Files.readString(receive);
+        String schema = Files.readString(state);
+        for (long stopOn : new long[] {-3, 1, 9}) {
+            Files.writeString(receive, source.replace(
+                    "if mail.value == 4; do", "if mail.value == " + stopOn + "; do"));
+            assertEquals(stopOn, build.lowerCriticalStateMirV1().stopOnMailValue());
+        }
+        Files.writeString(receive, source.replace("s.total", "s.count"));
+        Files.writeString(state, schema.replace("let int total : 0;",
+                "let int count : 17;"));
+        var plan = build.lowerCriticalStateMirV1();
+        assertEquals("count", plan.field());
+        assertEquals(17L, plan.initialValue());
+        assertEquals("count", plan.operations().getFirst().field());
+        assertEquals("count", plan.operations().get(1).field());
+        // Every variant also re-checks source digests rather than reusing the
+        // original canonical witness from another manifest snapshot.
+        assertNotEquals(build.auditDeclaredActors().sourceSha256().get(
+                "src/counter/state.atto"),
+                dev.oreslang.compiler.PackageNamespaceBuild.class.getName());
+    }
+
+    @Test
     void criticalStateViewMustNotShadowOwnedMailOrNominalReceiver() throws Exception {
         var build = physicalBuild();
         Path path = root.resolve("src/counter/receive.atto");
