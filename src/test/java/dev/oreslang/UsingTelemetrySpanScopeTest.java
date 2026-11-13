@@ -444,4 +444,22 @@ final class UsingTelemetrySpanScopeTest {
         assertTrue(denied.getMessage().contains("must not be shadowed"),
                 denied::getMessage);
     }
+
+    @Test
+    void userCallInsideNativeScopeRequiresVerifiedTransitiveEffects() {
+        String code = """
+                pub fnc helper(): void {
+                  return;
+                }
+                """ + program("""
+                using telemetry.span("checkout") as span {
+                  helper();
+                }
+                return;
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("transitive verified"),
+                denied::getMessage);
+    }
 }
