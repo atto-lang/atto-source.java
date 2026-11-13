@@ -69,7 +69,7 @@ jobs:
             }
             declare -A counts=()
             for key in tests failures errors skipped; do
-              if [[ ! "$header" =~ [[:space:]]${key}=\\\"([0-9]+)\\\" ]]; then
+              if [[ ! "$header" =~ [[:space:]]${key}=\"([0-9]+)\" ]]; then
                 echo "Missing or malformed $key result for $name" >&2; exit 1
               fi
               counts[$key]="${BASH_REMATCH[1]}"
