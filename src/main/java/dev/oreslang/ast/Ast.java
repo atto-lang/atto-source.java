@@ -198,7 +198,8 @@ public final class Ast {
             }
             // Normalize manually constructed AST nodes as well as parser output:
             // an underscore is a discard spelling, never an actor-local name.
-            if (receiverName.equals("_")) receiverName = "self";
+            String canonicalReceiver = receiverName.equals("_") ? "self" : receiverName;
+            receiverName = canonicalReceiver;
             if (java.util.Set.of("state", "handle_state", "on_start", "on_stop",
                     "on_panic", "on_throw", "on_throws", "on_raise",
                     "on_recover", "on_restart", "tear_down", "receive",
@@ -209,7 +210,7 @@ public final class Ast {
             java.util.Objects.requireNonNull(visibility, "external method visibility");
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
-            if (parameters.stream().anyMatch(p -> p.name().equals(receiverName)
+            if (parameters.stream().anyMatch(p -> p.name().equals(canonicalReceiver)
                     || p.name().equals("self"))) {
                 throw new IllegalArgumentException(
                         "actor method formal cannot shadow its implicit receiver");
