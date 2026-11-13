@@ -199,6 +199,21 @@ public final class Ast {
             // Normalize manually constructed AST nodes as well as parser output:
             // an underscore is a discard spelling, never an actor-local name.
             String canonicalReceiver = receiverName.equals("_") ? "self" : receiverName;
+            // Programmatic ASTs have to pass the same identifier boundary as
+            // lexer-parsed source: an alias is not a qualified path, symbol,
+            // synthetic compiler binding, or multiple source tokens.
+            if (!(Character.isLetter(canonicalReceiver.charAt(0))
+                    || canonicalReceiver.charAt(0) == '_')) {
+                throw new IllegalArgumentException(
+                        "actor receiver alias must be one valid source identifier");
+            }
+            for (int index = 1; index < canonicalReceiver.length(); index++) {
+                char character = canonicalReceiver.charAt(index);
+                if (!(Character.isLetterOrDigit(character) || character == '_')) {
+                    throw new IllegalArgumentException(
+                            "actor receiver alias must be one valid source identifier");
+                }
+            }
             receiverName = canonicalReceiver;
             if (java.util.Set.of("state", "handle_state", "on_start", "on_stop",
                     "on_panic", "on_throw", "on_throws", "on_raise",
