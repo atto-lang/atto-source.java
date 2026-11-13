@@ -243,6 +243,32 @@ final class DeclaredActorNativeGuestV1Test {
     }
 
     @Test
+    void omittedReceiverCannotTurnAttachedStateIntoUncheckedLegacyFields()
+            throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        write("src/counter/state.atto", NS
+                + "define state on actor Counter as { let int total : 0; }");
+        write("src/counter/method.atto", NS
+                + "pub mtd (Counter) echo(int n): int { return n; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                packageBuild::compileStatelessActorGuestV1);
+        assertTrue(error.getMessage().contains("sealed state/critical loans"),
+                error.getMessage());
+    }
+
+    @Test
+    void discardedReceiverDoesNotAuthorizePublicLifecycleIngress()
+            throws Exception {
+        PackageNamespaceBuild packageBuild = build();
+        write("src/counter/start.atto", NS
+                + "pub mtd (Counter _) on_start(): void { self.send(1); return; }");
+        var error = assertThrows(IllegalArgumentException.class,
+                packageBuild::compileStatelessActorGuestV1);
+        assertTrue(error.getMessage().contains("must be private"),
+                error.getMessage());
+    }
+
+    @Test
     void missingReceiveFailsBeforeGuestAdmission() throws Exception {
         PackageNamespaceBuild packageBuild = build();
         Files.delete(root.resolve("src/counter/receive.atto"));
