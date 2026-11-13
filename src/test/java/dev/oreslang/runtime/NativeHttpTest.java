@@ -491,13 +491,14 @@ class NativeHttpTest {
 
     @Test
     @org.junit.jupiter.api.Timeout(45)
-    void firstListenerCannotGracefullyStopActorStillSharedBySecondListener() throws Exception {
-        // Both listeners have used the SAME actual Atto worker generation
-        // before listener A starts shutdown. A must fail closed instead of
-        // sealing B's in-flight/future guest actor work. B remains usable.
+    void twoListenersSharingHandlerDrainIndependentlyWithoutStoppingEachOther()
+            throws Exception {
+        // The Handler is shared, but each listener owns a distinct pooled
+        // ActorRef. Listener A must complete its own *successful* physical
+        // shutdown while listener B remains alive and can reuse its actor.
         var firstPort = new CompletableFuture<Integer>();
         var secondPort = new CompletableFuture<Integer>();
-        var failedDrain = new CompletableFuture<Void>();
+        var firstDrain = new CompletableFuture<Void>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] bytes, int off, int len) {
                 super.write(bytes, off, len);
@@ -509,7 +510,7 @@ class NativeHttpTest {
                         .map(Integer::parseInt).toList();
                 if (!ports.isEmpty() && !firstPort.isDone()) firstPort.complete(ports.get(0));
                 if (ports.size() >= 2 && !secondPort.isDone()) secondPort.complete(ports.get(1));
-                if (complete.contains("shared-shutdown-rejected\n")) failedDrain.complete(null);
+                if (complete.contains("first-shutdown-completed\n")) firstDrain.complete(null);
             }
         };
         String source = """
@@ -534,18 +535,16 @@ class NativeHttpTest {
                   val secondCompleted = secondRequest.completion;
                   handler.dispatch(rt mut borrow secondRequest);
                   await secondCompleted;
-                  try {
-                    await first.shutdown(0);
-                    stdio.println("UNSAFE SHARED SHUTDOWN SUCCEEDED");
-                  } catch (err) {
-                    stdio.println("shared-shutdown-rejected");
-                  }
+                  await first.shutdown(0);
+                  stdio.println("first-shutdown-completed");
                   val nextRequest = await second.accept();
                   val nextCompleted = nextRequest.completion;
                   handler.dispatch(rt mut borrow nextRequest);
                   await nextCompleted;
                   await second.shutdown(0);
                   stdio.println("other-listener-still-served");
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
                   return;
                 }
                 """;
@@ -561,25 +560,26 @@ class NativeHttpTest {
                     assertNotEquals(a, b);
                     assertEquals(200, request(a, "GET", "/", "").statusCode());
                     assertEquals(200, request(b, "GET", "/", "").statusCode());
-                    failedDrain.get(15, TimeUnit.SECONDS);
+                    firstDrain.get(15, TimeUnit.SECONDS);
                     assertEquals(200, request(b, "GET", "/", "").statusCode(),
-                            "B must remain usable after A's guarded shutdown");
+                            "B must remain usable after A successfully drains");
                 } catch (Exception failure) {
                     throw new CompletionException(failure);
                 }
             });
             try {
                 context.eval(Source.newBuilder(OresLanguage.ID, source,
-                        "native-http-shared-ownership-guard.atto").build());
+                        "native-http-listener-isolation.atto").build());
                 client.get(30, TimeUnit.SECONDS);
             } finally {
                 client.cancel(true);
             }
         }
         String text = output.toString(StandardCharsets.UTF_8);
-        assertTrue(failedDrain.isDone(), "A never rejected unsafe global actor stop: " + text);
-        assertFalse(text.contains("UNSAFE SHARED SHUTDOWN SUCCEEDED"), text);
+        assertTrue(firstDrain.isDone(), "A never completed successful physical drain: " + text);
         assertTrue(text.contains("other-listener-still-served"), text);
+        assertTrue(text.endsWith("2\\n1\\n"),
+                "each listener must own a distinct actor; B must reuse only B's worker: " + text);
     }
 
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
