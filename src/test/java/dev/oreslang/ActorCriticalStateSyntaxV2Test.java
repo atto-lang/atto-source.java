@@ -228,12 +228,13 @@ final class ActorCriticalStateSyntaxV2Test {
                         "if mail.value == 5; do self.send(0);"),
                 canonical.replace("if mail.value == 4; do",
                         "if mail.value == 4; do self.send(0);"),
-                canonical.replace("self.send(s.total);",
+                canonical.replace("self.send(snapshot);",
                         "self.send(mail.value);"),
                 canonical.replace("self.end();", "self.send(42);"),
                 canonical.replace("if mail.value == 4; do",
                         "self.send(666); if mail.value == 4; do")
         }) {
+            assertNotEquals(canonical, mutation, "negative mutation must change actual source");
             Files.writeString(path, mutation);
             var rejected = assertThrows(IllegalArgumentException.class,
                     build::lowerCriticalStateMirV1, mutation);
