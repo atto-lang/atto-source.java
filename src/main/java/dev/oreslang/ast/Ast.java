@@ -1129,7 +1129,8 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr { }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.
@@ -1151,6 +1152,27 @@ public final class Ast {
                 if (!names.add(field.name())) {
                     throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
                 }
+            }
+        }
+    }
+
+    /**
+     * Explicit type-directed empty tilde constructor, e.g. ~<T>().
+     * Keep the type witness until the typechecker proves unique aggregate
+     * kind and zero-initializability. It is never a runtime dynamic factory.
+     * This AST form is conservatively rejected before lowering until
+     * per-kind guest constructor implementation is available.
+     */
+    /** Parser-only placeholder for ~map() awaiting a directly declared Map<K,V>
+     *  witness. Never typecheck or execute this node as a dynamic map.
+     */
+    public record ContextualEmptyMapExpr() implements Expr { }
+
+    public record TypedEmptyAggregateExpr(TypeRef aggregateType) implements Expr {
+        public TypedEmptyAggregateExpr {
+            java.util.Objects.requireNonNull(aggregateType, "typed empty aggregate type");
+            if (aggregateType.inferArguments()) {
+                throw new IllegalArgumentException("typed empty aggregate needs an explicit type");
             }
         }
     }
