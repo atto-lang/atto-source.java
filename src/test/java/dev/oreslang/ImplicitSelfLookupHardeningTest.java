@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -251,6 +252,20 @@ final class ImplicitSelfLookupHardeningTest {
                           }
                         end
                         """)));
+    }
+
+    @Test
+    void compilerBuiltinsKeepPriorityAcrossTypeOwnershipAndRuntime() {
+        for (String reserved : new String[] {
+                "init", "Some", "Ok", "Err", "And", "Or", "Xor", "print",
+                "task_context", "task_cancel_requested",
+                "$task_context_enter", "$task_context_exit"
+        }) {
+            assertTrue(CallableSelector.reservedImplicitReceiverCallName(reserved), reserved);
+        }
+        for (String method : new String[] { "value", "calculate", "heartbeat", "read_value" }) {
+            assertFalse(CallableSelector.reservedImplicitReceiverCallName(method), method);
+        }
     }
 
     @Test
