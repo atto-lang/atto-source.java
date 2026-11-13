@@ -807,8 +807,9 @@ public final class Parser {
                     "expected actor receiver name, '_', 'self' or ')'").lexeme();
             if (!writtenName.equals("_")) {
                 if (java.util.Set.of("state", "handle_state", "on_start",
-                        "on_stop", "on_panic", "on_throw", "on_raise",
-                        "on_recover", "receive", "init").contains(writtenName)) {
+                        "on_stop", "on_panic", "on_throw", "on_throws",
+                        "on_raise", "on_recover", "on_restart", "tear_down",
+                        "receive", "init").contains(writtenName)) {
                     throw error(previous(),
                             "actor receiver alias cannot shadow sealed state or runtime ingress");
                 }
