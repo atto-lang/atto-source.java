@@ -393,7 +393,7 @@ class NativeHttpTest {
 
     @org.junit.jupiter.api.RepeatedTest(4)
     @org.junit.jupiter.api.Timeout(45)
-    void twoListenersSharingOnePoolReplaceSealedWorkerAfterFirstShutdown() throws Exception {
+    void twoListenersSharingHandlerUseDistinctPooledWorkersAfterFirstShutdown() throws Exception {
         // Real Atto guest + loopback HTTP. Listener A's shutdown seals the
         // shared worker incarnation. Listener B must allocate a distinct
         // generation instead of sending to A's retired worker.
