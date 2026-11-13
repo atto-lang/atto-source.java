@@ -111,6 +111,33 @@ final class ActorCriticalStateSyntaxV2Test {
     }
 
     @Test
+    void readLoanCannotSendInScopeOrHideSnapshotInSendArgument() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        String source = Files.readString(path);
+        String detached = """
+                  val int snapshot = self.handle_state(critical-read |s| -> s.total);
+                  self.send(snapshot);""";
+        assertTrue(source.contains(detached), "test requires the current canonical read-then-send");
+
+        String liveLoanSend = source.replace(detached,
+                "  self.handle_state(critical-read |s| -> { self.send(s.total); });");
+        assertNotEquals(source, liveLoanSend);
+        Files.writeString(path, liveLoanSend);
+        var denied = assertThrows(IllegalArgumentException.class, build::auditDeclaredActors);
+        assertTrue(denied.getMessage().contains("critical-read cannot publish"),
+                denied.getMessage());
+
+        String embedded = source.replace(detached,
+                "  self.send(self.handle_state(critical-read |s| -> s.total));");
+        assertNotEquals(source, embedded);
+        Files.writeString(path, embedded);
+        var escaped = assertThrows(IllegalArgumentException.class, build::auditDeclaredActors);
+        assertTrue(escaped.getMessage().contains("unverified actor-state expression"),
+                escaped.getMessage());
+    }
+
+    @Test
     void malformedOrNonadjacentCriticalModesCannotBeMinted() {
         for (var mode : new String[] {"critical-readwrite", "critical -write",
                 "critical-writee", "critical-w rite", "critical - read"}) {
