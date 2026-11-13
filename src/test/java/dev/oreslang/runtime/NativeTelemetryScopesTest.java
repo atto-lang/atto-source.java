@@ -137,6 +137,47 @@ final class NativeTelemetryScopesTest {
     }
 
     @Test
+    void typedNativeObserversCountCallsOnlyForActiveEnabledScope() {
+        NativeTelemetryScopes runtime = new NativeTelemetryScopes();
+        NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
+        runtime.setEnabledFromTrustedHost(true);
+        NativeTelemetryScopes.SpanToken token =
+                runtime.beginFromTrustedRuntime(carrier, "order");
+        runtime.observeFromTrustedRuntime(carrier, token,
+                "set_attribute", List.of("order.type", "digital"));
+        runtime.observeFromTrustedRuntime(carrier, token,
+                "add_event", List.of("received"));
+        runtime.endFromTrustedRuntime(carrier, token);
+        assertEquals(2, runtime.snapshotForTrustedHost().observerCalls());
+        assertThrows(IllegalStateException.class,
+                () -> runtime.observeFromTrustedRuntime(carrier, token,
+                        "set_status", List.of("ok")));
+        assertEquals(2, runtime.snapshotForTrustedHost().observerCalls());
+    }
+
+    @Test
+    void nativeObserverCannotBypassOpaqueCarrierOrArityRules() {
+        NativeTelemetryScopes runtime = new NativeTelemetryScopes();
+        NativeTelemetryScopes.Carrier owner = runtime.createCarrierForTrustedRuntime();
+        NativeTelemetryScopes.Carrier other = runtime.createCarrierForTrustedRuntime();
+        runtime.setEnabledFromTrustedHost(true);
+        NativeTelemetryScopes.SpanToken token =
+                runtime.beginFromTrustedRuntime(owner, "order");
+        assertThrows(IllegalStateException.class,
+                () -> runtime.observeFromTrustedRuntime(other, token,
+                        "add_event", List.of("wrong")));
+        assertThrows(IllegalArgumentException.class,
+                () -> runtime.observeFromTrustedRuntime(owner, token,
+                        "set_attribute", List.of("missing-value")));
+        assertThrows(IllegalArgumentException.class,
+                () -> runtime.observeFromTrustedRuntime(owner, token,
+                        "close_scope", List.of()));
+        assertEquals(0, runtime.snapshotForTrustedHost().observerCalls());
+        runtime.endFromTrustedRuntime(owner, token);
+        assertEquals(0, runtime.snapshotForTrustedHost().active());
+    }
+
+    @Test
     void retirementEndsAllActiveScopesThenRejectsReuse() {
         NativeTelemetryScopes runtime = new NativeTelemetryScopes();
         NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
