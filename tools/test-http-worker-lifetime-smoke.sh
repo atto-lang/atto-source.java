@@ -10,5 +10,6 @@ cd "$repo_root"
 javac -encoding UTF-8 -d "$temp_classes" \
   src/main/java/dev/oreslang/runtime/HttpPooledWorkerAdmissionFence.java \
   src/main/java/dev/oreslang/runtime/HttpPooledWorkerGenerationRegistry.java \
+  src/main/java/dev/oreslang/runtime/HttpPooledWorkerListenerSlots.java \
   tools/ci/HttpWorkerLifetimeSmoke.java
 java -cp "$temp_classes" dev.oreslang.runtime.HttpWorkerLifetimeSmoke
