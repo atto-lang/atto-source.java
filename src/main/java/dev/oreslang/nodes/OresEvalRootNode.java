@@ -4773,14 +4773,55 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Apply one statically admitted aggregate item. Spreads never accept
+         * arbitrary host Maps or objects: only guest closed aggregates with
+         * independently copyable scalar fields are safe in this v1 slice.
+         * Later source items win; explicit duplicate names are AST-rejected.
+         */
+        private void putClosedAggregateField(
+                Ast.ObjectExpr object, Ast.ObjectField field, Object value,
+                LinkedHashMap<String, Object> destination) {
+            if (field.spread()) {
+                if (object.explicitStruct()) {
+                    throw new IllegalArgumentException("explicit struct spread is unsupported");
+                }
+                if (!(value instanceof ReadonlyRecordValue
+                        || value instanceof MutableStructValue)) {
+                    throw new IllegalArgumentException(
+                            "aggregate spread requires an internal closed record or struct");
+                }
+                for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                    if (!(entry.getKey() instanceof String key)
+                            || !(entry.getValue() instanceof String
+                                 || entry.getValue() instanceof Number
+                                 || entry.getValue() instanceof Boolean)) {
+                        throw new IllegalArgumentException(
+                                "aggregate spread contains a non-scalar or non-string field");
+                    }
+                    destination.put(key, entry.getValue());
+                }
+                return;
+            }
+            String key = field.name();
+            if (object.explicitStruct()) {
+                if (!destination.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            "explicit struct initializer contains undeclared field " + key);
+                }
+                if (destination.get(key) != UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "duplicate explicit struct initializer field " + key);
+                }
+            }
+            destination.put(key, value);
+        }
+
         private void evalSuspendableObject(
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
                 SourceValueCont continuation) {
-            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw new IllegalArgumentException("unverified aggregate spread cannot execute");
-            }
             ArrayList<Object> values = new ArrayList<>();
             evalSuspendableObjectField(
                     task,
@@ -4812,24 +4853,8 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                 }
-                for (Object value : values) {
-                    @SuppressWarnings("unchecked")
-                    Map.Entry<String, Object> entry =
-                            (Map.Entry<String, Object>) value;
-                    if (object.explicitStruct()) {
-                        if (!result.containsKey(entry.getKey())) {
-                            throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + entry.getKey());
-                        }
-                        if (result.get(entry.getKey()) != UNINITIALIZED_FIELD) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + entry.getKey());
-                        }
-                        result.put(entry.getKey(), entry.getValue());
-                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate struct field " + entry.getKey());
-                    }
+                for (int i = 0; i < values.size(); i++) {
+                    putClosedAggregateField(object, object.fields().get(i), values.get(i), result);
                 }
                 Object built = object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
@@ -4848,7 +4873,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
+                        values.add(value);
                         evalSuspendableObjectField(
                                 t,
                                 object,
@@ -8092,9 +8117,6 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                    throw new IllegalArgumentException("unverified aggregate spread cannot execute");
-                }
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -8105,21 +8127,8 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 for (Ast.ObjectField field : object.fields()) {
-                    String key = field.name();
                     Object value = eval(field.value(), env);
-                    if (object.explicitStruct()) {
-                        if (!result.containsKey(key)) {
-                            throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + key);
-                        }
-                        if (result.get(key) != UNINITIALIZED_FIELD) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + key);
-                        }
-                        result.put(key, value);
-                    } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate struct field " + key);
-                    }
+                    putClosedAggregateField(object, field, value, result);
                 }
                 return object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
