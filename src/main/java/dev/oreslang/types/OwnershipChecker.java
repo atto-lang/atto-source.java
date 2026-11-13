@@ -1711,6 +1711,39 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
+        // Exact built-in NIO2 provenance, independently rechecked in
+        // TypeChecker: a source-owned listener yields an affine connection.
+        // This avoids marking a merely inferred or user-defined class Send.
+        if (call.callee() instanceof Ast.MemberExpr nioMember
+                && nioMember.receiver() instanceof Ast.NameExpr namespace
+                && (namespace.name().equals("network") || namespace.name().equals("net"))
+                && scope.lookup(namespace.name()) == null
+                && nioMember.member().equals("listen_async")
+                && call.arguments().size() == 2
+                && findClass("NioListener") == null) {
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, false);
+            }
+            Ast.TypeRef listener = Ast.TypeRef.simple("NioListener");
+            Ast.TypeRef future = new Ast.TypeRef("Future", List.of(listener), false);
+            return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr nioMember
+                && nioMember.member().equals("accept_async")
+                && call.arguments().isEmpty()
+                && findClass("NioListener") == null
+                && findClass("NioConnection") == null) {
+            Ast.TypeRef receiver = receiverType(nioMember.receiver(), scope);
+            if (receiver != null && !receiver.isBorrow()
+                    && receiver.name().equals("NioListener")
+                    && receiver.arguments().isEmpty()) {
+                checkExpr(nioMember.receiver(), scope, false);
+                Ast.TypeRef connection = Ast.TypeRef.simple("NioConnection");
+                Ast.TypeRef future = new Ast.TypeRef(
+                        "Future", List.of(connection), false);
+                return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+            }
+        }
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
@@ -4431,6 +4464,15 @@ public final class OwnershipChecker {
         // T is routing/protocol metadata, not embedded actor state.
         if (name.equals("ActorRef")) {
             return isVerifiedActorReference(type) ? scalar : none;
+        }
+
+        // A completed accept creates a uniquely owned NIO2 connection.
+        // Independent tasks may MOVE (never Copy/Share) this exact handle.
+        // The per-socket native runtime enforces one pending I/O operation
+        // per direction; the caller loses the handle on task capture.
+        if (name.equals("NioConnection")) {
+            return type.arguments().isEmpty() && findClass("NioConnection") == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
         }
 
         // Task-owned authority and actor-turn/foreign capabilities do not
