@@ -366,9 +366,18 @@ public record IsolatePolicy(
             else if (arg.startsWith("--ores-max-heap-bytes=")) maxHeap = Long.parseLong(arg.substring("--ores-max-heap-bytes=".length()));
             else if (arg.startsWith("--ores-max-mailbox-messages=")) maxMailbox = Integer.parseInt(arg.substring("--ores-max-mailbox-messages=".length()));
             else if (arg.startsWith("--ores-max-wall-ms=")) maxWallMs = Long.parseLong(arg.substring("--ores-max-wall-ms=".length()));
-            else if (arg.startsWith("--ores-adversarial=")) adversarial = Boolean.parseBoolean(arg.substring("--ores-adversarial=".length()));
+            else if (arg.startsWith("--ores-adversarial=")) {
+                String value = arg.substring("--ores-adversarial=".length());
+                if (!"true".equals(value) && !"false".equals(value)) {
+                    throw new IllegalArgumentException("--ores-adversarial requires true or false");
+                }
+                adversarial = "true".equals(value);
+            }
         }
-        if (raw == null) return developer();
+        // Embedders may supply only an explicit threat-model flag. Never
+        // discard --ores-adversarial=true merely because no capability list
+        // was supplied: that would silently admit the developer policy.
+        if (raw == null) return adversarial ? strictFaas() : developer();
         EnumSet<Capability> caps = EnumSet.noneOf(Capability.class);
         if (!raw.isBlank()) {
             for (String value : raw.split(",")) caps.add(Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
