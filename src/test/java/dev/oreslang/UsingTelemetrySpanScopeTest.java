@@ -20,23 +20,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * interface, JIT re-instrumentation or independent LLVM AOT parity.
  */
 final class UsingTelemetrySpanScopeTest {
-    private static final String HEADER = """
-            define module telemetry as
-              pub define class SpanScope as
-                pub close_scope(): void {
-                  stdio.stdout.write("C");
-                  return;
-                }
-                pub set_attribute(string key, string value): void {
-                  return;
-                }
-              end
-              pub fnc span(string operation): SpanScope {
-                stdio.stdout.write("F");
-                return new SpanScope();
-              }
-            end
-            """;
+    // Compiler-owned telemetry.span must work without ANY guest-defined
+    // telemetry module, SpanScope constructor, or guest close_scope().
+    private static final String HEADER = "";
 
     private static String program(String body) {
         return HEADER + "pub fnc main(): void {\n" + body + "\n}\n";
@@ -95,7 +81,7 @@ final class UsingTelemetrySpanScopeTest {
                 return;
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
-        assertEquals("FBCA", run(code));
+        assertEquals("BA", run(code));
     }
 
     @Test
@@ -108,7 +94,7 @@ final class UsingTelemetrySpanScopeTest {
                 stdio.stdout.write("never");
                 """);
         assertEquals(0, OresCompiler.parseAndTypeCheckWithDiagnostics(code).warnings().size());
-        assertEquals("FBC", run(code));
+        assertEquals("B", run(code));
     }
 
     @Test
@@ -124,7 +110,7 @@ final class UsingTelemetrySpanScopeTest {
                 return;
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
-        assertEquals("FAFBCDC", run(code));
+        assertEquals("ABD", run(code));
     }
 
     @Test
@@ -166,7 +152,7 @@ final class UsingTelemetrySpanScopeTest {
                 """;
         IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(code)));
-        assertTrue(denied.getMessage().contains("nominal SpanScope"), denied::getMessage);
+        assertTrue(denied.getMessage().contains("unshadowed telemetry.span factory"), denied::getMessage);
     }
 
     @Test
@@ -188,8 +174,8 @@ final class UsingTelemetrySpanScopeTest {
                 """;
         IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(code)));
-        assertTrue(denied.getMessage().contains("zero-argument")
-                || denied.getMessage().contains("void"), denied::getMessage);
+        assertTrue(denied.getMessage().contains("unshadowed telemetry.span factory"),
+                denied::getMessage);
     }
 
     @Test
@@ -299,7 +285,7 @@ final class UsingTelemetrySpanScopeTest {
                 stdio.stdout.write("never");
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
-        assertEquals("FBC", run(code));
+        assertEquals("B", run(code));
     }
 
     @Test
@@ -410,5 +396,52 @@ final class UsingTelemetrySpanScopeTest {
             assertTrue(denied.getMessage().contains("continuation-owned span frames"),
                     denied::getMessage);
         }
+    }
+
+    @Test
+    void nativeObserverCallsAreTypedAndNeverExportScopeTokens() throws Exception {
+        String code = program("""
+                using telemetry.span("checkout") as span {
+                  span.set_attribute("order.type", "digital");
+                  span.add_event("acquired");
+                  span.set_status("ok");
+                  span.record_error("none");
+                  stdio.stdout.write("B");
+                }
+                return;
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
+        assertEquals("B", run(code));
+    }
+
+    @Test
+    void nativeObserversRejectInvalidArityAndWrongArgumentTypes() {
+        for (String observer : new String[] {
+                "span.set_attribute(7, \"digital\");",
+                "span.set_attribute(\"k\");",
+                "span.add_event();",
+                "span.set_status(42);",
+                "span.close_scope();"
+        }) {
+            String code = program("using telemetry.span(\"checkout\") as span { "
+                    + observer + " }");
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)), observer);
+        }
+    }
+
+    @Test
+    void nativeAliasCannotBeRedefinedWithinAnActiveScope() {
+        String code = program("""
+                using telemetry.span("checkout") as span {
+                  val span = 1;
+                  span.set_attribute("x", "y");
+                }
+                return;
+                """);
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(denied.getMessage().contains("must not be shadowed"),
+                denied::getMessage);
     }
 }
