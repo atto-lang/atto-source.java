@@ -76,7 +76,7 @@ jobs:
           failures = int(root.attrib.get("failures", "-1"))
           errors = int(root.attrib.get("errors", "-1"))
           skipped = int(root.attrib.get("skipped", "-1"))
-          if (count, failures, errors, skipped) != (22, 0, 0, 0) or len(cases) != 22:
+          if (count, failures, errors, skipped) != (23, 0, 0, 0) or len(cases) != 23:
               raise SystemExit(f"INCOMPLETE_TEST_RECEIPT: tests={count} failures={failures} errors={errors} skipped={skipped} testcase_elements={len(cases)}")
           names = [case.attrib.get("name") for case in cases]
           if any(not name for name in names) or len(set(names)) != len(names):
