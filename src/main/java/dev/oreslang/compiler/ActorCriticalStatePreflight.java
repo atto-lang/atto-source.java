@@ -16,9 +16,11 @@ import java.util.TreeMap;
  * Closed-world, manifest-owned state-loan preflight. This is a typed
  * SCHEMA/AST witness, NOT executable critical-loan MIR or an authority token.
  *
- * V2 deliberately admits one checked scalar increment in a WRITE loan or a
- * copy-only scalar send in a READ loan. It rejects nested callbacks, alias
- * export, state member spoofing, suspension and arbitrary guest side effects.
+ * V2 admits a checked scalar increment in a WRITE loan followed by
+ * a detached i64 snapshot from a READ loan. Actor mailbox publication is
+ * admitted only AFTER the READ loan has ended; a send or other side effect
+ * within the loan is rejected. Nested callbacks, alias export, state member
+ * spoofing, suspension and arbitrary guest side effects also fail closed.
  * A subsequent MIR pass must still prove generation fencing, effect admission
  * and correct runtime loan release on every exit.
  */
