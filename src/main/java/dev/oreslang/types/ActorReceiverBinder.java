@@ -435,8 +435,8 @@ public final class ActorReceiverBinder {
                     || method.parameters().getFirst().type().arguments().getFirst().isClosedAggregateType()
                     || !isVoid(method.returnType())) {
                 throw new IllegalArgumentException(
-                        "external receive must be private and accept one "
-                                + "ActorMail<T> argument with void return");
+                        "external receive must be private runtime-only and accept one "
+                                + "owned ActorMail<T> argument with void return");
             }
         } else if (name.equals("on_start") || name.equals("tear_down")) {
             if (method.visibility() != Ast.Visibility.PRIVATE
