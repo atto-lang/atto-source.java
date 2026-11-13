@@ -61,7 +61,7 @@ jobs:
           test -s target/surefire-reports/TEST-dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest.xml
           test -s target/surefire-reports/TEST-dev.oreslang.NamespaceActorUnleasedSpawnV0Test.xml
           for spec in \
-            dev.oreslang.compiler.NamespaceActorCriticalOutputTest:3 \
+            dev.oreslang.compiler.NamespaceActorCriticalOutputTest:5 \
             dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest:11 \
             dev.oreslang.NamespaceActorUnleasedSpawnV0Test:7; do
             clazz="${spec%%:*}"
@@ -72,6 +72,19 @@ jobs:
             grep -q 'errors="0"' "$report"
             grep -q 'failures="0"' "$report"
             grep -q 'skipped="0"' "$report"
+          done
+          # Detect any failures/errors/skips in default Surefire suite XMLs,
+          # not only in the individually pinned actor tests.
+          reports=(target/surefire-reports/TEST-*.xml)
+          test "${#reports[@]}" -gt 0
+          for report in "${reports[@]}"; do
+            test -s "$report"
+            suite="$(grep -m1 '<testsuite ' "$report")"
+            test -n "$suite"
+            printf '%s' "$suite" | grep -Eq 'tests="[1-9][0-9]*"'
+            printf '%s' "$suite" | grep -Eq 'failures="0"'
+            printf '%s' "$suite" | grep -Eq 'errors="0"'
+            printf '%s' "$suite" | grep -Eq 'skipped="0"'
           done
           echo ATTO_ACTOR_SOURCE_FULL_TREE_JUNIT=PASS
           echo ATTO_ACTOR_GENERAL_GUEST_LOWERING=NOT_PROVEN
