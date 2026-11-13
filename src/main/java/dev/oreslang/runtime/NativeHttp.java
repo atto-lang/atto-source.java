@@ -224,9 +224,9 @@ public final class NativeHttp implements AutoCloseable {
             var selected = listenerSlots.next(listener);
             Worker worker = selected.previous();
             if (worker != null && !worker.actor.done().isDone()) {
-                // FIRST check the admission fence. A worker sealed by another
-                // listener is intentionally stopping and MUST be replaced,
-                // not classified as a generic 500 "worker stopping" error.
+                // FIRST check the admission fence. This worker belongs only
+                // to the selected listener. A sealed/stopping generation must
+                // be replaced, not classified as a generic HTTP 500.
                 // A successful reservation prevents a concurrent shutdown
                 // seal from overtaking this dispatch before its handoff.
                 if (worker.admission.tryReserve()) {
@@ -739,10 +739,10 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 pooledBarrierStarted = true;
                 snapshot = List.copyOf(pooledWorkers);
-                // Linearize shutdown with ALL HTTP dispatch reservations,
-                // including those coming from other live listeners sharing a
-                // Handler pool. No new admission may use this worker generation
-                // after seal; a different listener creates a replacement.
+                // Seal every worker generation owned by THIS listener.
+                // Other listeners have disjoint slots and actor identities
+                // even when they reuse the same Handler configuration.
+                // No future admission may use a sealed generation.
                 for (Handler.Worker worker : snapshot) worker.admission.seal();
                 pooledWorkers.clear();
             }
