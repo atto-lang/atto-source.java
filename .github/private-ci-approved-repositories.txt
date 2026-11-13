@@ -6,5 +6,7 @@
 # Proposed narrow private carrier for v3 exact-tree tests; requires exact independent review before merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
 
-# Proposed Java #2048 carrier; effective only after the required independent review.
+# Proposed Java #2048 and #3020 carrier; effective only after the required independent review.
+# Java #3020 requires a V3 exact-head/tree proof and signed independent
+# ORESoftware approval before any of its private blobs may be exported.
 beamscale/bmscl-compiler 1383937120
