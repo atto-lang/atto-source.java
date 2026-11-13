@@ -760,6 +760,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeActorLifecycleMethod(
                 OresObject object, Ast.MethodDecl method, String hook) {
             Env env = new Env(null, false, declaringClass(method), object);
+            env.instanceMethodOwner = declaringClass(method);
             env.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
@@ -1347,6 +1348,9 @@ public final class OresEvalRootNode extends RootNode {
                                         : declarationModules.get(function));
 
                         if (receiver != null) {
+                            // SourceTask continuations must retain only the
+                            // compiler-owned instance-method lexical authority.
+                            params.instanceMethodOwner = declaringClass(method);
                             params.define(
                                     "self",
                                     receiver,
@@ -6247,6 +6251,7 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
             if (!method.isStatic()) {
+                env.instanceMethodOwner = declaringClass(method);
                 env.define("self", receiver, Ast.BindingKind.VAL, declaringClass(method));
             }
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
@@ -7112,8 +7117,8 @@ public final class OresEvalRootNode extends RootNode {
             // receiver's subclass. The selected explicit call still performs
             // ordinary virtual dispatch; subclass-only names must never
             // hijack a root/function call checked in a base method.
-            Ast.ClassDecl lexicalOwner = env.accessClass();
-            if (lexicalOwner == null) return null;
+            Ast.ClassDecl lexicalOwner = env.instanceMethodOwner();
+            if (lexicalOwner == null || env.accessClass() != lexicalOwner) return null;
             Object receiver = env.lookup("self");
             if (!(receiver instanceof OresObject object)
                     || !object.owner.hasInstanceMethodNamed(
@@ -10763,6 +10768,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
+        // Set only for compiler-created instance method entry frames.
+        // A constructor, field initializer or static local named "self"
+        // never acquires implicit receiver authority.
+        private Ast.ClassDecl instanceMethodOwner;
         // Declaration-origin boundary survives nlex lambdas, which intentionally
         // discard private-member authority but must not acquire file ambient scope.
         private final Ast.ClassDecl lexicalContainerClass;
@@ -10826,6 +10835,9 @@ public final class OresEvalRootNode extends RootNode {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
+            this.instanceMethodOwner =
+                    parent == null || descendantsNonLexical
+                            ? null : parent.instanceMethodOwner;
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
@@ -10842,6 +10854,7 @@ public final class OresEvalRootNode extends RootNode {
         private long scopeEpoch() { return scopeEpoch; }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
+        private Ast.ClassDecl instanceMethodOwner() { return instanceMethodOwner; }
         private Ast.ClassDecl lexicalContainerClass() { return lexicalContainerClass; }
         private String lexicalModule() { return lexicalModule; }
         private boolean isInsideExplicitModule() {
@@ -10911,6 +10924,7 @@ public final class OresEvalRootNode extends RootNode {
                     null,
                     lexicalModule);
             cp.structuredTaskScope = structuredTaskScope;
+            cp.instanceMethodOwner = descendantsNonLexical ? null : instanceMethodOwner;
             cp.slots.putAll(slots);
             return cp;
         }
