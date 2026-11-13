@@ -3066,7 +3066,7 @@ public final class TypeChecker {
                     && currentInstanceMethodOwner == currentClassOwner
                     && call.origin() == Ast.CallOrigin.DIRECT
                     && call.callee() instanceof Ast.NameExpr implicit
-                    && !isBooleanIntrinsicName(implicit.name())
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
                     && env.lookup(implicit.name()) == null) {
                 Env.Binding receiverBinding = env.lookup("self");
                 if (receiverBinding != null) {
