@@ -827,8 +827,9 @@ public final class Parser {
         consume(LPAREN, "expected '(' before external receiver method parameters");
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
+        final String checkedReceiverName = receiverName;
         if (parameters.stream().anyMatch(p -> p.structural()
-                || p.name().equals(receiverName)
+                || p.name().equals(checkedReceiverName)
                 || p.name().equals("self"))) {
             throw error(previous(), "external receiver methods cannot use structural parameters "
                     + "or shadow the receiver binding");
