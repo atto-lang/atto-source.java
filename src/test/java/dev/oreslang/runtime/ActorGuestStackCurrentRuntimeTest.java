@@ -73,8 +73,9 @@ final class ActorGuestStackCurrentRuntimeTest {
             });
             doomed.send("bad-unwind");
             assertTrue(doomed.awaitTermination(3, TimeUnit.SECONDS));
-            assertTrue(doomed.failure().isPresent(),
-                    "a swallowed malformed unwind must still fail-stop its actor");
+            assertInstanceOf(GuestCallDepthExceededException.class,
+                    doomed.failure().orElseThrow(),
+                    "swallowed invalid unwind must poison the actor, not merely fail a test assertion");
             sibling.send("alive");
             assertTrue(sibling.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(sibling.failure().isEmpty(),
