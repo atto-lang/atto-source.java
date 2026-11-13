@@ -26,7 +26,7 @@ final class ActorCriticalStateSyntaxV2Test {
 
     private static final String NS = "namespace counter;\n";
     private static final String STATEFUL_METHOD = NS + """
-            mtd (Counter c) receive(ActorMail<int> mail): void {
+            external mtd (Counter c) receive(ActorMail<int> mail): void {
                 self.handle_state(critical-write |s| -> {
                     s.total = s.total + mail.value;
                 });
@@ -53,7 +53,9 @@ final class ActorCriticalStateSyntaxV2Test {
 
     @Test
     void statefulMethodKeepsDistinctWriterAndReaderScopes() {
-        var body = method(STATEFUL_METHOD).body();
+        var verified = method(STATEFUL_METHOD);
+        assertTrue(verified.runtimeOnly(), "private external receive must preserve ingress provenance");
+        var body = verified.body();
         assertEquals(3, body.size());
         var write = scope(body.get(0), Ast.CriticalStateMode.WRITE);
         var read = scope(body.get(1), Ast.CriticalStateMode.READ);
@@ -124,6 +126,9 @@ final class ActorCriticalStateSyntaxV2Test {
     @Test
     void physicalMultiFileStatefulActorIsManifestBoundButNotExecutable() throws Exception {
         var build = physicalBuild();
+        var source = Files.readString(root.resolve("src/counter/receive.atto"));
+        assertTrue(method(source).runtimeOnly(),
+                "manifest-bound receiver must be explicit private external mtd");
         var audit = build.auditDeclaredActors();
         assertEquals(1, audit.contractWitness().actors().size());
         assertNotNull(audit.contractWitness().actors().values().iterator().next().stateUnit());
