@@ -90,6 +90,54 @@ authenticated scope acquisition/release inside the **existing** runtime
 Counter handler, a trusted host replay loop, or a synthetic expected-output
 oracle to stand in for `.atto` execution.
 
+## Experimental compiled receive on real actor turns (V1, limited)
+
+The manifest-owned builder now has a deliberately **opt-in** entrypoint,
+`compileCriticalStateActorGuestV1(SharedCodeImageStore)`, which consumes one
+closed snapshot and calls `ActorCriticalStateMirV1.lower` again. It installs
+an immutable **whole-source-set** `CodeImage` whose identity includes the
+manifest SHA-256 and every physical source-unit digest. The compiler creates
+an `ActorCodeExecutor` from the validated MIR, not a user-authored Java
+Counter handler. The caller may only attach that executor through the
+existing `ActorRuntime.spawnCodeActor(PRIVATE, ..., "Counter")` API.
+
+On a genuine actor startup turn, `initializeActor` allocates an eight-byte
+persistent `ActorMemorySlice.PrivateMemoryBlock` and writes the default
+declared by the attached `.atto` state field. State holds its runtime, actor
+ID, generation and exact CodeImage identity. On each runtime-minted mailbox
+turn, `receiveActor` checks those identities *and* the exact currently
+admitted `ActorInboxMail`, and decodes one owned Java `Long` (Atto `int`).
+It interprets the three **compiler-authenticated** MIR opcodes: checked
+`Math.addExact` update under a nonparking exclusive scope, copied read under
+a separate scope, a real `emitCurrentActorOutput` call, and finally
+`endCurrentActor` when the source-derived stop predicate is true. No
+state pointer/view appears in mailbox output. The state storage is closed
+under the actor's cooperative teardown and invalidated with the actor's
+memory slice on physical retirement. Overflow throws before persistence.
+
+`ActorCriticalStateGuestV1Test` drives real runtime mailbox messages, checks
+the computed `1|3|6|10` outputs, two actors' independent state, checked
+overflow with sibling survival, invalid message types, and an altered
+**physical Atto package** (renamed field, initial state 17, stop on 2)
+which must produce `24|26`. This proves the executor is source-derived,
+not a four-constant output oracle, *if and only if the tests actually run*.
+
+**Important evidence boundary:** this first slice compiles the Atto actor's
+`receive` method only, and the test driver sends actual mailbox DATA from
+Java. It does **not** compile or execute `main.atto`, nor permit arbitrary
+external methods, effects, untrusted actors, general concurrent critical
+readers, suspension inside loans, or all-backend parity. Ordinary `build()`
+and `TypeChecker.check` remain deliberately fail-closed on unsupported
+declarations. The current JVM direct-memory block is a bounded owner-checked
+scalar region, **not** proof of the complete 32-bit arena-relative heap ABI.
+
+The dedicated JDK25 CI workflow compiles the complete module and executes
+all three JUnit classes, with zero skips required, before claiming the
+`SOURCE_MIR_MAILBOX_EXECUTED=true, FULL_ATTO_MAIN_EXECUTED=false` receipt.
+The source GitHub organization has recently failed runner admission before
+any steps; until this workflow has stepfully run, this new runtime behavior is
+**committed but unverified**.
+
 ## Manifest-owned semantic preflight
 
 The `PackageNamespaceBuild.auditDeclaredActors()` pipeline now runs
