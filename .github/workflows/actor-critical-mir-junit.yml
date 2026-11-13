@@ -1,13 +1,15 @@
-name: Actor critical MIR typed admission (NOT guest execution)
+name: Actor critical MIR and compiled receive (MAIN NOT EXECUTED)
 on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/ActorCriticalStateMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/VerifiedCriticalStateActorGuestV1.java'
       - 'src/main/java/dev/oreslang/compiler/ActorCriticalStatePreflight.java'
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
       - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/ActorCriticalStateSyntaxV2Test.java'
+      - 'src/test/java/dev/oreslang/ActorCriticalStateGuestV1Test.java'
       - 'src/test/java/dev/oreslang/ExternalActorRuntimeIngressSyntaxTest.java'
       - 'contracts/declared-actor-stateful-counter-v2/**'
       - '.github/workflows/actor-critical-mir-junit.yml'
@@ -15,7 +17,7 @@ on:
 permissions:
   contents: read
 jobs:
-  typed-mir-nonexecuting-junit:
+  typed-mir-and-compiled-receive-junit:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -39,19 +41,20 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Compile and run both exact-head Java actor MIR suites
+      - name: Compile and execute typed MIR, ingress and real mailbox tests
         shell: bash
         run: |
           set -euo pipefail
           java -version
-          mvn -B -ntp -Dtest=ActorCriticalStateSyntaxV2Test,ExternalActorRuntimeIngressSyntaxTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          mvn -B -ntp -Dtest=ActorCriticalStateSyntaxV2Test,ExternalActorRuntimeIngressSyntaxTest,ActorCriticalStateGuestV1Test -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
           test -f target/surefire-reports/TEST-dev.oreslang.ActorCriticalStateSyntaxV2Test.xml
           test -f target/surefire-reports/TEST-dev.oreslang.ExternalActorRuntimeIngressSyntaxTest.xml
+          test -f target/surefire-reports/TEST-dev.oreslang.ActorCriticalStateGuestV1Test.xml
           python3 - <<'PY'
           import pathlib
           import xml.etree.ElementTree as ET
           root = pathlib.Path("target/surefire-reports")
-          names = ["ActorCriticalStateSyntaxV2Test", "ExternalActorRuntimeIngressSyntaxTest"]
+          names = ["ActorCriticalStateSyntaxV2Test", "ExternalActorRuntimeIngressSyntaxTest", "ActorCriticalStateGuestV1Test"]
           total = 0
           for name in names:
               p = root / f"TEST-dev.oreslang.{name}.xml"
@@ -63,5 +66,5 @@ jobs:
                       raise SystemExit(f"{name} has {k} != 0")
               if not t:
                   raise SystemExit(f"{name} executed zero tests")
-          print(f"ATTO_ACTOR_CRITICAL_MIR_STATIC_JUNIT_PASS tests={total} GUEST_NOT_EXECUTED=true")
+          print(f"ATTO_ACTOR_CRITICAL_RECEIVE_JUNIT_PASS tests={total} SOURCE_MIR_MAILBOX_EXECUTED=true FULL_ATTO_MAIN_EXECUTED=false")
           PY
