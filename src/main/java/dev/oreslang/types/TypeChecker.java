@@ -3145,6 +3145,25 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
+            if (!activeTelemetryAliases.isEmpty()) {
+                // Until there are transitive no-suspend/no-throw effects,
+                // permit only compiler-known immediate stdout writes. An
+                // arbitrary call could suspend or escape into another task
+                // without spelling await anywhere in this lexical body.
+                boolean builtinWrite = call.callee() instanceof Ast.MemberExpr member
+                        && Set.of("write", "write_line").contains(member.member())
+                        && member.receiver() instanceof Ast.MemberExpr stdout
+                        && stdout.member().equals("stdout")
+                        && stdout.receiver() instanceof Ast.NameExpr stdio
+                        && stdio.name().equals("stdio")
+                        && env.lookup("stdio") == null;
+                if (!builtinWrite) {
+                    throw new IllegalArgumentException(
+                            "native SpanScope requires transitive verified "
+                                    + "non-suspending callable effects; arbitrary calls "
+                                    + "inside using telemetry.span are not yet admitted");
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
