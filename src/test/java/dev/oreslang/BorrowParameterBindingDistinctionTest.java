@@ -204,6 +204,19 @@ final class BorrowParameterBindingDistinctionTest {
     }
 
     @Test
+    void unmarkedFunctionCannotAwaitEvenAnAlreadyCompletedFuture() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(BOX + """
+                        async fnc result(): int { return 1; }
+                        fnc invalid(): int {
+                          return await result();
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("await requires an async or suspends callable"),
+                failure.getMessage());
+    }
+
+    @Test
     void borrowParameterDoesNotCrossAwaitInTypedCallback() {
         rejects("""
                 async fnc load(): int { return 1; }
