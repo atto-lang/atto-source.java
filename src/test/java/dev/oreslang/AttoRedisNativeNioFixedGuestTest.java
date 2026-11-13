@@ -42,6 +42,7 @@ final class AttoRedisNativeNioFixedGuestTest {
                                     "redis_native_nio_fixed.atto")
                             .mimeType(OresLanguage.MIME_TYPE).build());
                 }
+                return null;
             });
             try (Socket client = connect(guest)) {
                 client.setSoTimeout(7000);
