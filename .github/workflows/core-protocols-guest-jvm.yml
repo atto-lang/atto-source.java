@@ -55,8 +55,10 @@ jobs:
           # actually discovers and completes the new guest test method.
           report='target/surefire-reports/TEST-dev.oreslang.CoreProtocolsGuestTest.xml'
           test -s "$report"
-          grep -F 'canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode' "$report"
-          grep -F 'canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods' "$report"
+          grep -F 'name="canonicalHashAndCloneTraitsExecuteRealLinkedAttoGuestCode"' "$report"
+          grep -F 'name="canonicalHashAndCloneTraitsRejectMissingOrMismatchedGuestMethods"' "$report"
+          # Require unskipped method testcase elements and zero suite failures.
+          grep -F 'skipped="0"' "$report"
           grep -E 'failures="0".*errors="0"|errors="0".*failures="0"' "$report"
           echo 'CORE_PROTOCOLS_JAVA_GUEST_JUNIT=EXECUTED'
       - name: Preserve evidence boundary
