@@ -168,6 +168,14 @@ public final class NativeTelemetryScopes {
         ended.incrementAndGet();
     }
 
+    /**
+     * Pure compiler/runtime shared validation. No encoding allocation and no
+     * lossy replacement of malformed UTF-16 surrogates are permitted.
+     */
+    public static void validateOperationLiteral(String operation) {
+        requireOperationName(operation);
+    }
+
     private static void requireOperationName(String operation) {
         Objects.requireNonNull(operation, "span operation");
         if (operation.isEmpty()) {
