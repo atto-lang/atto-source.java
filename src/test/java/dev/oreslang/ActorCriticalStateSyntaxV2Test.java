@@ -115,7 +115,7 @@ final class ActorCriticalStateSyntaxV2Test {
         var build = physicalBuild();
         Path path = root.resolve("src/counter/receive.atto");
         String source = Files.readString(path);
-        String detached = "  val int snapshot = self.handle_state(critical-read |s| -> s.total);\\n"
+        String detached = "  val int snapshot = self.handle_state(critical-read |s| -> s.total);\n"
                 + "  self.send(snapshot);";
         assertTrue(source.contains(detached), "test requires the current canonical read-then-send");
 
