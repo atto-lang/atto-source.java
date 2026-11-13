@@ -37,6 +37,16 @@ pub mtd (Worker _) process(): void {
   it does not change the meaning of normal typed function parameters.
 - A parameter cannot shadow the hidden `self` or a named receiver alias.
   Duplicate `name/arity` slots remain duplicates regardless of spelling.
+- An out-of-line public `mtd` requires a public nominal actor; an unnamed
+  receiver does not allow publication of a private actor.
+- Compiler-owned state and lifecycle identifiers (including `handle_state`,
+  `state`, `on_panic`, `on_restart`, `tear_down` and `receive`) cannot
+  be used as receiver aliases. The external-method AST itself enforces this
+  and converts a forged discard alias `_` to `self`.
+- `(Worker worker)` retains its source name in static metadata. The narrow
+  stateless guest lowerer currently binds the *implicit* runtime `self`; use
+  of a different alias in executable bodies still requires verified lexical
+  alias lowering and is not certified by this PR.
 
 ## Call resolution and security
 
