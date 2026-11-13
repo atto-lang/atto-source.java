@@ -3374,6 +3374,22 @@ public final class OwnershipChecker {
                 }
             }
         } else if (expr instanceof Ast.CallExpr e) {
+            // Capture analysis runs on original source AST before implicit
+            // self.method() lowering. A bare lexical instance-method call
+            // captures the same borrowed self as an explicit self.method()
+            // call. Without this, a closure could evade the self-loan capture
+            // gate and later have its bare name resolved as a free function.
+            if (currentInstanceMethodOwner != null
+                    && e.origin() == Ast.CallOrigin.DIRECT
+                    && e.callee() instanceof Ast.NameExpr implicit
+                    && !isBooleanIntrinsicName(implicit.name())
+                    && !locals.contains(implicit.name())
+                    && outer.lookup(implicit.name()) == null
+                    && hasMethodNamed(
+                            currentInstanceMethodOwner, implicit.name(), new LinkedHashSet<>())) {
+                scanExpr(new Ast.NameExpr("self"),
+                        locals, outer, recursiveBinding, captures, false);
+            }
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {
