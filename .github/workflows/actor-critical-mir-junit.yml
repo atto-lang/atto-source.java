@@ -2,6 +2,12 @@ name: Actor critical MIR and compiled receive (MAIN NOT EXECUTED)
 on:
   pull_request:
     paths:
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/SharedCodeImageStore.java'
+      - 'pom.xml'
+      - 'scripts/build-native-thread.sh'
       - 'src/main/java/dev/oreslang/compiler/ActorCriticalStateMirV1.java'
       - 'src/main/java/dev/oreslang/compiler/VerifiedCriticalStateActorGuestV1.java'
       - 'src/main/java/dev/oreslang/compiler/ActorCriticalStatePreflight.java'
@@ -50,21 +56,31 @@ jobs:
           test -f target/surefire-reports/TEST-dev.oreslang.ActorCriticalStateSyntaxV2Test.xml
           test -f target/surefire-reports/TEST-dev.oreslang.ExternalActorRuntimeIngressSyntaxTest.xml
           test -f target/surefire-reports/TEST-dev.oreslang.ActorCriticalStateGuestV1Test.xml
-          python3 - <<'PY'
-          import pathlib
-          import xml.etree.ElementTree as ET
-          root = pathlib.Path("target/surefire-reports")
-          names = ["ActorCriticalStateSyntaxV2Test", "ExternalActorRuntimeIngressSyntaxTest", "ActorCriticalStateGuestV1Test"]
-          total = 0
-          for name in names:
-              p = root / f"TEST-dev.oreslang.{name}.xml"
-              xml = ET.parse(p).getroot()
-              t = int(xml.attrib.get("tests", "0"))
-              total += t
-              for k in ("errors", "failures", "skipped"):
-                  if int(xml.attrib.get(k, "0")):
-                      raise SystemExit(f"{name} has {k} != 0")
-              if not t:
-                  raise SystemExit(f"{name} executed zero tests")
-          print(f"ATTO_ACTOR_CRITICAL_RECEIVE_JUNIT_PASS tests={total} SOURCE_MIR_MAILBOX_EXECUTED=true FULL_ATTO_MAIN_EXECUTED=false")
-          PY
+          # Fail closed if a test class vanishes, a test is skipped, or the
+          # pinned minimum suite shrinks. No Python or test-code override.
+          total=0
+          for item in 'ActorCriticalStateSyntaxV2Test:17' 'ExternalActorRuntimeIngressSyntaxTest:3' 'ActorCriticalStateGuestV1Test:7'; do
+            name="${item%%:*}"
+            minimum="${item##*:}"
+            report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
+            test -f "$report" || { echo "Missing JUnit result: $report" >&2; exit 1; }
+            header="$(grep -m1 -E '^<testsuite[[:space:]]' "$report")" || {
+              echo "Missing testsuite root for $name" >&2; exit 1;
+            }
+            declare -A counts=()
+            for key in tests failures errors skipped; do
+              if [[ ! "$header" =~ [[:space:]]${key}=\\\"([0-9]+)\\\" ]]; then
+                echo "Missing or malformed $key result for $name" >&2; exit 1
+              fi
+              counts[$key]="${BASH_REMATCH[1]}"
+            done
+            if (( 10#${counts[tests]} < minimum || 10#${counts[failures]} != 0 || 10#${counts[errors]} != 0 || 10#${counts[skipped]} != 0 )); then
+              echo "JUnit gate failed for $name: tests=${counts[tests]} failures=${counts[failures]} errors=${counts[errors]} skipped=${counts[skipped]}" >&2
+              exit 1
+            fi
+            total=$((total + 10#${counts[tests]}))
+            unset counts
+            echo "ATTO_JUNIT_CLASS_PASS $name"
+          done
+          if (( total < 27 )); then echo "Too few tests: $total" >&2; exit 1; fi
+          echo "ATTO_ACTOR_CRITICAL_RECEIVE_JUNIT_PASS tests=$total SOURCE_MIR_MAILBOX_EXECUTED=true FULL_ATTO_MAIN_EXECUTED=false"
