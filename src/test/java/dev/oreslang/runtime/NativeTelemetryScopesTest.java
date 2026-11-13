@@ -233,6 +233,26 @@ final class NativeTelemetryScopesTest {
     }
 
     @Test
+    void fullObserverBudgetDropsEventsWithoutChangingApplicationResults() {
+        NativeTelemetryScopes runtime = new NativeTelemetryScopes();
+        NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
+        runtime.setEnabledFromTrustedHost(true);
+        NativeTelemetryScopes.SpanToken span =
+                runtime.beginFromTrustedRuntime(carrier, "budgeted");
+        int result = 51;
+        for (int index = 0; index < 257; index++) {
+            runtime.observeFromTrustedRuntime(carrier, span,
+                    "add_event", List.of("event"));
+        }
+        runtime.endFromTrustedRuntime(carrier, span);
+        assertEquals(51, result);
+        assertEquals(256, runtime.snapshotForTrustedHost().observerCalls());
+        assertEquals(1, runtime.snapshotForTrustedHost().dropped());
+        assertEquals(1, runtime.snapshotForTrustedHost().ended());
+        assertEquals(0, runtime.snapshotForTrustedHost().active());
+    }
+
+    @Test
     void utf8OperationAndBoundedDepthRejectMalformedOrOverflowingInputs() {
         NativeTelemetryScopes runtime = new NativeTelemetryScopes();
         NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
@@ -246,8 +266,10 @@ final class NativeTelemetryScopesTest {
         for (int i = 0; i < 64; i++) {
             scopes.add(runtime.beginFromTrustedRuntime(carrier, "x".repeat(256)));
         }
-        assertThrows(IllegalStateException.class,
-                () -> runtime.beginFromTrustedRuntime(carrier, "overflow"));
+        NativeTelemetryScopes.SpanToken overflow =
+                runtime.beginFromTrustedRuntime(carrier, "overflow");
+        runtime.endFromTrustedRuntime(carrier, overflow);
+        assertEquals(1, runtime.snapshotForTrustedHost().dropped());
         for (int i = scopes.size() - 1; i >= 0; i--) {
             runtime.endFromTrustedRuntime(carrier, scopes.get(i));
         }
