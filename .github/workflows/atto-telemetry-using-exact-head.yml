@@ -84,7 +84,7 @@ jobs:
               )
               print(f'ATTO_USING_JAVA_VERIFIED_SUITE={suite} executed={count}')
               total += count
-          assert total >= 39, f'Expected 25 scoped guest tests, borrow regression and 13 native lifecycle cases: {total}'
+          assert total >= 40, f'Expected 26 scoped guest tests, borrow regression and 13 native lifecycle cases: {total}'
           print(f'ATTO_USING_JAVA_GUEST_JUNIT_PASS={total}')
           PY
       - name: Preserve exact-head guest proof reports
