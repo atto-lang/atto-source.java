@@ -2759,6 +2759,12 @@ public final class TypeChecker {
                     && indexed.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), initializedIndexedField);
             }
+            if (assignment.target() instanceof Ast.NameExpr rebound) {
+                // Even a statically compatible row can have extra hidden
+                // runtime fields after a reassignment. Invalidate the shape
+                // certificate on any assignment to a rebindable name.
+                env.lookup(rebound.name()).setExactAggregate(false);
+            }
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
