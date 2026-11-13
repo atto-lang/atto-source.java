@@ -154,6 +154,38 @@ final class ActorCriticalStateGuestV1Test {
     }
 
     @Test
+    void privateActorKindCannotSpoofSharedDeclaredSourceKind() throws Exception {
+        var build = physicalBuild();
+        try (var images = new SharedCodeImageStore();
+             var runtime = new ActorRuntime()) {
+            var compiled = build.compileCriticalStateActorGuestV1(images);
+            var forgedKind = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+            assertThrows(ExecutionException.class,
+                    () -> forgedKind.getReady().get(10, TimeUnit.SECONDS));
+            assertTrue(forgedKind.failure().isPresent(),
+                    "incorrect actor kind must fail startup before state emission");
+        }
+    }
+
+    @Test
+    void runtimeInitMustNotBeSilentlySkippedByReceiveOnlyLowerer() throws Exception {
+        var build = physicalBuild();
+        Path ingress = root.resolve("src/counter/receive.atto");
+        String source = Files.readString(ingress);
+        String prefix = "namespace counter;\n";
+        String init = "external mtd (Counter c) init(): void { return; }\n";
+        assertTrue(source.startsWith(prefix));
+        Files.writeString(ingress, prefix + init + source.substring(prefix.length()));
+        try (var images = new SharedCodeImageStore()) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> build.compileCriticalStateActorGuestV1(images));
+            assertEquals(0, images.imageCount(),
+                    "an unsupported lifecycle hook must never publish a code image");
+        }
+    }
+
+    @Test
     void nonI64MailNeverCoercesOrPublishesASpuriousOutput() throws Exception {
         var build = physicalBuild();
         try (var images = new SharedCodeImageStore();
