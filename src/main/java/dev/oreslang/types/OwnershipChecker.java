@@ -1292,7 +1292,7 @@ public final class OwnershipChecker {
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+                    Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
                     if (klass != null) {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
@@ -1319,6 +1319,16 @@ public final class OwnershipChecker {
             if (concreteReceiver == null) concreteReceiver = receiverValue.type;
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            // A collection's element count is a copyable scalar read, never a
+            // projection into the collection: `val int n = list.size` must
+            // not be treated as a mutable alias of `list`.
+            if (concreteReceiver != null
+                    && member.member().equals("size")
+                    && findClass(concreteReceiver.name()) == null
+                    && java.util.Set.of("List", "Array", "Vector", "Map")
+                            .contains(concreteReceiver.name())) {
+                return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
             }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
