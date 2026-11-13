@@ -567,6 +567,30 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void mutuallyRecursiveFunctionsUseHeapOwnedSourceTaskBoundaries() throws Exception {
+        assertEquals("true", run("""
+                fnc even(n: int): bool {
+                  if n <= 0; do
+                    return true;
+                  fi
+                  return odd(n - 1);
+                }
+
+                fnc odd(n: int): bool {
+                  if n <= 0; do
+                    return false;
+                  fi
+                  return even(n - 1);
+                }
+
+                pub async routine main(): void {
+                  stdio.stdout.write(even(4096));
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void recursiveInstanceMethodUsesHeapOwnedSourceTaskBoundary() throws Exception {
         assertEquals("4096", run("""
                 define class Counter as
