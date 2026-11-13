@@ -148,13 +148,23 @@ public final class ActorCriticalStateMirV1 {
         if (ingress == null) throw deny("missing manifest-linked receive ingress");
         Ast.ExternalActorMethodDecl receive = ingress.nominalBinding().method();
         if (!receive.runtimeOnly() || receive.visibility() != Ast.Visibility.PRIVATE
-                || receive.parameters().size() != 1
-                || !receive.parameters().getFirst().type().name().equals("ActorMail")
-                || receive.parameters().getFirst().type().arguments().size() != 1
-                || !receive.parameters().getFirst().type().arguments().getFirst().name().equals("int")
-                || receive.parameters().getFirst().type().isBorrow()
-                || !receive.returnType().name().equals("void"))
+                || receive.parameters().size() != 1)
             throw deny("receive requires private runtime-only owned ActorMail<int> -> void");
+        Ast.Param ownedMail = receive.parameters().getFirst();
+        Ast.TypeRef mailType = ownedMail.type();
+        if (ownedMail.mutable() || ownedMail.structural()
+                || !mailType.name().equals("ActorMail")
+                || mailType.isBorrow() || mailType.inferArguments()
+                || mailType.arguments().size() != 1
+                || !mailType.arguments().getFirst().name().equals("int")
+                || mailType.arguments().getFirst().isBorrow()
+                || mailType.arguments().getFirst().inferArguments()
+                || !mailType.arguments().getFirst().arguments().isEmpty()
+                || !receive.returnType().name().equals("void")
+                || receive.returnType().isBorrow()
+                || receive.returnType().inferArguments()
+                || !receive.returnType().arguments().isEmpty())
+            throw deny("receive requires one immutable owned ActorMail<int> -> void");
 
         String mail = receive.parameters().getFirst().name();
         if (receive.body().size() != 4)
