@@ -6055,6 +6055,21 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf
+                        || arg instanceof dev.oreslang.runtime.AsyncNioTcp.WriteHalf) {
+                    // Split halves are affine like the connection: they MOVE into
+                    // the callee only through an owned NioReader/NioWriter formal.
+                    String want = arg instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf
+                            ? "NioReader" : "NioWriter";
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !want.equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async task argument " + (i + 1)
+                                        + " moves a " + want + " and requires an owned " + want + " parameter");
+                    }
+                    detached.add(arg);
                 } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                     // An accepted NIO connection is an affine, single-owner
                     // capability: it MOVES (never copies or shares) into the
@@ -8399,8 +8414,53 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown async NIO listener member " + name);
                 };
             }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf reader) {
+                return switch (name) {
+                    case "read_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "reader.read_owned_bytes_async");
+                        return reader.readOwnedBytesAsync(bytesIndex(args.getFirst(), "read limit"));
+                    };
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "reader.read_bytes_async");
+                        return reader.readBytesAsync(bytesIndex(args.getFirst(), "read limit"));
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "reader.close_async");
+                        return reader.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown NioReader member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.WriteHalf writer) {
+                return switch (name) {
+                    case "write_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "writer.write_owned_bytes_async");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes bytes)) {
+                            throw new IllegalArgumentException("write_owned_bytes_async needs Bytes");
+                        }
+                        return writer.writeOwnedBytesAsync(bytes);
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "writer.write_bytes_async");
+                        if (!(args.getFirst() instanceof List<?> data)) {
+                            throw new IllegalArgumentException("write_bytes_async needs List<int>");
+                        }
+                        return writer.writeBytesAsync(data);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "writer.close_async");
+                        return writer.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown NioWriter member " + name);
+                };
+            }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                 return switch (name) {
+                    case "split" -> (Invokable) args -> {
+                        requireZero(args, "socket.split");
+                        dev.oreslang.runtime.AsyncNioTcp.Halves halves = socket.split();
+                        return List.of(halves.reader(), halves.writer());
+                    };
                     case "read_resp2_hex_async" -> (Invokable) args -> {
                         requireZero(args, "socket.read_resp2_hex_async");
                         return socket.readResp2HexAsync();
@@ -8723,6 +8783,16 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
+                    case "sleep_async" -> (Invokable) args -> {
+                        requireOne(args, "process.sleep_async");
+                        long millis = bytesIndex(args.getFirst(), "process.sleep_async milliseconds");
+                        if (millis < 0 || millis > 86_400_000L) {
+                            throw new IllegalArgumentException(
+                                    "process.sleep_async milliseconds must be 0..86400000");
+                        }
+                        return context.guestTimers().sleepNanos(
+                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(millis));
+                    };
                     case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
                     case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
                     case "context_id" -> process.contextId();
